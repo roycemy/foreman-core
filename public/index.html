@@ -793,4 +793,63 @@ function cwDraw(){const P=(LS&&LS.providers)||[];
 $("#addb").onclick=openAdd;$("#addb").textContent="+ Connect AI Employee";
 boot();
 })();
+/* ===== v12: production-ready onboarding ===== */
+(function(){
+const A=id=>document.getElementById(id);
+const st=document.createElement("style");st.textContent=`.cw .pc{display:block;border:2px solid #e2e8f0;border-radius:12px;padding:10px 12px;margin-bottom:8px;cursor:pointer}.cw .pc.on{border-color:#4f46e5;background:#eef2ff}.cw .pc input{display:none}.cw .chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}.cw .chip{font:600 10.5px system-ui;border-radius:6px;padding:2px 7px;border:1px solid}.chip.AUTO{color:#16a34a;border-color:#16a34a;background:#f0fdf4}.chip.ASK{color:#d97706;border-color:#d97706;background:#fffbeb}.chip.NEVER{color:#dc2626;border-color:#dc2626;background:#fef2f2}.cw .bad{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:10px;padding:9px 11px;font-size:13px;margin:8px 0}.cw .rec{font:600 10px system-ui;color:#4f46e5;border:1px solid #4f46e5;border-radius:6px;padding:1px 5px;margin-left:6px}#ft{position:fixed;right:16px;bottom:16px;width:340px;max-width:calc(100vw - 32px);background:#fff;color:#0f172a;border-radius:14px;box-shadow:0 10px 40px rgba(15,23,42,.28);padding:14px 16px;z-index:60;font:13px system-ui}#ft h4{margin:0 0 8px;font-size:14px}#ft .s{display:flex;gap:8px;align-items:flex-start;margin:6px 0}#ft .d{width:18px;height:18px;border-radius:50%;flex:none;text-align:center;font-size:11px;line-height:18px;color:#fff;background:#94a3b8}#ft .d.ok{background:#16a34a}#ft .d.run{background:#2563eb;animation:fp 1s infinite}#ft .d.bad{background:#dc2626}@keyframes fp{50%{opacity:.4}}#ft .res{background:#f1f5f9;border-radius:8px;padding:8px;margin-top:6px;max-height:140px;overflow:auto;white-space:pre-wrap;font-size:12px}#ft .x{position:absolute;right:10px;top:8px;cursor:pointer;color:#64748b}`;document.head.appendChild(st);
+const PRE=[
+ ["cautious","Ask me first","Safest. It checks with you before doing anything.",{read:"ASK",write:"ASK",del:"NEVER",hand:"ASK"}],
+ ["balanced","Balanced","Recommended. It can look things up on its own and asks before saving anything.",{read:"AUTO",write:"ASK",del:"NEVER",hand:"AUTO"}],
+ ["trusted","Trusting","It works on its own and saves notes without asking. It can never delete.",{read:"AUTO",write:"AUTO",del:"NEVER",hand:"AUTO"}]];
+const LAB={read:"Look things up on the web",write:"Save notes",del:"Delete anything",hand:"Pass work to teammates"};
+const WORD={AUTO:"Does it",ASK:"Asks you",NEVER:"Never"};
+const chips=m=>`<div class="chips">${Object.keys(LAB).map(k=>`<span class="chip ${m[k]}">${LAB[k]}: ${WORD[m[k]]}</span>`).join("")}</div>`;
+function friendly(e,prov){e=String(e||"");
+ if(/start with xai|starts with xai/i.test(e))return "That does not look like a Grok key. Keys start with xai- . Copy it again from console.x.ai.";
+ if(/xAI error (401|403)|unauthor|invalid/i.test(e))return "Grok did not accept this key. Make sure you copied all of it, and that it is a current key.";
+ if(/xAI error|credit/i.test(e))return "Grok could not be used with this key. Your xAI account may need credits (console.x.ai, Billing). Nothing was connected.";
+ if(/auth/i.test(e))return "You were signed out. Sign in again and retry.";
+ return e||"Something went wrong. Nothing was connected. Try again.";}
+let CW={};
+openAdd=function(){CW={step:0,pre:"balanced"};A("modal").classList.add("on");draw()};
+function shell(h,back){A("modal").querySelector(".box").innerHTML=`<div class="cw">${h}<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn" id="mc2">${back||"Close"}</button></div></div>`;A("mc2").onclick=()=>{A("modal").classList.remove("on");render()}}
+function draw(){const P=((LS&&LS.providers)||[]).slice().sort((a,b)=>(a.id==="grok"?-1:b.id==="grok"?1:0));
+ if(CW.step===0){shell(`<h3 style="margin:0 0 4px">Connect an AI employee</h3><div class="sum" style="margin-bottom:12px">Step 1 of 2. Which assistant are you connecting?</div>${P.map(p=>`<button class="btn opt" data-p="${p.id}"><b>${EMO9[p.id]||""} ${esc(p.name)}</b>${p.id==="grok"?'<span class="rec">Ready in 30 seconds</span>':""}<div class="sum" style="margin-top:2px">${p.id==="grok"?"Paste one key. It starts working right away.":"Foreman gives you one message to paste into it."}</div></button>`).join("")}`);
+  document.querySelectorAll(".cw [data-p]").forEach(b=>b.onclick=()=>{CW.p=b.dataset.p;CW.pn=(P.find(x=>x.id===CW.p)||{}).name;CW.n=CW.n||(CW.p==="grok"?"Grok Assistant":"");CW.step=1;draw()});return}
+ if(CW.step===1){const g=CW.p==="grok";
+  shell(`<h3 style="margin:0 0 4px">Set up ${esc(CW.pn||"your employee")}</h3><div class="sum" style="margin-bottom:10px">Step 2 of 2. You can change all of this later in Permissions.</div><input class="t" id="cwn" placeholder="Name, for example Sales Helper" value="${esc(CW.n||"")}"><input class="t" id="cwr" placeholder="What is its job? (optional)" value="${esc(CW.r||"")}"><div style="font-weight:600;margin:6px 0">How much should it do on its own?</div>${PRE.map(x=>`<label class="pc ${CW.pre===x[0]?"on":""}" data-v="${x[0]}"><input type="radio" name="pre" value="${x[0]}"><b>${x[1]}</b>${x[0]==="balanced"?'<span class="rec">Recommended</span>':""}<div class="sum">${x[2]}</div>${chips(x[3])}</label>`).join("")}${g?`<div style="font-weight:600;margin:8px 0 4px">Your Grok key</div><div class="sum" style="margin-bottom:4px">Get one at <a href="https://console.x.ai" target="_blank" rel="noopener">console.x.ai</a>. Foreman stores it encrypted and never shows it again.</div><input class="t" id="cwk" type="password" placeholder="xai-..." autocomplete="off">`:`<div class="sum">Next you get one message to paste into ${esc(CW.pn||"it")}.</div>`}<div id="cwe"></div><div style="display:flex;justify-content:space-between;margin-top:6px"><button class="btn" id="cwb">Back</button><button class="btn pri" id="cwg">Connect</button></div>`,"Cancel");
+  document.querySelectorAll(".cw .pc").forEach(l=>l.onclick=()=>{CW.pre=l.dataset.v;document.querySelectorAll(".cw .pc").forEach(x=>x.classList.toggle("on",x===l))});
+  A("cwb").onclick=()=>{CW.n=A("cwn").value;CW.r=A("cwr").value;CW.step=0;draw()};
+  A("cwg").onclick=async()=>{const n=A("cwn").value.trim();CW.n=n;CW.r=A("cwr").value.trim();const er=m=>{A("cwe").innerHTML=`<div class="bad">${esc(m)}</div>`;A("cwg").disabled=false;A("cwg").textContent="Connect"};
+   if(!n)return er("Give your employee a name first.");const body={provider:CW.p,name:n,role:CW.r,preset:CW.pre};
+   if(g){body.apiKey=A("cwk").value.trim();if(!body.apiKey)return er("Paste your Grok key first. You can get one at console.x.ai.")}
+   A("cwe").innerHTML="";A("cwg").disabled=true;A("cwg").textContent=g?"Checking your key...":"Connecting...";
+   let j;try{j=await api("/api/connect","POST",body)}catch(e){return er(friendly("auth"))}
+   if(j.error)return er(friendly(j.error,CW.p));
+   CW.res=j;SIG="~";await sync();A("modal").classList.remove("on");location.hash="#office";render();firstTask(j,CW.n,CW.p)}}}
+/* first real task, live */
+let FT=null;
+function panel(){let p=A("ft");if(!p){p=document.createElement("div");p.id="ft";document.body.appendChild(p)}return p}
+async function firstTask(j,name,prov){const hosted=!!j.hosted;const ag=j.agent;const title=hosted?"Introduce yourself in two sentences, then list 3 things you could help a small business owner with this week.":"Say hello and confirm you are connected.";
+ FT={id:null,ag:ag.id,name,hosted,j,title,since:Date.now(),msg:j.instructions};
+ const t=await api("/api/tasks","POST",{title,brief:hosted?"Keep it short and friendly.":"First task after connecting.",assignee:ag.id}).catch(()=>null);
+ FT.id=t&&t.task&&t.task.id;paintFT();clearInterval(FT.iv);FT.iv=setInterval(async()=>{await sync();paintFT()},1800)}
+function paintFT(){if(!FT)return;const p=panel();const S=(LS&&LS.tasks)||[];const t=S.find(x=>x.id===FT.id);const a=(LS&&LS.agents||[]).find(x=>x.id===FT.ag);
+ const pend=((LS&&LS.requests)||[]).filter(q=>q.status==="pending"&&q.agentId===FT.ag);const done=(LS&&LS.requests||[]).find(q=>q.agentId===FT.ag&&q.action==="notes.write"&&q.status!=="pending");
+ const seen=FT.hosted||(a&&a.lastSeen);const step=(c,tx)=>`<div class="s"><span class="d ${c}">${c==="ok"?"\u2713":c==="bad"?"!":""}</span><div>${tx}</div></div>`;
+ let h=`<span class="x" id="ftx">\u2715</span><h4>${esc(FT.name)} is joining your team</h4>`+step("ok","Connected")+step("ok","Added to your HQ");
+ if(!seen)h+=step("run","Waiting for "+esc(FT.name)+" to check in. Paste the message below into it.")+`<textarea readonly id="ftm" style="width:100%;height:80px;font-size:10.5px;box-sizing:border-box">${esc(FT.msg||"")}</textarea><button class="btn pri" id="ftc" style="margin-top:4px">Copy message</button><div class="sum">It contains a private key. It is shown only once.</div>`;
+ else if(!t||t.status==="queued"||t.status==="running")h+=step("run","First task: <b>"+esc(FT.title)+"</b><br><span class='sum'>"+(t&&t.status==="running"?"Working on it now":"Starting")+"</span>");
+ else if(t.status==="failed")h+=step("bad","First task did not finish.")+`<div class="res">${esc(t.result||"")}</div>`+(FT.hosted?`<div class="sum" style="margin-top:6px">Most often this means the xAI account is out of credits.</div>`:"");
+ else{h+=step("ok","First task done")+`<div class="res">${esc(t.result||"")}</div>`;
+  if(pend.length){h+=`<div style="margin-top:8px;font-weight:600">It wants to save this as a note. Your permission setting says to ask you.</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn pri" id="fta">Approve</button><button class="btn" id="ftd">Deny</button></div>`}
+  else if(done)h+=step(done.status==="denied"?"bad":"ok",done.status==="denied"?"Note not saved (you denied it)":"Note saved. See it in Activity.")}
+ p.innerHTML=h;
+ const X=A("ftx");if(X)X.onclick=()=>{clearInterval(FT.iv);p.remove();FT=null};
+ const C=A("ftc");if(C)C.onclick=()=>{A("ftm").select();try{navigator.clipboard.writeText(A("ftm").value)}catch(e){document.execCommand("copy")}toast("Copied")};
+ const ap=A("fta");if(ap)ap.onclick=async()=>{ap.disabled=true;await api("/api/requests/"+pend[0].id+"/approve","POST");await sync();paintFT()};
+ const dn=A("ftd");if(dn)dn.onclick=async()=>{dn.disabled=true;await api("/api/requests/"+pend[0].id+"/deny","POST");await sync();paintFT()};
+ if(t&&(t.status==="done"||t.status==="failed")&&!pend.length&&(done||t.status==="failed"||!FT.hosted)&&!FT.fin){FT.fin=1;clearInterval(FT.iv)}}
+A("addb").onclick=openAdd;
+})();
 </script></body></html>
