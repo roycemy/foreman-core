@@ -808,7 +808,8 @@ const WORD={AUTO:"Does it",ASK:"Asks you",NEVER:"Never"};
 const chips=m=>`<div class="chips">${Object.keys(LAB).map(k=>`<span class="chip ${m[k]}">${LAB[k]}: ${WORD[m[k]]}</span>`).join("")}</div>`;
 function friendly(e,prov){e=String(e||"");
  if(/start with xai|starts with xai/i.test(e))return "That does not look like a Grok key. Keys start with xai- . Copy it again from console.x.ai.";
- if(/xAI error (401|403)|unauthor|invalid/i.test(e))return "Grok did not accept this key. Make sure you copied all of it, and that it is a current key.";
+ if(/did not recognise/i.test(e))return "That key looks wrong. Copy the whole key from console.x.ai. It starts with xai- and has no spaces.";
+ if(/xAI error (401|403)|rejected|unauthor|invalid/i.test(e))return "Grok did not accept this key. Make sure you copied all of it, and that it is a current key.";
  if(/xAI error|credit/i.test(e))return "Grok could not be used with this key. Your xAI account may need credits (console.x.ai, Billing). Nothing was connected.";
  if(/auth/i.test(e))return "You were signed out. Sign in again and retry.";
  return e||"Something went wrong. Nothing was connected. Try again.";}
