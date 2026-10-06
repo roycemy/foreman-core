@@ -144,7 +144,7 @@ async function runHosted(agent, t) {
     await event(agent.id, 'completed', 'Finished: ' + t.title, { kind: 'COMPLETED', taskId: t.id });
     try { await gatewayAct(live, { action: 'notes.write', params: { title: ('Result: ' + t.title).slice(0, 80), text: out.slice(0, 1500) } }); } catch (e) {}
   } catch (e) {
-    t.status = 'failed'; t.result = String(e.message).slice(0, 300); t.finishedAt = now(); await setJ('fm:task:' + t.id, t);
+    await mark('first_task_failed', { reason: /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'run_error' }); t.status = 'failed'; t.result = String(e.message).slice(0, 300); t.finishedAt = now(); await setJ('fm:task:' + t.id, t);
     await event(agent.id, 'failed', 'Failed: ' + t.title + ' (' + t.result + ')', { kind: 'FAILED', taskId: t.id });
   }
 }
@@ -158,11 +158,28 @@ async function startSession(res, user) { const t = crypto.randomBytes(32).toStri
 // funnel instrumentation: first time each workspace reaches a step, record it once
 const STEPS = ['signup', 'connect_started', 'connected', 'first_task_started', 'approval_shown', 'approval_completed', 'first_receipt'];
 async function track(step, extra, ws) { try { ws = ws || wsId(); if (!STEPS.includes(step)) return; const first = await r(['SET', 'gl:fn:' + ws + ':' + step, '1', 'NX']); if (!first) return; await r(['LPUSH', 'gl:funnel', JSON.stringify({ ws, step, at: now(), ...(extra || {}) })]); await r(['LTRIM', 'gl:funnel', 0, 4999]); } catch (e) {} }
-async function funnel() { const rows = ((await r(['LRANGE', 'gl:funnel', 0, 4999])) || []).map(x => JSON.parse(x)).filter(x => x.ws !== 'legacy'); const by = {}; rows.forEach(x => { (by[x.ws] = by[x.ws] || {})[x.step] = x.at; if (x.provider) by[x.ws].provider = x.provider; });
-  const ws = Object.keys(by); const counts = STEPS.map(st => ({ step: st, workspaces: ws.filter(w => by[w][st]).length })); const out = counts.map((c, i) => ({ ...c, pctOfPrevious: i === 0 ? null : (counts[i - 1].workspaces ? Math.round(100 * c.workspaces / counts[i - 1].workspaces) : null) }));
-  return { steps: out, workspaces: ws.map((w, i) => ({ id: 'ws#' + (i + 1), provider: by[w].provider || null, reached: STEPS.filter(st => by[w][st]), lastStepAt: STEPS.map(st => by[w][st]).filter(Boolean).sort().pop() })) }; }
+// extra per-session events: failures and visits. Never stores keys or message text, only short reason codes.
+async function mark(kind, extra, ws) { try { ws = ws || wsId(); if (kind === 'visit' && !(await r(['SET', 'gl:vis:' + ws, '1', 'NX', 'EX', 1800]))) return; await r(['LPUSH', 'gl:funnel', JSON.stringify({ ws, k: kind, at: now(), ...(extra || {}) })]); await r(['LTRIM', 'gl:funnel', 0, 4999]); } catch (e) {} }
+const SLOW = { connect_started: 120, connected: 120, first_task_started: 45, approval_shown: 90, approval_completed: 180, first_receipt: 45 }; // seconds allowed since the previous step
+async function funnel(only) {
+  const rows = ((await r(['LRANGE', 'gl:funnel', 0, 4999])) || []).map(x => JSON.parse(x)).filter(x => x.ws !== 'legacy').reverse(); const by = {};
+  rows.forEach(x => { const w = (by[x.ws] = by[x.ws] || { steps: {}, ev: [], visits: [] }); if (x.provider) w.provider = x.provider; if (x.step) w.steps[x.step] = x.at; else if (x.k === 'visit') w.visits.push(x.at); else if (x.k) w.ev.push({ kind: x.k, reason: x.reason || null, at: x.at }); });
+  const ids = Object.keys(by).sort((a, b) => (by[a].steps.signup || '') < (by[b].steps.signup || '') ? -1 : 1); const sec = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 1000);
+  const sessions = ids.map((w, i) => { const d = by[w], reached = STEPS.filter(st => d.steps[st]); const steps = {}; let prev = null; const slow = [];
+    STEPS.forEach(st => { if (!d.steps[st]) return; const gap = prev ? sec(d.steps[prev], d.steps[st]) : null; steps[st] = { at: d.steps[st], secFromPrevious: gap }; if (gap != null && SLOW[st] && gap > SLOW[st]) slow.push({ step: st, seconds: gap, limit: SLOW[st] }); prev = st; });
+    const last = reached[reached.length - 1] || null, next = last ? STEPS[STEPS.indexOf(last) + 1] || null : 'signup'; const rcpt = d.steps.first_receipt;
+    const returned = rcpt ? d.visits.filter(v => sec(rcpt, v) > 300).length > 0 : false; const idle = last ? sec(d.steps[last], now()) : null;
+    return { id: 'session#' + (ids.length - i), workspace: w, provider: d.provider || null, signupAt: d.steps.signup || null, steps, stoppedAfter: next ? last : null, stuckAt: next, secondsSinceLastStep: next ? idle : null, slowSteps: slow, failures: d.ev.filter(e => /fail/.test(e.kind)), reachedFirstReceipt: !!rcpt, secondsSignupToReceipt: rcpt && d.steps.signup ? sec(d.steps.signup, rcpt) : null, returnedAfterReceipt: returned, visits: d.visits.length }; }).reverse();
+  const list = only ? sessions.filter(x => x.workspace === only) : sessions;
+  const counts = STEPS.map(st => ({ step: st, sessions: list.filter(x => x.steps[st]).length })); const steps = counts.map((c, i) => ({ ...c, pctOfPrevious: i === 0 ? null : (counts[i - 1].sessions ? Math.round(100 * c.sessions / counts[i - 1].sessions) : null) }));
+  const t = list.map(x => x.secondsSignupToReceipt).filter(x => x != null).sort((a, b) => a - b); const fails = {}; list.forEach(x => x.failures.forEach(f => { const k = f.kind + (f.reason ? ':' + f.reason : ''); fails[k] = (fails[k] || 0) + 1 }));
+  const safe = list.map(x => { const y = { ...x }; if (only) y.workspace = undefined; else delete y.workspace; return y; });
+  return { summary: { sessions: list.length, reachedFirstReceipt: list.filter(x => x.reachedFirstReceipt).length, returnedAfterReceipt: list.filter(x => x.returnedAfterReceipt).length, medianSecondsSignupToReceipt: t.length ? t[Math.floor(t.length / 2)] : null, failures: fails, slowLimitsSeconds: SLOW }, steps, sessions: safe };
+}
+function funnelHtml(f) { const e = x => String(x == null ? '' : x).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); const S = f.summary;
+  return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Foreman test sessions</title><body style="font:14px system-ui;margin:24px;color:#0f172a"><h2>Foreman test sessions</h2><p>${S.sessions} sessions - ${S.reachedFirstReceipt} reached first receipt - ${S.returnedAfterReceipt} returned after - median signup to receipt: ${S.medianSecondsSignupToReceipt == null ? 'n/a' : S.medianSecondsSignupToReceipt + 's'}</p><table cellpadding=6 style="border-collapse:collapse"><tr style="background:#f1f5f9"><th align=left>Step<th>Sessions<th>% of previous</tr>${f.steps.map(x => `<tr><td>${e(x.step)}<td align=center>${x.sessions}<td align=center>${x.pctOfPrevious == null ? '' : x.pctOfPrevious + '%'}</tr>`).join('')}</table><p>Failures: ${e(JSON.stringify(S.failures))}</p><h3>Each session</h3><table cellpadding=6 border=1 style="border-collapse:collapse;border-color:#e2e8f0"><tr style="background:#f1f5f9"><th>Session<th>Provider<th>Signed up<th>Stopped / stuck at<th>Idle since last step<th>Slow steps<th>Failures<th>Receipt<th>Returned</tr>${f.sessions.map(x => `<tr><td>${e(x.id)}<td>${e(x.provider || '-')}<td>${e(x.signupAt)}<td>${e(x.stuckAt || 'finished')}<td>${x.stuckAt ? e(x.secondsSinceLastStep) + 's' : '-'}<td>${e(x.slowSteps.map(y => y.step + ' ' + y.seconds + 's').join(', ') || '-')}<td>${e(x.failures.map(y => y.kind + (y.reason ? ':' + y.reason : '')).join(', ') || '-')}<td>${x.reachedFirstReceipt ? 'yes (' + x.secondsSignupToReceipt + 's)' : 'no'}<td>${x.returnedAfterReceipt ? 'yes' : 'no'}</tr>`).join('')}</table></body>`; }
 async function handleAuth(req, res, path, body) {
-  if (path === '/me') { const s = await getSession(req); if (!s) return res.status(401).json({ error: 'auth' }); return res.json({ email: s.email, legacy: s.ws === 'legacy' }); }
+  if (path === '/me') { const s = await getSession(req); if (!s) return res.status(401).json({ error: 'auth' }); if (s.ws !== 'legacy') await mark('visit', null, s.ws); return res.json({ email: s.email, legacy: s.ws === 'legacy' }); }
   if (path === '/auth/logout') { const t = cookieOf(req); if (t) await r(['DEL', 'gl:sess:' + sha(t)]); setCookie(res, '', 0); return res.json({ ok: true }); }
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
   const email = String(body.email || '').trim().toLowerCase(), pw = String(body.password || '');
@@ -384,7 +401,7 @@ module.exports = async (req, res) => {
   const path = (req.url || '').split('?')[0].replace(/^\/api/, '').replace(/\/$/, '') || '/';
   let body = req.body; if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } } body = body || {};
   try {
-    if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 13 });
+    if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
     if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
     if (path.startsWith('/gateway') || path === '/ingest' || path === '/mcp') {
       const ra = await resolveAgent(req);
@@ -393,7 +410,7 @@ module.exports = async (req, res) => {
     }
     const sess = await getSession(req);
     if (!sess) return res.status(401).json({ error: 'auth', message: 'Sign in required' });
-    if (path === '/funnel') { if (sess.ws !== 'legacy') return res.status(403).json({ error: 'owner only' }); return res.json(await als.run({ ws: sess.ws }, () => funnel())); }
+    if (path === '/funnel') { const f = await als.run({ ws: sess.ws }, () => funnel(sess.ws === 'legacy' ? null : sess.ws)); return /format=html/.test(req.url || '') ? res.setHeader('Content-Type', 'text/html; charset=utf-8').status(200).send(funnelHtml(f)) : res.json(f); }
     return await als.run({ ws: sess.ws }, () => routes(req, res, path, body, null));
   } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
 };
@@ -421,7 +438,7 @@ async function routes(req, res, path, body, agentPre) {
       if (Array.isArray(body)) { const outs = (await Promise.all(body.map(m => mcpHandle(agent, m)))).filter(Boolean); return outs.length ? res.json(outs) : res.status(202).end(); }
       const o = await mcpHandle(agent, body); return o ? res.json(o) : res.status(202).end(); }
     // --- owner-facing ---
-    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
+    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started'); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
     if (path === '/state') return res.json(await fullState());
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
@@ -443,9 +460,9 @@ async function routes(req, res, path, body, agentPre) {
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
       const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = origin;
       if (prov === 'grok') {
-        const k = String(body.apiKey || '').trim(); if (!/^xai-[A-Za-z0-9]{20,}$/.test(k)) return res.status(400).json({ error: 'Paste the key from console.x.ai (it starts with xai-)' });
+        const k = String(body.apiKey || '').trim(); if (!/^xai-[A-Za-z0-9]{20,}$/.test(k)) { await mark('connect_failed', { reason: 'bad_key_format' }); return res.status(400).json({ error: 'Paste the key from console.x.ai (it starts with xai-)' }); }
         const model = String(body.model || 'grok-4.3').replace(/[^\w.\-]/g, '').slice(0, 40);
-        try { await xaiChat(k, model, 'Reply with the word ready.', 5); } catch (e) { return res.status(400).json({ error: e.message + '. Check the key and that your xAI account has credits.' }); }
+        try { await xaiChat(k, model, 'Reply with the word ready.', 5); } catch (e) { await mark('connect_failed', { reason: /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'xai_other' }); return res.status(400).json({ error: e.message + '. Check the key and that your xAI account has credits.' }); }
         const c = await createAgent(name, String(body.role || '').trim() || 'Grok employee', 'grok', false, { preset, hosted: true, model });
         await r(['SET', 'fm:secret:' + c.agent.id, enc(k)]);
         await track('connected', { provider: 'grok' }); return res.json({ agent: c.agent, hosted: true });
