@@ -838,8 +838,8 @@ async function firstTask(j,name,prov){const hosted=!!j.hosted;const ag=j.agent;c
  FT.id=t&&t.task&&t.task.id;trk("first_task_started",prov);paintFT();clearInterval(FT.iv);FT.iv=setInterval(async()=>{await sync();paintFT()},1800)}
 function paintFT(){if(!FT)return;const p=panel();const S=(LS&&LS.tasks)||[];const t=S.find(x=>x.id===FT.id);const a=(LS&&LS.agents||[]).find(x=>x.id===FT.ag);
  const pend=((LS&&LS.requests)||[]).filter(q=>q.status==="pending"&&q.agentId===FT.ag);const done=(LS&&LS.requests||[]).find(q=>q.agentId===FT.ag&&q.action==="notes.write"&&q.status!=="pending");
- const seen=FT.hosted||(a&&a.lastSeen);const step=(c,tx)=>`<div class="s"><span class="d ${c}">${c==="ok"?"\u2713":c==="bad"?"!":""}</span><div>${tx}</div></div>`;
- let h=`<span class="x" id="ftx">\u2715</span><h4>${esc(FT.name)} is joining your team</h4>`+step("ok","Connected")+step("ok","Added to your HQ");
+ const seen=FT.hosted||(a&&a.lastSeen);if(seen&&!FT.toasted){FT.toasted=1;toast(FT.name+" joined your team")}const step=(c,tx)=>`<div class="s"><span class="d ${c}">${c==="ok"?"\u2713":c==="bad"?"!":""}</span><div>${tx}</div></div>`;
+ let h=`<span class="x" id="ftx">\u2715</span><h4>${seen?esc(FT.name)+" joined your team":esc(FT.name)+" is joining your team"}</h4>`+step("ok","Connected")+step("ok","Added to your HQ");
  if(!seen)h+=step("run","Waiting for "+esc(FT.name)+" to check in. Paste the message below into it.")+(Date.now()-FT.since>90000?`<div class="bad" style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:8px;padding:7px 9px;margin:4px 0;font-size:12px">Still waiting. Paste the whole message, including the key, into ${esc(FT.name)} and send it. This panel updates by itself.</div>`:"")+`<textarea readonly id="ftm" style="width:100%;height:80px;font-size:10.5px;box-sizing:border-box">${esc(FT.msg||"")}</textarea><button class="btn pri" id="ftc" style="margin-top:4px">Copy message</button><div class="sum">It contains a private key. It is shown only once.</div>`;
  else if(!t||t.status==="queued"||t.status==="running")h+=step("run","First task: <b>"+esc(FT.title)+"</b><br><span class='sum'>"+(t&&t.status==="running"?"Working on it now":"Starting")+"</span>");
  else if(t.status==="failed")h+=step("bad","First task did not finish.")+`<div class="res">${esc(t.result||"")}</div>`+(FT.hosted?`<div class="sum" style="margin-top:6px">Most often this means the xAI account is out of credits.</div>`:"");
@@ -858,6 +858,43 @@ function paintFT(){if(!FT)return;const p=panel();const S=(LS&&LS.tasks)||[];cons
 document.addEventListener("click",e=>{const a=e.target.closest&&e.target.closest("a.ftr");if(!a||!FT)return;const rs=(LS&&LS.receipts)||[];const q=((LS&&LS.requests)||[]).find(x=>x.agentId===FT.ag&&x.action==="notes.write");const r=(q&&rs.find(x=>x.requestId===q.id))||rs.find(x=>x.agentId===FT.ag);window.__hl=r?{id:r.id,until:Date.now()+12000,scrolled:false}:null;setTimeout(hlRcpt,200)});
 function hlRcpt(){const h=window.__hl;if(!h)return;if(Date.now()>h.until){window.__hl=null;return}const rs=(LS&&LS.receipts)||[];const i=rs.findIndex(x=>x.id===h.id);const el=document.querySelectorAll("#v-receipts .rcpt")[i];if(!el)return;el.style.boxShadow="0 0 0 3px #4f46e5";el.style.background="#eef2ff";if(!h.scrolled){h.scrolled=true;el.scrollIntoView({block:"center",behavior:"smooth"})}}
 const _rd13=render;render=function(){_rd13();if(window.__hl)setTimeout(hlRcpt,30)};
+window.__ft={firstTask,friendly,chips,PRE};
+A("addb").onclick=openAdd;
+})();
+
+/* ===== v14: one identical Connect pattern for every assistant ===== */
+(function(){
+const A=id=>document.getElementById(id);const X=window.__ft;
+const trk=(step,provider)=>{try{api("/api/track","POST",{step,provider}).catch(()=>{})}catch(e){}};
+const OPT=[{id:"grok",name:"Grok",emo:"\u26A1",line:"xAI's assistant. Ready in about 30 seconds."},{id:"instinct",name:"Instinct",emo:"\u2728",line:"Your Instinct assistant. Link it with one message."},{id:"muse",name:"Meta Muse",emo:"\u{1F3A8}",line:"Not available yet.",soon:true},{id:"custom",name:"Another assistant",emo:"\u{1F6E0}\uFE0F",line:"Any assistant that can send web requests."}];
+const ROLES=["Sales","Customer support","Research","Operations","Finance"];
+let W={};
+const N=["Choose assistant","Authorize","Choose role","Set permissions"];
+function shell(h,closeLbl){const dots=N.map((n,i)=>`<span style="flex:1;height:4px;border-radius:2px;background:${i<=W.step?"#4f46e5":"#e2e8f0"}"></span>`).join("");A("modal").querySelector(".box").innerHTML=`<div class="cw"><div style="display:flex;gap:4px;margin-bottom:10px">${dots}</div><div class="sum" style="margin-bottom:6px">Step ${W.step+1} of 4 \u00B7 ${N[W.step]}</div>${h}<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn" id="mc2">${closeLbl||"Cancel"}</button></div></div>`;A("mc2").onclick=()=>{A("modal").classList.remove("on");render()}}
+openAdd=function(){W={step:0,pre:"balanced"};A("modal").classList.add("on");draw()};
+const nav=(back)=>`<button class="btn" id="wb">Back</button>`;
+function draw(){
+ if(W.step===0){shell(`<h3 style="margin:0 0 10px">Which assistant do you want to add?</h3>${OPT.map(o=>`<button class="btn opt" data-p="${o.id}" ${o.soon?'disabled style="opacity:.55;cursor:not-allowed"':""}><b>${o.emo} ${o.name}</b>${o.soon?'<span class="rec" style="color:#64748b;border-color:#94a3b8">Coming soon</span>':""}<div class="sum" style="margin-top:2px">${o.line}</div></button>`).join("")}<div class="sum">Muse has no public connection available yet, so Foreman does not pretend. It will appear here when it does.</div>`);
+  document.querySelectorAll(".cw [data-p]:not([disabled])").forEach(b=>b.onclick=()=>{W.p=b.dataset.p;W.o=OPT.find(x=>x.id===W.p);trk("connect_started",W.p);W.n=W.n||(W.p==="grok"?"Grok Assistant":"");W.step=1;draw()});return}
+ if(W.step===1){const g=W.p==="grok";
+  shell(g?`<h3 style="margin:0 0 6px">Authorize Grok</h3><div class="sum" style="margin-bottom:10px">Sign in to your xAI account and copy an access key. Foreman keeps it encrypted and never shows it again.</div><a class="btn" href="https://console.x.ai" target="_blank" rel="noopener" style="display:inline-block;margin-bottom:10px;text-decoration:none">Open xAI and sign in</a><input class="t" id="wk" type="password" placeholder="Paste your access key here" autocomplete="off"><div id="we"></div><div style="display:flex;justify-content:space-between;margin-top:6px"><button class="btn" id="wb">Back</button><button class="btn pri" id="wn">Verify and continue</button></div>`
+   :`<h3 style="margin:0 0 6px">Authorize ${esc(W.o.name)}</h3><div class="sum" style="margin-bottom:10px">Foreman creates a private link for ${esc(W.o.name)} and gives you one message to send to it at the end. There is nothing to install and nothing to configure.</div><div class="sum" style="background:#f1f5f9;border-radius:10px;padding:10px;margin-bottom:10px">You stay in control. It can only do what you allow in the next steps.</div><div style="display:flex;justify-content:space-between"><button class="btn" id="wb">Back</button><button class="btn pri" id="wn">Continue</button></div>`);
+  A("wb").onclick=()=>{W.step=0;draw()};
+  A("wn").onclick=async()=>{if(!g){W.step=2;draw();return}
+   const k=A("wk").value.trim();const er=m=>{A("we").innerHTML=`<div class="bad">${esc(m)}</div>`;A("wn").disabled=false;A("wn").textContent="Verify and continue"};if(!k)return er("Paste your Grok access key first.");
+   A("wn").disabled=true;A("wn").textContent="Checking...";let j;try{j=await api("/api/connect","POST",{provider:"grok",name:"check",apiKey:k,check:true})}catch(e){return er(X.friendly("auth"))}
+   if(j.error)return er(X.friendly(j.error,"grok"));W.key=k;W.step=2;draw()};return}
+ if(W.step===2){shell(`<h3 style="margin:0 0 6px">Name it and choose its role</h3><input class="t" id="wn1" placeholder="Name, for example Sales Helper" value="${esc(W.n||"")}"><input class="t" id="wr" placeholder="Role" value="${esc(W.r||"")}"><div class="chips" style="margin-bottom:8px">${ROLES.map(r=>`<span class="chip" data-r="${r}" style="cursor:pointer;color:#4f46e5;border-color:#c7d2fe;background:#eef2ff">${r}</span>`).join("")}</div><div id="we"></div><div style="display:flex;justify-content:space-between;margin-top:6px"><button class="btn" id="wb">Back</button><button class="btn pri" id="wn">Continue</button></div>`);
+  document.querySelectorAll(".cw [data-r]").forEach(c=>c.onclick=()=>{A("wr").value=c.dataset.r;if(!A("wn1").value.trim())A("wn1").value=c.dataset.r+" Helper"});
+  A("wb").onclick=()=>{W.n=A("wn1").value;W.r=A("wr").value;W.step=1;draw()};
+  A("wn").onclick=()=>{const n=A("wn1").value.trim();if(!n){A("we").innerHTML='<div class="bad">Give it a name first.</div>';return}W.n=n;W.r=A("wr").value.trim();W.step=3;draw()};return}
+ if(W.step===3){shell(`<h3 style="margin:0 0 6px">What can ${esc(W.n)} do on its own?</h3><div class="sum" style="margin-bottom:8px">AUTO means it just does it. ASK means it waits for your OK. NEVER means it is blocked. You can change this any time.</div>${X.PRE.map(x=>`<label class="pc ${W.pre===x[0]?"on":""}" data-v="${x[0]}"><input type="radio" name="pre" value="${x[0]}"><b>${x[1]}</b>${x[0]==="balanced"?'<span class="rec">Recommended</span>':""}<div class="sum">${x[2]}</div>${X.chips(x[3])}</label>`).join("")}<div id="we"></div><div style="display:flex;justify-content:space-between;margin-top:6px"><button class="btn" id="wb">Back</button><button class="btn pri" id="wn">Add to HQ</button></div>`);
+  document.querySelectorAll(".cw .pc").forEach(l=>l.onclick=()=>{W.pre=l.dataset.v;document.querySelectorAll(".cw .pc").forEach(x=>x.classList.toggle("on",x===l))});
+  A("wb").onclick=()=>{W.step=2;draw()};
+  A("wn").onclick=async()=>{A("wn").disabled=true;A("wn").textContent="Adding...";const body={provider:W.p,name:W.n,role:W.r,preset:W.pre};if(W.p==="grok")body.apiKey=W.key;let j;
+   const er=m=>{A("we").innerHTML=`<div class="bad">${esc(m)}</div>`;A("wn").disabled=false;A("wn").textContent="Add to HQ"};
+   try{j=await api("/api/connect","POST",body)}catch(e){return er(X.friendly("auth"))}if(j.error)return er(X.friendly(j.error,W.p));
+   SIG="~";await sync();A("modal").classList.remove("on");location.hash="#office";render();X.firstTask(j,W.n,W.p);W.key=null}}}
 A("addb").onclick=openAdd;
 })();
 </script></body></html>
