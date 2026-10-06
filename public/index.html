@@ -766,6 +766,7 @@ function needAuth(){au.classList.add("on")}
 api=async function(p,m,b){const r=await fetch(API+p,{method:m||"GET",headers:{"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined});if(r.status===401){needAuth();throw new Error("auth")}return r.json()};
 let who=null;
 async function boot(){try{who=await api("/api/me")}catch(e){return}
+ if(!who.legacy){SC=false;const sbn=document.getElementById("scoutb");if(sbn)sbn.remove()}
  let so=A("fmso");if(!so){so=document.createElement("button");so.id="fmso";so.className="btn";so.style.cssText="margin-left:8px";const t=document.querySelector(".top");t.appendChild(so);so.onclick=async()=>{await fetch(API+"/api/auth/logout",{method:"POST"});location.reload()}}
  so.textContent="Sign out ("+who.email+")";sync()}
 const _vp=vPolicies;vPolicies=function(){if(!agents.length){$("#v-policies").innerHTML=`<h3>Permissions</h3><div class="sum">Connect an AI employee first, then set what it may do here.</div>`;return}return _vp()};
@@ -839,7 +840,7 @@ function paintFT(){if(!FT)return;const p=panel();const S=(LS&&LS.tasks)||[];cons
  const pend=((LS&&LS.requests)||[]).filter(q=>q.status==="pending"&&q.agentId===FT.ag);const done=(LS&&LS.requests||[]).find(q=>q.agentId===FT.ag&&q.action==="notes.write"&&q.status!=="pending");
  const seen=FT.hosted||(a&&a.lastSeen);const step=(c,tx)=>`<div class="s"><span class="d ${c}">${c==="ok"?"\u2713":c==="bad"?"!":""}</span><div>${tx}</div></div>`;
  let h=`<span class="x" id="ftx">\u2715</span><h4>${esc(FT.name)} is joining your team</h4>`+step("ok","Connected")+step("ok","Added to your HQ");
- if(!seen)h+=step("run","Waiting for "+esc(FT.name)+" to check in. Paste the message below into it.")+`<textarea readonly id="ftm" style="width:100%;height:80px;font-size:10.5px;box-sizing:border-box">${esc(FT.msg||"")}</textarea><button class="btn pri" id="ftc" style="margin-top:4px">Copy message</button><div class="sum">It contains a private key. It is shown only once.</div>`;
+ if(!seen)h+=step("run","Waiting for "+esc(FT.name)+" to check in. Paste the message below into it.")+(Date.now()-FT.since>90000?`<div class="bad" style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:8px;padding:7px 9px;margin:4px 0;font-size:12px">Still waiting. Paste the whole message, including the key, into ${esc(FT.name)} and send it. This panel updates by itself.</div>`:"")+`<textarea readonly id="ftm" style="width:100%;height:80px;font-size:10.5px;box-sizing:border-box">${esc(FT.msg||"")}</textarea><button class="btn pri" id="ftc" style="margin-top:4px">Copy message</button><div class="sum">It contains a private key. It is shown only once.</div>`;
  else if(!t||t.status==="queued"||t.status==="running")h+=step("run","First task: <b>"+esc(FT.title)+"</b><br><span class='sum'>"+(t&&t.status==="running"?"Working on it now":"Starting")+"</span>");
  else if(t.status==="failed")h+=step("bad","First task did not finish.")+`<div class="res">${esc(t.result||"")}</div>`+(FT.hosted?`<div class="sum" style="margin-top:6px">Most often this means the xAI account is out of credits.</div>`:"");
  else{h+=step("ok","First task done")+`<div class="res">${esc(t.result||"")}</div>`;
