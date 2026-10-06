@@ -155,6 +155,12 @@ const cookieOf = req => { const m = String(req.headers.cookie || '').match(new R
 async function getSession(req) { const t = cookieOf(req); if (!t) return null; const v = await r(['GET', 'gl:sess:' + sha(t)]); return v ? JSON.parse(v) : null; }
 const setCookie = (res, v, maxAge) => res.setHeader('Set-Cookie', `${COOKIE}=${v}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`);
 async function startSession(res, user) { const t = crypto.randomBytes(32).toString('hex'); await r(['SET', 'gl:sess:' + sha(t), JSON.stringify({ uid: user.id, email: user.email, ws: user.ws }), 'EX', 2592000]); setCookie(res, t, 2592000); }
+// funnel instrumentation: first time each workspace reaches a step, record it once
+const STEPS = ['signup', 'connect_started', 'connected', 'first_task_started', 'approval_shown', 'approval_completed', 'first_receipt'];
+async function track(step, extra, ws) { try { ws = ws || wsId(); if (!STEPS.includes(step)) return; const first = await r(['SET', 'gl:fn:' + ws + ':' + step, '1', 'NX']); if (!first) return; await r(['LPUSH', 'gl:funnel', JSON.stringify({ ws, step, at: now(), ...(extra || {}) })]); await r(['LTRIM', 'gl:funnel', 0, 4999]); } catch (e) {} }
+async function funnel() { const rows = ((await r(['LRANGE', 'gl:funnel', 0, 4999])) || []).map(x => JSON.parse(x)).filter(x => x.ws !== 'legacy'); const by = {}; rows.forEach(x => { (by[x.ws] = by[x.ws] || {})[x.step] = x.at; if (x.provider) by[x.ws].provider = x.provider; });
+  const ws = Object.keys(by); const counts = STEPS.map(st => ({ step: st, workspaces: ws.filter(w => by[w][st]).length })); const out = counts.map((c, i) => ({ ...c, pctOfPrevious: i === 0 ? null : (counts[i - 1].workspaces ? Math.round(100 * c.workspaces / counts[i - 1].workspaces) : null) }));
+  return { steps: out, workspaces: ws.map((w, i) => ({ id: 'ws#' + (i + 1), provider: by[w].provider || null, reached: STEPS.filter(st => by[w][st]), lastStepAt: STEPS.map(st => by[w][st]).filter(Boolean).sort().pop() })) }; }
 async function handleAuth(req, res, path, body) {
   if (path === '/me') { const s = await getSession(req); if (!s) return res.status(401).json({ error: 'auth' }); return res.json({ email: s.email, legacy: s.ws === 'legacy' }); }
   if (path === '/auth/logout') { const t = cookieOf(req); if (t) await r(['DEL', 'gl:sess:' + sha(t)]); setCookie(res, '', 0); return res.json({ ok: true }); }
@@ -168,7 +174,7 @@ async function handleAuth(req, res, path, body) {
     let ws = 'ws' + crypto.randomBytes(6).toString('hex');
     if (body.claim) { if (sha(String(body.claim).trim()) !== LEGACY_CLAIM_HASH || await r(['GET', 'gl:legacy-owner'])) return res.status(400).json({ error: 'That claim code is not valid or was already used' }); ws = 'legacy'; await r(['SET', 'gl:legacy-owner', email]); }
     const salt = crypto.randomBytes(16).toString('hex'); const user = { id: rid('user'), email, salt, hash: crypto.scryptSync(pw, salt, 32).toString('hex'), ws, createdAt: now() };
-    await r(['SET', 'gl:user:' + sha(email), JSON.stringify(user)]); await startSession(res, user); return res.json({ ok: true, email, legacy: ws === 'legacy' });
+    await r(['SET', 'gl:user:' + sha(email), JSON.stringify(user)]); await track('signup', null, ws); await startSession(res, user); return res.json({ ok: true, email, legacy: ws === 'legacy' });
   }
   if (path === '/auth/login') {
     const raw = await r(['GET', 'gl:user:' + sha(email)]); const u = raw && JSON.parse(raw);
@@ -191,7 +197,7 @@ function normKind(x) { const k = String(x || '').toUpperCase().replace(/[\s-]+/g
 async function event(agentId, type, text, extra) { bust(); const e = { id: rid('ev'), at: now(), agentId, type, kind: (extra && extra.kind) || KIND_OF[type] || null, text, ...extra };
   if (agentId && e.kind) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
 async function spentToday(agentId) { return parseInt((await r(['GET', `fm:spend:${agentId}:${now().slice(0, 10)}`])) || '0', 10); }
-async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust();
+async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust(); await track('first_receipt');
   const prev = (await r(['GET', 'fm:lasthash'])) || 'genesis';
   const rec = { id: rid('rcpt'), at: now(), agentId: agent.id, agentName: agent.name, action, params: redact(params), outcome, costCents: cost, summary, requestId: reqId || null, ...extra, prevHash: prev };
   rec.hash = sha(prev + JSON.stringify(rec));
@@ -378,7 +384,7 @@ module.exports = async (req, res) => {
   const path = (req.url || '').split('?')[0].replace(/^\/api/, '').replace(/\/$/, '') || '/';
   let body = req.body; if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } } body = body || {};
   try {
-    if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 11 });
+    if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 13 });
     if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
     if (path.startsWith('/gateway') || path === '/ingest' || path === '/mcp') {
       const ra = await resolveAgent(req);
@@ -387,6 +393,7 @@ module.exports = async (req, res) => {
     }
     const sess = await getSession(req);
     if (!sess) return res.status(401).json({ error: 'auth', message: 'Sign in required' });
+    if (path === '/funnel') { if (sess.ws !== 'legacy') return res.status(403).json({ error: 'owner only' }); return res.json(await als.run({ ws: sess.ws }, () => funnel())); }
     return await als.run({ ws: sess.ws }, () => routes(req, res, path, body, null));
   } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
 };
@@ -417,7 +424,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
     if (path === '/state') return res.json(await fullState());
     let m;
-    if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') return send(await decide(m[1], m[2]));
+    if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
     if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
     if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits)$/)) && req.method === 'POST') {
       const a = await getJ('fm:agent:' + m[1]); if (!a) return res.status(404).json({ error: 'not found' });
@@ -441,12 +448,13 @@ async function routes(req, res, path, body, agentPre) {
         try { await xaiChat(k, model, 'Reply with the word ready.', 5); } catch (e) { return res.status(400).json({ error: e.message + '. Check the key and that your xAI account has credits.' }); }
         const c = await createAgent(name, String(body.role || '').trim() || 'Grok employee', 'grok', false, { preset, hosted: true, model });
         await r(['SET', 'fm:secret:' + c.agent.id, enc(k)]);
-        return res.json({ agent: c.agent, hosted: true });
+        await track('connected', { provider: 'grok' }); return res.json({ agent: c.agent, hosted: true });
       }
       const c = await createAgent(name, String(body.role || '').trim(), prov, false, { preset });
       const msg = `You are joining my Foreman workspace as "${name}". Foreman controls what you can do. Your key: ${c.key}\nBase URL: ${base}/api\n1) Get work: GET ${base}/api/gateway/tasks/next with header "Authorization: Bearer <key>". It returns {"task":...} or null.\n2) Do real things only through POST ${base}/api/gateway/act with {"action":"web.fetch"|"notes.write"|"work.handoff","params":{...}}. Foreman answers completed, pending (wait for my approval and poll GET ${base}/api/gateway/requests/<id>) or blocked. Never work around a block.\n3) Finish with POST ${base}/api/gateway/tasks/<task_id>/complete {"result":"..."}.\n4) Report progress with POST ${base}/api/gateway/events {"kind":"TASK_STARTED|TOOL_USED|COMPLETED|FAILED","text":"...","task_id":"..."}.\nMCP clients can use ${base}/api/mcp with the same key.`;
-      return res.json({ agent: c.agent, hosted: false, instructions: msg, key: c.key });
+      await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, instructions: msg, key: c.key });
     }
+    if (path === '/track' && req.method === 'POST') { if (['connect_started', 'first_task_started', 'approval_shown'].includes(body.step)) await track(body.step, body.provider ? { provider: String(body.provider).slice(0, 20) } : null); return res.json({ ok: true }); }
     // --- live demo agent ---
     if (wsId() !== 'legacy' && path.startsWith('/demo/')) return res.status(404).json({ error: 'not found' });
     if (path === '/demo/scout/tick' && req.method === 'POST') return res.json(await scoutTick(origin));
