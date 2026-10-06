@@ -1,4 +1,4 @@
-// Foreman core: real permission gateway. Agents hold only a Foreman key; every action goes through /api/gateway/act.
+// Foreman core v9: real permission gateway + external-agent adapters + work bus. Agents hold only a Foreman key; every action goes through /api/gateway/act.
 const crypto = require('crypto');
 
 // ---------- storage (Upstash/Vercel KV REST; memory fallback for local dev only) ----------
@@ -42,8 +42,9 @@ const ACTIONS = {
   'web.fetch':   { label: 'Fetch a live web page', costCents: 1, risk: 'read' },
   'notes.write': { label: 'Write a note to the shared workspace', costCents: 2, risk: 'write' },
   'notes.delete':{ label: 'Delete a note from the shared workspace', costCents: 5, risk: 'destructive' },
+  'work.handoff':{ label: 'Hand a task to another agent', costCents: 0, risk: 'write' },
 };
-const DEFAULT_PERMS = { 'web.fetch': 'AUTO', 'notes.write': 'ASK', 'notes.delete': 'NEVER' };
+const DEFAULT_PERMS = { 'web.fetch': 'AUTO', 'notes.write': 'ASK', 'notes.delete': 'NEVER', 'work.handoff': 'AUTO' };
 
 function blockedHost(u) {
   try {
@@ -68,12 +69,51 @@ async function execute(agent, action, params) {
     await r(['DEL', 'fm:notes']);
     return { summary: 'Deleted all notes', data: {} };
   }
+  if (action === 'work.handoff') {
+    const t = await getJ('fm:task:' + params.task_id); if (!t || t.assignee !== agent.id) throw new Error('task not found or not yours');
+    const to = (await listAgents()).find(x => x.id === params.to || x.name.toLowerCase() === String(params.to || '').toLowerCase());
+    if (!to || to.id === agent.id) throw new Error('unknown target agent'); if (to.status !== 'active') throw new Error('target agent is not active');
+    const child = await newTask({ title: String(params.title || t.title).slice(0, 120), brief: String(params.brief || '').slice(0, 1500), assignee: to.id, parentId: t.id, context: t.result || '', createdBy: agent.id });
+    t.handedTo = to.id; t.childId = child.id; await setJ('fm:task:' + t.id, t);
+    await event(agent.id, 'handoff', `Handed "${t.title}" to ${to.name}`, { kind: 'HANDOFF', toAgentId: to.id, taskId: t.id, childTaskId: child.id });
+    return { summary: `Handed task "${t.title}" to ${to.name} (new task ${child.id}) with context from ${agent.name}`, data: { child_task_id: child.id, to: to.name } };
+  }
   throw new Error('unknown action');
 }
 
+// ---------- work bus ----------
+async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null };
+  bust(); await setJ('fm:task:' + t.id, t); await r(['LPUSH', 'fm:tasklist', t.id]); await r(['LTRIM', 'fm:tasklist', 0, 59]); return t; }
+async function listTasks() { const ids = await r(['LRANGE', 'fm:tasklist', 0, 29]); if (!ids.length) return []; return (await r(['MGET', ...ids.map(i => 'fm:task:' + i)])).filter(Boolean).map(x => JSON.parse(x)); }
+async function claimTask(agent) { const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
+  t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); await setJ('fm:task:' + t.id, t); await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
+async function completeTask(agent, id, body) { const t = await getJ('fm:task:' + id); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
+  const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); await setJ('fm:task:' + id, t);
+  await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id }); return { status: 200, body: { task: t } }; }
+async function reportEvent(agent, body, source) { const kind = normKind(body.kind || body.type || body.status || body.event); if (!kind) return { status: 400, body: { error: 'unrecognized event kind', allowed: KINDS } };
+  if (!agent.lastSeen || Date.now() - Date.parse(agent.lastSeen) > 15000) { agent.lastSeen = now(); await setJ('fm:agent:' + agent.id, agent); }
+  if (agent.status !== 'active') { await event(agent.id, 'blocked', 'Blocked event report: access revoked', { kind: 'BLOCKED' }); return { status: 403, body: { status: 'blocked', reason: 'Access revoked by owner' } }; }
+  const text = String(body.text || body.message || body.summary || kind).slice(0, 200);
+  await event(agent.id, 'reported', text, { kind, taskId: body.task_id || null, source: source || 'gateway' }); return { status: 200, body: { status: 'ok', kind } }; }
+// ---------- providers: honest integration tiers ----------
+const PROVIDERS = [
+  { id: 'instinct', name: 'Instinct', tier: 'manual', how: 'HTTP gateway', note: 'Instinct agents can call the gateway with their own key. Live proof in progress.' },
+  { id: 'custom', name: 'Custom agent', tier: 'verified', how: 'HTTP gateway', note: 'Any agent that can make HTTPS calls. Same adapter Instinct uses.' },
+  { id: 'mcp', name: 'API / MCP agent', tier: 'verified', how: 'MCP server (JSON-RPC over HTTPS) or REST', note: 'Foreman exposes /api/mcp. MCP-capable agents get gated tools.' },
+  { id: 'grok', name: 'Grok / Grok bots', tier: 'manual', how: 'HTTP or MCP, if the bot can call out', note: 'No native Grok connector. A Grok bot that can call HTTPS or an MCP server can use the same key. Not yet verified with a real Grok bot.' },
+  { id: 'muse', name: 'Muse', tier: 'waiting', how: 'Waiting on provider access', note: 'No public agent API verified for Muse yet. It can join through the generic adapter once it can call out. Not faked.' },
+];
 // ---------- core ----------
 async function listAgents() { const ids = await r(['SMEMBERS', 'fm:agents']); if (!ids.length) return []; const vs = await r(['MGET', ...ids.map(i => 'fm:agent:' + i)]); return vs.filter(Boolean).map(v => JSON.parse(v)).sort((x, y) => x.createdAt < y.createdAt ? -1 : 1); }
-async function event(agentId, type, text, extra) { bust(); const e = { id: rid('ev'), at: now(), agentId, type, text, ...extra }; await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
+// Universal Foreman event model. Every provider's activity is normalized into one of these kinds.
+const KINDS = ['TASK_STARTED','TOOL_USED','ACTION_REQUESTED','WAITING','HANDOFF','COMPLETED','FAILED','NEEDS_APPROVAL','BLOCKED'];
+const KIND_OF = { attempt:'ACTION_REQUESTED', pending:'NEEDS_APPROVAL', completed:'COMPLETED', failed:'FAILED', blocked:'BLOCKED', revoked:'BLOCKED', denied:'BLOCKED', handoff:'HANDOFF' };
+// adapter-level normalizer: maps a provider's own vocabulary onto KINDS
+function normKind(x) { const k = String(x || '').toUpperCase().replace(/[\s-]+/g, '_'); if (KINDS.includes(k)) return k;
+  const m = [[/START|BEGIN|RUNNING|PICKED|CLAIM/, 'TASK_STARTED'],[/TOOL|CALL|INVOK/, 'TOOL_USED'],[/REQUEST|ATTEMPT|ACTION/, 'ACTION_REQUESTED'],[/WAIT|IDLE|PEND|BLOCKED_ON|QUEUE/, 'WAITING'],[/HAND|DELEGAT|TRANSFER/, 'HANDOFF'],[/DONE|COMPLET|FINISH|SUCCE/, 'COMPLETED'],[/FAIL|ERR/, 'FAILED'],[/APPROV/, 'NEEDS_APPROVAL'],[/BLOCK|DENIED|REFUS/, 'BLOCKED']];
+  for (const [re, v] of m) if (re.test(k)) return v; return null; }
+async function event(agentId, type, text, extra) { bust(); const e = { id: rid('ev'), at: now(), agentId, type, kind: (extra && extra.kind) || KIND_OF[type] || null, text, ...extra };
+  if (agentId && e.kind) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
 async function spentToday(agentId) { return parseInt((await r(['GET', `fm:spend:${agentId}:${now().slice(0, 10)}`])) || '0', 10); }
 async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust();
   const prev = (await r(['GET', 'fm:lasthash'])) || 'genesis';
@@ -120,7 +160,7 @@ async function authAgent(req) {
 async function gatewayAct(agent, body) {
   const action = body.action, params = body.params || {};
   if (!agent.lastSeen || Date.now() - Date.parse(agent.lastSeen) > 20000) { agent.lastSeen = now(); await setJ('fm:agent:' + agent.id, agent); }
-  const mode = (agent.permissions || {})[action] || 'NEVER';
+  const mode = (agent.permissions || {})[action] || DEFAULT_PERMS[action] || 'NEVER';
   await event(agent.id, 'attempt', `Attempted ${action} (${mode})`, { action });
   const blocked = await policy(agent, action, mode);
   if (blocked) {
@@ -173,15 +213,16 @@ async function fullState() {
   const hist = parse(await r(['LRANGE', 'fm:reqhist', 0, 14]));
   const day = now().slice(0, 10);
   const sp = agents.length ? await r(['MGET', ...agents.map(a => `fm:spend:${a.id}:${day}`)]) : [];
-  const agentsPub = agents.map((a, i) => ({ ...a, spentTodayCents: parseInt(sp[i] || '0', 10) }));
+  const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
+  const agentsPub = agents.map((a, i) => ({ ...a, spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
-  const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes) };
+  const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
   STATE_CACHE = { t: Date.now(), v }; return v;
 }
 async function finishReq(q) { bust(); await setJ('fm:req:' + q.id, q); await r(['SREM', 'fm:reqs', q.id]); await r(['LPUSH', 'fm:reqhist', JSON.stringify(pub(q))]); await r(['LTRIM', 'fm:reqhist', 0, 29]); }
-async function createAgent(name, role) {
+async function createAgent(name, role, provider, harness) {
   const id = rid('agent'); const key = 'fmk_' + crypto.randomBytes(20).toString('hex');
-  const agent = { id, name: String(name || 'Agent').slice(0, 40), role: String(role || '').slice(0, 60), provider: 'Foreman Demo Agent', status: 'active', permissions: { ...DEFAULT_PERMS }, limits: { perActionCents: 10, dailyCents: 50 }, createdAt: now(), lastSeen: null, keyHint: key.slice(0, 8) + '...' + key.slice(-4) };
+  const agent = { id, name: String(name || 'Agent').slice(0, 40), role: String(role || '').slice(0, 60), provider: (PROVIDERS.find(p => p.id === provider) || { name: 'Custom agent' }).name, providerId: provider || 'custom', harness: !!harness, status: 'active', permissions: { ...DEFAULT_PERMS }, limits: { perActionCents: 10, dailyCents: 50 }, createdAt: now(), lastSeen: null, keyHint: key.slice(0, 8) + '...' + key.slice(-4) };
   bust(); await setJ('fm:agent:' + id, agent); await r(['SET', 'fm:key:' + sha(key), id]); await r(['SADD', 'fm:agents', id]);
   await event(id, 'connected', `${agent.name} connected to Foreman`);
   return { agent, key };
@@ -213,11 +254,41 @@ async function scoutTick(origin) {
 }
 async function seed() {
   if (SEEDED) return; if (await r(['GET', 'fm:seeded'])) { SEEDED = true; return; } SEEDED = true;
-  const { agent, key } = await createAgent('Scout', 'Research agent (live)');
+  const { agent, key } = await createAgent('Scout', 'Research agent (live)', 'custom', true);
   agent.provider = 'Foreman live agent'; agent.live = true; await setJ('fm:agent:' + agent.id, agent);
   await r(['SET', 'fm:scout:key', key]); await r(['SET', 'fm:scout:id', agent.id]); await r(['SET', 'fm:seeded', '1']);
 }
 
+// ---------- MCP adapter (JSON-RPC 2.0 over HTTPS) ----------
+const MCP_TOOLS = [
+  { name: 'foreman_web_fetch', description: 'Fetch a live https web page through Foreman (policy-gated).', inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] }, action: 'web.fetch' },
+  { name: 'foreman_notes_write', description: 'Write a note to the shared workspace through Foreman (policy-gated; may pause for owner approval).', inputSchema: { type: 'object', properties: { title: { type: 'string' }, text: { type: 'string' } }, required: ['title', 'text'] }, action: 'notes.write' },
+  { name: 'foreman_notes_delete', description: 'Delete workspace notes through Foreman (policy-gated).', inputSchema: { type: 'object', properties: {} }, action: 'notes.delete' },
+  { name: 'foreman_handoff', description: 'Hand a task to another Foreman agent.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, to: { type: 'string' }, brief: { type: 'string' } }, required: ['task_id', 'to'] }, action: 'work.handoff' },
+  { name: 'foreman_report', description: 'Report your activity. kind is one of ' + KINDS.join(', '), inputSchema: { type: 'object', properties: { kind: { type: 'string' }, text: { type: 'string' } }, required: ['kind'] } },
+  { name: 'foreman_next_task', description: 'Claim the next task from the Foreman work bus.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'foreman_complete_task', description: 'Finish a task and store its result.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, result: { type: 'string' } }, required: ['task_id', 'result'] } },
+  { name: 'foreman_check_request', description: 'Check a paused (ASK) request. Once approved Foreman has already run it; the result is included.', inputSchema: { type: 'object', properties: { request_id: { type: 'string' } }, required: ['request_id'] } },
+];
+async function mcpCall(agent, name, args) {
+  const t = MCP_TOOLS.find(x => x.name === name); if (!t) return { isError: true, content: [{ type: 'text', text: 'unknown tool' }] };
+  let out;
+  if (t.action) { const g = await gatewayAct(agent, { action: t.action, params: args || {} }); out = g.body; }
+  else if (name === 'foreman_report') out = (await reportEvent(agent, args || {}, 'mcp')).body;
+  else if (name === 'foreman_next_task') { if (agent.status !== 'active') out = { status: 'blocked', reason: 'Access revoked by owner' }; else out = { task: await claimTask(agent) }; }
+  else if (name === 'foreman_complete_task') out = (await completeTask(agent, (args || {}).task_id, args || {})).body;
+  else if (name === 'foreman_check_request') { const q = await getJ('fm:req:' + (args || {}).request_id); out = q && q.agentId === agent.id ? pub(q) : { error: 'not found' }; }
+  return { isError: ['blocked', 'failed'].includes(out && out.status), content: [{ type: 'text', text: JSON.stringify(out) }] };
+}
+async function mcpHandle(agent, m) {
+  const ok = result => ({ jsonrpc: '2.0', id: m.id, result });
+  if (m.method === 'initialize') return ok({ protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'foreman', version: '9.0.0' } });
+  if (m.method === 'tools/list') return ok({ tools: MCP_TOOLS.map(({ action, ...t }) => t) });
+  if (m.method === 'tools/call') return ok(await mcpCall(agent, m.params && m.params.name, m.params && m.params.arguments));
+  if (m.method === 'ping') return ok({});
+  if (m.id === undefined) return null;
+  return { jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'method not found' } };
+}
 // ---------- http ----------
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -234,15 +305,25 @@ module.exports = async (req, res) => {
       const agent = await authAgent(req);
       if (!agent) return res.status(401).json({ status: 'unauthorized', reason: 'Unknown or invalid agent key' });
       if (path === '/gateway/act' && req.method === 'POST') return send(await gatewayAct(agent, body));
+      if (path === '/gateway/events' && req.method === 'POST') return send(await reportEvent(agent, body));
+      if (path === '/gateway/tasks/next') { if (agent.status !== 'active') { await event(agent.id, 'blocked', 'Blocked task claim: access revoked', { kind: 'BLOCKED' }); return res.status(403).json({ status: 'blocked', reason: 'Access revoked by owner' }); } return res.json({ task: await claimTask(agent) }); }
+      { const tm = path.match(/^\/gateway\/tasks\/(\w+)\/complete$/); if (tm && req.method === 'POST') return send(await completeTask(agent, tm[1], body)); }
       const m = path.match(/^\/gateway\/requests\/(\w+)$/);
       if (m) { const q = await getJ('fm:req:' + m[1]); if (!q || q.agentId !== agent.id) return res.status(404).json({ error: 'not found' }); return res.json(pub(q)); }
       return res.status(404).json({ error: 'not found' });
     }
+    // --- webhook intake: a provider posts its own payload, the adapter normalizes it ---
+    if (path === '/ingest' && req.method === 'POST') { const agent = await authAgent(req); if (!agent) return res.status(401).json({ status: 'unauthorized' }); return send(await reportEvent(agent, body, 'webhook')); }
+    if (path === '/mcp') { const agent = await authAgent(req); if (!agent) return res.status(401).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unknown or invalid agent key' } });
+      if (req.method !== 'POST') return res.status(405).json({ error: 'POST JSON-RPC' });
+      if (Array.isArray(body)) { const outs = (await Promise.all(body.map(m => mcpHandle(agent, m)))).filter(Boolean); return outs.length ? res.json(outs) : res.status(202).end(); }
+      const o = await mcpHandle(agent, body); return o ? res.json(o) : res.status(202).end(); }
     // --- owner-facing ---
+    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
     if (path === '/state') return res.json(await fullState());
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') return send(await decide(m[1], m[2]));
-    if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role); return res.json(c); }
+    if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
     if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits)$/)) && req.method === 'POST') {
       const a = await getJ('fm:agent:' + m[1]); if (!a) return res.status(404).json({ error: 'not found' });
       if (m[2] === 'revoke') { a.status = 'revoked'; a.revokedAt = now(); await event(a.id, 'revoked', `Owner revoked ${a.name}'s access`); 
