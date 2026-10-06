@@ -1,11 +1,17 @@
 // Foreman core v9: real permission gateway + external-agent adapters + work bus. Agents hold only a Foreman key; every action goes through /api/gateway/act.
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
+const als = new AsyncLocalStorage();
+// v11: every workspace gets its own key namespace. 'legacy' is the original v9/v10 data (no prefix). 'gl:' keys are global (users, sessions, key index).
+const wsId = () => ((als.getStore() || {}).ws) || 'legacy';
+const nsKey = k => { const w = wsId(); return (typeof k === 'string' && k.startsWith('fm:') && w !== 'legacy') ? 'w:' + w + ':' + k : k; };
 
 // ---------- storage (Upstash/Vercel KV REST; memory fallback for local dev only) ----------
 const URL_ = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const TOK = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 const mem = global.__mem || (global.__mem = { kv: new Map(), lists: new Map() });
-async function r(cmd) {
+async function r(cmd0) {
+  const cmd = cmd0.map((x, i) => i === 0 ? x : nsKey(x));
   if (!URL_) return memCmd(cmd);
   const res = await fetch(URL_, { method: 'POST', headers: { Authorization: 'Bearer ' + TOK, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
   const j = await res.json();
@@ -25,12 +31,13 @@ function memCmd(c) {
     case 'SADD': { const s = new Set(mem.kv.get(k) || []); s.add(a[0]); mem.kv.set(k, [...s]); return 1; }
     case 'SREM': { const x=(mem.kv.get(k)||[]).filter(v=>v!==a[0]); mem.kv.set(k,x); return 1; }
     case 'SMEMBERS': return mem.kv.get(k) || [];
+    case 'EXPIRE': return 1;
     case 'DEL': mem.kv.delete(k); mem.lists.delete(k); return 1;
   }
   throw new Error('memcmd ' + op);
 }
-let STATE_CACHE = null, SEEDED = false;
-const bust = () => { STATE_CACHE = null; };
+const CACHES = new Map(); let SEEDED = false;
+const bust = () => { CACHES.delete(wsId()); };
 const getJ = async k => { const v = await r(['GET', k]); return v ? JSON.parse(v) : null; };
 const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
 const now = () => new Date().toISOString();
@@ -83,7 +90,9 @@ async function execute(agent, action, params) {
 
 // ---------- work bus ----------
 async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null };
-  bust(); await setJ('fm:task:' + t.id, t); await r(['LPUSH', 'fm:tasklist', t.id]); await r(['LTRIM', 'fm:tasklist', 0, 59]); return t; }
+  bust(); await setJ('fm:task:' + t.id, t); await r(['LPUSH', 'fm:tasklist', t.id]); await r(['LTRIM', 'fm:tasklist', 0, 59]);
+  if (t.assignee) { const ag = await getJ('fm:agent:' + t.assignee); if (ag && ag.hosted && ag.status === 'active') await runHosted(ag, t); }
+  return t; }
 async function listTasks() { const ids = await r(['LRANGE', 'fm:tasklist', 0, 29]); if (!ids.length) return []; return (await r(['MGET', ...ids.map(i => 'fm:task:' + i)])).filter(Boolean).map(x => JSON.parse(x)); }
 async function claimTask(agent) { const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
   t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); await setJ('fm:task:' + t.id, t); await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
@@ -103,6 +112,73 @@ const PROVIDERS = [
   { id: 'grok', name: 'Grok / Grok bots', tier: 'verified', how: 'xAI API worker (HTTP gateway)', note: 'Proven live: a real Grok worker (xAI API, grok-4.3) received a handed-off task through the work bus, did the work, and was gated by ASK on its write.' },
   { id: 'muse', name: 'Muse', tier: 'waiting', how: 'Waiting on provider access', note: 'No public agent API verified for Muse yet. It can join through the generic adapter once it can call out. Not faked.' },
 ];
+
+// ---------- v11: secrets, owner accounts, hosted agents ----------
+const ENCK = crypto.createHash('sha256').update('foreman-v11|' + (process.env.ENC_SECRET || TOK || 'dev')).digest();
+const enc = t => { const iv = crypto.randomBytes(12); const c = crypto.createCipheriv('aes-256-gcm', ENCK, iv); const d = Buffer.concat([c.update(String(t), 'utf8'), c.final()]); return [iv, c.getAuthTag(), d].map(b => b.toString('base64')).join('.'); };
+const dec = t => { const [iv, tag, d] = String(t).split('.').map(x => Buffer.from(x, 'base64')); const c = crypto.createDecipheriv('aes-256-gcm', ENCK, iv); c.setAuthTag(tag); return Buffer.concat([c.update(d), c.final()]).toString('utf8'); };
+const PRESETS = {
+  cautious: { 'web.fetch': 'ASK', 'notes.write': 'ASK', 'notes.delete': 'NEVER', 'work.handoff': 'ASK' },
+  balanced: { 'web.fetch': 'AUTO', 'notes.write': 'ASK', 'notes.delete': 'NEVER', 'work.handoff': 'AUTO' },
+  trusted:  { 'web.fetch': 'AUTO', 'notes.write': 'AUTO', 'notes.delete': 'NEVER', 'work.handoff': 'AUTO' },
+};
+async function xaiChat(key, model, prompt, maxTokens) {
+  const res = await fetch('https://api.x.ai/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(25000),
+    body: JSON.stringify({ model, max_tokens: maxTokens || 600, messages: [{ role: 'system', content: 'You are an AI employee working inside Foreman. Use only the context given. Be concise and factual. If context is missing, say so.' }, { role: 'user', content: prompt }] }) });
+  let j = {}; try { j = await res.json(); } catch {}
+  if (!res.ok) { const e = new Error(res.status === 401 || res.status === 403 ? 'xAI rejected that key' : (res.status === 402 || res.status === 429) ? 'xAI says this key has no credits or is rate limited' : 'xAI error ' + res.status); e.http = res.status; throw e; }
+  return String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
+}
+// Hosted agents run inline, the moment work is assigned: no polling, no cron, no tab.
+async function runHosted(agent, t) {
+  const live = await getJ('fm:agent:' + agent.id) || agent;
+  t.status = 'running'; t.startedAt = now(); await setJ('fm:task:' + t.id, t);
+  await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id });
+  const stop = live.status !== 'active' ? 'Access revoked by owner' : (await r(['GET', 'fm:kill'])) ? 'Owner kill switch is on' : null;
+  if (stop) { t.status = 'failed'; t.result = 'Not run: ' + stop; t.finishedAt = now(); await setJ('fm:task:' + t.id, t); await event(agent.id, 'blocked', 'Blocked task: ' + stop, { kind: 'BLOCKED', taskId: t.id }); return; }
+  try {
+    const key = dec(await r(['GET', 'fm:secret:' + agent.id])); const model = live.model || 'grok-4.3';
+    await event(agent.id, 'tool_used', 'Calling Grok (' + model + ')', { kind: 'TOOL_USED', taskId: t.id });
+    const out = await xaiChat(key, model, 'Task: ' + t.title + '\nBrief: ' + t.brief + (t.context ? '\nContext from the previous agent (via Foreman):\n' + t.context : ''));
+    t.status = 'done'; t.result = out.slice(0, 4000); t.finishedAt = now(); await setJ('fm:task:' + t.id, t);
+    await event(agent.id, 'completed', 'Finished: ' + t.title, { kind: 'COMPLETED', taskId: t.id });
+    try { await gatewayAct(live, { action: 'notes.write', params: { title: ('Result: ' + t.title).slice(0, 80), text: out.slice(0, 1500) } }); } catch (e) {}
+  } catch (e) {
+    t.status = 'failed'; t.result = String(e.message).slice(0, 300); t.finishedAt = now(); await setJ('fm:task:' + t.id, t);
+    await event(agent.id, 'failed', 'Failed: ' + t.title + ' (' + t.result + ')', { kind: 'FAILED', taskId: t.id });
+  }
+}
+// owner accounts: email + password (scrypt), session cookie, one workspace per account
+const COOKIE = 'fm_sess';
+const LEGACY_CLAIM_HASH = '939eed690d2af252b4940442b755cb84ba4c27be515142877a44b1a32424454d';
+const cookieOf = req => { const m = String(req.headers.cookie || '').match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)')); return m ? m[1] : null; };
+async function getSession(req) { const t = cookieOf(req); if (!t) return null; const v = await r(['GET', 'gl:sess:' + sha(t)]); return v ? JSON.parse(v) : null; }
+const setCookie = (res, v, maxAge) => res.setHeader('Set-Cookie', `${COOKIE}=${v}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`);
+async function startSession(res, user) { const t = crypto.randomBytes(32).toString('hex'); await r(['SET', 'gl:sess:' + sha(t), JSON.stringify({ uid: user.id, email: user.email, ws: user.ws }), 'EX', 2592000]); setCookie(res, t, 2592000); }
+async function handleAuth(req, res, path, body) {
+  if (path === '/me') { const s = await getSession(req); if (!s) return res.status(401).json({ error: 'auth' }); return res.json({ email: s.email, legacy: s.ws === 'legacy' }); }
+  if (path === '/auth/logout') { const t = cookieOf(req); if (t) await r(['DEL', 'gl:sess:' + sha(t)]); setCookie(res, '', 0); return res.json({ ok: true }); }
+  if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
+  const email = String(body.email || '').trim().toLowerCase(), pw = String(body.password || '');
+  if (!/^[^@\s]{1,64}@[^@\s]{1,120}\.[^@\s]{2,}$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
+  const rl = await r(['INCRBY', 'gl:rl:' + sha(email), 1]); await r(['EXPIRE', 'gl:rl:' + sha(email), 900]); if (rl > 12) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
+  if (path === '/auth/signup') {
+    if (pw.length < 8) return res.status(400).json({ error: 'Use a password of at least 8 characters' });
+    if (await r(['GET', 'gl:user:' + sha(email)])) return res.status(409).json({ error: 'An account with that email already exists. Sign in instead.' });
+    let ws = 'ws' + crypto.randomBytes(6).toString('hex');
+    if (body.claim) { if (sha(String(body.claim).trim()) !== LEGACY_CLAIM_HASH || await r(['GET', 'gl:legacy-owner'])) return res.status(400).json({ error: 'That claim code is not valid or was already used' }); ws = 'legacy'; await r(['SET', 'gl:legacy-owner', email]); }
+    const salt = crypto.randomBytes(16).toString('hex'); const user = { id: rid('user'), email, salt, hash: crypto.scryptSync(pw, salt, 32).toString('hex'), ws, createdAt: now() };
+    await r(['SET', 'gl:user:' + sha(email), JSON.stringify(user)]); await startSession(res, user); return res.json({ ok: true, email, legacy: ws === 'legacy' });
+  }
+  if (path === '/auth/login') {
+    const raw = await r(['GET', 'gl:user:' + sha(email)]); const u = raw && JSON.parse(raw);
+    const okp = u && crypto.timingSafeEqual(Buffer.from(crypto.scryptSync(pw, u.salt, 32).toString('hex')), Buffer.from(u.hash));
+    if (!okp) return res.status(401).json({ error: 'Email or password is wrong' });
+    await startSession(res, u); return res.json({ ok: true, email, legacy: u.ws === 'legacy' });
+  }
+  return res.status(404).json({ error: 'not found' });
+}
+
 // ---------- core ----------
 async function listAgents() { const ids = await r(['SMEMBERS', 'fm:agents']); if (!ids.length) return []; const vs = await r(['MGET', ...ids.map(i => 'fm:agent:' + i)]); return vs.filter(Boolean).map(v => JSON.parse(v)).sort((x, y) => x.createdAt < y.createdAt ? -1 : 1); }
 // Universal Foreman event model. Every provider's activity is normalized into one of these kinds.
@@ -151,6 +227,12 @@ async function runAndReceipt(agent, action, params, reqId, approvedBy) {
   }
 }
 
+async function resolveAgent(req) {
+  const key = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim(); if (!key) return null;
+  const w = await r(['GET', 'gl:key:' + sha(key)]);
+  if (w) { const agent = await als.run({ ws: w }, () => authAgent(req)); return agent ? { ws: w, agent } : null; }
+  const agent = await als.run({ ws: 'legacy' }, () => authAgent(req)); return agent ? { ws: 'legacy', agent } : null;
+}
 async function authAgent(req) {
   const h = req.headers['authorization'] || ''; const key = h.replace(/^Bearer\s+/i, '').trim(); if (!key) return null;
   const id = await r(['GET', 'fm:key:' + sha(key)]); if (!id) return null;
@@ -205,7 +287,7 @@ async function decide(reqId, decision) {
 const pub = q => { const { rawParams, ...rest } = q; return rest; };
 
 async function fullState() {
-  if (STATE_CACHE && Date.now() - STATE_CACHE.t < 1500) return STATE_CACHE.v;
+  { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 1500) return c.v; }
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
@@ -217,13 +299,13 @@ async function fullState() {
   const agentsPub = agents.map((a, i) => ({ ...a, spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
   const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
-  STATE_CACHE = { t: Date.now(), v }; return v;
+  CACHES.set(wsId(), { t: Date.now(), v }); return v;
 }
 async function finishReq(q) { bust(); await setJ('fm:req:' + q.id, q); await r(['SREM', 'fm:reqs', q.id]); await r(['LPUSH', 'fm:reqhist', JSON.stringify(pub(q))]); await r(['LTRIM', 'fm:reqhist', 0, 29]); }
-async function createAgent(name, role, provider, harness) {
+async function createAgent(name, role, provider, harness, opts) { opts = opts || {};
   const id = rid('agent'); const key = 'fmk_' + crypto.randomBytes(20).toString('hex');
-  const agent = { id, name: String(name || 'Agent').slice(0, 40), role: String(role || '').slice(0, 60), provider: (PROVIDERS.find(p => p.id === provider) || { name: 'Custom agent' }).name, providerId: provider || 'custom', harness: !!harness, status: 'active', permissions: { ...DEFAULT_PERMS }, limits: { perActionCents: 10, dailyCents: 50 }, createdAt: now(), lastSeen: null, keyHint: key.slice(0, 8) + '...' + key.slice(-4) };
-  bust(); await setJ('fm:agent:' + id, agent); await r(['SET', 'fm:key:' + sha(key), id]); await r(['SADD', 'fm:agents', id]);
+  const agent = { id, name: String(name || 'Agent').slice(0, 40), role: String(role || '').slice(0, 60), provider: (PROVIDERS.find(p => p.id === provider) || { name: 'Custom agent' }).name, providerId: provider || 'custom', harness: !!harness, status: 'active', permissions: { ...(PRESETS[opts.preset] || DEFAULT_PERMS) }, hosted: !!opts.hosted, model: opts.model || null, limits: { perActionCents: 10, dailyCents: 50 }, createdAt: now(), lastSeen: null, keyHint: key.slice(0, 8) + '...' + key.slice(-4) };
+  bust(); await setJ('fm:agent:' + id, agent); await r(['SET', 'fm:key:' + sha(key), id]); await r(['SET', 'gl:key:' + sha(key), wsId()]); await r(['SADD', 'fm:agents', id]);
   await event(id, 'connected', `${agent.name} connected to Foreman`);
   return { agent, key };
 }
@@ -295,15 +377,28 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(204).end();
   const path = (req.url || '').split('?')[0].replace(/^\/api/, '').replace(/\/$/, '') || '/';
   let body = req.body; if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } } body = body || {};
+  try {
+    if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 11 });
+    if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
+    if (path.startsWith('/gateway') || path === '/ingest' || path === '/mcp') {
+      const ra = await resolveAgent(req);
+      if (!ra) return path === '/mcp' ? res.status(401).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unknown or invalid agent key' } }) : res.status(401).json({ status: 'unauthorized', reason: 'Unknown or invalid agent key' });
+      return await als.run({ ws: ra.ws }, () => routes(req, res, path, body, ra.agent));
+    }
+    const sess = await getSession(req);
+    if (!sess) return res.status(401).json({ error: 'auth', message: 'Sign in required' });
+    return await als.run({ ws: sess.ws }, () => routes(req, res, path, body, null));
+  } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+};
+async function routes(req, res, path, body, agentPre) {
   const send = (o) => res.status(o.status).json(o.body);
   const origin = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host;
   try {
-    await seed();
-    if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now() });
+    if (wsId() === 'legacy') await seed();
+
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
-      const agent = await authAgent(req);
-      if (!agent) return res.status(401).json({ status: 'unauthorized', reason: 'Unknown or invalid agent key' });
+      const agent = agentPre;
       if (path === '/gateway/act' && req.method === 'POST') return send(await gatewayAct(agent, body));
       if (path === '/gateway/events' && req.method === 'POST') return send(await reportEvent(agent, body));
       if (path === '/gateway/tasks/next') { if (agent.status !== 'active') { await event(agent.id, 'blocked', 'Blocked task claim: access revoked', { kind: 'BLOCKED' }); return res.status(403).json({ status: 'blocked', reason: 'Access revoked by owner' }); } return res.json({ task: await claimTask(agent) }); }
@@ -313,8 +408,8 @@ module.exports = async (req, res) => {
       return res.status(404).json({ error: 'not found' });
     }
     // --- webhook intake: a provider posts its own payload, the adapter normalizes it ---
-    if (path === '/ingest' && req.method === 'POST') { const agent = await authAgent(req); if (!agent) return res.status(401).json({ status: 'unauthorized' }); return send(await reportEvent(agent, body, 'webhook')); }
-    if (path === '/mcp') { const agent = await authAgent(req); if (!agent) return res.status(401).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unknown or invalid agent key' } });
+    if (path === '/ingest' && req.method === 'POST') { return send(await reportEvent(agentPre, body, 'webhook')); }
+    if (path === '/mcp') { const agent = agentPre;
       if (req.method !== 'POST') return res.status(405).json({ error: 'POST JSON-RPC' });
       if (Array.isArray(body)) { const outs = (await Promise.all(body.map(m => mcpHandle(agent, m)))).filter(Boolean); return outs.length ? res.json(outs) : res.status(202).end(); }
       const o = await mcpHandle(agent, body); return o ? res.json(o) : res.status(202).end(); }
@@ -334,9 +429,26 @@ module.exports = async (req, res) => {
       if (m[2] === 'limits') { a.limits = { perActionCents: body.perActionCents == null ? null : +body.perActionCents, dailyCents: body.dailyCents == null ? null : +body.dailyCents }; await event(a.id, 'limits', `Limits set: per action ${a.limits.perActionCents}c, daily ${a.limits.dailyCents}c`); }
       bust(); await setJ('fm:agent:' + a.id, a); return res.json({ agent: a });
     }
-    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); a.status = 'revoked'; await setJ('fm:agent:' + a.id, a); bust(); await r(['SREM', 'fm:agents', a.id]); return res.json({ removed: true }); }
+    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); a.status = 'revoked'; await setJ('fm:agent:' + a.id, a); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
     if (path === '/kill' && req.method === 'POST') { bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
+    // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
+    if (path === '/connect' && req.method === 'POST') {
+      const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
+      const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = origin;
+      if (prov === 'grok') {
+        const k = String(body.apiKey || '').trim(); if (!/^xai-[A-Za-z0-9]{20,}$/.test(k)) return res.status(400).json({ error: 'Paste the key from console.x.ai (it starts with xai-)' });
+        const model = String(body.model || 'grok-4.3').replace(/[^\w.\-]/g, '').slice(0, 40);
+        try { await xaiChat(k, model, 'Reply with the word ready.', 5); } catch (e) { return res.status(400).json({ error: e.message + '. Check the key and that your xAI account has credits.' }); }
+        const c = await createAgent(name, String(body.role || '').trim() || 'Grok employee', 'grok', false, { preset, hosted: true, model });
+        await r(['SET', 'fm:secret:' + c.agent.id, enc(k)]);
+        return res.json({ agent: c.agent, hosted: true });
+      }
+      const c = await createAgent(name, String(body.role || '').trim(), prov, false, { preset });
+      const msg = `You are joining my Foreman workspace as "${name}". Foreman controls what you can do. Your key: ${c.key}\nBase URL: ${base}/api\n1) Get work: GET ${base}/api/gateway/tasks/next with header "Authorization: Bearer <key>". It returns {"task":...} or null.\n2) Do real things only through POST ${base}/api/gateway/act with {"action":"web.fetch"|"notes.write"|"work.handoff","params":{...}}. Foreman answers completed, pending (wait for my approval and poll GET ${base}/api/gateway/requests/<id>) or blocked. Never work around a block.\n3) Finish with POST ${base}/api/gateway/tasks/<task_id>/complete {"result":"..."}.\n4) Report progress with POST ${base}/api/gateway/events {"kind":"TASK_STARTED|TOOL_USED|COMPLETED|FAILED","text":"...","task_id":"..."}.\nMCP clients can use ${base}/api/mcp with the same key.`;
+      return res.json({ agent: c.agent, hosted: false, instructions: msg, key: c.key });
+    }
     // --- live demo agent ---
+    if (wsId() !== 'legacy' && path.startsWith('/demo/')) return res.status(404).json({ error: 'not found' });
     if (path === '/demo/scout/tick' && req.method === 'POST') return res.json(await scoutTick(origin));
     if (path === '/demo/scout/state') return res.json({ ...(await getJ('fm:scout:state') || {}), agentId: await r(['GET', 'fm:scout:id']) });
     return res.status(404).json({ error: 'not found', path });
