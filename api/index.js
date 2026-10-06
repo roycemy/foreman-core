@@ -459,10 +459,12 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/connect' && req.method === 'POST') {
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
       const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = origin;
+      if (prov === 'muse') return res.status(400).json({ error: 'Muse is coming soon. It cannot be connected yet.' });
       if (prov === 'grok') {
         const k = String(body.apiKey || '').trim(); if (!/^xai-[A-Za-z0-9]{20,}$/.test(k)) { await mark('connect_failed', { reason: 'bad_key_format' }); return res.status(400).json({ error: 'Paste the key from console.x.ai (it starts with xai-)' }); }
         const model = String(body.model || 'grok-4.3').replace(/[^\w.\-]/g, '').slice(0, 40);
         try { await xaiChat(k, model, 'Reply with the word ready.', 5); } catch (e) { await mark('connect_failed', { reason: /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'xai_other' }); return res.status(400).json({ error: e.message + '. Check the key and that your xAI account has credits.' }); }
+        if (body.check) return res.json({ ok: true });
         const c = await createAgent(name, String(body.role || '').trim() || 'Grok employee', 'grok', false, { preset, hosted: true, model });
         await r(['SET', 'fm:secret:' + c.agent.id, enc(k)]);
         await track('connected', { provider: 'grok' }); return res.json({ agent: c.agent, hosted: true });
