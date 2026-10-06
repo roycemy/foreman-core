@@ -15,6 +15,7 @@ async function r(cmd) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
+    case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'SET': mem.kv.set(k, a[0]); return 'OK';
     case 'INCRBY': { const v = (parseInt(mem.kv.get(k) || '0', 10)) + parseInt(a[0], 10); mem.kv.set(k, String(v)); return v; }
@@ -28,6 +29,8 @@ function memCmd(c) {
   }
   throw new Error('memcmd ' + op);
 }
+let STATE_CACHE = null, SEEDED = false;
+const bust = () => { STATE_CACHE = null; };
 const getJ = async k => { const v = await r(['GET', k]); return v ? JSON.parse(v) : null; };
 const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
 const now = () => new Date().toISOString();
@@ -69,10 +72,10 @@ async function execute(agent, action, params) {
 }
 
 // ---------- core ----------
-async function listAgents() { const ids = await r(['SMEMBERS', 'fm:agents']); const out = []; for (const id of ids) { const a = await getJ('fm:agent:' + id); if (a) out.push(a); } return out.sort((x, y) => x.createdAt < y.createdAt ? -1 : 1); }
-async function event(agentId, type, text, extra) { const e = { id: rid('ev'), at: now(), agentId, type, text, ...extra }; await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
+async function listAgents() { const ids = await r(['SMEMBERS', 'fm:agents']); if (!ids.length) return []; const vs = await r(['MGET', ...ids.map(i => 'fm:agent:' + i)]); return vs.filter(Boolean).map(v => JSON.parse(v)).sort((x, y) => x.createdAt < y.createdAt ? -1 : 1); }
+async function event(agentId, type, text, extra) { bust(); const e = { id: rid('ev'), at: now(), agentId, type, text, ...extra }; await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
 async function spentToday(agentId) { return parseInt((await r(['GET', `fm:spend:${agentId}:${now().slice(0, 10)}`])) || '0', 10); }
-async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) {
+async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust();
   const prev = (await r(['GET', 'fm:lasthash'])) || 'genesis';
   const rec = { id: rid('rcpt'), at: now(), agentId: agent.id, agentName: agent.name, action, params: redact(params), outcome, costCents: cost, summary, requestId: reqId || null, ...extra, prevHash: prev };
   rec.hash = sha(prev + JSON.stringify(rec));
@@ -85,7 +88,7 @@ const redact = p => { const o = {}; for (const k of Object.keys(p || {})) o[k] =
 async function policy(agent, action, mode) {
   const a = ACTIONS[action]; if (!a) return { code: 'unknown_action', reason: 'Action is not in the catalog' };
   if (agent.status !== 'active') return { code: 'revoked', reason: agent.status === 'revoked' ? 'Access revoked by owner' : 'Agent is not active' };
-  if (global.__killed || await r(['GET', 'fm:kill'])) return { code: 'killed', reason: 'Owner kill switch is on' };
+  if (await r(['GET', 'fm:kill'])) return { code: 'killed', reason: 'Owner kill switch is on' };
   if (mode === 'NEVER') return { code: 'never', reason: 'Permission is NEVER for this action' };
   const lim = agent.limits || {};
   if (lim.perActionCents != null && a.costCents > lim.perActionCents) return { code: 'limit_action', reason: `Cost ${a.costCents}c exceeds per-action limit ${lim.perActionCents}c` };
@@ -116,7 +119,7 @@ async function authAgent(req) {
 
 async function gatewayAct(agent, body) {
   const action = body.action, params = body.params || {};
-  agent.lastSeen = now(); await setJ('fm:agent:' + agent.id, agent);
+  if (!agent.lastSeen || Date.now() - Date.parse(agent.lastSeen) > 20000) { agent.lastSeen = now(); await setJ('fm:agent:' + agent.id, agent); }
   const mode = (agent.permissions || {})[action] || 'NEVER';
   await event(agent.id, 'attempt', `Attempted ${action} (${mode})`, { action });
   const blocked = await policy(agent, action, mode);
@@ -127,7 +130,7 @@ async function gatewayAct(agent, body) {
   }
   if (mode === 'ASK') {
     const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: now() };
-    await setJ('fm:req:' + q.id, q); await r(['SADD', 'fm:reqs', q.id]);
+    bust(); await setJ('fm:req:' + q.id, q); await r(['SADD', 'fm:reqs', q.id]);
     await event(agent.id, 'pending', `Waiting for owner approval: ${action}`, { requestId: q.id });
     return { status: 202, body: { status: 'pending', request_id: q.id, message: 'Action is paused until the owner approves or denies it.' } };
   }
@@ -141,7 +144,7 @@ async function decide(reqId, decision) {
   if (q.status !== 'pending') return { status: 409, body: { error: 'already ' + q.status, request: pub(q) } };
   const agent = await getJ('fm:agent:' + q.agentId);
   if (decision === 'deny') {
-    q.status = 'denied'; q.decidedAt = now(); await setJ('fm:req:' + q.id, q);
+    q.status = 'denied'; q.decidedAt = now(); await finishReq(q);
     const rec = await receipt(agent, q.action, q.params, 'denied', 0, `Owner denied ${q.action}`, q.id, { approvedBy: 'owner:deny' });
     await event(agent.id, 'denied', `Owner denied ${q.action}`, { requestId: q.id, receiptId: rec.id });
     return { status: 200, body: { request: pub(q) } };
@@ -149,32 +152,37 @@ async function decide(reqId, decision) {
   // approval: re-check policy NOW (agent may have been revoked / budget changed while paused). Mode treated as AUTO for this one action.
   const blocked = await policy(agent, q.action, 'AUTO');
   if (blocked) {
-    q.status = 'blocked'; q.decidedAt = now(); q.reason = blocked.reason; await setJ('fm:req:' + q.id, q);
+    q.status = 'blocked'; q.decidedAt = now(); q.reason = blocked.reason; await finishReq(q);
     const rec = await receipt(agent, q.action, q.params, 'blocked', 0, `BLOCKED at approval: ${blocked.reason}`, q.id, { code: blocked.code });
     await event(agent.id, 'blocked', `Blocked at approval: ${blocked.reason}`, { requestId: q.id, receiptId: rec.id });
     return { status: 200, body: { request: pub(q) } };
   }
-  q.status = 'approved'; q.decidedAt = now(); await setJ('fm:req:' + q.id, q);
+  q.status = 'approved'; q.decidedAt = now(); bust(); await setJ('fm:req:' + q.id, q);
   const { rec, out, error } = await runAndReceipt(agent, q.action, q.rawParams, q.id, 'owner:approve');
-  q.status = error ? 'failed' : 'executed'; q.receiptId = rec.id; q.result = out ? out.data : { error }; await setJ('fm:req:' + q.id, q);
+  q.status = error ? 'failed' : 'executed'; q.receiptId = rec.id; q.result = out ? out.data : { error }; await finishReq(q);
   return { status: 200, body: { request: pub(q), receipt: rec } };
 }
 const pub = q => { const { rawParams, ...rest } = q; return rest; };
 
 async function fullState() {
-  const agents = await listAgents(); const ids = await r(['SMEMBERS', 'fm:reqs']); const reqs = [];
-  for (const id of ids) { const q = await getJ('fm:req:' + id); if (q) reqs.push(pub(q)); }
-  reqs.sort((a, b) => a.createdAt < b.createdAt ? 1 : -1);
-  const spend = {}; for (const a of agents) spend[a.id] = await spentToday(a.id);
-  const parse = a => (a || []).map(x => JSON.parse(x));
-  const agentsPub = agents.map(({ keyHint, ...a }) => ({ ...a, keyHint, spentTodayCents: spend[a.id] }));
-  return { now: now(), killed: !!(await r(['GET', 'fm:kill'])), actions: ACTIONS, agents: agentsPub, requests: reqs.slice(0, 50), receipts: parse(await r(['LRANGE', 'fm:receipts', 0, 59])), events: parse(await r(['LRANGE', 'fm:events', 0, 79])), notes: parse(await r(['LRANGE', 'fm:notes', 0, 9])) };
+  if (STATE_CACHE && Date.now() - STATE_CACHE.t < 1500) return STATE_CACHE.v;
+  const agents = await listAgents();
+  const ids = await r(['SMEMBERS', 'fm:reqs']);
+  const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
+  const pend = ids.length ? parse(await r(['MGET', ...ids.map(i => 'fm:req:' + i)])).map(pub) : [];
+  const hist = parse(await r(['LRANGE', 'fm:reqhist', 0, 14]));
+  const day = now().slice(0, 10);
+  const sp = agents.length ? await r(['MGET', ...agents.map(a => `fm:spend:${a.id}:${day}`)]) : [];
+  const agentsPub = agents.map((a, i) => ({ ...a, spentTodayCents: parseInt(sp[i] || '0', 10) }));
+  const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
+  const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes) };
+  STATE_CACHE = { t: Date.now(), v }; return v;
 }
-
+async function finishReq(q) { bust(); await setJ('fm:req:' + q.id, q); await r(['SREM', 'fm:reqs', q.id]); await r(['LPUSH', 'fm:reqhist', JSON.stringify(pub(q))]); await r(['LTRIM', 'fm:reqhist', 0, 29]); }
 async function createAgent(name, role) {
   const id = rid('agent'); const key = 'fmk_' + crypto.randomBytes(20).toString('hex');
   const agent = { id, name: String(name || 'Agent').slice(0, 40), role: String(role || '').slice(0, 60), provider: 'Foreman Demo Agent', status: 'active', permissions: { ...DEFAULT_PERMS }, limits: { perActionCents: 10, dailyCents: 50 }, createdAt: now(), lastSeen: null, keyHint: key.slice(0, 8) + '...' + key.slice(-4) };
-  await setJ('fm:agent:' + id, agent); await r(['SET', 'fm:key:' + sha(key), id]); await r(['SADD', 'fm:agents', id]);
+  bust(); await setJ('fm:agent:' + id, agent); await r(['SET', 'fm:key:' + sha(key), id]); await r(['SADD', 'fm:agents', id]);
   await event(id, 'connected', `${agent.name} connected to Foreman`);
   return { agent, key };
 }
@@ -204,7 +212,7 @@ async function scoutTick(origin) {
   return { step, scout: { n: st.n, pending: st.pending } };
 }
 async function seed() {
-  if (await r(['GET', 'fm:seeded'])) return;
+  if (SEEDED) return; if (await r(['GET', 'fm:seeded'])) { SEEDED = true; return; } SEEDED = true;
   const { agent, key } = await createAgent('Scout', 'Research agent (live)');
   agent.provider = 'Foreman live agent'; agent.live = true; await setJ('fm:agent:' + agent.id, agent);
   await r(['SET', 'fm:scout:key', key]); await r(['SET', 'fm:scout:id', agent.id]); await r(['SET', 'fm:seeded', '1']);
@@ -239,14 +247,14 @@ module.exports = async (req, res) => {
       const a = await getJ('fm:agent:' + m[1]); if (!a) return res.status(404).json({ error: 'not found' });
       if (m[2] === 'revoke') { a.status = 'revoked'; a.revokedAt = now(); await event(a.id, 'revoked', `Owner revoked ${a.name}'s access`); 
         // pending requests of this agent are cancelled immediately
-        for (const id of await r(['SMEMBERS', 'fm:reqs'])) { const q = await getJ('fm:req:' + id); if (q && q.agentId === a.id && q.status === 'pending') { q.status = 'blocked'; q.reason = 'Access revoked while pending'; q.decidedAt = now(); await setJ('fm:req:' + id, q); await receipt(a, q.action, q.params, 'blocked', 0, 'BLOCKED: access revoked while request was pending', q.id, { code: 'revoked' }); } } }
+        for (const id of await r(['SMEMBERS', 'fm:reqs'])) { const q = await getJ('fm:req:' + id); if (q && q.agentId === a.id && q.status === 'pending') { q.status = 'blocked'; q.reason = 'Access revoked while pending'; q.decidedAt = now(); await finishReq(q); await receipt(a, q.action, q.params, 'blocked', 0, 'BLOCKED: access revoked while request was pending', q.id, { code: 'revoked' }); } } }
       if (m[2] === 'restore') { a.status = 'active'; delete a.revokedAt; await event(a.id, 'restored', `Owner restored ${a.name}'s access`); }
       if (m[2] === 'permissions') { if (!ACTIONS[body.action] || !['AUTO', 'ASK', 'NEVER'].includes(body.mode)) return res.status(400).json({ error: 'bad input' }); a.permissions[body.action] = body.mode; await event(a.id, 'permission', `${body.action} set to ${body.mode}`); }
       if (m[2] === 'limits') { a.limits = { perActionCents: body.perActionCents == null ? null : +body.perActionCents, dailyCents: body.dailyCents == null ? null : +body.dailyCents }; await event(a.id, 'limits', `Limits set: per action ${a.limits.perActionCents}c, daily ${a.limits.dailyCents}c`); }
-      await setJ('fm:agent:' + a.id, a); return res.json({ agent: a });
+      bust(); await setJ('fm:agent:' + a.id, a); return res.json({ agent: a });
     }
-    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); a.status = 'revoked'; await setJ('fm:agent:' + a.id, a); await r(['SREM', 'fm:agents', a.id]); return res.json({ removed: true }); }
-    if (path === '/kill' && req.method === 'POST') { if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
+    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); a.status = 'revoked'; await setJ('fm:agent:' + a.id, a); bust(); await r(['SREM', 'fm:agents', a.id]); return res.json({ removed: true }); }
+    if (path === '/kill' && req.method === 'POST') { bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
     // --- live demo agent ---
     if (path === '/demo/scout/tick' && req.method === 'POST') return res.json(await scoutTick(origin));
     if (path === '/demo/scout/state') return res.json({ ...(await getJ('fm:scout:state') || {}), agentId: await r(['GET', 'fm:scout:id']) });
