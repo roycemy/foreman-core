@@ -1,0 +1,17 @@
+name: foreman-grok-worker
+on:
+  schedule: [{ cron: '*/5 * * * *' }]
+  workflow_dispatch: {}
+concurrency: foreman-worker
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: node worker/worker.js
+        env:
+          FOREMAN_KEY: ${{ secrets.FOREMAN_GROK_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
