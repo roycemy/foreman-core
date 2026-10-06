@@ -846,13 +846,17 @@ function paintFT(){if(!FT)return;const p=panel();const S=(LS&&LS.tasks)||[];cons
   if(pend.length&&!FT.shown){FT.shown=1;trk("approval_shown")}
   if(pend.length){h+=`<div style="margin-top:8px;font-weight:600">It wants to save this as a note. Your permission setting says to ask you.</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn pri" id="fta">Approve</button><button class="btn" id="ftd">Deny</button></div>`}
   else if(done)h+=step(done.status==="denied"?"bad":"ok",done.status==="denied"?"Note not saved (you denied it)":"Note saved. A receipt was created.");
-  if(!pend.length&&(done||!FT.hosted))h+=`<div style="margin-top:10px;padding-top:8px;border-top:1px solid #e2e8f0"><div style="font-weight:600;margin-bottom:4px">What next</div><div class="sum"><a href="#receipts">See the receipt</a> of what it did.<br><a href="#policies">Change what it may do</a>, or click it in HQ and choose Revoke access to turn it off.<br><a href="#work">Give it another task</a>.</div></div>`}
+  if(!pend.length&&(done||!FT.hosted))h+=`<div style="margin-top:10px;padding-top:8px;border-top:1px solid #e2e8f0"><div style="font-weight:600;margin-bottom:4px">What next</div><div class="sum"><a href="#receipts" class="ftr">See the receipt</a> of what it did.<br><a href="#policies">Change what it may do</a>, or click it in HQ and choose Revoke access to turn it off.<br><a href="#work">Give it another task</a>.</div></div>`}
  p.innerHTML=h;
  const X=A("ftx");if(X)X.onclick=()=>{clearInterval(FT.iv);p.remove();FT=null};
  const C=A("ftc");if(C)C.onclick=()=>{A("ftm").select();try{navigator.clipboard.writeText(A("ftm").value)}catch(e){document.execCommand("copy")}toast("Copied")};
  const ap=A("fta");if(ap)ap.onclick=async()=>{ap.disabled=true;await api("/api/requests/"+pend[0].id+"/approve","POST");await sync();paintFT()};
  const dn=A("ftd");if(dn)dn.onclick=async()=>{dn.disabled=true;await api("/api/requests/"+pend[0].id+"/deny","POST");await sync();paintFT()};
  if(t&&(t.status==="done"||t.status==="failed")&&!pend.length&&(done||t.status==="failed"||!FT.hosted)&&!FT.fin){FT.fin=1;clearInterval(FT.iv)}}
+
+document.addEventListener("click",e=>{const a=e.target.closest&&e.target.closest("a.ftr");if(!a||!FT)return;const rs=(LS&&LS.receipts)||[];const q=((LS&&LS.requests)||[]).find(x=>x.agentId===FT.ag&&x.action==="notes.write");const r=(q&&rs.find(x=>x.requestId===q.id))||rs.find(x=>x.agentId===FT.ag);window.__hl=r&&r.id;setTimeout(hlRcpt,150)});
+function hlRcpt(){if(!window.__hl)return;const rs=(LS&&LS.receipts)||[];const i=rs.findIndex(x=>x.id===window.__hl);const els=document.querySelectorAll("#v-receipts .rcpt");const el=els[i];if(!el){return}el.style.transition="box-shadow .3s, background .3s";el.style.boxShadow="0 0 0 3px #4f46e5";el.style.background="#eef2ff";el.scrollIntoView({block:"center",behavior:"smooth"});const id=window.__hl;setTimeout(()=>{el.style.boxShadow="";el.style.background=""},4000);window.__hl=null}
+const _rd13=render;render=function(){_rd13();if(window.__hl)setTimeout(hlRcpt,50)};
 A("addb").onclick=openAdd;
 })();
 </script></body></html>
