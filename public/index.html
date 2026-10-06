@@ -870,7 +870,7 @@ const OPT=[{id:"grok",name:"Grok",emo:"\u26A1",line:"xAI's assistant. Ready in a
 const ROLES=["Sales","Customer support","Research","Operations","Finance"];
 let W={};
 const N=["Choose assistant","Authorize","Choose role","Set permissions"];
-function shell(h,closeLbl){const dots=N.map((n,i)=>`<span style="flex:1;height:4px;border-radius:2px;background:${i<=W.step?"#4f46e5":"#e2e8f0"}"></span>`).join("");A("modal").querySelector(".box").innerHTML=`<div class="cw"><div style="display:flex;gap:4px;margin-bottom:10px">${dots}</div><div class="sum" style="margin-bottom:6px">Step ${W.step+1} of 4 \u00B7 ${N[W.step]}</div>${h}<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn" id="mc2">${closeLbl||"Cancel"}</button></div></div>`;A("mc2").onclick=()=>{A("modal").classList.remove("on");render()}}
+function shell(h,closeLbl){const dots=N.map((n,i)=>`<span style="flex:1;height:4px;border-radius:2px;background:${i<=W.step?"#4f46e5":"#e2e8f0"}"></span>`).join("");A("modal").querySelector(".box").innerHTML=`<div class="cw"><div style="display:flex;gap:4px;margin-bottom:10px">${dots}</div><div class="sum" style="margin-bottom:6px">Step ${W.step+1} of 4 \u00B7 ${N[W.step]}</div>${h}${W.step===0?'<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn" id="mc2">Cancel</button></div>':'<a id="mc2" style="position:absolute;right:16px;top:12px;cursor:pointer;color:#64748b;font-size:13px">Cancel</a>'}</div>`;A("modal").querySelector(".box").style.position="relative";A("mc2").onclick=()=>{A("modal").classList.remove("on");render()}}
 openAdd=function(){W={step:0,pre:"balanced"};A("modal").classList.add("on");draw()};
 const nav=(back)=>`<button class="btn" id="wb">Back</button>`;
 function draw(){
