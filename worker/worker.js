@@ -16,6 +16,7 @@ async function grok(prompt) {
 }
 (async () => {
   if (!KEY) { console.log('FOREMAN_KEY missing'); process.exit(1); }
+  if (!XKEY) { console.log('XAI_API_KEY not set: not claiming tasks'); return; }
   let n = 0;
   for (; n < +(process.env.MAX_TASKS || 3); n++) {
     const c = await fm('/gateway/tasks/next');
