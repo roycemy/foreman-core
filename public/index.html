@@ -687,4 +687,67 @@ route=function(){const v=(location.hash.slice(1)||"office");const k=["office","a
 setLayout();buildFloor();route();sync();setInterval(()=>{if(!document.hidden)sync()},3500);$("#emer2").onclick=()=>$("#emer").click();
 window.addEventListener("resize",()=>{if((innerWidth<760)!==MOB){setLayout();buildFloor();agents.forEach(a=>{const p=homeOf(a);setPos(a,p[0],p[1],0);a._pos="home"});render()}});
 
+/* ===== v9: external agents, universal event model, work bus ===== */
+Object.assign(ACTIONS,{"work.handoff":"Hand a task to another agent"});
+SC=false;try{sb.remove()}catch(e){}
+document.title="Foreman HQ";
+const EMO9={instinct:"\u2728",grok:"\u26A1",muse:"\u{1F3A8}",custom:"\u{1F6E0}\uFE0F",mcp:"\u{1F50C}"};
+ICON.waiting="\u23F3";BADGE.waiting="\u2026";
+const KCOL={TASK_STARTED:"#2563eb",TOOL_USED:"#0891b2",ACTION_REQUESTED:"#7c3aed",WAITING:"#64748b",HANDOFF:"#db2777",COMPLETED:"#16a34a",FAILED:"#dc2626",NEEDS_APPROVAL:"#d97706",BLOCKED:"#dc2626"};
+const kchip=k=>k?`<span style="font:600 10px system-ui;padding:2px 6px;border-radius:6px;background:${KCOL[k]||"#64748b"}1f;color:${KCOL[k]||"#64748b"};letter-spacing:.3px">${k}</span>`:"";
+vs=function(){return this.st==="done"||this.st==="handoff"||this.st==="meeting"?"working":this.st==="waiting"?"idle":this.st};
+agents.forEach(a=>a.vs=vs);
+const _mk=mkAgent;mkAgent=function(d,i){const a=_mk(d,i);a.vs=vs;a.emo=EMO9[d.providerId]||"\u{1F916}";a.level=d.provider||"Agent";return a};
+async function hoAnim(a,b,txt){if(a._ho)return;a._ho=true;a.carry=txt;paint(a);try{const [bx,by]=homeOf(b);await walk(a,bx+(a.x<bx?-6:6),by+1);flash(b,"Received a task",3500);await sleep(900);a.carry=null;paint(a);await goHome(a)}catch(e){}a._ho=false}
+applyState=function(s){LS=s;const sig=s.agents.map(a=>a.id).join(",");if(sig!==SIG){SIG=sig;structural(s)}
+ const pend=s.requests.filter(q=>q.status==="pending");
+ G.approvals=pend.map(q=>{if(!numOf[q.id])numOf[q.id]=++nextN;const a=byId[q.agentId];return a?{id:numOf[q.id],reqId:q.id,a,t:{a:q.action},text:`<b>${esc(q.agentName)}</b> wants to <b>${esc(q.label)}</b>${q.params&&(q.params.title||q.params.url||q.params.to)?" \u00B7 "+esc(q.params.title||q.params.url||q.params.to):""} \u00B7 costs ${q.costCents}\u00A2`}:null}).filter(Boolean);
+ G.paused=!!s.killed;const today=s.now.slice(0,10);G.completedToday=s.receipts.filter(r=>r.outcome==="completed"&&r.at.slice(0,10)===today).length;
+ s.agents.forEach(d=>{const a=byId[d.id];if(!a)return;
+  a.revoked=d.status==="revoked";a.policy=Object.assign({},d.permissions);a.limits=d.limits||{};a.spent=d.spentTodayCents/100;a.cap=d.limits&&d.limits.perActionCents;a.emo=EMO9[d.providerId]||"\u{1F916}";a.prov=d.provider;
+  const rc=s.receipts.filter(r=>r.agentId===d.id);a.actions=rc.filter(r=>r.outcome==="completed").length;a.blockedN=rc.filter(r=>r.outcome==="blocked").length;a.outcomes=a.actions;
+  a.done=rc.filter(r=>r.outcome==="completed").slice(0,8).map(r=>r.summary);a.tools={};rc.filter(r=>r.outcome==="completed").forEach(r=>a.tools[r.action]=(a.tools[r.action]||0)+1);
+  const evs=s.events.filter(e=>e.agentId===d.id);a.hist=evs.slice(0,14).map(e=>ft(e.at)+"  "+(e.kind?e.kind+" \u00B7 ":"")+e.text);
+  const S=d.state,age=S?(Date.now()-Date.parse(S.at))/1000:1e9,seen=d.lastSeen?(Date.now()-Date.parse(d.lastSeen))/1000:1e9,mine=pend.find(q=>q.agentId===d.id);
+  let st="idle",now=d.lastSeen||S?"Standing by":"Connected, waiting for first activity";
+  if(a.revoked){st=(S&&S.kind==="BLOCKED"&&age<12)?"blocked":"paused";now=st==="blocked"?"Blocked: access revoked":"Access revoked"}
+  else if(mine){st="needs";now="Waiting for approval: "+mine.action}
+  else if(s.killed){st="paused";now="Kill switch on"}
+  else if(S){const k=S.kind;
+   if(["TASK_STARTED","TOOL_USED","ACTION_REQUESTED"].includes(k)&&age<600){st="working";now=S.text}
+   else if(k==="WAITING"&&age<900){st="waiting";now="Waiting: "+S.text}
+   else if((k==="BLOCKED"||k==="FAILED")&&age<30){st="blocked";now=S.text}
+   else if(k==="COMPLETED"&&age<20){st="done";now=S.text}
+   else if(k==="HANDOFF"&&age<10){st="handoff";now=S.text;const b=byId[S.toAgentId];if(b&&a._hseen!==S.eventId&&age<10){a._hseen=S.eventId;hoAnim(a,b,"Task")}}
+   else if(age>=600&&seen>1200){now="Offline: no activity in "+Math.round(seen/60)+" min"}
+   else now="Last: "+S.text}
+  a.st=st;a.now=now;if(!a._ho)a.bub=null;paint(a);
+  if(st==="needs"&&a._pos!=="appr"){a._pos="appr";const i=Math.max(0,G.approvals.findIndex(r=>r.a===a));const p=ASLOT[i%ASLOT.length];walk(a,p[0],p[1])}
+  else if(st!=="needs"&&a._pos==="appr"){a._pos="home";goHome(a)}});
+ if(window.__wait){const d=s.agents.find(x=>x.id===window.__wait);const el=document.getElementById("cwait");if(d&&el&&(d.lastSeen||d.state)){el.innerHTML="\u2705 Connected. This employee is now in the HQ and its activity is live.";el.style.color="var(--grn,#16a34a)";window.__wait=null}}
+ drawDesks();render()};
+/* ---------- Add AI Employee ---------- */
+const TIERS={verified:["Live","#16a34a"],manual:["Generic connection","#d97706"],waiting:["Waiting on provider","#64748b"]};
+function openAdd(){const P=(LS&&LS.providers)||[];$("#modal .box").innerHTML=`<h3 style="margin:0 0 4px">Add an AI employee</h3><div style="color:var(--mut);margin-bottom:12px;font-size:12.5px">Foreman does not build employees. Pick how yours connects. Everything it does goes through Foreman, so Foreman decides AUTO, ASK or NEVER.</div><div id="addp" style="display:grid;gap:8px">${P.map(p=>`<button class="btn" data-p="${p.id}" style="text-align:left;padding:10px 12px;display:block;white-space:normal"><b>${EMO9[p.id]||""} ${esc(p.name)}</b> <span style="font:600 10px system-ui;color:${TIERS[p.tier][1]};border:1px solid ${TIERS[p.tier][1]};border-radius:6px;padding:1px 5px;margin-left:4px">${TIERS[p.tier][0]}</span><div style="font-size:11.5px;color:var(--mut);margin-top:3px">${esc(p.how)}. ${esc(p.note)}</div></button>`).join("")}</div><div id="cout"></div><div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" id="mc2">Close</button></div>`;
+ $("#modal").classList.add("on");$("#mc2").onclick=()=>{$("#modal").classList.remove("on");window.__wait=null};
+ document.querySelectorAll("#addp [data-p]").forEach(b=>b.onclick=()=>pickProv(b.dataset.p))}
+function pickProv(pid){const p=LS.providers.find(x=>x.id===pid);$("#addp").style.display="none";
+ $("#cout").innerHTML=`<div style="font-weight:600;margin-bottom:6px">${EMO9[pid]||""} ${esc(p.name)}</div><div class="sum" style="margin-bottom:8px">${esc(p.note)}</div><input id="cn" placeholder="Employee name" style="width:100%;padding:9px;margin-bottom:8px"><input id="cr" placeholder="Role (optional)" style="width:100%;padding:9px;margin-bottom:10px"><div style="text-align:right"><button class="btn pri" id="cgo">Create and get connection details</button></div>`;
+ $("#cgo").onclick=async()=>{const n=$("#cn").value.trim();if(!n)return;const r=await api("/api/agents","POST",{name:n,role:$("#cr").value.trim(),provider:pid});const base=API||location.origin;const pre=t=>`<pre style="white-space:pre-wrap;word-break:break-all;background:#f1f5f9;padding:8px;border-radius:8px;font-size:11px;margin:4px 0 10px">${esc(t)}</pre>`;
+  const mcp=JSON.stringify({mcpServers:{foreman:{url:base+"/api/mcp",headers:{Authorization:"Bearer "+r.key}}}},null,1);
+  $("#cout").innerHTML=`<div style="font-weight:600">${esc(n)} created. Key (shown once):</div>${pre(r.key)}<div class="sum">REST gateway (any agent that can make HTTPS calls)</div>${pre(`curl -X POST ${base}/api/gateway/act -H "Authorization: Bearer ${r.key}" -H "Content-Type: application/json" -d '{"action":"web.fetch","params":{"url":"https://api.github.com/zen"}}'`)}<div class="sum">Report activity (normalized to the Foreman event model: TASK_STARTED, TOOL_USED, ACTION_REQUESTED, WAITING, HANDOFF, COMPLETED, FAILED, NEEDS_APPROVAL, BLOCKED)</div>${pre(`curl -X POST ${base}/api/gateway/events -H "Authorization: Bearer ${r.key}" -H "Content-Type: application/json" -d '{"kind":"TASK_STARTED","text":"Researching competitors"}'`)}<div class="sum">MCP client config</div>${pre(mcp)}<div id="cwait" style="font-weight:600;color:var(--mut)">\u23F3 Waiting for ${esc(n)}'s first activity...</div>`;window.__wait=r.agent.id;await sync()}}
+$("#addb").textContent="+ Add AI Employee";$("#addb").onclick=openAdd;
+/* ---------- Work bus view + live event feed ---------- */
+(function(){const nav=$("#nav");const a=document.createElement("a");a.href="#work";a.dataset.v="work";a.textContent="Work";nav.insertBefore(a,nav.children[1]);const sec=document.createElement("section");sec.className="view";sec.id="v-work";$("#v-office").after(sec)})();
+route=function(){const v=(location.hash.slice(1)||"office");const k=["office","work","approvals","receipts","stubs","policies"].includes(v)?v:"office";document.querySelectorAll(".view").forEach(e=>e.classList.toggle("on",e.id==="v-"+k));document.querySelectorAll("nav a").forEach(a=>a.classList.toggle("on",a.dataset.v===k));render()};
+const _render=render;render=function(){_render();if((location.hash.slice(1)||"office")==="work")vWork()};
+function vWork(){const el=$("#v-work");if(!el.dataset.init){el.dataset.init="1";el.innerHTML=`<h3>Work</h3><div class="sum" style="margin-bottom:12px">The Foreman work bus. Agents claim tasks from here and hand work to each other through Foreman. Every agent only has to understand Foreman.</div><form id="tf" style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap"><input id="tt" placeholder="New task for the team" style="flex:1;min-width:200px;padding:9px"><select id="ta" style="padding:9px"></select><button class="btn pri" type="submit">Add task</button></form><div id="tl"></div>`;
+  $("#tf").onsubmit=async e=>{e.preventDefault();const t=$("#tt").value.trim();if(!t)return;await api("/api/tasks","POST",{title:t,assignee:$("#ta").value||null});$("#tt").value="";toast("Task added to the work bus");await sync()}}
+ const sel=$("#ta"),cur=sel.value;sel.innerHTML=`<option value="">Any available agent</option>`+agents.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");sel.value=cur;
+ const nm=id=>(byId[id]&&byId[id].name)||"Owner";const ts=(LS&&LS.tasks)||[];const col={queued:"#64748b",running:"#2563eb",done:"#16a34a",failed:"#dc2626"};
+ $("#tl").innerHTML=ts.map(t=>`<div class="card" style="margin-bottom:8px"><div style="display:flex;gap:8px;align-items:center"><span style="font:600 10px system-ui;color:${col[t.status]};border:1px solid ${col[t.status]};border-radius:6px;padding:1px 6px;text-transform:uppercase">${t.status}</span><b>${esc(t.title)}</b><span class="sum" style="margin-left:auto">${t.assignee?esc(nm(t.assignee)):"unassigned"} \u00B7 ${ft(t.createdAt)}</span></div>${t.parentId?`<div class="sum" style="margin-top:4px">\u21B3 handed over by ${esc(nm(t.createdBy))} with context</div>`:""}${t.context?`<div class="sum" style="margin-top:4px">Context: ${esc(t.context.slice(0,240))}</div>`:""}${t.result?`<div style="margin-top:4px;font-size:12.5px">Result: ${esc(t.result.slice(0,400))}</div>`:""}</div>`).join("")||`<div class="card">No tasks yet.</div>`}
+const _vr=vReceipts;vReceipts=function(){_vr();const evs=((LS&&LS.events)||[]).filter(e=>e.kind).slice(0,14);const nm=id=>(byId[id]&&byId[id].name)||"Foreman";
+ $("#v-receipts").insertAdjacentHTML("afterbegin",`<h3>Live events</h3><div class="sum" style="margin-bottom:8px">Every provider's activity, normalized into one Foreman language.</div><div class="card" style="margin-bottom:16px">${evs.map(e=>`<div style="display:flex;gap:8px;align-items:center;padding:3px 0;font-size:12.5px">${kchip(e.kind)}<b>${esc(nm(e.agentId))}</b><span style="color:var(--mut)">${esc(e.text)}</span><span class="sum" style="margin-left:auto">${ft(e.at)}</span></div>`).join("")||"No events yet."}</div>`)};
+render();
+
 </script></body></html>
