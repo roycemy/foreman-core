@@ -97,7 +97,7 @@ async function reportEvent(agent, body, source) { const kind = normKind(body.kin
   await event(agent.id, 'reported', text, { kind, taskId: body.task_id || null, source: source || 'gateway' }); return { status: 200, body: { status: 'ok', kind } }; }
 // ---------- providers: honest integration tiers ----------
 const PROVIDERS = [
-  { id: 'instinct', name: 'Instinct', tier: 'manual', how: 'HTTP gateway', note: 'Instinct agents can call the gateway with their own key. Live proof in progress.' },
+  { id: 'instinct', name: 'Instinct', tier: 'verified', how: 'HTTP gateway', note: 'Proven live: a real Instinct agent connected, worked through tasks, and was gated by AUTO, ASK and NEVER, then revoked.' },
   { id: 'custom', name: 'Custom agent', tier: 'verified', how: 'HTTP gateway', note: 'Any agent that can make HTTPS calls. Same adapter Instinct uses.' },
   { id: 'mcp', name: 'API / MCP agent', tier: 'verified', how: 'MCP server (JSON-RPC over HTTPS) or REST', note: 'Foreman exposes /api/mcp. MCP-capable agents get gated tools.' },
   { id: 'grok', name: 'Grok / Grok bots', tier: 'manual', how: 'HTTP or MCP, if the bot can call out', note: 'No native Grok connector. A Grok bot that can call HTTPS or an MCP server can use the same key. Not yet verified with a real Grok bot.' },
@@ -253,7 +253,7 @@ async function scoutTick(origin) {
   return { step, scout: { n: st.n, pending: st.pending } };
 }
 async function seed() {
-  if (SEEDED) return; if (await r(['GET', 'fm:seeded'])) { SEEDED = true; return; } SEEDED = true;
+  if (SEEDED) return; if (await r(['GET', 'fm:seeded'])) { SEEDED = true; const sid = await r(['GET', 'fm:scout:id']); const sa = sid && await getJ('fm:agent:' + sid); if (sa && !sa.harness) { sa.harness = true; await setJ('fm:agent:' + sid, sa); } return; } SEEDED = true;
   const { agent, key } = await createAgent('Scout', 'Research agent (live)', 'custom', true);
   agent.provider = 'Foreman live agent'; agent.live = true; await setJ('fm:agent:' + agent.id, agent);
   await r(['SET', 'fm:scout:key', key]); await r(['SET', 'fm:scout:id', agent.id]); await r(['SET', 'fm:seeded', '1']);
