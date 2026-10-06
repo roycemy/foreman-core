@@ -100,7 +100,7 @@ const PROVIDERS = [
   { id: 'instinct', name: 'Instinct', tier: 'verified', how: 'HTTP gateway', note: 'Proven live: a real Instinct agent connected, worked through tasks, and was gated by AUTO, ASK and NEVER, then revoked.' },
   { id: 'custom', name: 'Custom agent', tier: 'verified', how: 'HTTP gateway', note: 'Any agent that can make HTTPS calls. Same adapter Instinct uses.' },
   { id: 'mcp', name: 'API / MCP agent', tier: 'verified', how: 'MCP server (JSON-RPC over HTTPS) or REST', note: 'Foreman exposes /api/mcp. MCP-capable agents get gated tools.' },
-  { id: 'grok', name: 'Grok / Grok bots', tier: 'manual', how: 'HTTP or MCP, if the bot can call out', note: 'No native Grok connector. A Grok bot that can call HTTPS or an MCP server can use the same key. Not yet verified with a real Grok bot.' },
+  { id: 'grok', name: 'Grok / Grok bots', tier: 'manual', how: 'HTTP or MCP, if the bot can call out', note: 'No native Grok connector. A Grok worker (xAI API) runs through the Foreman worker script and the same gateway key. Not marked verified until a real Grok run completes a handed-off task.' },
   { id: 'muse', name: 'Muse', tier: 'waiting', how: 'Waiting on provider access', note: 'No public agent API verified for Muse yet. It can join through the generic adapter once it can call out. Not faked.' },
 ];
 // ---------- core ----------
