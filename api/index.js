@@ -126,7 +126,7 @@ async function xaiChat(key, model, prompt, maxTokens) {
   const res = await fetch('https://api.x.ai/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(25000),
     body: JSON.stringify({ model, max_tokens: maxTokens || 600, messages: [{ role: 'system', content: 'You are an AI employee working inside Foreman. Use only the context given. Be concise and factual. If context is missing, say so.' }, { role: 'user', content: prompt }] }) });
   let j = {}; try { j = await res.json(); } catch {}
-  if (!res.ok) { const e = new Error(res.status === 401 || res.status === 403 ? 'xAI rejected that key' : (res.status === 402 || res.status === 429) ? 'xAI says this key has no credits or is rate limited' : 'xAI error ' + res.status); e.http = res.status; throw e; }
+  if (!res.ok) { const e = new Error(res.status === 401 || res.status === 403 ? 'xAI rejected that key' : (res.status === 402 || res.status === 429) ? 'xAI says this key has no credits or is rate limited' : res.status === 400 ? 'xAI did not recognise that key' : 'xAI error ' + res.status); e.http = res.status; throw e; }
   return String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
 }
 // Hosted agents run inline, the moment work is assigned: no polling, no cron, no tab.
@@ -144,7 +144,7 @@ async function runHosted(agent, t) {
     await event(agent.id, 'completed', 'Finished: ' + t.title, { kind: 'COMPLETED', taskId: t.id });
     try { await gatewayAct(live, { action: 'notes.write', params: { title: ('Result: ' + t.title).slice(0, 80), text: out.slice(0, 1500) } }); } catch (e) {}
   } catch (e) {
-    await mark('first_task_failed', { reason: /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'run_error' }); t.status = 'failed'; t.result = String(e.message).slice(0, 300); t.finishedAt = now(); await setJ('fm:task:' + t.id, t);
+    await mark('first_task_failed', { reason: /recognise/.test(e.message) ? 'bad_key_format' : /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'run_error' }); t.status = 'failed'; t.result = String(e.message).slice(0, 300); t.finishedAt = now(); await setJ('fm:task:' + t.id, t);
     await event(agent.id, 'failed', 'Failed: ' + t.title + ' (' + t.result + ')', { kind: 'FAILED', taskId: t.id });
   }
 }
@@ -463,7 +463,7 @@ async function routes(req, res, path, body, agentPre) {
       if (prov === 'grok') {
         const k = String(body.apiKey || '').trim(); if (!/^xai-[A-Za-z0-9]{20,}$/.test(k)) { await mark('connect_failed', { reason: 'bad_key_format' }); return res.status(400).json({ error: 'Paste the key from console.x.ai (it starts with xai-)' }); }
         const model = String(body.model || 'grok-4.3').replace(/[^\w.\-]/g, '').slice(0, 40);
-        try { await xaiChat(k, model, 'Reply with the word ready.', 5); } catch (e) { await mark('connect_failed', { reason: /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'xai_other' }); return res.status(400).json({ error: e.message + '. Check the key and that your xAI account has credits.' }); }
+        try { await xaiChat(k, model, 'Reply with the word ready.', 5); } catch (e) { await mark('connect_failed', { reason: /recognise/.test(e.message) ? 'bad_key_format' : /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'xai_other' }); return res.status(400).json({ error: e.message + '. Check the key and that your xAI account has credits.' }); }
         if (body.check) return res.json({ ok: true });
         const c = await createAgent(name, String(body.role || '').trim() || 'Grok employee', 'grok', false, { preset, hosted: true, model });
         await r(['SET', 'fm:secret:' + c.agent.id, enc(k)]);
