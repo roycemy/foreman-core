@@ -678,12 +678,13 @@ $("#addb").onclick=openConnect;
 /* Scout: the live demo agent. It calls the gateway with its own key, on Foreman's server. */
 let SC=localStorage.getItem("fm_scout")!=="0",scBusy=false;
 const sb=document.createElement("button");sb.className="btn";sb.id="scoutb";$("#addb").before(sb);
-function scLabel(){sb.textContent=SC?"Scout: running":"Scout: stopped";sb.className="btn"+(SC?" grn":"")}scLabel();
+let scIdle=0;document.addEventListener("click",()=>{if(scIdle>=40){scIdle=0;scLabel()}else scIdle=0},true);
+function scLabel(){sb.textContent=SC?(scIdle>=40?"Scout: resting (click to wake)":"Scout: running"):"Scout: stopped";sb.className="btn"+(SC?" grn":"")}scLabel();
 sb.onclick=()=>{SC=!SC;localStorage.setItem("fm_scout",SC?"1":"0");scLabel()};
-setInterval(async()=>{if(!SC||scBusy||document.hidden)return;scBusy=true;try{await api("/api/demo/scout/tick","POST");await sync()}catch(e){}scBusy=false},4500);
+setInterval(async()=>{if(!SC||scBusy||document.hidden||scIdle>=40){if(scIdle===40){scIdle++;scLabel()}return}scIdle++;scBusy=true;try{await api("/api/demo/scout/tick","POST");await sync()}catch(e){}scBusy=false},9000);
 const st0=document.createElement("style");st0.textContent="#goalbar,#recap{display:none!important}";document.head.appendChild(st0);
 route=function(){const v=(location.hash.slice(1)||"office");const k=["office","approvals","receipts","stubs","policies"].includes(v)?v:"office";document.querySelectorAll(".view").forEach(e=>e.classList.toggle("on",e.id==="v-"+k));document.querySelectorAll("nav a").forEach(a=>a.classList.toggle("on",a.dataset.v===k));render()};
-setLayout();buildFloor();route();sync();setInterval(sync,1800);$("#emer2").onclick=()=>$("#emer").click();
+setLayout();buildFloor();route();sync();setInterval(()=>{if(!document.hidden)sync()},3500);$("#emer2").onclick=()=>$("#emer").click();
 window.addEventListener("resize",()=>{if((innerWidth<760)!==MOB){setLayout();buildFloor();agents.forEach(a=>{const p=homeOf(a);setPos(a,p[0],p[1],0);a._pos="home"});render()}});
 
 </script></body></html>
