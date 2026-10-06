@@ -1,0 +1,36 @@
+// End-to-end proof of the control loop against a live Foreman URL.
+const B = process.argv[2] || 'http://localhost:3999';
+const j = async (p, m = 'GET', b, key) => { const r = await fetch(B + p, { method: m, headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}) }, body: b ? JSON.stringify(b) : undefined }); return { http: r.status, ...(await r.json()) }; };
+const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
+(async () => {
+  const { agent, key } = await j('/api/agents', 'POST', { name: 'E2E-' + Date.now() % 10000, role: 'proof' });
+  console.log('agent', agent.id);
+  let r = await j('/api/gateway/act', 'POST', { action: 'web.fetch', params: { url: 'https://api.github.com/zen' } }, key);
+  ok(r.http === 200 && r.status === 'completed', 'AUTO action executes: ' + JSON.stringify(r.result).slice(0, 80));
+  r = await j('/api/gateway/act', 'POST', { action: 'notes.write', params: { title: 'proof', text: 'hello' } }, key);
+  ok(r.http === 202 && r.status === 'pending', 'ASK action is paused (202 pending)');
+  const rid = r.request_id;
+  let st = await j('/api/state'); const notesBefore = st.notes.filter(n => n.by === agent.id).length;
+  ok(notesBefore === 0, 'nothing was executed while pending');
+  const a = await j('/api/requests/' + rid + '/approve', 'POST');
+  ok(a.request.status === 'executed' && a.receipt.outcome === 'completed', 'owner approval executes the action and yields a receipt ' + a.receipt.id);
+  st = await j('/api/state'); ok(st.notes.filter(n => n.by === agent.id).length === 1, 'the write really happened after approval');
+  r = await j('/api/gateway/act', 'POST', { action: 'notes.delete', params: {} }, key);
+  ok(r.http === 403 && r.code === 'never', 'NEVER action blocked');
+  await j('/api/agents/' + agent.id + '/limits', 'POST', { perActionCents: 0, dailyCents: 50 });
+  r = await j('/api/gateway/act', 'POST', { action: 'web.fetch', params: { url: 'https://api.github.com/zen' } }, key);
+  ok(r.http === 403 && r.code === 'limit_action', 'per-action limit enforced');
+  await j('/api/agents/' + agent.id + '/limits', 'POST', { perActionCents: 10, dailyCents: 2 });
+  r = await j('/api/gateway/act', 'POST', { action: 'web.fetch', params: { url: 'https://api.github.com/zen' } }, key);
+  ok(r.http === 403 && r.code === 'limit_daily', 'daily budget enforced (already spent ' + 3 + 'c)');
+  await j('/api/agents/' + agent.id + '/limits', 'POST', { perActionCents: 10, dailyCents: 500 });
+  r = await j('/api/gateway/act', 'POST', { action: 'notes.write', params: { title: 'x', text: 'y' } }, key); const p2 = r.request_id;
+  await j('/api/agents/' + agent.id + '/revoke', 'POST');
+  const d = await j('/api/requests/' + p2 + '/approve', 'POST');
+  ok(d.request.status === 'blocked', 'pending request cannot be approved after revoke');
+  r = await j('/api/gateway/act', 'POST', { action: 'web.fetch', params: { url: 'https://api.github.com/zen' } }, key);
+  ok(r.http === 403 && r.code === 'revoked', 'AFTER REVOKE the same AUTO action is blocked');
+  st = await j('/api/state'); const rc = st.receipts.filter(x => x.agentId === agent.id);
+  console.log('receipts:', rc.map(x => x.outcome).reverse().join(','));
+  ok((await j('/api/gateway/act', 'POST', {action:'web.fetch',params:{url:'https://x.com'}}, 'fmk_bogus')).http === 401, 'bad key rejected');
+})();
