@@ -28,6 +28,13 @@ async function grok(prompt) {
       await ev('TOOL_USED', 'Calling Grok (' + MODEL + ')', t.id);
       const out = await grok('Task: ' + t.title + '\nBrief: ' + t.brief + (t.context ? '\nContext from previous agent (via Foreman):\n' + t.context : ''));
       await fm('/gateway/tasks/' + t.id + '/complete', 'POST', { result: out });
+      // External action through Foreman's gate (notes.write is ASK by default): pause until the owner decides.
+      const a = await fm('/gateway/act', 'POST', { action: 'notes.write', params: { title: 'Grok result: ' + t.title.slice(0, 60), text: out.slice(0, 1500) } });
+      console.log('act', a.status, a.body.status);
+      if (a.status === 202 && a.body.request_id) {
+        const until = Date.now() + 170000;
+        while (Date.now() < until) { await new Promise(r => setTimeout(r, 5000)); const q = await fm('/gateway/requests/' + a.body.request_id); const st = q.body.status; if (st && st !== 'pending') { console.log('request resolved:', st); break; } }
+      }
     } catch (e) { await fm('/gateway/tasks/' + t.id + '/complete', 'POST', { status: 'failed', result: String(e.message).slice(0, 500) }); }
   }
 })();
