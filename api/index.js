@@ -21,6 +21,7 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
+    case 'EVAL': { const [script,n,key,expected,replacement]=[k,...a]; if(script!==AGENT_CAS || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'SET': if(a.includes('NX')&&mem.kv.has(k))return null;mem.kv.set(k, a[0]); return 'OK';
@@ -40,6 +41,18 @@ const CACHES = new Map(); let SEEDED = false;
 const bust = () => { CACHES.delete(wsId()); };
 const getJ = async k => { const v = await r(['GET', k]); return v ? JSON.parse(v) : null; };
 const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
+// Policy JSON is authoritative; heartbeats never rewrite it.
+const AGENT_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2]); return 1";
+async function updateAgent(id, patch) {
+  const key='fm:agent:'+id;
+  for(let attempt=0;attempt<8;attempt++){
+    const raw=await r(['GET',key]);if(!raw)return null;
+    const a=JSON.parse(raw);patch(a);a.policyRevision=(Number(a.policyRevision)||0)+1;
+    const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(a)]);
+    if(won===1){bust();return a;}if(won===-1)return null;
+  }
+  throw new Error('Concurrent policy update; retry');
+}
 const now = () => new Date().toISOString();
 const rid = p => p + '_' + crypto.randomBytes(5).toString('hex');
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -115,8 +128,8 @@ async function chatTask(agent, body) {
   return {status:200,body:{task:t}};
 }
 async function touchAgent(agent) {
-  const live = await getJ('fm:agent:' + agent.id);if(!live || live.status !== 'active')return;
-  live.lastSeen=now();await setJ('fm:agent:' + agent.id,live);bust();
+  const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active')return;
+  await r(['SET','fm:seen:'+agent.id,now()]);bust();
 }
 async function taskForAgent(agent,id) {
   const t=await getJ('fm:task:' + id);if(!t)return null;
@@ -140,7 +153,7 @@ async function completeTask(agent, id, body) { const t = await getJ('fm:task:' +
   if(t.parentId){const p=await getJ('fm:task:' + t.parentId);if(p&&p.assignee)await event(p.assignee,'result_returned','Delegate '+(failed?'failed: ':'result ready: ')+t.title,{kind:'WAITING',taskId:p.id,childTaskId:t.id,fromAgentId:agent.id});}
   return { status: 200, body: { task: t } }; }
 async function reportEvent(agent, body, source) { const kind = normKind(body.kind || body.type || body.status || body.event); if (!kind) return { status: 400, body: { error: 'unrecognized event kind', allowed: KINDS } };
-  if (!agent.lastSeen || Date.now() - Date.parse(agent.lastSeen) > 15000) { agent.lastSeen = now(); await setJ('fm:agent:' + agent.id, agent); }
+  await touchAgent(agent);
   if (agent.status !== 'active') { await event(agent.id, 'blocked', 'Blocked event report: access revoked', { kind: 'BLOCKED' }); return { status: 403, body: { status: 'blocked', reason: 'Access revoked by owner' } }; }
   if (body.task_id) {const t=await getJ('fm:task:' + body.task_id);if(!t || t.assignee!==agent.id)return {status:404,body:{error:'Task not found or not yours'}};}
   const text = String(body.text || body.message || body.summary || kind).slice(0, 200);
@@ -257,7 +270,7 @@ async function handleAuth(req, res, path, body) {
 }
 
 // ---------- core ----------
-async function listAgents() { const ids = await r(['SMEMBERS', 'fm:agents']); if (!ids.length) return []; const vs = await r(['MGET', ...ids.map(i => 'fm:agent:' + i)]); return vs.filter(Boolean).map(v => JSON.parse(v)).sort((x, y) => x.createdAt < y.createdAt ? -1 : 1); }
+async function listAgents() { const ids = await r(['SMEMBERS', 'fm:agents']); if (!ids.length) return []; const vs = await r(['MGET', ...ids.map(i => 'fm:agent:' + i)]), seen=await r(['MGET',...ids.map(i=>'fm:seen:'+i)]); return vs.map((v,i)=>{if(!v)return null;const a=JSON.parse(v);if(seen[i] && (!a.lastSeen || seen[i]>a.lastSeen))a.lastSeen=seen[i];return a;}).filter(Boolean).sort((x, y) => x.createdAt < y.createdAt ? -1 : 1); }
 // Universal Foreman event model. Every provider's activity is normalized into one of these kinds.
 const KINDS = ['INTERACTION','TASK_STARTED','TOOL_USED','ACTION_REQUESTED','WAITING','HANDOFF','COMPLETED','FAILED','NEEDS_APPROVAL','BLOCKED'];
 const KIND_OF = { attempt:'ACTION_REQUESTED', pending:'NEEDS_APPROVAL', completed:'COMPLETED', failed:'FAILED', blocked:'BLOCKED', revoked:'BLOCKED', denied:'BLOCKED', handoff:'HANDOFF' };
@@ -318,7 +331,7 @@ async function authAgent(req) {
 
 async function gatewayAct(agent, body) {
   const action = body.action, params = body.params || {};
-  if (!agent.lastSeen || Date.now() - Date.parse(agent.lastSeen) > 20000) { agent.lastSeen = now(); await setJ('fm:agent:' + agent.id, agent); }
+  await touchAgent(agent);
   const mode = (agent.permissions || {})[action] || DEFAULT_PERMS[action] || 'NEVER';
   await event(agent.id, 'attempt', `Attempted ${action} (${mode})`, { action });
   const blocked = await policy(agent, action, mode);
@@ -412,9 +425,9 @@ async function scoutTick(origin) {
   return { step, scout: { n: st.n, pending: st.pending } };
 }
 async function seed() {
-  if (SEEDED) return; if (await r(['GET', 'fm:seeded'])) { SEEDED = true; const sid = await r(['GET', 'fm:scout:id']); const sa = sid && await getJ('fm:agent:' + sid); if (sa && !sa.harness) { sa.harness = true; await setJ('fm:agent:' + sid, sa); } return; } SEEDED = true;
+  if (SEEDED) return; if (await r(['GET', 'fm:seeded'])) { SEEDED = true; const sid = await r(['GET', 'fm:scout:id']); const sa = sid && await getJ('fm:agent:' + sid); if (sa && !sa.harness) { await updateAgent(sid,a=>{a.harness=true;}); } return; } SEEDED = true;
   const { agent, key } = await createAgent('Scout', 'Research agent (live)', 'custom', true);
-  agent.provider = 'Foreman live agent'; agent.live = true; await setJ('fm:agent:' + agent.id, agent);
+  await updateAgent(agent.id,a=>{a.provider='Foreman live agent';a.live=true;});
   await r(['SET', 'fm:scout:key', key]); await r(['SET', 'fm:scout:id', agent.id]); await r(['SET', 'fm:seeded', '1']);
 }
 
@@ -508,16 +521,23 @@ async function routes(req, res, path, body, agentPre) {
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
     if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
     if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits)$/)) && req.method === 'POST') {
-      const a = await getJ('fm:agent:' + m[1]); if (!a) return res.status(404).json({ error: 'not found' });
-      if (m[2] === 'revoke') { a.status = 'revoked'; a.revokedAt = now(); await event(a.id, 'revoked', `Owner revoked ${a.name}'s access`); 
+      const op=m[2];
+      if(op==='permissions' && (!ACTIONS[body.action] || !['AUTO','ASK','NEVER'].includes(body.mode)))return res.status(400).json({error:'bad input'});
+      const a=await updateAgent(m[1],a=>{
+        if(op==='revoke'){a.status='revoked';a.revokedAt=now();}
+        if(op==='restore'){a.status='active';delete a.revokedAt;}
+        if(op==='permissions'){a.permissions={...(a.permissions||{}),[body.action]:body.mode};}
+        if(op==='limits'){a.limits={perActionCents:body.perActionCents==null?null:+body.perActionCents,dailyCents:body.dailyCents==null?null:+body.dailyCents};}
+      });if(!a)return res.status(404).json({error:'not found'});
+      if (m[2] === 'revoke') { await event(a.id, 'revoked', `Owner revoked ${a.name}'s access`); 
         // pending requests of this agent are cancelled immediately
         for (const id of await r(['SMEMBERS', 'fm:reqs'])) { const q = await getJ('fm:req:' + id); if (q && q.agentId === a.id && q.status === 'pending') { q.status = 'blocked'; q.reason = 'Access revoked while pending'; q.decidedAt = now(); await finishReq(q); await receipt(a, q.action, q.params, 'blocked', 0, 'BLOCKED: access revoked while request was pending', q.id, { code: 'revoked' }); } } }
-      if (m[2] === 'restore') { a.status = 'active'; delete a.revokedAt; await event(a.id, 'restored', `Owner restored ${a.name}'s access`); }
-      if (m[2] === 'permissions') { if (!ACTIONS[body.action] || !['AUTO', 'ASK', 'NEVER'].includes(body.mode)) return res.status(400).json({ error: 'bad input' }); a.permissions[body.action] = body.mode; await event(a.id, 'permission', `${body.action} set to ${body.mode}`); }
-      if (m[2] === 'limits') { a.limits = { perActionCents: body.perActionCents == null ? null : +body.perActionCents, dailyCents: body.dailyCents == null ? null : +body.dailyCents }; await event(a.id, 'limits', `Limits set: per action ${a.limits.perActionCents}c, daily ${a.limits.dailyCents}c`); }
-      bust(); await setJ('fm:agent:' + a.id, a); return res.json({ agent: a });
+      if (m[2] === 'restore') { await event(a.id, 'restored', `Owner restored ${a.name}'s access`); }
+      if (m[2] === 'permissions') { await event(a.id, 'permission', `${body.action} set to ${body.mode}`); }
+      if (m[2] === 'limits') { await event(a.id, 'limits', `Limits set: per action ${a.limits.perActionCents}c, daily ${a.limits.dailyCents}c`); }
+      return res.json({ agent: a });
     }
-    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); a.status = 'revoked'; await setJ('fm:agent:' + a.id, a); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
+    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
     if (path === '/kill' && req.method === 'POST') { bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
     // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
     if (path === '/connect' && req.method === 'POST') {
