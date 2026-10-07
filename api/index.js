@@ -551,7 +551,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
     if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits|room)$/)) && req.method === 'POST') {
       const op=m[2];
-      const rooms={ops:'Ops Hub',sales:'Sales Studio',marketing:'Creative Studio',finance:'Finance',support:'Support Desk'};
+      const rooms={ops:'Execution Center',sales:'Outreach Center',marketing:'Creative / Marketing',finance:'Research Center',support:'Outreach Center',lounge:'Lounge'};
       if(op==='room' && !Object.prototype.hasOwnProperty.call(rooms,body.room))return res.status(400).json({error:'Choose a valid room'});
       if(op==='permissions' && (!ACTIONS[body.action] || !['AUTO','ASK','NEVER'].includes(body.mode)))return res.status(400).json({error:'bad input'});
       const a=await updateAgent(m[1],a=>{
