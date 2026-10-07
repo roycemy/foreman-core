@@ -362,13 +362,13 @@ async function walk(a,x,y){
  if(Math.abs(a.x-x)+Math.abs(a.y-y)<.5)return;
  const farAcross=Math.abs(a.x-x)>24,changingSide=(a.y<44&&y>56)||(a.y>56&&y<44),points=[];
  /* Long trips use the shared central walkway, so employees circulate through one office. */
- if(farAcross||changingSide){
+ if(!MOB&&(farAcross||changingSide)){
   const hallY=50.5;
   if(Math.abs(a.y-hallY)>3)points.push([a.x,hallY]);
   if(Math.abs(x-a.x)>3)points.push([x,hallY])
  }
  points.push([x,y]);a.el.classList.add("walk");
- for(const p of points){if(a.lock||a.killed||G.paused)break;await walkStep(a,p[0],p[1])}
+ for(const p of points){await walkStep(a,p[0],p[1])}
  a.el.classList.remove("walk")
 }
 const goHome=a=>{const [x,y]=homeOf(a);return walk(a,x,y)};
@@ -754,7 +754,7 @@ route=function(){const v=(location.hash.slice(1)||"office");const k=["office","w
 const _render=render;render=function(){_render();if((location.hash.slice(1)||"office")==="work")vWork()};
 function vWork(){const el=$("#v-work");if(!el.dataset.init){el.dataset.init="1";el.innerHTML=`<h3>Work</h3><div class="sum" style="margin-bottom:12px">Give your AI employees work here. Each task shows who did it and what came back. Employees can also pass work to each other.</div><form id="tf" style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap"><input id="tt" placeholder="New task for the team" style="flex:1;min-width:200px;padding:9px"><select id="ta" style="padding:9px"></select><button class="btn pri" type="submit">Add task</button></form><div id="tl"></div>`;
   $("#tf").onsubmit=async e=>{e.preventDefault();const t=$("#tt").value.trim();if(!t)return;await api("/api/tasks","POST",{title:t,assignee:$("#ta").value||null});$("#tt").value="";toast("Task added to the work bus");await sync()}}
- const sel=$("#ta"),cur=sel.value;sel.innerHTML=`<option value="">Any available agent</option>`+agents.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");sel.value=cur;
+ const sel=$("#ta"),cur=sel.value;sel.innerHTML=`<option value="">Unassigned (waits for an agent to claim)</option>`+agents.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");sel.value=cur;
  const nm=id=>(byId[id]&&byId[id].name)||"Owner";const ts=(LS&&LS.tasks)||[];const col={queued:"#64748b",running:"#2563eb",done:"#16a34a",failed:"#dc2626"};
  $("#tl").innerHTML=ts.map(t=>`<div class="card" style="margin-bottom:8px"><div style="display:flex;gap:8px;align-items:center"><span style="font:600 10px system-ui;color:${col[t.status]};border:1px solid ${col[t.status]};border-radius:6px;padding:1px 6px;text-transform:uppercase">${t.status}</span><b>${esc(t.title)}</b><span class="sum" style="margin-left:auto">${t.assignee?esc(nm(t.assignee)):"unassigned"} \u00B7 ${ft(t.createdAt)}</span></div>${t.parentId?`<div class="sum" style="margin-top:4px">\u21B3 handed over by ${esc(nm(t.createdBy))} with context</div>`:""}${t.context?`<div class="sum" style="margin-top:4px">Context: ${esc(t.context.slice(0,240))}</div>`:""}${t.result?`<div style="margin-top:4px;font-size:12.5px">Result: ${esc(t.result.slice(0,400))}</div>`:""}</div>`).join("")||`<div class="card">No tasks yet.</div>`}
 const _vr=vReceipts;vReceipts=function(){_vr();const evs=((LS&&LS.events)||[]).filter(e=>e.kind).slice(0,14);const nm=id=>(byId[id]&&byId[id].name)||"Foreman";
@@ -1104,7 +1104,7 @@ main{background:#e9edee}
 </style>
 <script>
 /* Keep the shell intentionally small; the office remains the primary workspace. */
-document.querySelector('#nav [data-v="work"]')?.remove();
+/* Keep the existing Work view accessible for task status and explicit assignment. */
 const liveCommand=document.getElementById("gf");
 if(liveCommand)liveCommand.onsubmit=async e=>{
  e.preventDefault();
@@ -1115,13 +1115,13 @@ if(liveCommand)liveCommand.onsubmit=async e=>{
  try{
   const result=await api("/api/tasks","POST",{title,assignee:null});
   if(result&&result.error)throw new Error(result.error);
-  input.value="";toast("Task added — Foreman will route it to the team.");
+  input.value="";toast("Task queued, unassigned. Choose an employee in Work for direct assignment.");
   if(typeof sync==="function")await sync();
  }catch(err){toast("Could not assign that task. Please try again.")}
- finally{input.disabled=false;button.disabled=false;button.textContent="Assign";input.focus()}
+ finally{input.disabled=false;button.disabled=false;button.textContent="Queue";input.focus()}
 };
 const commandButton=liveCommand&&liveCommand.querySelector("button");
-if(commandButton)commandButton.textContent="Assign";
+if(commandButton)commandButton.textContent="Queue";
 </script>
 <style id="v17-gather-reference">
 /* Reference direction: Gather's continuous top-down office, rendered as a polished workplace. */
@@ -1246,10 +1246,10 @@ main,#v-office{background:#f2f3f1}
 .r-ops .team-board::before{content:"SPRINT BOARD";color:#6d68a2}
 .r-ops .team-board{background:linear-gradient(90deg,#f8faf7 0 31%,#d8deea 32% 34%,#f8faf7 35% 65%,#d8deea 66% 68%,#f8faf7 69%)}
 .r-ops .team-board::after{background:#a69bd0;box-shadow:18px 5px 0 #7aa8ae,38px 0 0 #d4ad63,58px 5px 0 #8eb17c}
-.r-finance .team-board::before{content:"LIVE METRICS";color:#8d753d}
+.r-finance .team-board::before{content:"METRICS BOARD";color:#8d753d}
 .r-finance .team-board{width:36%;height:12%;background:linear-gradient(180deg,#24343c,#18252b);border-color:#75858a}
 .r-finance .team-board::after{top:61%;left:8%;right:8%;height:2px;background:linear-gradient(90deg,#70b68e 0 16%,transparent 17% 21%,#d8b65b 22% 39%,transparent 40% 44%,#75a7c1 45% 68%,transparent 69% 73%,#cb7771 74%) ;box-shadow:0 -5px 0 -1px rgba(255,255,255,.17)}
-.r-support .team-board::before{content:"CALL QUEUE";color:#4f8b69}
+.r-support .team-board::before{content:"SUPPORT";color:#4f8b69}
 .r-support .team-board{width:35%;height:12%;background:linear-gradient(180deg,#183d3a 0 32%,#21504b 33% 100%);border-color:#72958d}
 .r-support .team-board::after{left:9%;right:9%;top:29%;height:4px;background:#6fd49c;box-shadow:0 7px 0 #e9bc63}
 .team-shelf{position:absolute;left:4%;top:27%;width:17%;height:7%;border-radius:2px;background:#b9946d;box-shadow:0 3px 0 #8f6c4d,5px -6px 0 -3px #8c9dae,12px -8px 0 -3px #d28d72,20px -5px 0 -3px #d8b85f}
@@ -1264,7 +1264,7 @@ main,#v-office{background:#f2f3f1}
 .r-marketing .team-tool{left:7%;bottom:7%;width:19px;height:18px;border-radius:50% 50% 45% 45%;background:#e7ab62;box-shadow:17px 2px 0 #a78ac2}
 .r-ops .team-shelf{background:#7e8792;box-shadow:0 3px 0 #59636f,5px -6px 0 -3px #9da9b2,12px -8px 0 -3px #5f7182,20px -5px 0 -3px #c7a965}
 .r-ops .team-feature{left:42%;top:53%;width:19%;height:12%;border-radius:4px;background:linear-gradient(90deg,#475462 0 31%,#667787 32% 65%,#475462 66%);box-shadow:0 4px 6px rgba(35,45,55,.22)}
-.r-ops .team-feature::after{content:"LIVE";position:absolute;right:3px;top:3px;font-size:5px;font-style:normal;font-weight:900;color:#7ce4aa}
+.r-ops .team-feature::after{content:"OPS";position:absolute;right:3px;top:3px;font-size:5px;font-style:normal;font-weight:900;color:#7ce4aa}
 .r-ops .team-tool{left:7%;bottom:7%;width:8px;height:25px;background:#718290;box-shadow:5px 0 0 #536370,10px 0 0 #8999a4}
 .r-finance .team-shelf{width:19%;background:#8b6d51;box-shadow:0 3px 0 #614a38,5px -7px 0 -3px #576979,12px -9px 0 -3px #496c58,19px -6px 0 -3px #a17a48}
 .r-finance .team-feature{left:42%;top:52%;width:18%;height:15%;border-radius:3px;background:repeating-linear-gradient(0deg,#fbf8ed 0 3px,#d9dfd2 4px 5px);transform:rotate(-3deg);box-shadow:3px 3px 0 #c4bcae,6px 6px 0 #e8e2d6}
@@ -1274,7 +1274,7 @@ main,#v-office{background:#f2f3f1}
 .r-support .team-feature{left:43%;top:52%;width:16%;height:15%;border-radius:50%;border:4px solid #4f8874;border-bottom-color:transparent;background:transparent}
 .r-support .team-feature::after{content:"";position:absolute;right:-5px;bottom:-2px;width:7px;height:10px;border-radius:3px;background:#4f8874}
 .r-support .team-tool{left:6%;bottom:7%;width:28px;height:17px;border-radius:3px;background:#315b58;box-shadow:0 3px 0 #244541}
-.r-support .team-tool::after{content:"ON CALL";position:absolute;inset:0;display:grid;place-items:center;font-size:4px;font-style:normal;font-weight:900;letter-spacing:.06em;color:#8ee2b2}
+.r-support .team-tool::after{content:"HELP DESK";position:absolute;inset:0;display:grid;place-items:center;font-size:4px;font-style:normal;font-weight:900;letter-spacing:.06em;color:#8ee2b2}
 .zone-note{position:absolute;left:50%;bottom:4%;transform:translateX(-50%);font-size:5.5px;font-weight:800;letter-spacing:.12em;color:color-mix(in srgb,var(--zone) 65%,#55605d);white-space:nowrap}
 .r-sales .zone-note::after{content:"PITCH · DEMO · CLOSE"}.r-marketing .zone-note::after{content:"CREATE · REVIEW · PUBLISH"}
 .r-ops .zone-note::after{content:"PLAN · SHIP · MONITOR"}.r-finance .zone-note::after{content:"FORECAST · MODEL · REPORT"}.r-support .zone-note::after{content:"LISTEN · SOLVE · FOLLOW UP"}
@@ -1454,11 +1454,40 @@ nav{background:#edf4fb;border-color:#dae7f3}.btn.pri{background:linear-gradient(
 .ch .tag2{background:rgba(255,255,255,.97);border-color:#d8e5ef;box-shadow:0 8px 20px -11px rgba(24,58,83,.48);backdrop-filter:blur(12px) saturate(1.2)}
 .ch:hover .tag2,.ch.sel .tag2{transform:translateX(-50%) translateY(-2px);box-shadow:0 0 0 2px #fff,0 10px 24px -9px var(--col)}
 @keyframes live-signal{50%{filter:brightness(1.25);opacity:.72}}
-.r-finance .team-board::after,.r-support .team-board::after,.r-ops .team-feature::after{animation:live-signal 1.8s ease-in-out infinite}
+.r-finance .team-board::after,.r-support .team-board::after,.r-ops .team-feature::after{animation:none}
 @media(prefers-reduced-motion:reduce){.r-finance .team-board::after,.r-support .team-board::after,.r-ops .team-feature::after{animation:none}}
 @media(max-width:760px){
  .floor{background:linear-gradient(150deg,#fff,#edf7ff)!important}
  .room .zone-rug{opacity:1}.team-board{box-shadow:0 4px 8px rgba(31,68,93,.14)}
+}
+</style>
+
+<style id="hq-regression-fixes">
+/* Preserve the owner's office artwork. Restore state cues and fit on narrow screens. */
+.desk.working::before{background:linear-gradient(145deg,#75d5ed,#4b8ee8)!important;box-shadow:0 0 0 2px #d9e2e8,0 0 16px #4299e57a!important}
+.desk.needs::before{background:linear-gradient(145deg,#ffd77d,#e99b32)!important;box-shadow:0 0 0 2px #f8ead2,0 0 16px #e89f3180!important}
+.desk.blocked::before,.desk.revoked::before{background:linear-gradient(145deg,#f58b8f,#d24b55)!important;box-shadow:0 0 0 2px #f5dbdd,0 0 15px #cd475061!important}
+.desk.paused::before{background:linear-gradient(145deg,#69798c,#344255)!important;box-shadow:0 4px 6px #1c273433!important}
+.desk.idle::before,.desk.empty::before{background:linear-gradient(145deg,#34475a,#1c2a3a)!important;box-shadow:0 4px 6px #1c273433!important}
+.ch .bub{display:none!important;max-width:180px}
+.ch.bub-on .bub,.ch.needs .bub,.ch.blocked .bub{display:block!important;bottom:calc(100% + 74px);z-index:7}
+#goalbar{min-width:0;gap:8px}#gf{min-width:0}#gi{min-width:0}
+@media(max-width:760px){
+ html,body{max-width:100%;overflow-x:hidden}
+ #goalbar{padding:7px 8px;flex-wrap:wrap;gap:6px;min-width:0}
+ #gf{width:100%;max-width:none;flex:1 1 100%;min-width:0;gap:6px}
+ #gi{width:0;flex:1 1 0;min-width:0;font-size:12px}
+ #gf .btn{flex:none;padding:8px 12px}
+ #goalbar .mobemer{margin-left:auto;font-size:10px}
+ #goalst{max-width:100%;white-space:normal}
+ .ch .tag2{bottom:auto;top:4px;min-width:82px;max-width:100px}
+ .ch.needs .tag2{top:auto;bottom:calc(100% + 5px)}
+ .ch.bub-on .bub,.ch.needs .bub,.ch.blocked .bub{bottom:calc(100% + 42px);max-width:110px;font-size:8px}
+ #v-work #tt{min-width:0!important;flex:1 1 100%!important;width:100%}
+ #v-work #ta{max-width:100%;min-width:0}
+ #v-work .card>div{flex-wrap:wrap}
+ #v-work .sum{white-space:normal;overflow-wrap:anywhere}
+ nav{max-width:100%;margin-left:0}nav a{padding-left:9px;padding-right:9px}
 }
 </style>
 </body></html>
