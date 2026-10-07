@@ -641,7 +641,25 @@ function applyState(s){LS=s;const sig=s.agents.map(a=>a.id).join(",");if(sig!==S
  drawDesks();render()}
 async function sync(){try{applyState(await api("/api/state"))}catch(e){$("#sum").innerHTML='<span style="color:var(--red)">Backend unreachable - retrying</span>'}}
 /* owner actions -> real backend */
-resolveReq=async function(id,d){const r=G.approvals.find(x=>x.id===id);if(!r)return;toast(d==="deny"?"Denied. "+r.a.name+" stays blocked on that action.":"Approved. Running the action now.");await api("/api/requests/"+r.reqId+"/"+(d==="deny"?"deny":"approve"),"POST");await sync()};
+function approvalOutcome(j){
+ const q=j&&j.request,st=q&&q.status;
+ if(st==="executed"&&j.receipt&&j.receipt.outcome==="completed")return "Action completed. Receipt created.";
+ if(st==="denied")return "Denied. The action was not run.";
+ if(st==="blocked")return "Action blocked: "+(q.reason||"permission or limit changed");
+ if(st==="expired")return "Approval expired. The action was not run.";
+ if(st==="failed")return "Action failed: "+(q.reason||(q.result&&q.result.error)||"see Activity for details");
+ if(st==="approved"||st==="executing")return "Approval recorded. Execution is not confirmed yet.";
+ if(j&&j.error)return "Could not confirm the action: "+j.error;
+ return "Action outcome is not confirmed. Check Activity before trying again.";
+}
+async function submitDecision(reqId,d){
+ if(submitDecision.busy&&submitDecision.busy.has(reqId))return;
+ submitDecision.busy=submitDecision.busy||new Set();submitDecision.busy.add(reqId);
+ try{const j=await api("/api/requests/"+reqId+"/"+(d==="deny"?"deny":"approve"),"POST");toast(approvalOutcome(j));return j}
+ catch(e){toast("Decision could not be confirmed. Check Activity before trying again.");return null}
+ finally{submitDecision.busy.delete(reqId);await sync()}
+}
+resolveReq=async function(id,d){const r=G.approvals.find(x=>x.id===id);if(r)return submitDecision(r.reqId,d)};
 setPol=async function(id,k,l){await api("/api/agents/"+id+"/permissions","POST",{action:k,mode:l});await sync()};
 setPerm=async function(id,k,l){await setPol(id,k,l)};
 window.setPol=setPol;window.setPerm=setPerm;
@@ -860,13 +878,15 @@ function paintFT(){if(!FT)return;const p=panel();const S=(LS&&LS.tasks)||[];cons
  else{h+=step("ok","First task done")+`<div class="res">${esc(t.result||"")}</div>`;
   if(pend.length&&!FT.shown){FT.shown=1;trk("approval_shown")}
   if(pend.length){h+=`<div style="margin-top:8px;font-weight:600">It wants to save this as a note. Your permission setting says to ask you.</div><div style="display:flex;gap:6px;margin-top:6px"><button class="btn pri" id="fta">Approve</button><button class="btn" id="ftd">Deny</button></div>`}
-  else if(done)h+=step(done.status==="denied"?"bad":"ok",done.status==="denied"?"Note not saved (you denied it)":"Note saved. A receipt was created.");
+  else if(done){const saved=done.status==="executed"&&((LS&&LS.receipts)||[]).some(r=>r.id===done.receiptId&&r.requestId===done.id&&r.action==="notes.write"&&r.outcome==="completed");
+   const label=saved?"Note saved. A receipt was created.":done.status==="denied"?"Note not saved (you denied it)":done.status==="blocked"?"Note blocked. It was not saved.":done.status==="failed"?"Saving the note failed. Check Activity for details.":done.status==="expired"?"Approval expired. The note was not saved.":"Note save is not confirmed. Check Activity before trying again.";
+   h+=step(saved?"ok":"bad",label);}
   if(!pend.length&&(done||!FT.hosted))h+=`<div style="margin-top:10px;padding-top:8px;border-top:1px solid #e2e8f0"><div style="font-weight:600;margin-bottom:4px">What next</div><div style="display:block;font-size:12.5px;line-height:1.7;color:#475569"><div><a href="#receipts" class="ftr">See the receipt</a> of what it did</div><div><a href="#policies">Change what it may do</a></div><div>To turn it off, click it in HQ and choose Revoke access</div><div><a href="#work">Give it another task</a></div></div></div>`}
  p.innerHTML=h;
  const X=A("ftx");if(X)X.onclick=()=>{clearInterval(FT.iv);p.remove();FT=null};
  const C=A("ftc");if(C)C.onclick=()=>{A("ftm").select();try{navigator.clipboard.writeText(A("ftm").value)}catch(e){document.execCommand("copy")}toast("Copied")};
- const ap=A("fta");if(ap)ap.onclick=async()=>{ap.disabled=true;await api("/api/requests/"+pend[0].id+"/approve","POST");await sync();paintFT()};
- const dn=A("ftd");if(dn)dn.onclick=async()=>{dn.disabled=true;await api("/api/requests/"+pend[0].id+"/deny","POST");await sync();paintFT()};
+ const ap=A("fta");if(ap)ap.onclick=async()=>{ap.disabled=true;await submitDecision(pend[0].id,"approve");paintFT()};
+ const dn=A("ftd");if(dn)dn.onclick=async()=>{dn.disabled=true;await submitDecision(pend[0].id,"deny");paintFT()};
  if(t&&(t.status==="done"||t.status==="failed")&&!pend.length&&(done||t.status==="failed"||!FT.hosted)&&!FT.fin){FT.fin=1;clearInterval(FT.iv)}}
 
 document.addEventListener("click",e=>{const a=e.target.closest&&e.target.closest("a.ftr");if(!a||!FT)return;const rs=(LS&&LS.receipts)||[];const q=((LS&&LS.requests)||[]).find(x=>x.agentId===FT.ag&&x.action==="notes.write");const r=(q&&rs.find(x=>x.requestId===q.id))||rs.find(x=>x.agentId===FT.ag);window.__hl=r?{id:r.id,until:Date.now()+12000,scrolled:false}:null;setTimeout(hlRcpt,200)});
