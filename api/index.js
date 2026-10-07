@@ -120,7 +120,7 @@ const PROVIDERS = [
   { id: 'custom', name: 'Custom agent', tier: 'verified', how: 'HTTP gateway', note: 'Any agent that can make HTTPS calls. Same adapter Instinct uses.' },
   { id: 'mcp', name: 'API / MCP agent', tier: 'verified', how: 'MCP server (JSON-RPC over HTTPS) or REST', note: 'Foreman exposes /api/mcp. MCP-capable agents get gated tools.' },
   { id: 'grok', name: 'Grok / Grok bots', tier: 'verified', how: 'xAI API worker (HTTP gateway)', note: 'Proven live: a real Grok worker (xAI API, grok-4.3) received a handed-off task through the work bus, did the work, and was gated by ASK on its write.' },
-  { id: 'muse', name: 'Muse', tier: 'waiting', how: 'Waiting on provider access', note: 'No public agent API verified for Muse yet. It can join through the generic adapter once it can call out. Not faked.' },
+  { id: 'muse', name: 'Meta Muse Spark', tier: 'hosted', how: 'Meta Model API', note: 'Connect with a Meta Model API key. Model-list validation is read-only; tasks use separately billed Meta tokens. No automatic welcome task.' },
 ];
 
 // ---------- v11: secrets, owner accounts, hosted agents ----------
@@ -139,6 +139,18 @@ async function xaiChat(key, model, prompt, maxTokens) {
   if (!res.ok) { const e = new Error(res.status === 401 || res.status === 403 ? 'xAI rejected that key' : (res.status === 402 || res.status === 429) ? 'xAI says this key has no credits or is rate limited' : res.status === 400 ? 'xAI did not recognise that key' : 'xAI error ' + res.status); e.http = res.status; throw e; }
   return String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
 }
+async function museModels(key) {
+  const res = await fetch('https://api.meta.ai/v1/models', { headers: { authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? 'Meta rejected that key or access is unavailable' : res.status === 429 ? 'Meta is rate limiting this key. Try later.' : 'Meta model lookup failed (HTTP ' + res.status + ')');
+  const j = await res.json(); return (Array.isArray(j.data) ? j.data : []).map(m => m.id).filter(id => /^muse-spark-[\w.\-]+$/.test(String(id)));
+}
+async function museChat(key, model, prompt) {
+  const res = await fetch('https://api.meta.ai/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(25000),
+    body: JSON.stringify({ model, max_completion_tokens: 1200, reasoning_effort: 'low', messages: [{ role: 'system', content: 'You are an AI employee working inside Foreman. Use only the context given. Be concise and factual. If context is missing, say so.' }, { role: 'user', content: prompt }] }) });
+  if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? 'Meta rejected this key or model access' : res.status === 402 || res.status === 429 ? 'Meta billing or rate limit prevented this task' : 'Meta task failed (HTTP ' + res.status + ')');
+  const j = await res.json(); const text = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  if (typeof text !== 'string' || !text.trim()) throw new Error('Meta returned no text result'); return text.trim();
+}
 // Hosted agents run inline, the moment work is assigned: no polling, no cron, no tab.
 async function runHosted(agent, t) {
   const live = await getJ('fm:agent:' + agent.id) || agent;
@@ -147,9 +159,10 @@ async function runHosted(agent, t) {
   const stop = live.status !== 'active' ? 'Access revoked by owner' : (await r(['GET', 'fm:kill'])) ? 'Owner kill switch is on' : null;
   if (stop) { t.status = 'failed'; t.result = 'Not run: ' + stop; t.finishedAt = now(); await setJ('fm:task:' + t.id, t); await event(agent.id, 'blocked', 'Blocked task: ' + stop, { kind: 'BLOCKED', taskId: t.id }); return; }
   try {
-    const key = dec(await r(['GET', 'fm:secret:' + agent.id])); const model = live.model || 'grok-4.3';
-    await event(agent.id, 'tool_used', 'Calling Grok (' + model + ')', { kind: 'TOOL_USED', taskId: t.id });
-    const out = await xaiChat(key, model, 'Task: ' + t.title + '\nBrief: ' + t.brief + (t.context ? '\nContext from the previous agent (via Foreman):\n' + t.context : ''));
+    const key = dec(await r(['GET', 'fm:secret:' + agent.id])); const meta = live.providerId === 'muse'; const model = live.model || (meta ? 'muse-spark-1.3' : 'grok-4.3');
+    await event(agent.id, 'tool_used', 'Calling ' + (meta ? 'Muse Spark' : 'Grok') + ' (' + model + ')', { kind: 'TOOL_USED', taskId: t.id });
+    const prompt = 'Task: ' + t.title + '\nBrief: ' + t.brief + (t.context ? '\nContext from the previous agent (via Foreman):\n' + t.context : '');
+    const out = await (meta ? museChat(key, model, prompt) : xaiChat(key, model, prompt));
     t.status = 'done'; t.result = out.slice(0, 4000); t.finishedAt = now(); await setJ('fm:task:' + t.id, t);
     await event(agent.id, 'completed', 'Finished: ' + t.title, { kind: 'COMPLETED', taskId: t.id });
     try { await gatewayAct(live, { action: 'notes.write', params: { title: ('Result: ' + t.title).slice(0, 80), text: out.slice(0, 1500) } }); } catch (e) {}
@@ -470,7 +483,19 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/connect' && req.method === 'POST') {
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
       const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = origin;
-      if (prov === 'muse') return res.status(400).json({ error: 'Muse is coming soon. It cannot be connected yet.' });
+      if (prov === 'muse') {
+        const k = String(body.apiKey || '').trim();
+        if (!/^LLM\|[^\s|]+\|[^\s|]+$/.test(k)) return res.status(400).json({ error: 'Paste your Meta Model API key from dev.meta.ai. It starts with LLM|.' });
+        let models; try { models = await museModels(k); } catch (e) { return res.status(400).json({ error: e.message }); }
+        if (!models.length) return res.status(400).json({ error: 'This Meta account has no available Muse Spark text model. Check model access in the Meta dashboard.' });
+        const requested = String(body.model || '');
+        const model = requested || (models.includes('muse-spark-1.3') ? 'muse-spark-1.3' : models.find(x => !x.includes('contributor')) || models[0]);
+        if (!models.includes(model)) return res.status(400).json({ error: 'That Muse Spark model is not available to this key.' });
+        if (body.check) return res.json({ ok: true, model, validation: 'read-only model list' });
+        const c = await createAgent(name, String(body.role || '').trim() || 'Muse Spark employee', 'muse', false, { preset, hosted: true, model });
+        await r(['SET', 'fm:secret:' + c.agent.id, enc(k)]);
+        await track('connected', { provider: 'muse' }); return res.json({ agent: c.agent, hosted: true, noFirstTask: true });
+      }
       if (prov === 'grok') {
         const k = String(body.apiKey || '').trim(); if (!/^xai-[A-Za-z0-9]{20,}$/.test(k)) { await mark('connect_failed', { reason: 'bad_key_format' }); return res.status(400).json({ error: 'Paste the key from console.x.ai (it starts with xai-)' }); }
         const model = String(body.model || 'grok-4.3').replace(/[^\w.\-]/g, '').slice(0, 40);
