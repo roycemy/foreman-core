@@ -586,7 +586,7 @@ $("#awaygo").onclick=hideAway;$("#away").onclick=e=>{if(e.target.id==="away")hid
 function route(){const v=(location.hash.slice(1)||"office");const k=["office","approvals","receipts","stubs","policies"].includes(v)?v:"office";
  document.querySelectorAll(".view").forEach(e=>e.classList.toggle("on",e.id==="v-"+k));document.querySelectorAll("nav a").forEach(a=>a.classList.toggle("on",a.dataset.v===k));
  $("#goalbar").style.display=k==="office"?"flex":"none";render()}
-window.addEventListener("hashchange",route);
+window.addEventListener("hashchange",()=>route());
 
 /* onboarding */
 
@@ -1105,6 +1105,7 @@ main{background:#e9edee}
 <script>
 /* Keep the shell intentionally small; the office remains the primary workspace. */
 /* Keep the existing Work view accessible for task status and explicit assignment. */
+route();
 const liveCommand=document.getElementById("gf");
 if(liveCommand)liveCommand.onsubmit=async e=>{
  e.preventDefault();
