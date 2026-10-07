@@ -520,10 +520,13 @@ async function routes(req, res, path, body, agentPre) {
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
     if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
-    if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits)$/)) && req.method === 'POST') {
+    if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits|room)$/)) && req.method === 'POST') {
       const op=m[2];
+      const rooms={ops:'Ops Hub',sales:'Sales Studio',marketing:'Creative Studio',finance:'Finance',support:'Support Desk'};
+      if(op==='room' && !Object.prototype.hasOwnProperty.call(rooms,body.room))return res.status(400).json({error:'Choose a valid room'});
       if(op==='permissions' && (!ACTIONS[body.action] || !['AUTO','ASK','NEVER'].includes(body.mode)))return res.status(400).json({error:'bad input'});
       const a=await updateAgent(m[1],a=>{
+        if(op==='room'){a.room=body.room;}
         if(op==='revoke'){a.status='revoked';a.revokedAt=now();}
         if(op==='restore'){a.status='active';delete a.revokedAt;}
         if(op==='permissions'){a.permissions={...(a.permissions||{}),[body.action]:body.mode};}
@@ -535,6 +538,7 @@ async function routes(req, res, path, body, agentPre) {
       if (m[2] === 'restore') { await event(a.id, 'restored', `Owner restored ${a.name}'s access`); }
       if (m[2] === 'permissions') { await event(a.id, 'permission', `${body.action} set to ${body.mode}`); }
       if (m[2] === 'limits') { await event(a.id, 'limits', `Limits set: per action ${a.limits.perActionCents}c, daily ${a.limits.dailyCents}c`); }
+      if(op==='room')await event(a.id,'room_changed','Moved to '+rooms[a.room],{room:a.room});
       return res.json({ agent: a });
     }
     if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
