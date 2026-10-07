@@ -486,7 +486,7 @@ async function routes(req, res, path, body, agentPre) {
       const agent = agentPre;
       if (path === '/gateway/chat-task' && req.method === 'POST') return send(await chatTask(agent,body));
       if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'chat'});return res.json({status:'ok'});}
-      {const tm=path.match(/^\/gateway\/tasks\/(\w+)$/);if(tm&&req.method==='GET'){const t=await taskForAgent(agent,tm[1]);return t?res.json({task:t}):res.status(404).json({error:'not found'});}}
+      {const tm=path.match(/^\/gateway\/tasks\/(\w+)$/);if(tm&&tm[1]!=='next'&&req.method==='GET'){const t=await taskForAgent(agent,tm[1]);return t?res.json({task:t}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/act' && req.method === 'POST') return send(await gatewayAct(agent, body));
       if (path === '/gateway/events' && req.method === 'POST') return send(await reportEvent(agent, body));
       if (path === '/gateway/tasks/next') { if (agent.status !== 'active') { await event(agent.id, 'blocked', 'Blocked task claim: access revoked', { kind: 'BLOCKED' }); return res.status(403).json({ status: 'blocked', reason: 'Access revoked by owner' }); } return res.json({ task: await claimTask(agent) }); }
@@ -524,7 +524,7 @@ async function routes(req, res, path, body, agentPre) {
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
       const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = origin;
       if (prov === 'muse') {
-        const k = String(body.apiKey || '').trim();
+        let k = String(body.apiKey || '').trim().replace(/^MODEL_API_KEY=/i, '').replace(/^Bearer\s+/i, '').trim(); if (k.length > 1 && ((k[0] === '"' && k.endsWith('"')) || (k[0] === "'" && k.endsWith("'")))) k = k.slice(1, -1).trim();
         if (!/^LLM\|[^\s|]+\|[^\s|]+$/.test(k)) return res.status(400).json({ error: 'Paste your Meta Model API key from dev.meta.ai. It starts with LLM|.' });
         let models; try { models = await museModels(k); } catch (e) { return res.status(400).json({ error: e.message }); }
         if (!models.length) return res.status(400).json({ error: 'This Meta account has no available Muse Spark text model. Check model access in the Meta dashboard.' });
