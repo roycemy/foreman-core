@@ -1497,7 +1497,7 @@ nav{background:#edf4fb;border-color:#dae7f3}.btn.pri{background:linear-gradient(
 /* Real-work floor choreography. Visual trips never call a tool or create activity. */
 function stopWorkMotion(a){
  a._motionToken=(a._motionToken||0)+1;a._walkEpoch=(a._walkEpoch||0)+1;
- a._motion=false;a._motionPlace=null;a.carry=null;a.bub=null;
+ a._motion=false;a._ambient=false;a._motionPlace=null;a.carry=null;a.bub=null;
  if(a.el)a.el.classList.remove("walk");paint(a);
 }
 function workDestination(kind,a){
@@ -1518,6 +1518,7 @@ async function workTrip(a,kind){
  }finally{if(a._motionToken===token){a._motion=false;a._motionPlace=null;a.carry=null;a.bub=null;paint(a)}}
 }
 function animateWork(a,d,s){
+ if(a._ambient&&a.st!=="idle"){stopWorkMotion(a);a._ambient=false;}
  const interrupted=a.revoked||s.killed||["needs","blocked","paused","waiting"].includes(a.st);
  if(interrupted){if(a._motion)stopWorkMotion(a);return}
  if(document.hidden||matchMedia("(prefers-reduced-motion: reduce)").matches)return;
@@ -1539,5 +1540,27 @@ function animateWork(a,d,s){
 const _workPaint=paint;paint=function(a){_workPaint(a);if(a.el&&a._motionPlace){const status=a.el.querySelector(".st2");if(status)status.textContent=a.now+" · "+a._motionPlace}};
 document.addEventListener("visibilitychange",()=>{if(document.hidden)agents.forEach(a=>{if(a._motion)stopWorkMotion(a)})});
 window.addEventListener("resize",()=>agents.forEach(a=>{if(a._motion)stopWorkMotion(a)}));
+</script>
+<script>
+/* Idle life is ambient animation, never evidence of work or a real meeting. */
+async function ambientTrip(a){
+ const token=a._motionToken=(a._motionToken||0)+1,el=a.el;
+ a._motion=true;a._ambient=true;a._ambientCount=(a._ambientCount||0)+1;
+ const pick=a._ambientCount%4,other=agents.find(b=>b!==a&&b.st==="idle"&&!b._motion&&!b.revoked);
+ let p,label,carry=null;
+ if(pick===0){p=MOB?[LOUNGE.x+LOUNGE.w*.5,LOUNGE.y+LOUNGE.h*.78]:[66,55];label=MOB?"Ambient: lounge break":"Ambient: game break";}
+ else if(pick===1){p=MOB?[LOUNGE.x+LOUNGE.w*.35,LOUNGE.y+LOUNGE.h*.83]:[86,55];label="Ambient: coffee break";carry="Coffee";}
+ else if(pick===2&&other){const h=homeOf(other);p=[h[0]+(h[0]>50?-5:5),h[1]+4];label="Ambient: saying hi";}
+ else{p=MOB?[MEET.x+MEET.w*.5,MEET.y+MEET.h*.78]:[50,56];label="Ambient: stretching legs";}
+ const valid=()=>a._motionToken===token&&a.el===el&&a.st==="idle"&&!a.revoked&&!G.paused&&!document.hidden;
+ try{a._motionPlace=label;a.bub=label;a.carry=carry;paint(a);await walk(a,...p);if(!valid())return;await sleep(4200);if(!valid())return;a.bub="Ambient: back to desk";paint(a);await goHome(a);}
+ finally{if(a._motionToken===token){a._motion=false;a._ambient=false;a._motionPlace=null;a.carry=null;a.bub=null;paint(a);a._nextAmbient=Date.now()+16000+(a.slot%4)*4500;}}
+}
+setInterval(()=>{
+ if(document.hidden||G.paused||matchMedia("(prefers-reduced-motion: reduce)").matches||!document.getElementById("v-office").classList.contains("on"))return;
+ const busy=agents.filter(a=>a._ambient).length;if(busy>=Math.max(1,Math.ceil(agents.length/3)))return;
+ const a=agents.find(a=>a.st==="idle"&&!a.revoked&&!a.killed&&!a._motion&&!a._ho&&a._pos!=="appr"&&!/^Offline:/.test(a.now)&&Date.now()>=(a._nextAmbient||0));
+ if(a)ambientTrip(a);
+},4000);
 </script>
 </body></html>
