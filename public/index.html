@@ -359,6 +359,7 @@ function setPos(a,x,y,ms){a.x=x;a.y=y;a.el.style.transitionDuration=ms+"ms";a.el
 function updAv(a){const s=a.el&&a.el.querySelector(".avs");if(s)s.innerHTML=avatarSVG(a.av)}
 async function walkStep(a,x,y){const d=Math.hypot((a.x-x)*1.6,a.y-y);const ms=Math.max(320,Math.min(1900,d*42));setPos(a,x,y,ms);await sleep(ms+45)}
 async function walk(a,x,y){
+ const epoch=a._walkEpoch=(a._walkEpoch||0)+1,el=a.el;
  if(Math.abs(a.x-x)+Math.abs(a.y-y)<.5)return;
  const farAcross=Math.abs(a.x-x)>24,changingSide=(a.y<44&&y>56)||(a.y>56&&y<44),points=[];
  /* Long trips use the shared central walkway, so employees circulate through one office. */
@@ -368,8 +369,8 @@ async function walk(a,x,y){
   if(Math.abs(x-a.x)>3)points.push([x,hallY])
  }
  points.push([x,y]);a.el.classList.add("walk");
- for(const p of points){await walkStep(a,p[0],p[1])}
- a.el.classList.remove("walk")
+ for(const p of points){if(a._walkEpoch!==epoch||a.el!==el)return;await walkStep(a,p[0],p[1])}
+ if(a._walkEpoch===epoch&&a.el===el)a.el.classList.remove("walk")
 }
 const goHome=a=>{const [x,y]=homeOf(a);return walk(a,x,y)};
 const ICON={working:"\u2699\uFE0F",needs:"\u{1F7E1}",blocked:"\u{1F534}",handoff:"\u27A1\uFE0F",meeting:"\u{1F4AC}",done:"\u2705",idle:"\u{1F4A4}",paused:"\u23F8"};
@@ -381,7 +382,7 @@ function paint(a){const e=a.el;if(!e)return;const rv=a.revoked&&a.st==="paused";
  const txt=a.bub||(a.st==="needs"?"Approve?":a.st==="blocked"?"Blocked":rv?"Access revoked":a.now);
  e.querySelector(".bub").textContent=txt;e.querySelector(".bdg").textContent=rv?"\u26D4":BADGE[a.st]||"";e.querySelector(".st2").textContent=rv?"Access revoked":(a.now||"");
  const meta=e.querySelector(".meta");if(meta)meta.textContent=(a.role||"AI employee")+" · "+((ROOMS[a.room]&&ROOMS[a.room].n)||a.room);
- const t=e.querySelector(".tok");if(a.carry){t.style.display="block";t.textContent="\u{1F4C4} "+a.carry}else t.style.display="none"}
+ const t=e.querySelector(".tok");if(a.carry){t.style.display="block";t.textContent=(a.carry==="Coffee"?"\u2615 ":"\u{1F4C4} ")+a.carry}else t.style.display="none"}
 function setSt(a,st,nw){a.st=st;if(nw)a.now=nw;paint(a);refresh()}
 function hist(a,m){a.hist.unshift(now()+"  "+m);if(a.hist.length>30)a.hist.pop()}
 function receipt(a,action,text,dec,amt,tool){G.receipts.unshift({t:now(),agent:a.name,action,text,dec,amt:amt||0,tool:tool||""});if(G.receipts.length>200)G.receipts.pop();hist(a,dec+": "+text)}
@@ -732,7 +733,8 @@ applyState=function(s){LS=s;const sig=s.agents.map(a=>a.id).join(",");if(sig!==S
    else if(k==="HANDOFF"&&age<10){st="handoff";now=S.text;const b=byId[S.toAgentId];if(b&&a._hseen!==S.eventId&&age<10){a._hseen=S.eventId;hoAnim(a,b,"Task")}}
    else if(age>=600&&seen>1200){now="Offline: no activity in "+Math.round(seen/60)+" min"}
    else now="Last: "+S.text}
-  a.st=st;a.now=now;if(!a._ho)a.bub=null;paint(a);
+  a.st=st;a.now=now;if(!a._ho&&!a._motion)a.bub=null;paint(a);
+  animateWork(a,d,s);
   if(st==="needs"&&a._pos!=="appr"){a._pos="appr";const i=Math.max(0,G.approvals.findIndex(r=>r.a===a));const p=ASLOT[i%ASLOT.length];walk(a,p[0],p[1])}
   else if(st!=="needs"&&a._pos==="appr"){a._pos="home";goHome(a)}});
  if(window.__wait){const d=s.agents.find(x=>x.id===window.__wait);const el=document.getElementById("cwait");if(d&&el&&(d.lastSeen||d.state)){el.innerHTML="\u2705 Connected. This employee is now in the HQ and its activity is live.";el.style.color="var(--grn,#16a34a)";window.__wait=null}}
@@ -1491,4 +1493,51 @@ nav{background:#edf4fb;border-color:#dae7f3}.btn.pri{background:linear-gradient(
  nav{max-width:100%;margin-left:0}nav a{padding-left:9px;padding-right:9px}
 }
 </style>
+<script>
+/* Real-work floor choreography. Visual trips never call a tool or create activity. */
+function stopWorkMotion(a){
+ a._motionToken=(a._motionToken||0)+1;a._walkEpoch=(a._walkEpoch||0)+1;
+ a._motion=false;a._motionPlace=null;a.carry=null;a.bub=null;
+ if(a.el)a.el.classList.remove("walk");paint(a);
+}
+function workDestination(kind,a){
+ const lane=(a.slot%3-1)*3;
+ if(kind==="research")return {point:[MEET.x+MEET.w*.5+lane,MEET.y+MEET.h*.78],place:"Idea lab",bubble:"Research stop",carry:"Research brief"};
+ if(kind==="notes")return {point:MOB?[MEET.x+MEET.w*.5+lane,MEET.y+MEET.h*.78]:[50+lane,56],place:MOB?"Idea lab table":"Project table",bubble:"Working on notes",carry:"Document"};
+ return {point:MOB?[LOUNGE.x+LOUNGE.w*.35,LOUNGE.y+LOUNGE.h*.83]:[88+lane,55],place:"Coffee break (animation)",bubble:"Coffee break",carry:"Coffee"};
+}
+async function workTrip(a,kind){
+ const token=a._motionToken=(a._motionToken||0)+1,el=a.el;
+ a._motion=true;const dest=workDestination(kind,a);
+ const valid=()=>a._motionToken===token&&a.el===el&&!a.revoked&&!G.paused&&!document.hidden&&!["needs","blocked","paused","waiting"].includes(a.st);
+ try{
+  a._motionPlace=dest.place;a.carry=dest.carry;a.bub=dest.bubble;paint(a);
+  await walk(a,...dest.point);if(!valid())return;
+  await sleep(2500);if(!valid())return;
+  a.bub="Back to my desk";paint(a);await goHome(a);
+ }finally{if(a._motionToken===token){a._motion=false;a._motionPlace=null;a.carry=null;a.bub=null;paint(a)}}
+}
+function animateWork(a,d,s){
+ const interrupted=a.revoked||s.killed||["needs","blocked","paused","waiting"].includes(a.st);
+ if(interrupted){if(a._motion)stopWorkMotion(a);return}
+ if(document.hidden||matchMedia("(prefers-reduced-motion: reduce)").matches)return;
+ if(a._motion||a._ho||a._pos==="appr")return;
+ const task=s.tasks.find(t=>t.assignee===a.id&&t.status==="running");
+ const state=d.state,age=state?(Date.now()-Date.parse(state.at))/1000:Infinity;
+ const active=a.st==="working"&&age<600;
+ const completed=a.st==="done"&&age<20;
+ if(!active&&!completed)return;
+ const key=task?task.id:state&&(state.eventId||state.at+state.kind);
+ if(completed){if(a._coffeeSeen===key)return;a._coffeeSeen=key;workTrip(a,"coffee");return}
+ if(a._tripKey===key&&Date.now()-(a._lastTrip||0)<22000)return;
+ a._tripKey=key;a._lastTrip=Date.now();
+ const text=((task&&task.title)||"")+" "+((state&&state.text)||"");
+ const receipt=s.receipts.find(r=>r.agentId===a.id&&Date.now()-Date.parse(r.at)<20000);
+ const kind=receipt&&receipt.action==="notes.write"||/notes|write|draft|document/i.test(text)?"notes":"research";
+ workTrip(a,kind);
+}
+const _workPaint=paint;paint=function(a){_workPaint(a);if(a.el&&a._motionPlace){const status=a.el.querySelector(".st2");if(status)status.textContent=a.now+" · "+a._motionPlace}};
+document.addEventListener("visibilitychange",()=>{if(document.hidden)agents.forEach(a=>{if(a._motion)stopWorkMotion(a)})});
+window.addEventListener("resize",()=>agents.forEach(a=>{if(a._motion)stopWorkMotion(a)}));
+</script>
 </body></html>
