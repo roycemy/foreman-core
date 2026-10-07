@@ -23,7 +23,7 @@ function memCmd(c) {
   switch (op.toUpperCase()) {
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
-    case 'SET': mem.kv.set(k, a[0]); return 'OK';
+    case 'SET': if(a.includes('NX')&&mem.kv.has(k))return null;mem.kv.set(k, a[0]); return 'OK';
     case 'INCRBY': { const v = (parseInt(mem.kv.get(k) || '0', 10)) + parseInt(a[0], 10); mem.kv.set(k, String(v)); return v; }
     case 'LPUSH': { const l = L(); l.unshift(a[0]); mem.lists.set(k, l); return l.length; }
     case 'LRANGE': return L().slice(parseInt(a[0], 10), parseInt(a[1], 10) + 1);
@@ -99,6 +99,32 @@ async function execute(agent, action, params) {
 }
 
 // ---------- work bus ----------
+// Chat adapters register only work that has actually started in their own runtime.
+// Idempotency is scoped to authenticated employee and workspace; this never starts hosted inference.
+async function chatTask(agent, body) {
+  if (agent.status !== 'active' || await r(['GET','fm:kill'])) return {status:403,body:{status:'blocked',reason:'Worker is revoked or workspace paused'}};
+  const sourceId = String(body.source_id || '').trim(), title = String(body.title || '').trim();
+  if (!sourceId || sourceId.length > 200 || !title || title.length > 120) return {status:400,body:{error:'source_id (max 200) and title (max 120) required'}};
+  const id = 'task_' + sha(agent.id + ':' + sourceId).slice(0,24);
+  const old = await getJ('fm:task:' + id);
+  if (old) return {status:200,body:{task:old,duplicate:true}};
+  const t = {id,title,brief:String(body.brief || '').slice(0,1500),assignee:agent.id,status:'running',parentId:null,createdBy:agent.id,createdAt:now(),startedAt:now(),result:null,origin:'chat',sourceId};
+  const won=await r(['SET','fm:task:' + id,JSON.stringify(t),'NX']);if(!won)return {status:200,body:{task:await getJ('fm:task:' + id),duplicate:true}};await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);
+  await touchAgent(agent);
+  await event(agent.id,'task_started','Started: '+title,{kind:'TASK_STARTED',taskId:id,source:'chat'});
+  return {status:200,body:{task:t}};
+}
+async function touchAgent(agent) {
+  const live = await getJ('fm:agent:' + agent.id);if(!live || live.status !== 'active')return;
+  live.lastSeen=now();await setJ('fm:agent:' + agent.id,live);bust();
+}
+async function taskForAgent(agent,id) {
+  const t=await getJ('fm:task:' + id);if(!t)return null;
+  // Original worker can read its delegated child result; recipient can read its own assignment.
+  if(t.assignee===agent.id || t.createdBy===agent.id)return t;
+  return null;
+}
+
 async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null };
   bust(); await setJ('fm:task:' + t.id, t); await r(['LPUSH', 'fm:tasklist', t.id]); await r(['LTRIM', 'fm:tasklist', 0, 59]);
   if (t.assignee) { const ag = await getJ('fm:agent:' + t.assignee); if (ag && ag.hosted && ag.status === 'active') await runHosted(ag, t); }
@@ -107,11 +133,16 @@ async function listTasks() { const ids = await r(['LRANGE', 'fm:tasklist', 0, 29
 async function claimTask(agent) { const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
   t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); await setJ('fm:task:' + t.id, t); await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
 async function completeTask(agent, id, body) { const t = await getJ('fm:task:' + id); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
+  if (!['running','queued'].includes(t.status)) return {status:409,body:{error:'Task is already terminal',task:t}};
   const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); await setJ('fm:task:' + id, t);
-  await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id }); return { status: 200, body: { task: t } }; }
+  await touchAgent(agent);
+  await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id });
+  if(t.parentId){const p=await getJ('fm:task:' + t.parentId);if(p&&p.assignee)await event(p.assignee,'result_returned','Delegate '+(failed?'failed: ':'result ready: ')+t.title,{kind:'WAITING',taskId:p.id,childTaskId:t.id,fromAgentId:agent.id});}
+  return { status: 200, body: { task: t } }; }
 async function reportEvent(agent, body, source) { const kind = normKind(body.kind || body.type || body.status || body.event); if (!kind) return { status: 400, body: { error: 'unrecognized event kind', allowed: KINDS } };
   if (!agent.lastSeen || Date.now() - Date.parse(agent.lastSeen) > 15000) { agent.lastSeen = now(); await setJ('fm:agent:' + agent.id, agent); }
   if (agent.status !== 'active') { await event(agent.id, 'blocked', 'Blocked event report: access revoked', { kind: 'BLOCKED' }); return { status: 403, body: { status: 'blocked', reason: 'Access revoked by owner' } }; }
+  if (body.task_id) {const t=await getJ('fm:task:' + body.task_id);if(!t || t.assignee!==agent.id)return {status:404,body:{error:'Task not found or not yours'}};}
   const text = String(body.text || body.message || body.summary || kind).slice(0, 200);
   await event(agent.id, 'reported', text, { kind, taskId: body.task_id || null, source: source || 'gateway' }); return { status: 200, body: { status: 'ok', kind } }; }
 // ---------- providers: honest integration tiers ----------
@@ -228,7 +259,7 @@ async function handleAuth(req, res, path, body) {
 // ---------- core ----------
 async function listAgents() { const ids = await r(['SMEMBERS', 'fm:agents']); if (!ids.length) return []; const vs = await r(['MGET', ...ids.map(i => 'fm:agent:' + i)]); return vs.filter(Boolean).map(v => JSON.parse(v)).sort((x, y) => x.createdAt < y.createdAt ? -1 : 1); }
 // Universal Foreman event model. Every provider's activity is normalized into one of these kinds.
-const KINDS = ['TASK_STARTED','TOOL_USED','ACTION_REQUESTED','WAITING','HANDOFF','COMPLETED','FAILED','NEEDS_APPROVAL','BLOCKED'];
+const KINDS = ['INTERACTION','TASK_STARTED','TOOL_USED','ACTION_REQUESTED','WAITING','HANDOFF','COMPLETED','FAILED','NEEDS_APPROVAL','BLOCKED'];
 const KIND_OF = { attempt:'ACTION_REQUESTED', pending:'NEEDS_APPROVAL', completed:'COMPLETED', failed:'FAILED', blocked:'BLOCKED', revoked:'BLOCKED', denied:'BLOCKED', handoff:'HANDOFF' };
 // adapter-level normalizer: maps a provider's own vocabulary onto KINDS
 function normKind(x) { const k = String(x || '').toUpperCase().replace(/[\s-]+/g, '_'); if (KINDS.includes(k)) return k;
@@ -395,6 +426,9 @@ const MCP_TOOLS = [
   { name: 'foreman_enqueue', description: 'Queue an unassigned task in your own workspace. This does not start a hosted worker. Policy-gated, zero cost, maximum 10 per minute.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, brief: { type: 'string' } }, required: ['title'] }, action: 'work.enqueue' },
   { name: 'foreman_handoff', description: 'Hand a task to another Foreman agent.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, to: { type: 'string' }, brief: { type: 'string' } }, required: ['task_id', 'to'] }, action: 'work.handoff' },
   { name: 'foreman_report', description: 'Report your activity. kind is one of ' + KINDS.join(', '), inputSchema: { type: 'object', properties: { kind: { type: 'string' }, text: { type: 'string' } }, required: ['kind'] } },
+  {name:'foreman_chat_task',description:'Register a task you have actually begun from an owner chat. Does not execute work or infer from text.',inputSchema:{type:'object',properties:{source_id:{type:'string'},title:{type:'string'},brief:{type:'string'}},required:['source_id','title']}},
+  {name:'foreman_read_task',description:'Read your task or the result of a task you delegated.',inputSchema:{type:'object',properties:{task_id:{type:'string'}},required:['task_id']}},
+  {name:'foreman_presence',description:'Report actual recent interaction with your owner. Does not claim work is running.',inputSchema:{type:'object',properties:{}}},
   { name: 'foreman_next_task', description: 'Claim the next task from the Foreman work bus.', inputSchema: { type: 'object', properties: {} } },
   { name: 'foreman_complete_task', description: 'Finish a task and store its result.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, result: { type: 'string' } }, required: ['task_id', 'result'] } },
   { name: 'foreman_check_request', description: 'Check a paused (ASK) request. Once approved Foreman has already run it; the result is included.', inputSchema: { type: 'object', properties: { request_id: { type: 'string' } }, required: ['request_id'] } },
@@ -404,6 +438,9 @@ async function mcpCall(agent, name, args) {
   let out;
   if (t.action) { const g = await gatewayAct(agent, { action: t.action, params: args || {} }); out = g.body; }
   else if (name === 'foreman_report') out = (await reportEvent(agent, args || {}, 'mcp')).body;
+  else if(name==='foreman_chat_task')out=(await chatTask(agent,args||{})).body;
+  else if(name==='foreman_read_task'){const task=await taskForAgent(agent,(args||{}).task_id);out=task?{task}:{error:'not found'};}
+  else if(name==='foreman_presence'){if(agent.status!=='active'||await r(['GET','fm:kill']))out={status:'blocked'};else{await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'mcp'});out={status:'ok'};}}
   else if (name === 'foreman_next_task') { if (agent.status !== 'active') out = { status: 'blocked', reason: 'Access revoked by owner' }; else out = { task: await claimTask(agent) }; }
   else if (name === 'foreman_complete_task') out = (await completeTask(agent, (args || {}).task_id, args || {})).body;
   else if (name === 'foreman_check_request') { const q = await getJ('fm:req:' + (args || {}).request_id); out = q && q.agentId === agent.id ? pub(q) : { error: 'not found' }; }
@@ -447,6 +484,9 @@ async function routes(req, res, path, body, agentPre) {
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
       const agent = agentPre;
+      if (path === '/gateway/chat-task' && req.method === 'POST') return send(await chatTask(agent,body));
+      if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'chat'});return res.json({status:'ok'});}
+      {const tm=path.match(/^\/gateway\/tasks\/(\w+)$/);if(tm&&req.method==='GET'){const t=await taskForAgent(agent,tm[1]);return t?res.json({task:t}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/act' && req.method === 'POST') return send(await gatewayAct(agent, body));
       if (path === '/gateway/events' && req.method === 'POST') return send(await reportEvent(agent, body));
       if (path === '/gateway/tasks/next') { if (agent.status !== 'active') { await event(agent.id, 'blocked', 'Blocked task claim: access revoked', { kind: 'BLOCKED' }); return res.status(403).json({ status: 'blocked', reason: 'Access revoked by owner' }); } return res.json({ task: await claimTask(agent) }); }
