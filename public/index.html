@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Foreman HQ - Every AI employee. One workplace.</title>
+<title>Black Box - Every AI employee. One workplace.</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Crect x='10' y='10' width='12' height='12' rx='3' fill='%23fff'/%3E%3C/svg%3E">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -239,7 +239,7 @@ body[data-theme=evening] .room{border-color:rgba(255,255,255,.55);filter:brightn
 #deskl,#chl{position:absolute;inset:0;pointer-events:none}.ch{pointer-events:auto}
 @media(max-width:760px){.idl{display:none}}
 </style></head><body data-theme="daylight">
-<div class="top"><div class="mark"></div><div class="brand">FOREMAN <b>HQ</b></div>
+<div class="top"><div class="mark"></div><div class="brand">BLACK <b>BOX</b></div>
 <nav id="nav"><a href="#office" data-v="office">HQ</a><a href="#stubs" data-v="stubs">Team</a><a href="#receipts" data-v="receipts">Activity</a><a href="#policies" data-v="policies">Permissions</a></nav>
 <div class="sum" id="sum"></div><div class="sp"></div>
 <button class="btn" id="recap">While you were away</button><button class="btn pri" id="addb">+ Connect a bot</button><button class="elink" id="emer">Emergency controls</button></div>
@@ -261,7 +261,7 @@ body[data-theme=evening] .room{border-color:rgba(255,255,255,.55);filter:brightn
 <div class="ob" id="ob"><div class="box">
 <div class="dots" id="obdots"><i class="on"></i><i></i><i></i><i></i></div>
 <div class="step on" data-s="0">
-<div class="logo"><div class="mark"></div><div class="brand">FOREMAN <b>HQ</b></div></div>
+<div class="logo"><div class="mark"></div><div class="brand">BLACK <b>BOX</b></div></div>
 <h2>Your AI company, in one office</h2>
 <div class="sub">Every AI employee. One workplace. Connect your bots, set their permissions, and watch them work.</div>
 <label>Phone number</label>
@@ -339,7 +339,7 @@ function homeOf(a){const r=ROOMS[a.room],s=SLS[a.slot];return [r.x+r.w*s[0]/100,
 function buildFloor(){let h="";const bx=r=>`left:${r.x}%;top:${r.y}%;width:${r.w}%;height:${r.h}%`;
  h+=`<div class="office-architecture" aria-hidden="true">
   <div class="sunwash"></div><div class="walkway main-walk"></div><div class="walkway cross-walk"></div>
-  <div class="office-title"><span>FOREMAN HQ</span><small>ONE TEAM · ONE WORKSPACE</small></div>
+  <div class="office-title"><span>BLACK BOX</span><small>ONE TEAM · ONE WORKSPACE</small></div>
   <div class="collab-island"><i class="collab-board"></i><i class="collab-table"></i><i class="stool s1"></i><i class="stool s2"></i><i class="stool s3"></i><span>PROJECT TABLE</span></div>
   <div class="snack-bar"><span>COFFEE + SNACKS</span><i class="counter"></i><i class="machine"></i><i class="snacks"></i></div>
   <div class="game-nook"><span>TAKE FIVE</span><i class="game-table"></i><i class="paddle pa"></i><i class="paddle pb"></i></div>
@@ -426,7 +426,7 @@ async function meeting(a,bid,topic){const b=byId[bid];if(G.meetBusy||!b||b.kille
  await sleep(5500);await Promise.all([goHome(a),goHome(b)]);b.lock=false;G.meetBusy=false;setSt(a,"idle","Back at desk");if(!b.killed)setSt(b,"working","Back to work")}
 async function loop(a){await sleep(800+Math.random()*2500);
  while(true){if(a.lock||a.killed||G.paused||a.joining){await sleep(400);continue}
-  if(a.revoked){setSt(a,"blocked","Tried to act - Foreman blocked it");receipt(a,"read","Tried to work while revoked","Blocked - access revoked",0,"Foreman");flash(a,"Blocked: no access",3500);await tick(a,5000);if(a.revoked){setSt(a,"paused","Access revoked");await tick(a,9000)}continue}
+  if(a.revoked){setSt(a,"blocked","Tried to act - Black Box blocked it");receipt(a,"read","Tried to work while revoked","Blocked - access revoked",0,"Black Box");flash(a,"Blocked: no access",3500);await tick(a,5000);if(a.revoked){setSt(a,"paused","Access revoked");await tick(a,9000)}continue}
   if(a.rest&&a.i>0&&a.i%a.script.length===0&&!a.rested){a.rested=true;await goHome(a);setSt(a,"idle","Idle, no tasks queued");await tick(a,a.rest);continue}a.rested=false;
   let t=a.script[a.i%a.script.length];a.i++;
   try{await runTask(a,t)}catch(e){console.error(e)}
@@ -576,9 +576,9 @@ function setPol(id,k,l){byId[id].policy[k]=l;renderDr()}
 function togKill(id){const a=byId[id];a.killed?reviveAgent(a):killAgent(a);renderDr()}
 window.setPol=setPol;window.togKill=togKill;window.closeDr=closeDr;
 window.revokeBot=(id,btn)=>{const a=byId[id];
- if(a.revoked){a.revoked=false;setSt(a,"idle","Access restored");hist(a,"Access restored by you");receipt(a,"update","Access restored for "+a.name,"Owner action",0,"Foreman");refresh();renderDr();return}
+ if(a.revoked){a.revoked=false;setSt(a,"idle","Access restored");hist(a,"Access restored by you");receipt(a,"update","Access restored for "+a.name,"Owner action",0,"Black Box");refresh();renderDr();return}
  if(!btn.dataset.arm){btn.dataset.arm="1";btn.textContent="Tap again to confirm revoke";setTimeout(()=>{if(btn.dataset.arm){btn.dataset.arm="";renderDr()}},3000);return}
- a.revoked=true;const r=G.approvals.find(x=>x.a===a);if(r)r.res("kill");a.carry=null;setSt(a,"paused","Access revoked");hist(a,"Access revoked by you");receipt(a,"kill","Access revoked for "+a.name,"Owner action",0,"Foreman");goHome(a);renderDr()};
+ a.revoked=true;const r=G.approvals.find(x=>x.a===a);if(r)r.res("kill");a.carry=null;setSt(a,"paused","Access revoked");hist(a,"Access revoked by you");receipt(a,"kill","Access revoked for "+a.name,"Owner action",0,"Black Box");goHome(a);renderDr()};
 /* away */
 function showAway(){const e=$("#away");e.classList.add("on");requestAnimationFrame(()=>requestAnimationFrame(()=>e.classList.add("show")))}
 function hideAway(){const e=$("#away");e.classList.remove("show");setTimeout(()=>e.classList.remove("on"),260);location.hash="#office"}
@@ -607,7 +607,7 @@ async function finishJoin(instant){const js=agents.filter(a=>a.joining);if(insta
  for(const a of js){await goHome(a);a.joining=false;drawDesks();setSt(a,"idle","Ready for work");await sleep(120)}}
 $("#obdone").onclick=async()=>{obHide();location.hash="#office";const had=agents.some(a=>a.joining);await finishJoin(false);setTimeout(showAway,had?900:0)};
 $("#ob").onclick=e=>{if(e.target.id==="ob"){obHide();finishJoin(true);showAway()}};
-/* ===== FOREMAN LIVE (v8): real state from the Foreman gateway. No simulation. ===== */
+/* ===== FOREMAN LIVE (v8): real state from the Black Box gateway. No simulation. ===== */
 for(const k of Object.keys(ACTIONS))delete ACTIONS[k];
 Object.assign(ACTIONS,{"web.fetch":"Fetch a live web page","notes.write":"Write a note to the workspace","notes.delete":"Delete workspace notes"});
 const API=(new URLSearchParams(location.search).get("api")||"").replace(/\/$/,"");
@@ -665,7 +665,7 @@ setPerm=async function(id,k,l){await setPol(id,k,l)};
 window.setPol=setPol;window.setPerm=setPerm;
 window.revokeBot=async(id,btn)=>{const a=byId[id];if(a.revoked){await api("/api/agents/"+id+"/restore","POST");toast("Access restored for "+a.name);await sync();return}
  if(!btn.dataset.arm){btn.dataset.arm="1";btn.textContent="Tap again to confirm revoke";setTimeout(()=>{if(btn.dataset.arm){btn.dataset.arm="";if(DR)renderDr()}},3000);return}
- await api("/api/agents/"+id+"/revoke","POST");toast("Access revoked. Foreman will now block every action from "+a.name);await sync()};
+ await api("/api/agents/"+id+"/revoke","POST");toast("Access revoked. Black Box will now block every action from "+a.name);await sync()};
 window.saveLimits=async id=>{const p=document.getElementById("lim-p").value,d=document.getElementById("lim-d").value;await api("/api/agents/"+id+"/limits","POST",{perActionCents:p===""?null:+p,dailyCents:d===""?null:+d});toast("Limits saved");await sync()};
 window.rmAgent=async id=>{await api("/api/agents/"+id+"/remove","POST");closeDr();await sync()};
 pauseAll=async function(on){await api("/api/kill","POST",{on:on===undefined?!G.paused:on});await sync()};
@@ -676,7 +676,7 @@ togKill=()=>{};
 vReceipts=function(){const rs=(LS&&LS.receipts)||[];$("#v-receipts").innerHTML=`<h3>Activity and receipts</h3><div class="sum" style="margin-bottom:12px">Every action your employees try leaves a receipt: completed, blocked, or denied. Receipts are linked together so they cannot be quietly changed. To change what an employee may do, open Permissions. To turn one off, click it in HQ and choose Revoke access.</div><div class="feed">${rs.map(r=>`<div class="rcpt"><div class="ic">${OUTI[r.outcome]||"\u{1F9FE}"}</div><div class="tx"><div class="t">${esc(r.summary)}</div><div class="s">${esc(r.agentName)} \u00B7 ${esc(r.action)} \u00B7 <b>${esc(r.outcome)}</b>${r.approvedBy?" \u00B7 "+esc(r.approvedBy):""}${r.code?" \u00B7 "+esc(r.code):""} \u00B7 #${r.hash.slice(0,8)} \u2190 ${r.prevHash.slice(0,8)}</div></div>${r.costCents?`<div class="amt">${cents(r.costCents)}</div>`:""}<div class="tm">${ft(r.at)}</div></div>`).join("")||`<div class="card">No receipts yet.</div>`}</div>`};
 vStubs=function(){const c=counts();const sp=agents.reduce((s,a)=>s+a.spent,0),ac=agents.reduce((s,a)=>s+a.actions,0),bl=agents.reduce((s,a)=>s+(a.blockedN||0),0);
  $("#v-stubs").innerHTML=`<h3>Team</h3><div class="cards"><div class="card"><div class="v">${c.working}</div><div class="l">working</div></div><div class="card"><div class="v" style="color:var(--amber)">${c.needs}</div><div class="l">need you</div></div><div class="card"><div class="v" style="color:var(--red)">${bl}</div><div class="l">actions blocked</div></div><div class="card"><div class="v">${ac}</div><div class="l">actions completed</div></div><div class="card"><div class="v">${money(sp)}</div><div class="l">spent today</div></div></div>
- <div class="card tw"><table><tr><th>Agent</th><th>Status</th><th>Completed</th><th>Blocked</th><th>Spent today</th><th>Daily limit</th></tr>${agents.map(a=>`<tr><td><span class="mini">${avatarSVG(a.av)}</span><b>${esc(a.name)}</b></td><td>${a.revoked?"Revoked":esc(a.now)}</td><td>${a.actions}</td><td>${a.blockedN||0}</td><td>${money(a.spent)}</td><td>${a.limits&&a.limits.dailyCents!=null?cents(a.limits.dailyCents):"none"}</td></tr>`).join("")}</table></div><div class="sum">Spend is metered by the Foreman gateway per action (no real money moves in this version).</div>`};
+ <div class="card tw"><table><tr><th>Agent</th><th>Status</th><th>Completed</th><th>Blocked</th><th>Spent today</th><th>Daily limit</th></tr>${agents.map(a=>`<tr><td><span class="mini">${avatarSVG(a.av)}</span><b>${esc(a.name)}</b></td><td>${a.revoked?"Revoked":esc(a.now)}</td><td>${a.actions}</td><td>${a.blockedN||0}</td><td>${money(a.spent)}</td><td>${a.limits&&a.limits.dailyCents!=null?cents(a.limits.dailyCents):"none"}</td></tr>`).join("")}</table></div><div class="sum">Spend is metered by the Black Box gateway per action (no real money moves in this version).</div>`};
 vApprovals=function(){$("#v-approvals").innerHTML=`<h3>Needs You</h3><div class="sum" style="margin-bottom:12px">These actions are genuinely paused. Nothing runs until you approve.</div>`+(G.approvals.length?G.approvals.map(r=>`<div class="req" style="margin-bottom:10px"><div class="q">\u{1F7E1} ${r.text}</div><div class="bt"><button class="btn grn" data-r="${r.id}" data-d="approve">Approve once</button><button class="btn red" data-r="${r.id}" data-d="deny">Deny</button></div></div>`).join(""):`<div class="card">Nothing needs you right now.</div>`)};
 vPolicies=function(){if(document.activeElement&&document.activeElement.closest&&document.activeElement.closest("#v-policies")&&document.activeElement.tagName==="INPUT")return;
  if(!agents.length){$("#v-policies").innerHTML="";return}if(!PB||!byId[PB])PB=agents[0].id;const a=byId[PB];
@@ -698,14 +698,14 @@ renderEmer=function(){$("#epause").textContent=G.paused?"Turn kill switch off":"
 $("#epause").onclick=async()=>{await pauseAll(!G.paused);renderEmer()};
 $("#erevoke").onclick=async()=>{await revokeAll(!allRevoked());renderEmer()};
 /* connect a real agent */
-function openConnect(){$("#modal .box").innerHTML=`<h3 style="margin:0 0 4px">Connect an agent</h3><div style="color:var(--mut);margin-bottom:14px;font-size:12.5px">Creates an agent with a Foreman key. The agent calls Foreman to act, so Foreman can allow, pause or block every action.</div>
+function openConnect(){$("#modal .box").innerHTML=`<h3 style="margin:0 0 4px">Connect an agent</h3><div style="color:var(--mut);margin-bottom:14px;font-size:12.5px">Creates an agent with a Black Box key. The agent calls Black Box to act, so Black Box can allow, pause or block every action.</div>
  <input id="cn" placeholder="Agent name" style="width:100%;padding:9px;margin-bottom:8px"><input id="cr" placeholder="Role (optional)" style="width:100%;padding:9px;margin-bottom:10px"><div id="cout"></div>
  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px"><button class="btn pri" id="cgo">Create agent</button><button class="btn" id="mc2">Close</button></div>`;
  $("#modal").classList.add("on");$("#mc2").onclick=()=>$("#modal").classList.remove("on");
  $("#cgo").onclick=async()=>{const n=$("#cn").value.trim();if(!n)return;const r=await api("/api/agents","POST",{name:n,role:$("#cr").value.trim()});const base=API||location.origin;
   $("#cout").innerHTML=`<div class="sum">Agent key (shown once, save it now):</div><pre style="white-space:pre-wrap;word-break:break-all;background:#f1f5f9;padding:8px;border-radius:8px;font-size:11.5px">${esc(r.key)}</pre><div class="sum">Try it:</div><pre style="white-space:pre-wrap;word-break:break-all;background:#f1f5f9;padding:8px;border-radius:8px;font-size:11px">curl -X POST ${esc(base)}/api/gateway/act -H "Authorization: Bearer ${esc(r.key)}" -H "Content-Type: application/json" -d '{"action":"notes.write","params":{"title":"hi","text":"from my agent"}}'</pre>`;$("#cgo").style.display="none";await sync()}};
 $("#addb").onclick=openConnect;
-/* Scout: the live demo agent. It calls the gateway with its own key, on Foreman's server. */
+/* Scout: the live demo agent. It calls the gateway with its own key, on Black Box's server. */
 let SC=localStorage.getItem("fm_scout")!=="0",scBusy=false;
 const sb=document.createElement("button");sb.className="btn";sb.id="scoutb";$("#addb").before(sb);
 let scIdle=0;document.addEventListener("click",()=>{if(scIdle>=40){scIdle=0;scLabel()}else scIdle=0},true);
@@ -720,7 +720,7 @@ window.addEventListener("resize",()=>{if((innerWidth<760)!==MOB){setLayout();bui
 /* ===== v9: external agents, universal event model, work bus ===== */
 Object.assign(ACTIONS,{"work.handoff":"Hand a task to another agent"});
 SC=false;try{sb.remove()}catch(e){}
-document.title="Foreman HQ";
+document.title="Black Box";
 const EMO9={instinct:"\u2728",grok:"\u26A1",muse:"\u{1F3A8}",custom:"\u{1F6E0}\uFE0F",mcp:"\u{1F50C}"};
 ICON.waiting="\u23F3";BADGE.waiting="\u2026";
 const KCOL={TASK_STARTED:"#2563eb",TOOL_USED:"#0891b2",ACTION_REQUESTED:"#7c3aed",WAITING:"#64748b",HANDOFF:"#db2777",COMPLETED:"#16a34a",FAILED:"#dc2626",NEEDS_APPROVAL:"#d97706",BLOCKED:"#dc2626"};
@@ -759,14 +759,14 @@ applyState=function(s){LS=s;const sig=s.agents.map(a=>a.id).join(",");if(sig!==S
  drawDesks();render()};
 /* ---------- Add AI Employee ---------- */
 const TIERS={verified:["Live","#16a34a"],manual:["Generic connection","#d97706"],waiting:["Waiting on provider","#64748b"]};
-function openAdd(){const P=(LS&&LS.providers)||[];$("#modal .box").innerHTML=`<h3 style="margin:0 0 4px">Add an AI employee</h3><div style="color:var(--mut);margin-bottom:12px;font-size:12.5px">Foreman does not build employees. Pick how yours connects. Everything it does goes through Foreman, so Foreman decides AUTO, ASK or NEVER.</div><div id="addp" style="display:grid;gap:8px">${P.map(p=>`<button class="btn" data-p="${p.id}" style="text-align:left;padding:10px 12px;display:block;white-space:normal"><b>${EMO9[p.id]||""} ${esc(p.name)}</b> <span style="font:600 10px system-ui;color:${TIERS[p.tier][1]};border:1px solid ${TIERS[p.tier][1]};border-radius:6px;padding:1px 5px;margin-left:4px">${TIERS[p.tier][0]}</span><div style="font-size:11.5px;color:var(--mut);margin-top:3px">${esc(p.how)}. ${esc(p.note)}</div></button>`).join("")}</div><div id="cout"></div><div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" id="mc2">Close</button></div>`;
+function openAdd(){const P=(LS&&LS.providers)||[];$("#modal .box").innerHTML=`<h3 style="margin:0 0 4px">Add an AI employee</h3><div style="color:var(--mut);margin-bottom:12px;font-size:12.5px">Black Box does not build employees. Pick how yours connects. Everything it does goes through Black Box, so Black Box decides AUTO, ASK or NEVER.</div><div id="addp" style="display:grid;gap:8px">${P.map(p=>`<button class="btn" data-p="${p.id}" style="text-align:left;padding:10px 12px;display:block;white-space:normal"><b>${EMO9[p.id]||""} ${esc(p.name)}</b> <span style="font:600 10px system-ui;color:${TIERS[p.tier][1]};border:1px solid ${TIERS[p.tier][1]};border-radius:6px;padding:1px 5px;margin-left:4px">${TIERS[p.tier][0]}</span><div style="font-size:11.5px;color:var(--mut);margin-top:3px">${esc(p.how)}. ${esc(p.note)}</div></button>`).join("")}</div><div id="cout"></div><div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" id="mc2">Close</button></div>`;
  $("#modal").classList.add("on");$("#mc2").onclick=()=>{$("#modal").classList.remove("on");window.__wait=null};
  document.querySelectorAll("#addp [data-p]").forEach(b=>b.onclick=()=>pickProv(b.dataset.p))}
 function pickProv(pid){const p=LS.providers.find(x=>x.id===pid);$("#addp").style.display="none";
  $("#cout").innerHTML=`<div style="font-weight:600;margin-bottom:6px">${EMO9[pid]||""} ${esc(p.name)}</div><div class="sum" style="margin-bottom:8px">${esc(p.note)}</div><input id="cn" placeholder="Employee name" style="width:100%;padding:9px;margin-bottom:8px"><input id="cr" placeholder="Role (optional)" style="width:100%;padding:9px;margin-bottom:10px"><div style="text-align:right"><button class="btn pri" id="cgo">Create and get connection details</button></div>`;
  $("#cgo").onclick=async()=>{const n=$("#cn").value.trim();if(!n)return;const r=await api("/api/agents","POST",{name:n,role:$("#cr").value.trim(),provider:pid});const base=API||location.origin;const pre=t=>`<pre style="white-space:pre-wrap;word-break:break-all;background:#f1f5f9;padding:8px;border-radius:8px;font-size:11px;margin:4px 0 10px">${esc(t)}</pre>`;
   const mcp=JSON.stringify({mcpServers:{foreman:{url:base+"/api/mcp",headers:{Authorization:"Bearer "+r.key}}}},null,1);
-  $("#cout").innerHTML=`<div style="font-weight:600">${esc(n)} created. Key (shown once):</div>${pre(r.key)}<div class="sum">REST gateway (any agent that can make HTTPS calls)</div>${pre(`curl -X POST ${base}/api/gateway/act -H "Authorization: Bearer ${r.key}" -H "Content-Type: application/json" -d '{"action":"web.fetch","params":{"url":"https://api.github.com/zen"}}'`)}<div class="sum">Report activity (normalized to the Foreman event model: TASK_STARTED, TOOL_USED, ACTION_REQUESTED, WAITING, HANDOFF, COMPLETED, FAILED, NEEDS_APPROVAL, BLOCKED)</div>${pre(`curl -X POST ${base}/api/gateway/events -H "Authorization: Bearer ${r.key}" -H "Content-Type: application/json" -d '{"kind":"TASK_STARTED","text":"Researching competitors"}'`)}<div class="sum">MCP client config</div>${pre(mcp)}<div id="cwait" style="font-weight:600;color:var(--mut)">\u23F3 Waiting for ${esc(n)}'s first activity...</div>`;window.__wait=r.agent.id;await sync()}}
+  $("#cout").innerHTML=`<div style="font-weight:600">${esc(n)} created. Key (shown once):</div>${pre(r.key)}<div class="sum">REST gateway (any agent that can make HTTPS calls)</div>${pre(`curl -X POST ${base}/api/gateway/act -H "Authorization: Bearer ${r.key}" -H "Content-Type: application/json" -d '{"action":"web.fetch","params":{"url":"https://api.github.com/zen"}}'`)}<div class="sum">Report activity (normalized to the Black Box event model: TASK_STARTED, TOOL_USED, ACTION_REQUESTED, WAITING, HANDOFF, COMPLETED, FAILED, NEEDS_APPROVAL, BLOCKED)</div>${pre(`curl -X POST ${base}/api/gateway/events -H "Authorization: Bearer ${r.key}" -H "Content-Type: application/json" -d '{"kind":"TASK_STARTED","text":"Researching competitors"}'`)}<div class="sum">MCP client config</div>${pre(mcp)}<div id="cwait" style="font-weight:600;color:var(--mut)">\u23F3 Waiting for ${esc(n)}'s first activity...</div>`;window.__wait=r.agent.id;await sync()}}
 $("#addb").textContent="+ Add AI Employee";$("#addb").onclick=openAdd;
 /* ---------- Work bus view + live event feed ---------- */
 (function(){const nav=$("#nav");const a=document.createElement("a");a.href="#work";a.dataset.v="work";a.textContent="Work";nav.insertBefore(a,nav.children[1]);const sec=document.createElement("section");sec.className="view";sec.id="v-work";$("#v-office").after(sec)})();
@@ -777,16 +777,16 @@ function vWork(){const el=$("#v-work");if(!el.dataset.init){el.dataset.init="1";
  const sel=$("#ta"),cur=sel.value;sel.innerHTML=`<option value="">Unassigned (waits for an agent to claim)</option>`+agents.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");sel.value=cur;
  const nm=id=>(byId[id]&&byId[id].name)||"Owner";const ts=(LS&&LS.tasks)||[];const col={queued:"#64748b",running:"#2563eb",done:"#16a34a",failed:"#dc2626"};
  $("#tl").innerHTML=ts.map(t=>`<div class="card" style="margin-bottom:8px"><div style="display:flex;gap:8px;align-items:center"><span style="font:600 10px system-ui;color:${col[t.status]};border:1px solid ${col[t.status]};border-radius:6px;padding:1px 6px;text-transform:uppercase">${t.status}</span><b>${esc(t.title)}</b><span class="sum" style="margin-left:auto">${t.assignee?esc(nm(t.assignee)):"unassigned"} \u00B7 ${ft(t.createdAt)}</span></div>${t.parentId?`<div class="sum" style="margin-top:4px">\u21B3 handed over by ${esc(nm(t.createdBy))} with context</div>`:""}${t.context?`<div class="sum" style="margin-top:4px">Context: ${esc(t.context.slice(0,240))}</div>`:""}${t.result?`<div style="margin-top:4px;font-size:12.5px">Result: ${esc(t.result.slice(0,400))}</div>`:""}</div>`).join("")||`<div class="card">No tasks yet.</div>`}
-const _vr=vReceipts;vReceipts=function(){_vr();const evs=((LS&&LS.events)||[]).filter(e=>e.kind).slice(0,14);const nm=id=>(byId[id]&&byId[id].name)||"Foreman";
+const _vr=vReceipts;vReceipts=function(){_vr();const evs=((LS&&LS.events)||[]).filter(e=>e.kind).slice(0,14);const nm=id=>(byId[id]&&byId[id].name)||"Black Box";
  $("#v-receipts").insertAdjacentHTML("afterbegin",`<h3>Live events</h3><div class="sum" style="margin-bottom:8px">What your employees did, newest first.</div><div class="card" style="margin-bottom:16px">${evs.map(e=>`<div style="display:flex;gap:8px;align-items:center;padding:3px 0;font-size:12.5px">${kchip(e.kind)}<b>${esc(nm(e.agentId))}</b><span style="color:var(--mut)">${esc(e.text)}</span><span class="sum" style="margin-left:auto">${ft(e.at)}</span></div>`).join("")||"No events yet."}</div>`)};
 render();
 
 /* ===== v11: accounts, private workspaces, simple Connect flow ===== */
 (function(){
 const st=document.createElement("style");st.textContent=`#fmauth{position:fixed;inset:0;z-index:9999;background:#0b1020;display:none;align-items:center;justify-content:center;padding:16px}#fmauth.on{display:flex}#fmauth .bx{background:#fff;color:#0f172a;border-radius:16px;padding:26px;width:380px;max-width:100%;font-family:system-ui,sans-serif}#fmauth input{width:100%;padding:10px;margin:0 0 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;box-sizing:border-box}#fmauth h2{margin:0 0 4px}#fmauth .e{color:#dc2626;font-size:12.5px;min-height:16px;margin-bottom:6px}#fmauth a{color:#2563eb;cursor:pointer;font-size:12.5px}#ob,#away{display:none!important}.cw .opt{display:block;width:100%;text-align:left;padding:12px;margin-bottom:8px;white-space:normal}.cw .seg{display:grid;gap:8px;margin:8px 0 12px}.cw .seg label{border:1px solid #cbd5e1;border-radius:10px;padding:9px 11px;cursor:pointer;display:block}.cw .seg input{width:auto!important;margin:0 8px 0 0!important}.cw input.t{width:100%;padding:9px;margin-bottom:8px;box-sizing:border-box}.cw .er{color:#dc2626;font-size:12.5px;min-height:16px;margin:4px 0}`;document.head.appendChild(st);
-const au=document.createElement("div");au.id="fmauth";au.innerHTML=`<div class="bx"><h2>Foreman</h2><div style="color:#64748b;font-size:13px;margin-bottom:14px" id="aus">Sign in to manage your AI employees.</div><input id="aue" type="email" placeholder="Email" autocomplete="email"><input id="aup" type="password" placeholder="Password (8+ characters)" autocomplete="current-password"><input id="auc" placeholder="Claim code (only if you were given one)" style="display:none"><div class="e" id="aur"></div><button class="btn pri" id="aug" style="width:100%">Sign in</button><div style="margin-top:12px;display:flex;justify-content:space-between"><a id="aum">Create an account</a><a id="aucl" style="color:#94a3b8">Have a claim code?</a></div></div>`;document.body.appendChild(au);
+const au=document.createElement("div");au.id="fmauth";au.innerHTML=`<div class="bx"><h2>Black Box</h2><div style="color:#64748b;font-size:13px;margin-bottom:14px" id="aus">Sign in to manage your AI employees.</div><input id="aue" type="email" placeholder="Email" autocomplete="email"><input id="aup" type="password" placeholder="Password (8+ characters)" autocomplete="current-password"><input id="auc" placeholder="Claim code (only if you were given one)" style="display:none"><div class="e" id="aur"></div><button class="btn pri" id="aug" style="width:100%">Sign in</button><div style="margin-top:12px;display:flex;justify-content:space-between"><a id="aum">Create an account</a><a id="aucl" style="color:#94a3b8">Have a claim code?</a></div></div>`;document.body.appendChild(au);
 let mode="in";const A=id=>document.getElementById(id);
-function setMode(m){mode=m;A("aug").textContent=m==="in"?"Sign in":"Create account";A("aum").textContent=m==="in"?"Create an account":"I already have an account";A("aus").textContent=m==="in"?"Sign in to manage your AI employees.":"Foreman lets you decide what your AI employees can do, and keeps a receipt of everything they do.";A("aup").autocomplete=m==="in"?"current-password":"new-password";if(m==="in")A("auc").style.display="none"}
+function setMode(m){mode=m;A("aug").textContent=m==="in"?"Sign in":"Create account";A("aum").textContent=m==="in"?"Create an account":"I already have an account";A("aus").textContent=m==="in"?"Sign in to manage your AI employees.":"Black Box lets you decide what your AI employees can do, and keeps a receipt of everything they do.";A("aup").autocomplete=m==="in"?"current-password":"new-password";if(m==="in")A("auc").style.display="none"}
 A("aum").onclick=()=>setMode(mode==="in"?"up":"in");A("aucl").onclick=()=>{setMode("up");A("auc").style.display="block";A("auc").focus()};
 async function go(){A("aur").textContent="";const b={email:A("aue").value.trim(),password:A("aup").value};if(mode==="up"&&A("auc").value.trim())b.claim=A("auc").value.trim();
  const r=await fetch(API+"/api/auth/"+(mode==="in"?"login":"signup"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const j=await r.json().catch(()=>({}));
@@ -848,10 +848,10 @@ let CW={};
 openAdd=function(){CW={step:0,pre:"balanced"};A("modal").classList.add("on");draw()};
 function shell(h,back){A("modal").querySelector(".box").innerHTML=`<div class="cw">${h}<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn" id="mc2">${back||"Close"}</button></div></div>`;A("mc2").onclick=()=>{A("modal").classList.remove("on");render()}}
 function draw(){const P=((LS&&LS.providers)||[]).slice().sort((a,b)=>(a.id==="grok"?-1:b.id==="grok"?1:0));
- if(CW.step===0){shell(`<h3 style="margin:0 0 4px">Connect an AI employee</h3><div class="sum" style="margin-bottom:12px">Step 1 of 2. Which assistant are you connecting?</div>${P.map(p=>`<button class="btn opt" data-p="${p.id}"><b>${EMO9[p.id]||""} ${esc(p.name)}</b>${p.id==="grok"?'<span class="rec">Ready in 30 seconds</span>':""}<div class="sum" style="margin-top:2px">${p.id==="grok"?"Paste one key. It starts working right away.":"Foreman gives you one message to paste into it."}</div></button>`).join("")}`);
+ if(CW.step===0){shell(`<h3 style="margin:0 0 4px">Connect an AI employee</h3><div class="sum" style="margin-bottom:12px">Step 1 of 2. Which assistant are you connecting?</div>${P.map(p=>`<button class="btn opt" data-p="${p.id}"><b>${EMO9[p.id]||""} ${esc(p.name)}</b>${p.id==="grok"?'<span class="rec">Ready in 30 seconds</span>':""}<div class="sum" style="margin-top:2px">${p.id==="grok"?"Paste one key. It starts working right away.":"Black Box gives you one message to paste into it."}</div></button>`).join("")}`);
   document.querySelectorAll(".cw [data-p]").forEach(b=>b.onclick=()=>{CW.p=b.dataset.p;trk("connect_started",CW.p);CW.pn=(P.find(x=>x.id===CW.p)||{}).name;CW.n=CW.n||(CW.p==="grok"?"Grok Assistant":W.p==="muse"?"Muse Assistant":"");CW.step=1;draw()});return}
  if(CW.step===1){const g=CW.p==="grok";
-  shell(`<h3 style="margin:0 0 4px">Set up ${esc(CW.pn||"your employee")}</h3><div class="sum" style="margin-bottom:10px">Step 2 of 2. You can change all of this later in Permissions.</div><input class="t" id="cwn" placeholder="Name, for example Sales Helper" value="${esc(CW.n||"")}"><input class="t" id="cwr" placeholder="What is its job? (optional)" value="${esc(CW.r||"")}"><div style="font-weight:600;margin:6px 0">How much should it do on its own?</div>${PRE.map(x=>`<label class="pc ${CW.pre===x[0]?"on":""}" data-v="${x[0]}"><input type="radio" name="pre" value="${x[0]}"><b>${x[1]}</b>${x[0]==="balanced"?'<span class="rec">Recommended</span>':""}<div class="sum">${x[2]}</div>${chips(x[3])}</label>`).join("")}${g?`<div style="font-weight:600;margin:8px 0 4px">Your Grok key</div><div class="sum" style="margin-bottom:4px">Get one at <a href="https://console.x.ai" target="_blank" rel="noopener">console.x.ai</a>. Foreman stores it encrypted and never shows it again.</div><input class="t" id="cwk" type="password" placeholder="xai-..." autocomplete="off">`:`<div class="sum">Next you get one message to paste into ${esc(CW.pn||"it")}.</div>`}<div id="cwe"></div><div style="display:flex;justify-content:space-between;margin-top:6px"><button class="btn" id="cwb">Back</button><button class="btn pri" id="cwg">Connect</button></div>`,"Cancel");
+  shell(`<h3 style="margin:0 0 4px">Set up ${esc(CW.pn||"your employee")}</h3><div class="sum" style="margin-bottom:10px">Step 2 of 2. You can change all of this later in Permissions.</div><input class="t" id="cwn" placeholder="Name, for example Sales Helper" value="${esc(CW.n||"")}"><input class="t" id="cwr" placeholder="What is its job? (optional)" value="${esc(CW.r||"")}"><div style="font-weight:600;margin:6px 0">How much should it do on its own?</div>${PRE.map(x=>`<label class="pc ${CW.pre===x[0]?"on":""}" data-v="${x[0]}"><input type="radio" name="pre" value="${x[0]}"><b>${x[1]}</b>${x[0]==="balanced"?'<span class="rec">Recommended</span>':""}<div class="sum">${x[2]}</div>${chips(x[3])}</label>`).join("")}${g?`<div style="font-weight:600;margin:8px 0 4px">Your Grok key</div><div class="sum" style="margin-bottom:4px">Get one at <a href="https://console.x.ai" target="_blank" rel="noopener">console.x.ai</a>. Black Box stores it encrypted and never shows it again.</div><input class="t" id="cwk" type="password" placeholder="xai-..." autocomplete="off">`:`<div class="sum">Next you get one message to paste into ${esc(CW.pn||"it")}.</div>`}<div id="cwe"></div><div style="display:flex;justify-content:space-between;margin-top:6px"><button class="btn" id="cwb">Back</button><button class="btn pri" id="cwg">Connect</button></div>`,"Cancel");
   document.querySelectorAll(".cw .pc").forEach(l=>l.onclick=()=>{CW.pre=l.dataset.v;document.querySelectorAll(".cw .pc").forEach(x=>x.classList.toggle("on",x===l))});
   A("cwb").onclick=()=>{CW.n=A("cwn").value;CW.r=A("cwr").value;CW.step=0;draw()};
   A("cwg").onclick=async()=>{const n=A("cwn").value.trim();CW.n=n;CW.r=A("cwr").value.trim();const er=m=>{A("cwe").innerHTML=`<div class="bad">${esc(m)}</div>`;A("cwg").disabled=false;A("cwg").textContent="Connect"};
@@ -911,8 +911,8 @@ function draw(){
  if(W.step===0){shell(`<h3 style="margin:0 0 10px">Which assistant do you want to add?</h3>${OPT.map(o=>`<button class="btn opt" data-p="${o.id}" ${o.soon?'disabled style="opacity:.55;cursor:not-allowed"':""}><b>${o.emo} ${o.name}</b>${o.soon?'<span class="rec" style="color:#64748b;border-color:#94a3b8">Coming soon</span>':""}<div class="sum" style="margin-top:2px">${o.line}</div></button>`).join("")}<div class="sum">Muse Spark uses a separate Meta Model API account. Connecting checks model access only; tasks may cost money.</div>`);
   document.querySelectorAll(".cw [data-p]:not([disabled])").forEach(b=>b.onclick=()=>{W.p=b.dataset.p;W.o=OPT.find(x=>x.id===W.p);trk("connect_started",W.p);W.n=W.n||(W.p==="grok"?"Grok Assistant":W.p==="muse"?"Muse Assistant":"");W.step=1;draw()});return}
  if(W.step===1){const meta=W.p==="muse",g=W.p==="grok"||meta;
-  shell(g?`<h3 style="margin:0 0 6px">Authorize ${meta?"Muse Spark":"Grok"}</h3><div class="sum" style="margin-bottom:10px">${meta?"Open the Meta Model API dashboard, create an API key, and copy it here. Connecting only reads model access. No task runs automatically; later tasks use separately billed Meta tokens.":"Sign in to your xAI account and copy an access key."} Foreman keeps the key encrypted and never shows it again.</div><a class="btn" href="${meta?"https://dev.meta.ai/":"https://console.x.ai"}" target="_blank" rel="noopener" style="display:inline-block;margin-bottom:10px;text-decoration:none">Open ${meta?"Meta Model API":"xAI"} and sign in</a><input class="t" id="wk" type="password" placeholder="Paste your access key here" autocomplete="off"><div id="we"></div><div style="display:flex;justify-content:space-between;margin-top:6px"><button class="btn" id="wb">Back</button><button class="btn pri" id="wn">Verify and continue</button></div>`
-   :`<h3 style="margin:0 0 6px">Authorize ${esc(W.o.name)}</h3><div class="sum" style="margin-bottom:10px">Foreman creates a private link for ${esc(W.o.name)} and gives you one message to send to it at the end. There is nothing to install and nothing to configure.</div><div class="sum" style="background:#f1f5f9;border-radius:10px;padding:10px;margin-bottom:10px">You stay in control. It can only do what you allow in the next steps.</div><div style="display:flex;justify-content:space-between"><button class="btn" id="wb">Back</button><button class="btn pri" id="wn">Continue</button></div>`);
+  shell(g?`<h3 style="margin:0 0 6px">Authorize ${meta?"Muse Spark":"Grok"}</h3><div class="sum" style="margin-bottom:10px">${meta?"Open the Meta Model API dashboard, create an API key, and copy it here. Connecting only reads model access. No task runs automatically; later tasks use separately billed Meta tokens.":"Sign in to your xAI account and copy an access key."} Black Box keeps the key encrypted and never shows it again.</div><a class="btn" href="${meta?"https://dev.meta.ai/":"https://console.x.ai"}" target="_blank" rel="noopener" style="display:inline-block;margin-bottom:10px;text-decoration:none">Open ${meta?"Meta Model API":"xAI"} and sign in</a><input class="t" id="wk" type="password" placeholder="Paste your access key here" autocomplete="off"><div id="we"></div><div style="display:flex;justify-content:space-between;margin-top:6px"><button class="btn" id="wb">Back</button><button class="btn pri" id="wn">Verify and continue</button></div>`
+   :`<h3 style="margin:0 0 6px">Authorize ${esc(W.o.name)}</h3><div class="sum" style="margin-bottom:10px">Black Box creates a private link for ${esc(W.o.name)} and gives you one message to send to it at the end. There is nothing to install and nothing to configure.</div><div class="sum" style="background:#f1f5f9;border-radius:10px;padding:10px;margin-bottom:10px">You stay in control. It can only do what you allow in the next steps.</div><div style="display:flex;justify-content:space-between"><button class="btn" id="wb">Back</button><button class="btn pri" id="wn">Continue</button></div>`);
   A("wb").onclick=()=>{W.step=0;draw()};
   A("wn").onclick=async()=>{if(!g){W.step=2;draw();return}
    const k=A("wk").value.trim();const er=m=>{A("we").innerHTML=`<div class="bad">${esc(m)}</div>`;A("wn").disabled=false;A("wn").textContent="Verify and continue"};if(!k)return er("Paste your access key first.");
@@ -1048,7 +1048,7 @@ body[data-theme=evening] .room{filter:brightness(.8) saturate(.85)}body[data-the
 @media(max-width:760px){#reqs{min-width:0;width:100%}.req{min-width:0;width:100%;flex-wrap:wrap}.req .q{min-width:0;white-space:normal;overflow-wrap:anywhere;flex:1}.req .bt{flex:0 0 100%;justify-content:flex-end}.req .rav{flex:none}}
 </style>
 <style id="v16-living-office">
-/* Foreman Living Office — premium spatial workspace */
+/* Black Box Living Office — premium spatial workspace */
 :root{--ac:#5b5ce2;--ink:#172033;--mut:#687386;--line:#e3e7ee;--canvas:#e8ecec;--shadow:0 18px 46px -28px rgba(19,31,48,.42)}
 body{background:#f6f7f9;color:var(--ink)}
 .top{height:58px;padding:0 22px;background:rgba(252,253,254,.9);border-bottom:1px solid #e7e9ee;box-shadow:none;backdrop-filter:blur(18px)}
@@ -1582,5 +1582,48 @@ setInterval(()=>{
  const a=agents.find(a=>a.st==="idle"&&!a.revoked&&!a.killed&&!a._motion&&!a._ho&&a._pos!=="appr"&&!/^Offline:/.test(a.now)&&Date.now()>=(a._nextAmbient||0));
  if(a)ambientTrip(a);
 },4000);
+</script>
+
+<style id="phone-office">
+/* Phone office: each employee gets a stable, readable workstation. Desktop keeps the open floor. */
+@media(max-width:760px){
+ :root{--s:1}
+ .top{display:flex;flex-wrap:wrap;padding:10px 12px;gap:8px;height:auto;min-height:0}
+ .top .brand{font-size:12px;letter-spacing:.1em}.top .mark{width:24px;height:24px}
+ .top #addb{margin-left:auto;font-size:12px;min-height:44px;padding:8px 10px;white-space:normal;max-width:190px}
+ .top #fmso{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+ .top nav{order:10;display:flex;width:100%;margin:0!important;overflow-x:auto;gap:2px;padding:2px;background:#eef3f8;border-radius:12px;flex:none}
+ .top nav a{min-height:44px;display:flex;align-items:center;justify-content:center;padding:8px 10px;font-size:12px;flex:1}
+ .top .sum,.top .sp{display:none}
+ #strip.clear{font-size:12px;white-space:normal;padding:10px 12px}
+ #strip.hot{max-height:180px}#strip .req .btn{min-height:44px}
+ main{min-height:0;overflow:hidden}#v-office{height:100%;overflow-y:auto;padding:12px!important;position:relative}
+ #floor.floor{position:relative!important;inset:auto!important;min-height:100%;height:auto;border-radius:18px;padding:16px 12px 18px;overflow:visible!important;background:linear-gradient(155deg,#edf7fc,#f7f4ef)!important;box-shadow:inset 0 0 0 1px #dce5eb}
+ #floor::before{content:"YOUR OFFICE";display:block;position:static;margin:0 0 12px;color:#40586b;font-size:11px;font-weight:800;letter-spacing:.12em}
+ #floor::after,#floor>.room,#floor>.mat,#floor>#deskl,#floor>.office-architecture{display:none!important}
+ #chl{position:relative;inset:auto;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;pointer-events:auto}
+ #chl .ch{position:relative!important;left:auto!important;top:auto!important;z-index:auto!important;transform:none!important;width:100%;height:auto;min-height:104px;transition:none!important;border:1px solid #dbe3eb;border-left:4px solid var(--col);border-radius:14px;background:#ffffffed;box-shadow:0 5px 14px -10px #35495c;padding:14px 12px;overflow:hidden;touch-action:manipulation}
+ #chl .ch .body{position:relative;inset:auto;display:grid;grid-template-columns:48px minmax(0,1fr);gap:12px;align-items:center}
+ #chl .ch .avs{width:40px;height:64px;grid-column:1;grid-row:1;filter:drop-shadow(0 3px 2px #34495c25)!important}
+ #chl .ch .tag2{position:static;transform:none;min-width:0;max-width:none;width:100%;padding:0;border:0;border-radius:0;background:none;box-shadow:none;white-space:normal;backdrop-filter:none;grid-column:2;grid-row:1;text-align:left}
+ #chl .ch .tag2 .nm{font-size:15px;line-height:1.3;overflow-wrap:anywhere}
+ #chl .ch .tag2 small{display:block;max-width:none;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;font-size:12px;line-height:1.4;color:#526477}
+ #chl .ch .tag2 .meta{display:block;font-size:10px;color:#788696;margin-top:3px}
+ #chl .ch .tag2 .st2{margin-top:5px;color:#40576b}
+ #chl .ch .bdg{left:32px;top:0;transform:none;width:20px;height:20px;font-size:11px;border-width:2px}
+ #chl .ch .bub,#chl .ch .gnd,#chl .ch .tok{display:none!important}
+ #chl .ch.needs{background:#fffbeb;border-color:#f4ce75}#chl .ch.blocked{background:#fff1f2;border-color:#f3b8c0}
+ #chl .ch:focus-visible{outline:3px solid #6366f1;outline-offset:2px}
+ #goalbar{padding:10px 12px!important;gap:8px;flex-wrap:wrap;min-height:0!important}#goalbar #gf{min-width:0;width:100%;gap:8px}#goalbar #gi{min-width:0;font-size:16px;min-height:46px;padding:10px 12px}#goalbar .btn{min-height:46px}#goalbar .mobemer{min-height:44px;margin-left:auto;font-size:12px}
+ .btn{min-height:44px}.modal .box,.away .box,.ob .box{max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow-y:auto}
+ .dr{max-height:90dvh;padding:18px 16px 28px}.dr input,.dr select,.modal input,.modal select{font-size:16px}
+ .view:not(#v-office) .sum{white-space:normal;flex-wrap:wrap}.view:not(#v-office) .grid{grid-template-columns:minmax(0,1fr)}
+ .toast{max-width:calc(100vw - 24px);width:max-content;white-space:normal;top:12px}
+}
+</style>
+<script>
+/* The existing employee drawer is also reachable with keyboard and assistive controls. */
+const _phoneMkEl=mkEl;mkEl=function(a){_phoneMkEl(a);a.el.setAttribute("role","button");a.el.tabIndex=0;a.el.setAttribute("aria-label","Open "+a.name+" details");a.el.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();openDr(a.id)}}};
+agents.forEach(a=>{if(a.el){a.el.setAttribute("role","button");a.el.tabIndex=0;a.el.setAttribute("aria-label","Open "+a.name+" details");a.el.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();openDr(a.id)}}}});
 </script>
 </body></html>
