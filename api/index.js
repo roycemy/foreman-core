@@ -468,6 +468,31 @@ async function mcpHandle(agent, m) {
   if (m.id === undefined) return null;
   return { jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'method not found' } };
 }
+// ---------- spend review scaffold: NO payment execution ----------
+// Records owner intent only. No provider adapter or execution token exists here.
+async function listSpendRequests(){const ids=(await r(['SMEMBERS','fm:spendRequests']));if(!ids.length)return [];return (await r(['MGET',...ids.map(id=>'fm:spendRequest:'+id)])).filter(Boolean).map(JSON.parse).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,300);}
+async function spendSummary(){const requests=await listSpendRequests(),bots={};for(const q of requests){const b=bots[q.agentId]||(bots[q.agentId]={agentId:q.agentId,agentName:q.agentName,requestedCents:0,approvedCents:0,deniedCents:0,chargedCents:0,pendingCount:0});b.requestedCents+=q.amountCents;if(q.status==='approved_not_connected')b.approvedCents+=q.amountCents;if(q.status==='denied')b.deniedCents+=q.amountCents;if(q.status==='pending_review')b.pendingCount++;}return {paymentConnected:false,notificationConnected:false,currency:'USD',requests,bots:Object.values(bots),receipts:requests.filter(q=>q.decisionReceipt).map(q=>q.decisionReceipt),metricsScope:'Latest 300 requests. Approved amounts are intent, not charges.'};}
+async function newSpendRequest(agent,body){
+ const a=await getJ('fm:agent:'+agent.id);if(!a||a.status!=='active'||await r(['GET','fm:kill']))return {status:403,body:{error:'Worker is off; no spend request accepted'}};
+ const text=(v,n)=>typeof v==='string'&&v.trim().length>0&&v.trim().length<=n;
+ if(!Number.isSafeInteger(body.amountCents)||body.amountCents<=0||body.amountCents>100000000||body.currency!=='USD'||!text(body.merchant,120)||!text(body.accountLabel,120)||!text(body.purpose,500)||!text(body.undoTerms,500)||!text(body.sourceId,120))return {status:400,body:{error:'USD amountCents (positive integer), merchant, accountLabel, purpose, undoTerms and sourceId are required'}};
+ if(body.taskId){const t=await getJ('fm:task:'+body.taskId);if(!t||t.assignee!==a.id)return {status:400,body:{error:'Task must belong to this worker'}};}
+ const details={taskId:body.taskId||null,amountCents:body.amountCents,currency:'USD',merchant:body.merchant.trim(),accountLabel:body.accountLabel.trim(),purpose:body.purpose.trim(),undoTerms:body.undoTerms.trim()};
+ const id='spend_'+sha(a.id+':'+body.sourceId).slice(0,24),key='fm:spendRequest:'+id,existing=await getJ(key);
+ if(existing)return {status:sha(JSON.stringify(existing.details))===sha(JSON.stringify(details))?200:409,body:sha(JSON.stringify(existing.details))===sha(JSON.stringify(details))?{request:existing}:{error:'sourceId already has different spend details'}};
+ const q={id,agentId:a.id,agentName:a.name,...details,details,detailsHash:sha(JSON.stringify(details)),status:'pending_review',createdAt:now(),expiresAt:new Date(Date.now()+86400000).toISOString(),paymentConnected:false,notificationStatus:'in_app_only',chargedCents:0};
+ const won=await r(['SET',key,JSON.stringify(q),'NX']);if(!won){const old=await getJ(key);return {status:old.detailsHash===q.detailsHash?200:409,body:old.detailsHash===q.detailsHash?{request:old}:{error:'sourceId conflict'}};}
+ await r(['SADD','fm:spendRequests',id]);bust();return {status:201,body:{request:q}};
+}
+async function reviewSpend(id,decision,detailsHash){const key='fm:spendRequest:'+id;
+ for(let attempt=0;attempt<8;attempt++){const raw=await r(['GET',key]);if(!raw)return {status:404,body:{error:'not found'}};const q=JSON.parse(raw);
+ if(q.detailsHash!==detailsHash)return {status:409,body:{error:'Spend details changed; review this request again'}};
+ if(q.status!=='pending_review')return {status:200,body:{request:q}};
+ const a=await getJ('fm:agent:'+q.agentId),blocked=!a||a.status!=='active'||await r(['GET','fm:kill']);
+ q.status=decision==='deny'?'denied':Date.parse(q.expiresAt)<=Date.now()?'expired':blocked?'blocked':'approved_not_connected';q.decidedAt=now();q.decisionReceipt={id:'review_'+id,at:q.decidedAt,requestId:id,agentId:q.agentId,agentName:q.agentName,merchant:q.merchant,amountCents:q.amountCents,currency:q.currency,outcome:q.status,chargedCents:0,kind:'decision_record',detailsHash:q.detailsHash,note:'Decision record only. No payment connection, no charge and no vendor receipt.'};
+ const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(q)]);if(won===1){bust();return {status:200,body:{request:q,receipt:q.decisionReceipt}};}}
+ return {status:409,body:{error:'Another decision is being saved; refresh'}};
+}
 // ---------- http ----------
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -497,6 +522,8 @@ async function routes(req, res, path, body, agentPre) {
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
       const agent = agentPre;
+      if(path==='/gateway/spend-requests'&&req.method==='POST')return send(await newSpendRequest(agent,body));
+      {const sm=path.match(/^\/gateway\/spend-requests\/(spend_[a-f0-9]+)$/);if(sm&&req.method==='GET'){const q=await getJ('fm:spendRequest:'+sm[1]);return q&&q.agentId===agent.id?res.json({request:q}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/chat-task' && req.method === 'POST') return send(await chatTask(agent,body));
       if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'chat'});return res.json({status:'ok'});}
       {const tm=path.match(/^\/gateway\/tasks\/(\w+)$/);if(tm&&tm[1]!=='next'&&req.method==='GET'){const t=await taskForAgent(agent,tm[1]);return t?res.json({task:t}):res.status(404).json({error:'not found'});}}
@@ -516,6 +543,8 @@ async function routes(req, res, path, body, agentPre) {
       const o = await mcpHandle(agent, body); return o ? res.json(o) : res.status(202).end(); }
     // --- owner-facing ---
     if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started'); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
+    if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
+    {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
     if (path === '/state') return res.json(await fullState());
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
