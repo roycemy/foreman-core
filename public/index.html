@@ -338,7 +338,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const $=s=>document.querySelector(s);const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const money=n=>"$"+n.toFixed(2);const now=()=>new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"});
 /* floor */
-function homeOf(a){const r=ROOMS[a.room],s=SLS[a.slot];return [r.x+r.w*s[0]/100,r.y+r.h*s[1]/100]}
+function homeOf(a){const r=ROOMS[a.room],s=SLS[a.slot%SLS.length];return [r.x+r.w*s[0]/100,r.y+r.h*s[1]/100]}
 function buildFloor(){let h="";const bx=r=>`left:${r.x}%;top:${r.y}%;width:${r.w}%;height:${r.h}%`;
  h+=`<div class="office-architecture" aria-hidden="true">
   <div class="sunwash"></div><div class="walkway main-walk"></div><div class="walkway cross-walk"></div>
@@ -620,10 +620,12 @@ let LS=null,SIG="",nextN=0;const numOf={};
 const ft=iso=>new Date(iso).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"});
 const cents=c=>"$"+(c/100).toFixed(2);
 const OUTI={completed:"\u2705",blocked:"\u26D4",denied:"\u{1F6AB}",failed:"\u26A0\uFE0F"};
-function mkAgent(d,i){return {id:d.id,name:d.name,emo:d.live?"\u{1F52D}":"\u{1F916}",col:PALETTE[i%PALETTE.length],room:ROOMK[i%ROOMK.length],role:d.role||"Connected agent",level:d.live?"Live agent":"Agent",policy:{},prov:d.provider,spent:0,actions:0,outcomes:0,outLabel:"completed actions",script:[],i:0,st:"idle",now:"Standing by",done:[],hist:[],tools:{},killed:false,revoked:false,lock:false,carry:null,bub:null,x:0,y:0,slot:0,vs,av:Object.assign({},PRESETS[i%PRESETS.length]),_pos:"home"}}
-function structural(s){const keep=new Map(agents.map(a=>[a.id,a]));const next=s.agents.map((d,i)=>keep.get(d.id)||mkAgent(d,i));agents.splice(0,agents.length,...next);
- for(const k in byId)delete byId[k];agents.forEach(a=>byId[a.id]=a);const cnt={};agents.forEach(a=>{a.slot=cnt[a.room]=(cnt[a.room]||0);cnt[a.room]++});buildFloor();agents.forEach(a=>a._pos="home")}
-function applyState(s){LS=s;const sig=s.agents.map(a=>a.id).join(",");if(sig!==SIG){SIG=sig;structural(s)}
+function mkAgent(d,i){return {id:d.id,name:d.name,emo:d.live?"\u{1F52D}":"\u{1F916}",col:PALETTE[i%PALETTE.length],room:ROOMK.includes(d.room)?d.room:ROOMK[i%ROOMK.length],role:d.role||"Connected agent",level:d.live?"Live agent":"Agent",policy:{},prov:d.provider,spent:0,actions:0,outcomes:0,outLabel:"completed actions",script:[],i:0,st:"idle",now:"Standing by",done:[],hist:[],tools:{},killed:false,revoked:false,lock:false,carry:null,bub:null,x:0,y:0,slot:0,vs,av:Object.assign({},PRESETS[i%PRESETS.length]),_pos:"home"}}
+function structural(s){const keep=new Map(agents.map(a=>[a.id,a])),moves=[];const next=s.agents.map((d,i)=>{const a=keep.get(d.id)||mkAgent(d,i),room=ROOMK.includes(d.room)?d.room:ROOMK[i%ROOMK.length];if(a.room!==room){moves.push({a,x:a.x,y:a.y});if(typeof stopWorkMotion==="function")stopWorkMotion(a);a._walkEpoch=(a._walkEpoch||0)+1;a._ho=false;a.room=room;}return a;});agents.splice(0,agents.length,...next);
+ for(const k in byId)delete byId[k];agents.forEach(a=>byId[a.id]=a);const cnt={};agents.forEach(a=>{a.slot=cnt[a.room]=(cnt[a.room]||0);cnt[a.room]++});buildFloor();agents.forEach(a=>a._pos="home");
+ moves.forEach(({a,x,y})=>{const pending=s.requests.some(q=>q.agentId===a.id&&q.status==="pending");if(matchMedia("(prefers-reduced-motion: reduce)").matches||pending||a.revoked||s.killed)return;setPos(a,x,y,0);a._roomMoving=true;a.bub="Moving to "+(a.room==="marketing"?"Creative Studio":ROOMS[a.room].n);paint(a);requestAnimationFrame(()=>requestAnimationFrame(()=>{goHome(a).finally(()=>{a._roomMoving=false;a._nextAmbient=Date.now()+15000;a.bub=null;paint(a);});}));});
+}
+function applyState(s){LS=s;const sig=s.agents.map(a=>a.id+":"+(a.room||"")).join(",");if(sig!==SIG){SIG=sig;structural(s)}
  const pend=s.requests.filter(q=>q.status==="pending");
  G.approvals=pend.map(q=>{if(!numOf[q.id])numOf[q.id]=++nextN;const a=byId[q.agentId];return a?{id:numOf[q.id],reqId:q.id,a,t:{a:q.action},text:`<b>${esc(q.agentName)}</b> wants to <b>${esc(q.label)}</b>${q.params&&(q.params.title||q.params.url)?" \u00B7 "+esc(q.params.title||q.params.url):""} \u00B7 costs ${q.costCents}\u00A2`}:null}).filter(Boolean);
  G.paused=!!s.killed;const today=s.now.slice(0,10);G.completedToday=s.receipts.filter(r=>r.outcome==="completed"&&r.at.slice(0,10)===today).length;
@@ -670,6 +672,7 @@ window.revokeBot=async(id,btn)=>{const a=byId[id];if(a.revoked){await api("/api/
  if(!btn.dataset.arm){btn.dataset.arm="1";btn.textContent="Tap again to confirm revoke";setTimeout(()=>{if(btn.dataset.arm){btn.dataset.arm="";if(DR)renderDr()}},3000);return}
  await api("/api/agents/"+id+"/revoke","POST");toast("Access revoked. Black Box will now block every action from "+a.name);await sync()};
 window.saveLimits=async id=>{const p=document.getElementById("lim-p").value,d=document.getElementById("lim-d").value;await api("/api/agents/"+id+"/limits","POST",{perActionCents:p===""?null:+p,dailyCents:d===""?null:+d});toast("Limits saved");await sync()};
+window.moveRoom=async(id,room)=>{const a=byId[id];if(!a||!ROOMK.includes(room))return;try{const j=await api("/api/agents/"+id+"/room","POST",{room});if(j.error||!j.agent){toast(j.error||"Could not move worker");return}await sync();toast(a.name+" moved to "+(room==="marketing"?"Creative Studio":ROOMS[room].n));}catch(e){toast("Could not move worker. Try again.")}};
 window.rmAgent=async id=>{const a=byId[id];if(!a)return;if(!confirm('Remove '+a.name+'? This disconnects this worker and deletes its stored provider key. History is kept. You will need to reconnect it.'))return;try{const j=await api("/api/agents/"+id+"/remove","POST");if(!j.removed){toast(j.error||"Could not remove worker");return}closeDr();toast(a.name+" removed. Reconnect when ready.");await sync()}catch(e){toast("Could not remove worker. Try again.")}};
 pauseAll=async function(on){await api("/api/kill","POST",{on:on===undefined?!G.paused:on});await sync()};
 revokeAll=async function(on){for(const a of agents)await api("/api/agents/"+a.id+"/"+(on?"revoke":"restore"),"POST");await sync()};
@@ -690,6 +693,7 @@ renderDr=function(){const a=byId[DR];if(!a)return;const sc=$("#dr").scrollTop;
  const stl=a.revoked&&a.st==="paused"?"Access revoked":{working:"Working",needs:"Needs you",blocked:"Blocked",done:"Just finished",idle:"Idle",paused:"Paused"}[a.st]||a.st;
  $("#dr").innerHTML=`<button class="x" onclick="closeDr()">\u00D7</button><div class="hd"><div class="big">${avatarSVG(a.av)}</div><div><h2>${esc(a.name)}</h2><div class="rl">${esc(a.role)}</div><div class="rl">${esc(a.prov||"Agent")}</div><span class="stp" style="border-color:${a.st==="needs"?"var(--amber)":a.st==="blocked"||a.revoked?"var(--red)":"var(--line)"}">${ICON[a.st]||""} ${stl}</span></div></div>
  <h4>Current status</h4><div>${esc(a.now)}</div>
+ <h4>Home room</h4><label for="worker-room" class="rl">Move this worker</label><select id="worker-room" style="display:block;width:100%;min-height:44px;padding:9px;margin-top:6px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--tx)" onchange="moveRoom('${a.id}',this.value)">${ROOMK.map(r=>`<option value="${r}"${a.room===r?" selected":""}>${{ops:"Ops Hub",sales:"Sales Studio",marketing:"Creative Studio",finance:"Finance",support:"Support Desk"}[r]}</option>`).join("")}</select><div class="rl" style="margin-top:5px">Changes its home desk only. Tasks and permissions stay the same.</div>
  <h4>Permissions</h4><div class="pg">${Object.keys(ACTIONS).map(k=>`<div>${ACTIONS[k]}</div><div class="seg">${["AUTO","ASK","NEVER"].map(l=>`<button class="${l}${a.policy[k]===l?" on":""}" onclick="setPol('${a.id}','${k}','${l}')">${l}</button>`).join("")}</div>`).join("")}</div>
  <h4>Recent activity</h4><ul>${a.hist.slice(0,8).map(x=>`<li>${esc(x)}</li>`).join("")||"<li>No activity yet</li>"}</ul>
  <h4>Controls</h4><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="closeDr();location.hash='#receipts'">View receipts</button><button class="btn" onclick="closeDr();pickBot('${a.id}');location.hash='#policies'">Edit permissions and limits</button>
@@ -732,7 +736,7 @@ vs=function(){return this.st==="done"||this.st==="handoff"||this.st==="meeting"?
 agents.forEach(a=>a.vs=vs);
 const _mk=mkAgent;mkAgent=function(d,i){const a=_mk(d,i);a.vs=vs;a.emo=EMO9[d.providerId]||"\u{1F916}";a.level=d.provider||"Agent";return a};
 async function hoAnim(a,b,txt){if(a._ho)return;a._ho=true;a.carry=txt;paint(a);try{const [bx,by]=homeOf(b);await walk(a,bx+(a.x<bx?-6:6),by+1);flash(b,"Received a task",3500);await sleep(900);a.carry=null;paint(a);await goHome(a)}catch(e){}a._ho=false}
-applyState=function(s){LS=s;const sig=s.agents.map(a=>a.id).join(",");if(sig!==SIG){SIG=sig;structural(s)}
+applyState=function(s){LS=s;const sig=s.agents.map(a=>a.id+":"+(a.room||"")).join(",");if(sig!==SIG){SIG=sig;structural(s)}
  const pend=s.requests.filter(q=>q.status==="pending");
  G.approvals=pend.map(q=>{if(!numOf[q.id])numOf[q.id]=++nextN;const a=byId[q.agentId];return a?{id:numOf[q.id],reqId:q.id,a,t:{a:q.action},text:`<b>${esc(q.agentName)}</b> wants to <b>${esc(q.label)}</b>${q.params&&(q.params.title||q.params.url||q.params.to)?" \u00B7 "+esc(q.params.title||q.params.url||q.params.to):""} \u00B7 costs ${q.costCents}\u00A2`}:null}).filter(Boolean);
  G.paused=!!s.killed;const today=s.now.slice(0,10);G.completedToday=s.receipts.filter(r=>r.outcome==="completed"&&r.at.slice(0,10)===today).length;
@@ -759,7 +763,7 @@ applyState=function(s){LS=s;const sig=s.agents.map(a=>a.id).join(",");if(sig!==S
    else if(k==="HANDOFF"&&age<10){st="handoff";now=S.text;const b=byId[S.toAgentId];if(b&&a._hseen!==S.eventId&&age<10){a._hseen=S.eventId;hoAnim(a,b,"Task")}}
    else if(age>=600&&seen>1200){now="Offline: no activity in "+Math.round(seen/60)+" min"}
    else now="Last: "+S.text}
-  a.st=st;a.now=now;if(!a._ho&&!a._motion)a.bub=null;paint(a);
+  a.st=st;a.now=now;if(!a._ho&&!a._motion&&!a._roomMoving)a.bub=null;paint(a);
   animateWork(a,d,s);
   if(st==="needs"&&a._pos!=="appr"){a._pos="appr";const i=Math.max(0,G.approvals.findIndex(r=>r.a===a));const p=ASLOT[i%ASLOT.length];walk(a,p[0],p[1])}
   else if(st!=="needs"&&a._pos==="appr"){a._pos="home";goHome(a)}});
@@ -1550,7 +1554,7 @@ function animateWork(a,d,s){
  const interrupted=a.revoked||s.killed||["needs","blocked","paused","waiting"].includes(a.st);
  if(interrupted){if(a._motion)stopWorkMotion(a);return}
  if(document.hidden||matchMedia("(prefers-reduced-motion: reduce)").matches)return;
- if(a._motion||a._ho||a._pos==="appr")return;
+ if(a._roomMoving||a._motion||a._ho||a._pos==="appr")return;
  const task=s.tasks.find(t=>t.assignee===a.id&&t.status==="running");
  const state=d.state,age=state?(Date.now()-Date.parse(state.at))/1000:Infinity;
  const active=a.st==="working"&&age<600;
@@ -1587,7 +1591,7 @@ async function ambientTrip(a){
 setInterval(()=>{
  if(document.hidden||G.paused||matchMedia("(prefers-reduced-motion: reduce)").matches||!document.getElementById("v-office").classList.contains("on"))return;
  const busy=agents.filter(a=>a._ambient).length;if(busy>=Math.max(1,Math.ceil(agents.length/3)))return;
- const a=agents.find(a=>a.st==="idle"&&!a.revoked&&!a.killed&&!a._motion&&!a._ho&&a._pos!=="appr"&&!/^Offline:/.test(a.now)&&Date.now()>=(a._nextAmbient||0));
+ const a=agents.find(a=>a.st==="idle"&&!a.revoked&&!a.killed&&!a._roomMoving&&!a._motion&&!a._ho&&a._pos!=="appr"&&!/^Offline:/.test(a.now)&&Date.now()>=(a._nextAmbient||0));
  if(a)ambientTrip(a);
 },4000);
 </script>
