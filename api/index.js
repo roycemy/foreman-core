@@ -49,9 +49,10 @@ const ACTIONS = {
   'web.fetch':   { label: 'Fetch a live web page', costCents: 1, risk: 'read' },
   'notes.write': { label: 'Write a note to the shared workspace', costCents: 2, risk: 'write' },
   'notes.delete':{ label: 'Delete a note from the shared workspace', costCents: 5, risk: 'destructive' },
+  'work.enqueue':{ label: 'Queue an unassigned task', costCents: 0, risk: 'write' },
   'work.handoff':{ label: 'Hand a task to another agent', costCents: 0, risk: 'write' },
 };
-const DEFAULT_PERMS = { 'web.fetch': 'AUTO', 'notes.write': 'ASK', 'notes.delete': 'NEVER', 'work.handoff': 'AUTO' };
+const DEFAULT_PERMS = { 'web.fetch': 'AUTO', 'notes.write': 'ASK', 'notes.delete': 'NEVER', 'work.handoff': 'AUTO', 'work.enqueue': 'ASK' };
 
 function blockedHost(u) {
   try {
@@ -75,6 +76,15 @@ async function execute(agent, action, params) {
   if (action === 'notes.delete') {
     await r(['DEL', 'fm:notes']);
     return { summary: 'Deleted all notes', data: {} };
+  }
+  if (action === 'work.enqueue') {
+    if (typeof params.title !== 'string' || !params.title.trim()) throw new Error('title required');
+    if (params.brief != null && typeof params.brief !== 'string') throw new Error('brief must be text');
+    const slot = Math.floor(Date.now() / 60000), key = `fm:enqueue:${agent.id}:${slot}`;
+    const n = await r(['INCRBY', key, 1]); await r(['EXPIRE', key, 120]);
+    if (n > 10) throw new Error('Queue limit reached: 10 tasks per minute');
+    const t = await newTask({ title: params.title.trim(), brief: params.brief || '', createdBy: agent.id });
+    return { summary: `Queued unassigned task "${t.title}" (${t.id})`, data: { task_id: t.id, status: t.status, assignee: null } };
   }
   if (action === 'work.handoff') {
     const t = await getJ('fm:task:' + params.task_id); if (!t || t.assignee !== agent.id) throw new Error('task not found or not yours');
@@ -369,6 +379,7 @@ const MCP_TOOLS = [
   { name: 'foreman_web_fetch', description: 'Fetch a live https web page through Foreman (policy-gated).', inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] }, action: 'web.fetch' },
   { name: 'foreman_notes_write', description: 'Write a note to the shared workspace through Foreman (policy-gated; may pause for owner approval).', inputSchema: { type: 'object', properties: { title: { type: 'string' }, text: { type: 'string' } }, required: ['title', 'text'] }, action: 'notes.write' },
   { name: 'foreman_notes_delete', description: 'Delete workspace notes through Foreman (policy-gated).', inputSchema: { type: 'object', properties: {} }, action: 'notes.delete' },
+  { name: 'foreman_enqueue', description: 'Queue an unassigned task in your own workspace. This does not start a hosted worker. Policy-gated, zero cost, maximum 10 per minute.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, brief: { type: 'string' } }, required: ['title'] }, action: 'work.enqueue' },
   { name: 'foreman_handoff', description: 'Hand a task to another Foreman agent.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, to: { type: 'string' }, brief: { type: 'string' } }, required: ['task_id', 'to'] }, action: 'work.handoff' },
   { name: 'foreman_report', description: 'Report your activity. kind is one of ' + KINDS.join(', '), inputSchema: { type: 'object', properties: { kind: { type: 'string' }, text: { type: 'string' } }, required: ['kind'] } },
   { name: 'foreman_next_task', description: 'Claim the next task from the Foreman work bus.', inputSchema: { type: 'object', properties: {} } },
