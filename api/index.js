@@ -525,7 +525,7 @@ async function routes(req, res, path, body, agentPre) {
       const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = origin;
       if (prov === 'muse') {
         let k = String(body.apiKey || '').trim().replace(/^MODEL_API_KEY=/i, '').replace(/^Bearer\s+/i, '').trim(); if (k.length > 1 && ((k[0] === '"' && k.endsWith('"')) || (k[0] === "'" && k.endsWith("'")))) k = k.slice(1, -1).trim();
-        if (!/^LLM\|[^\s|]+\|[^\s|]+$/.test(k)) return res.status(400).json({ error: 'Paste your Meta Model API key from dev.meta.ai. It starts with LLM|.' });
+        if (!/^LLM(?:_[^\s_|]+_[^\s|]+|\|[^\s|]+\|[^\s|]+)$/.test(k)) return res.status(400).json({ error: 'Paste your Meta Model API key from dev.meta.ai. It starts with LLM_ (LLM_<id>_<secret>).' });
         let models; try { models = await museModels(k); } catch (e) { return res.status(400).json({ error: e.message }); }
         if (!models.length) return res.status(400).json({ error: 'This Meta account has no available Muse Spark text model. Check model access in the Meta dashboard.' });
         const requested = String(body.model || '');
