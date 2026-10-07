@@ -527,8 +527,8 @@ function renderTray(){const s=$("#strip"),n=G.approvals.length;
  else{s.className="hot";s.innerHTML=`<div class="sh"><i></i>NEEDS YOU \u00B7 ${n} WAITING</div><div class="rq">${G.approvals.map(reqCard).join("")}</div>`}
  const ap=$("#appr");if(ap)ap.classList.toggle("hot",n>0)}
 document.addEventListener("click",e=>{const b=e.target.closest("[data-r]");if(b)resolveReq(+b.dataset.r,b.dataset.d)});
-function refresh(){const c=counts();const idle=agents.filter(a=>a.st==="idle").length;
- $("#sum").innerHTML=`<span class="dt" style="background:#3b82f6"></span><b>${c.working}</b> working \u00B7 <a href="#approvals" class="nlink"><span class="n">${c.needs} need you</span></a> \u00B7 ${G.completedToday} completed today<span class="idl"> \u00B7 ${idle} idle</span>${c.blocked?` \u00B7 <span style="color:var(--red)"><b>${c.blocked}</b> blocked</span>`:""}`;
+function refresh(){const c=counts();const idle=agents.filter(a=>a.st==="idle").length;const sp=agents.reduce((s,a)=>s+(a.spent||0),0),dl=agents.reduce((s,a)=>s+((a.limits&&a.limits.dailyCents!=null)?a.limits.dailyCents:0),0);
+ $("#sum").innerHTML=`<span class="dt" style="background:#3b82f6"></span><b>${c.working}</b> working \u00B7 <a href="#approvals" class="nlink"><span class="n">${c.needs} need you</span></a> \u00B7 <b>${money(sp)}</b>${dl?" of "+money(dl/100):""} spent today \u00B7 ${G.completedToday} completed today<span class="idl"> \u00B7 ${idle} idle</span>${c.blocked?` \u00B7 <span style="color:var(--red)"><b>${c.blocked}</b> blocked</span>`:""}`;
  for(const k in ROOMS){const m=agents.filter(a=>a.room===k);const el=$("#ct-"+k);if(el)el.textContent=" \u00B7 "+m.length}
  agents.forEach(a=>{const d=document.querySelector(`[data-d="${a.room}${a.slot}"]`);if(d)d.className="desk "+(a.joining?"empty":(a.revoked&&a.st!=="working"?"revoked":a.vs()))});
  if(DR)renderDr()}
@@ -1642,7 +1642,8 @@ agents.forEach(a=>{if(a.el){a.el.setAttribute("role","button");a.el.tabIndex=0;a
 (function(){const link=document.createElement('a');link.href='#money';link.dataset.v='money';link.textContent='Money';$('#nav').appendChild(link);const view=document.createElement('section');view.className='view';view.id='v-money';$('#v-office').after(view);
 let MD=null,busy=false;
 const usd=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(n/100);
-function draw(){if(!MD)return;view.innerHTML=`<h3>Money</h3><div class="card" style="margin-bottom:14px;border-color:#f59e0b"><b>Not connected to payment</b><p>Review spend proposals here. Approve records your decision only. It cannot charge a card, launch ads or pay a vendor yet.</p><div class="sum">Notifications: in-app only. Phone push is not connected.</div></div><h3>Needs your review</h3>${MD.requests.filter(q=>q.status==='pending_review').map(q=>`<div class="card" style="margin-bottom:12px"><div class="sum">${esc(q.agentName)} wants to spend</div><div style="font-size:30px;font-weight:700;margin:8px 0">${usd(q.amountCents)}</div><b>${esc(q.merchant)}</b><p>${esc(q.purpose)}</p><div class="sum">Account: ${esc(q.accountLabel)}<br>Cancel/refund terms (reported by worker): ${esc(q.undoTerms)}<br>Review expires: ${esc(new Date(q.expiresAt).toLocaleString())}</div><div style="display:flex;gap:10px;margin-top:16px"><button class="btn grn" style="min-height:44px" data-money-id="${q.id}" data-decision="approve">Approve proposal only</button><button class="btn red" style="min-height:44px" data-money-id="${q.id}" data-decision="deny">Deny</button></div></div>`).join('')||'<div class="card">No spend proposals waiting.</div>'}<h3 style="margin-top:20px">By worker</h3>${MD.bots.map(b=>`<div class="card" style="margin-bottom:8px"><b>${esc(b.agentName)}</b><div class="sum">Requested ${usd(b.requestedCents)} · Approved proposals ${usd(b.approvedCents)} · Denied ${usd(b.deniedCents)}</div><div style="font-weight:700;margin-top:8px">Confirmed charged: ${usd(b.chargedCents)}</div></div>`).join('')||'<div class="sum">No money activity yet.</div>'}<div class="sum" style="margin-top:8px">${esc(MD.metricsScope)}</div><h3 style="margin-top:20px">Decision ledger</h3><div class="sum" style="margin-bottom:10px">These are decision records, not vendor payment receipts.</div>${MD.receipts.map(r=>`<div class="card" style="margin-bottom:8px"><b>${esc(r.agentName)} · ${usd(r.amountCents)}</b><p>${esc(r.merchant)} · ${esc(r.outcome.replaceAll('_',' '))}</p><div class="sum">Charged: ${usd(r.chargedCents)} · ${esc(new Date(r.at).toLocaleString())}<br>${esc(r.note)}<br>Request: ${esc(r.requestId)}</div></div>`).join('')||'<div class="card">No decisions yet.</div>'}`;view.querySelectorAll('[data-money-id]').forEach(b=>b.onclick=()=>decideMoney(b.dataset.moneyId,b.dataset.decision));}
+function moneyTotals(){const t=MD.bots.reduce((s,b)=>{s.req+=b.requestedCents;s.app+=b.approvedCents;s.den+=b.deniedCents;s.chg+=b.chargedCents;return s},{req:0,app:0,den:0,chg:0});return `<div class="cards money-totals" style="margin-bottom:14px"><div class="card"><div class="v">${usd(t.req)}</div><div class="l">proposed</div></div><div class="card"><div class="v">${usd(t.app)}</div><div class="l">approved proposals</div></div><div class="card"><div class="v">${usd(t.den)}</div><div class="l">denied</div></div><div class="card"><div class="v">${usd(t.chg)}</div><div class="l">confirmed charged</div></div></div>`}
+function draw(){if(!MD)return;view.innerHTML=`<h3>Money</h3>${moneyTotals()}<div class="card" style="margin-bottom:14px;border-color:#f59e0b"><b>Not connected to payment</b><p>Review spend proposals here. Approve records your decision only. It cannot charge a card, launch ads or pay a vendor yet.</p><div class="sum">Notifications: in-app only. Phone push is not connected.</div></div><h3>Needs your review</h3>${MD.requests.filter(q=>q.status==='pending_review').map(q=>`<div class="card" style="margin-bottom:12px"><div class="sum">${esc(q.agentName)} wants to spend</div><div style="font-size:30px;font-weight:700;margin:8px 0">${usd(q.amountCents)}</div><b>${esc(q.merchant)}</b><p>${esc(q.purpose)}</p><div class="sum">Account: ${esc(q.accountLabel)}<br>Cancel/refund terms (reported by worker): ${esc(q.undoTerms)}<br>Review expires: ${esc(new Date(q.expiresAt).toLocaleString())}</div><div style="display:flex;gap:10px;margin-top:16px"><button class="btn grn" style="min-height:44px" data-money-id="${q.id}" data-decision="approve">Approve proposal only</button><button class="btn red" style="min-height:44px" data-money-id="${q.id}" data-decision="deny">Deny</button></div></div>`).join('')||'<div class="card">No spend proposals waiting.</div>'}<h3 style="margin-top:20px">By worker</h3>${MD.bots.map(b=>`<div class="card" style="margin-bottom:8px"><b>${esc(b.agentName)}</b><div class="sum">Requested ${usd(b.requestedCents)} · Approved proposals ${usd(b.approvedCents)} · Denied ${usd(b.deniedCents)}</div><div style="font-weight:700;margin-top:8px">Confirmed charged: ${usd(b.chargedCents)}</div></div>`).join('')||'<div class="sum">No money activity yet.</div>'}<div class="sum" style="margin-top:8px">${esc(MD.metricsScope)}</div><h3 style="margin-top:20px">Decision ledger</h3><div class="sum" style="margin-bottom:10px">These are decision records, not vendor payment receipts.</div>${MD.receipts.map(r=>`<div class="card" style="margin-bottom:8px"><b>${esc(r.agentName)} · ${usd(r.amountCents)}</b><p>${esc(r.merchant)} · ${esc(r.outcome.replaceAll('_',' '))}</p><div class="sum">Charged: ${usd(r.chargedCents)} · ${esc(new Date(r.at).toLocaleString())}<br>${esc(r.note)}<br>Request: ${esc(r.requestId)}</div></div>`).join('')||'<div class="card">No decisions yet.</div>'}`;view.querySelectorAll('[data-money-id]').forEach(b=>b.onclick=()=>decideMoney(b.dataset.moneyId,b.dataset.decision));}
 async function load(){try{MD=await api('/api/money');draw()}catch(e){view.innerHTML='<h3>Money</h3><div class="card">Could not load money requests. Refresh to try again.</div>'}}
 async function decideMoney(id,decision){if(busy)return;const q=MD.requests.find(q=>q.id===id);if(!q)return;busy=true;view.querySelectorAll('button').forEach(b=>b.disabled=true);try{const j=await api('/api/money/'+id+'/'+decision,'POST',{detailsHash:q.detailsHash});toast(j.error||((j.request&&j.request.status)==='approved_not_connected'?'Proposal approved. No payment was made.':'Decision: '+((j.request&&j.request.status)||'not confirmed')));}catch(e){toast('Decision not confirmed. Refresh the ledger before trying again.')}finally{busy=false;await load()}}
 const oldSync=sync;sync=async function(){await oldSync();if(location.hash==='#money'&&!busy)await load();};
@@ -1699,4 +1700,77 @@ ambientTrip=async function(a){const token=a._motionToken=(a._motionToken||0)+1,e
 setLayout();buildFloor();agents.forEach(a=>a._pos='home');window.addEventListener('resize',()=>{fit();agents.forEach(approvalMove)});window.addEventListener('hashchange',()=>{fit();renderTray()});
 })();
 </script>
+
+<style id="warm-unify">
+/* One product feel: the diorama office's warm wood and cream carried into the functional surfaces. */
+:root{--tx:#3b2f1e;--mut:#7d6c4e;--dim:#a3906e;--line:#e8dab9;--line2:#d9c69c;--ac:#9a641d;--card:#fffdf5;--paper:#f6efe0}
+body{background:var(--paper);color:var(--tx)}
+.view:not(#v-office){background:linear-gradient(180deg,#f8f2e3 0,#f3ead6 360px)}
+.view:not(#v-office) h3{color:#41321a}
+.view:not(#v-office) .sum{color:#7d6c4e}
+.top{border-bottom:1px solid #e9dcbc}
+.brand b{color:var(--ac)}
+.mark{background:linear-gradient(135deg,#c08a3e,#8a5a16)!important;box-shadow:0 4px 10px rgba(154,100,29,.35)}
+nav{background:#efe5cd;border-color:#e3d4b0}
+nav a{color:#7d6c4e}
+nav a:hover{background:rgba(255,253,245,.72);color:#41321a}
+nav a.on{background:#fffdf5;color:#41321a;box-shadow:0 1px 2px rgba(87,60,27,.12),0 2px 8px -2px rgba(87,60,27,.18)}
+.top .sum{color:#7d6c4e}.top .sum b{color:#41321a}.top .sum .n{color:#b45309}
+#goalbar{background:#fffdf7;border-top:1px solid #e9dcbc}
+.goalst{color:var(--ac)}
+#gi{background:#fdf8ec;border-color:#dcc9a0;color:#3b2f1e}
+#gi:focus{border-color:#c08a3e;box-shadow:0 0 0 4px rgba(192,138,62,.18);background:#fffdf5}
+.btn{background:#fffdf5;border-color:var(--line2);color:#41321e}
+.btn:hover{border-color:#c0a06a;box-shadow:0 3px 10px -3px rgba(87,60,27,.22)}
+.btn.pri{background:linear-gradient(180deg,#b57e2e,#8a5a16);border-color:#7c5012;box-shadow:0 4px 14px -4px rgba(154,100,29,.5)}
+.btn.pri:hover{filter:brightness(1.07)}
+.btn.amb{background:#fdf3dc;border-color:#e5bc6b;color:#8a4b00}
+.elink{color:#a3906e}
+#strip{background:#fffdf7;border-bottom-color:#e9dcbc}
+#strip.clear{background:#f2f6e7;color:#5c6f35;border-bottom-color:#e0e6c6}
+#strip.hot{background:linear-gradient(90deg,#fdf3dc,#fef9ec);border-bottom-color:#ecd096}
+.req{background:#fffdf5;border-color:#ecd3a0;box-shadow:0 4px 14px -8px rgba(154,100,29,.4)}
+.card,.cards>*{background:var(--card);border-color:var(--line);box-shadow:0 1px 2px rgba(87,60,27,.05),0 10px 28px -20px rgba(87,60,27,.3)}
+.cards .l{color:#7d6c4e}
+.tw{background:var(--card);border-color:var(--line)}
+th{background:#faf3e2;color:#a3906e}
+td,th{border-bottom-color:#eee2c6}
+.rcpt{background:var(--card);border-color:var(--line)}
+.rcpt .ic{background:#f6ecd6}
+.rcpt .s{color:#7d6c4e}.rcpt .tm{color:#a3906e}
+.tag{background:#f3ead2;color:#6b5a3a}
+.seg{border-color:var(--line2);background:#fffdf5}
+.seg button{color:#7d6c4e}
+.chip{border-color:var(--line2);background:#fffdf5;color:#5c4a2a}
+.chip.on{background:#f8ecd2;border-color:#c89a4b;color:#7a4f10}
+.prow{border-bottom-color:#f0e5c9}
+.prow .pd{color:#7d6c4e}
+#v-policies input{background:#fdf8ec;border-color:#dcc9a0;color:#3b2f1e}
+#v-policies input:focus{border-color:#c08a3e;box-shadow:0 0 0 3px rgba(192,138,62,.2)}
+.team-worker:hover{background:#faf3e2}
+.dr{background:#fffdf6;border-left-color:#e9dcbc}
+.dr .big{background:linear-gradient(180deg,#fbf5e6,#f0e4c9)}
+.dr .x{background:#f3ead2}
+.dr .stp{background:#fdf8ec;border-color:var(--line)}
+.dr h4{color:#a3906e}
+.dr .rl{color:#7d6c4e}
+.dr ul{color:#5c4a2a}
+.dr .bar{background:#f0e6cd}.dr .bar i{background:var(--ac)}
+.modal .box,.away .box,.ob .box{background:#fffdf6}
+.away .st{background:#faf3e2;border-color:var(--line)}
+.away .st.warn{background:#fdf3dc;border-color:#e5bc6b}
+.sub,.hint{color:#7d6c4e}
+.ob input,.modal input,.modal select,.modal textarea{background:#fdf8ec;border-color:#dcc9a0;color:#3b2f1e}
+.ob input:focus,.modal input:focus,.modal select:focus,.modal textarea:focus{border-color:#c08a3e;box-shadow:0 0 0 4px rgba(192,138,62,.16);background:#fffdf5}
+.ob .dots i{background:#e6d8b6}.ob .dots i.on{background:var(--ac)}
+.pcard{background:#fffdf5;border-color:var(--line)}
+.pcard .av{background:#f6ecd6}
+.tcard{background:#fffdf5;border-color:var(--line)}
+.tcard.on{border-color:var(--ac);box-shadow:0 0 0 3px rgba(154,100,29,.16)}
+.toast{background:#3a2c17}
+.skip{color:#7d6c4e}
+.money-totals .v{color:#41321a}
+@media(max-width:760px){.top nav{background:#efe5cd}}
+</style>
 </body></html>
+
