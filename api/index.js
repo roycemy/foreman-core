@@ -558,11 +558,11 @@ async function connectionState(a){
  if(a.hosted)return {status:'not_applicable',persistent:false};
  if(a.status!=='active')return {status:'revoked',persistent:false};
  const gateway=await getJ('fm:gatewaySeen:'+a.id);
- if(a.connectionMode==='gateway')return gateway&&gateway.epoch===(a.oauthEpoch||0)?{status:'active',transport:'gateway',persistent:false,authorizedAt:gateway.seenAt}:{status:'awaiting_bot',transport:'gateway',persistent:false,reason:'gateway_call_pending'};
  const ids=await r(['SMEMBERS','fm:oauth:grants:'+a.id]);
  const grants=(await Promise.all(ids.map(id=>getJ('gl:oauth:grant:'+id)))).filter(g=>g&&g.ws===wsId()&&g.agentId===a.id&&g.epoch===(a.oauthEpoch||0));
  const live=grants.filter(g=>!g.revoked).sort((a,b)=>String(b.renewedAt||b.createdAt).localeCompare(String(a.renewedAt||a.createdAt)));
  if(live.length)return {status:'active',persistent:true,authorizedAt:live[0].createdAt,lastRenewedAt:live[0].renewedAt||null};
+ if(a.connectionMode==='gateway')return gateway&&gateway.epoch===(a.oauthEpoch||0)?{status:'active',transport:'gateway',persistent:false,authorizedAt:gateway.seenAt}:{status:'awaiting_bot',transport:'gateway',persistent:false,reason:'gateway_call_pending'};
  const failed=grants.filter(g=>g.failureReason).sort((a,b)=>String(b.failedAt).localeCompare(String(a.failedAt)))[0];
  const seen=a.lastSeen||await r(['GET','fm:seen:'+a.id]),legacy=await getJ('fm:oauth:legacy:'+a.id),knownLegacy=legacy&&legacy.epoch===(a.oauthEpoch||0);
  return {status:failed||knownLegacy||ids.length?'needs_reauth':seen?'verification_pending':'awaiting_bot',persistent:seen&&!failed&&!knownLegacy&&!ids.length?null:false,reason:failed?failed.failureReason:knownLegacy||ids.length?'persistent_grant_missing':seen?'grant_index_not_verified':'authorization_pending',failedAt:failed?failed.failedAt:null,reconnectEndpoint:'/api/agents/'+a.id+'/reconnect',requiresClientParameters:true};
