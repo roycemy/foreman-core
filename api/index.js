@@ -156,7 +156,7 @@ async function chatTask(agent, body) {
   if (agent.status !== 'active' || await r(['GET','fm:kill'])) return {status:403,body:{status:'blocked',reason:'Worker is revoked or workspace paused'}};
   const sourceId = String(body.source_id || '').trim(), title = String(body.title || '').trim();
   if (!sourceId || sourceId.length > 200 || !title || title.length > 120) return {status:400,body:{error:'source_id (max 200) and title (max 120) required'}};
-  if(body.assignee&&body.assignee!==agent.id)return gatewayAct(agent,{action:'work.assign',params:body});
+  if(body.assignee&&body.assignee!==agent.id)return gatewayAct(agent,{action:'work.assign',params:body,task_id:body.task_id});
   const category=String(body.category||'').trim().toLowerCase();
   const id = 'task_' + sha(agent.id + ':' + sourceId).slice(0,24);
   const old = await getJ('fm:task:' + id);
@@ -200,7 +200,8 @@ async function routing(category){const bots=await capabilityProfiles(),rank=bots
 async function teammates(){return (await capabilityProfiles());}
 
 // Owner-confirmed identity correction. Preserve history; the target must claim.
-async function reassignTask(id,body){
+async function reassignTask(id,body){return withJobLock(id,()=>reassignTaskUnlocked(id,body));}
+async function reassignTaskUnlocked(id,body){
  if(body.confirmed!==true)return {status:400,body:{error:'Owner confirmation required'}};
  if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}};
  const key='fm:task:'+id,raw=await r(['GET',key]),t=raw&&JSON.parse(raw);
@@ -209,6 +210,7 @@ async function reassignTask(id,body){
  if(t.assignee!==body.expectedAssignee||t.status!==body.expectedStatus)return {status:409,body:{error:'Task changed. Review again'}};
  const target=await getJ('fm:agent:'+body.assignee);
  if(!target||target.status!=='active'||target.harness||target.hosted||target.id===t.assignee)return {status:400,body:{error:'Choose a different active external worker in this workspace'}};
+ await closeJobGrant(t,'Job transferred; old grant expired');
  const from=t.assignee,at=now(),next={...t,assignee:target.id,status:'queued',startedAt:null,reassignedAt:at,reassignments:[...(t.reassignments||[]),{from,to:target.id,at,previousStatus:t.status,previousStartedAt:t.startedAt||null,by:'owner',reason:String(body.reason||'Owner corrected worker identity').slice(0,300)}]};
  if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return {status:409,body:{error:'Task changed. Review again'}};
  bust();
@@ -217,12 +219,21 @@ async function reassignTask(id,body){
  return {status:200,body:{task:next}};
 }
 
+// Job grants restrict gated actions, not authentication or ordinary replies.
+async function withJobLock(id,fn){const k='fm:joblock:'+id,v=rid('lock');if(!await r(['SET',k,v,'NX','PX',120000]))return {status:409,body:{error:'Job is busy. Retry after the current action finishes'}};try{return await fn()}finally{if(await r(['GET',k])===v)await r(['DEL',k]);}}
+async function cancelJobRequests(id,reason){for(const qid of await r(['SMEMBERS','fm:reqs'])){const q=await getJ('fm:req:'+qid);if(q&&q.taskId===id&&q.status==='pending'){q.status='blocked';q.reason=reason;q.decidedAt=now();await finishReq(q);await event(q.agentId,'blocked',reason,{kind:'BLOCKED',taskId:id,requestId:qid});}}}
+async function setJobScope(id,body){if(body.confirmed!==true||!['job','standing'].includes(body.scope))return {status:400,body:{error:'Review and confirm the permission scope'}};const a=await getJ('fm:agent:'+id);if(!a||a.status!=='active'||a.harness||a.hosted)return {status:404,body:{error:'Active external worker required'}};await updateAgent(id,x=>{x.permissionScope=body.scope});if(body.scope==='job'){for(const qid of await r(['SMEMBERS','fm:reqs'])){const q=await getJ('fm:req:'+qid);if(q&&q.agentId===id&&q.status==='pending'&&!q.taskId){q.status='blocked';q.reason='Standing action permission closed by owner';q.decidedAt=now();await finishReq(q);await event(id,'blocked',q.reason,{requestId:qid});}}}await event(id,'permission','Owner set gated actions to '+body.scope+' scope',{kind:'INTERACTION'});return {status:200,body:{agentId:id,permissionScope:body.scope}};}
+async function grantJob(id,body){return withJobLock(id,async()=>{const t=await getJ('fm:task:'+id),a=t&&await getJ('fm:agent:'+t.assignee);if(!t||!a||a.status!=='active'||a.harness||a.hosted)return {status:404,body:{error:'Task and active worker required'}};if(body.confirmed!==true||body.expectedAssignee!==t.assignee||!['running','queued'].includes(t.status))return {status:409,body:{error:'Review this unfinished job and worker again'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace paused'}};const modes=body.actions;if(!modes||typeof modes!=='object'||Array.isArray(modes)||!Object.keys(modes).length||Object.entries(modes).some(([k,v])=>!ACTIONS[k]||!['AUTO','ASK'].includes(v)||((a.permissions||{})[k]||DEFAULT_PERMS[k]||'NEVER')==='NEVER'))return {status:400,body:{error:'Choose supported actions and AUTO/ASK modes; NEVER remains blocked'}};if(!Number.isSafeInteger(body.budgetCents)||body.budgetCents<0||body.budgetCents>1000000)return {status:400,body:{error:'Exact ledger budget required (0 to 1000000 cents)'}};const old=t.jobGrant,spent=Number(old?.spentCents||0);if(body.budgetCents<spent)return {status:400,body:{error:'Budget cannot be below already-used ledger cents'}};t.jobGrant={id:rid('grant'),agentId:a.id,actions:{...modes},budgetCents:body.budgetCents,spentCents:spent,status:'active',issuedAt:now(),by:'owner',note:'Gateway ledger only. Not payment authorization.'};await setJ('fm:task:'+id,t);await cancelJobRequests(id,'Job grant changed. Request again under the new grant');bust();await event(a.id,'permission','Owner granted scoped actions for '+t.title,{kind:'INTERACTION',taskId:id});return {status:200,body:{task:t}};});}
+async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return {code:'unknown_action',reason:'Action is not in the catalog'};if(agent.permissionScope!=='job')return null;if(!taskId)return {code:'job_required',reason:'Register or claim the real job first; gated actions require an owner job grant'};const t=await getJ('fm:task:'+taskId),g=t?.jobGrant;if(!t||t.assignee!==agent.id||t.status!=='running')return {code:'job_inactive',reason:'Job is not running under this worker'};if(!g||g.status!=='active'||g.agentId!==agent.id||grantId&&g.id!==grantId)return {code:'job_grant_required',reason:'Owner must grant actions and a ledger budget for this job'};if(!g.actions[action])return {code:'job_action',reason:'Action is outside the job grant'};if(Number(g.spentCents||0)+ACTIONS[action].costCents>g.budgetCents)return {code:'limit_job',reason:'Job ledger budget would be exceeded'};return null;}
+async function closeJobGrant(t,reason){if(t.jobGrant){t.jobGrant={...t.jobGrant,status:'closed',closedAt:now(),closeReason:reason};}await cancelJobRequests(t.id,reason);}
+
 async function claimTask(agent) { if(agent.status!=='active'||await r(['GET','fm:kill']))return null;const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
   const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now();if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
-async function completeTask(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
+async function completeTask(agent,id,body){return withJobLock(id,()=>completeTaskUnlocked(agent,id,body));}
+async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
   if(t.status==='queued'&&(t.reassignedAt||(t.origin==='chat'&&t.createdBy!==agent.id)))return {status:409,body:{error:'Claim the assigned job before completing it'}};
   if (!['running','queued'].includes(t.status)) return {status:409,body:{error:'Task is already terminal',task:t}};
-  const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+id,raw,JSON.stringify(t)])!==1)return {status:409,body:{error:'Task changed. Read it again'}};
+  const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); await closeJobGrant(t,'Job finished; action grant expired'); if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+id,raw,JSON.stringify(t)])!==1)return {status:409,body:{error:'Task changed. Read it again'}};
   await touchAgent(agent);
   await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id });
   if(t.createdBy&&t.createdBy!==agent.id&&t.createdBy!=='owner')await event(t.createdBy,failed?'failed':'completed','Delegate '+(failed?'failed: ':'finished: ')+t.title,{kind:failed?'FAILED':'COMPLETED',taskId:t.id,fromAgentId:agent.id});
@@ -388,20 +399,21 @@ async function policy(agent, action, mode) {
   if (mode === 'NEVER') return { code: 'never', reason: 'Permission is NEVER for this action' };
   const lim = agent.limits || {};
   if (lim.perActionCents != null && a.costCents > lim.perActionCents) return { code: 'limit_action', reason: `Cost ${a.costCents}c exceeds per-action limit ${lim.perActionCents}c` };
-  if (lim.dailyCents != null) { const s = await spentToday(agent.id); if (s + a.costCents > lim.dailyCents) return { code: 'limit_daily', reason: `Daily budget ${lim.dailyCents}c would be exceeded (spent ${s}c)` }; }
+  if (agent.permissionScope!=='job' && lim.dailyCents != null) { const s = await spentToday(agent.id); if (s + a.costCents > lim.dailyCents) return { code: 'limit_daily', reason: `Daily budget ${lim.dailyCents}c would be exceeded (spent ${s}c)` }; }
   return null;
 }
 
-async function runAndReceipt(agent, action, params, reqId, approvedBy) {
+async function runAndReceipt(agent, action, params, reqId, approvedBy, taskId) {
   const a = ACTIONS[action];
   try {
     const out = await execute(agent, action, params);
     await r(['INCRBY', `fm:spend:${agent.id}:${now().slice(0, 10)}`, a.costCents]);
-    const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO' });
+    if(agent.permissionScope==='job'&&taskId){const t=await getJ('fm:task:'+taskId);t.jobGrant.spentCents=Number(t.jobGrant.spentCents||0)+a.costCents;await setJ('fm:task:'+taskId,t);}
+    const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null });
     await event(agent.id, 'completed', out.summary, { receiptId: rec.id });
     return { rec, out };
   } catch (e) {
-    const rec = await receipt(agent, action, params, 'failed', 0, 'Execution failed: ' + e.message, reqId, { approvedBy: approvedBy || 'policy:AUTO' });
+    const rec = await receipt(agent, action, params, 'failed', 0, 'Execution failed: ' + e.message, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null });
     await event(agent.id, 'failed', 'Execution failed: ' + e.message, { receiptId: rec.id });
     return { rec, out: null, error: e.message };
   }
@@ -420,29 +432,32 @@ async function authAgent(req) {
   const current=await r(['GET','fm:gatewayKeyHash:'+id]);if(current&&current!==sha(key))return null;return getJ('fm:agent:' + id);
 }
 
-async function gatewayAct(agent, body) {
-  const action = body.action, params = body.params || {};
+async function gatewayAct(agent,body){const taskId=body.task_id||body.params?.task_id;return taskId?withJobLock(taskId,()=>gatewayActUnlocked(agent,body)):gatewayActUnlocked(agent,body);}
+async function gatewayActUnlocked(agent, body) {
+  const action = body.action, params = body.params || {}, taskId=body.task_id||params.task_id;
   await touchAgent(agent);
-  const mode = (agent.permissions || {})[action] || DEFAULT_PERMS[action] || 'NEVER';
+  const task=taskId?await getJ('fm:task:'+taskId):null;
+  const mode = (agent.permissions||{})[action]==='NEVER'?'NEVER':agent.permissionScope==='job'?(task?.jobGrant?.actions?.[action]||'NEVER'):((agent.permissions||{})[action]||DEFAULT_PERMS[action]||'NEVER');
   await event(agent.id, 'attempt', `Attempted ${action} (${mode})`, { action });
-  const blocked = await policy(agent, action, mode);
+  const blocked = await jobPolicy(agent,action,taskId) || await policy(agent, action, mode);
   if (blocked) {
     const rec = await receipt(agent, action, params, 'blocked', 0, `BLOCKED: ${blocked.reason}`, null, { code: blocked.code });
     await event(agent.id, 'blocked', `Blocked ${action}: ${blocked.reason}`, { receiptId: rec.id, code: blocked.code });
     return { status: 403, body: { status: 'blocked', code: blocked.code, reason: blocked.reason, receipt_id: rec.id } };
   }
   if (mode === 'ASK') {
-    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: now() };
+    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: now(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
     bust(); await setJ('fm:req:' + q.id, q); await r(['SADD', 'fm:reqs', q.id]);
-    await event(agent.id, 'pending', `Waiting for owner approval: ${action}`, { requestId: q.id });
+    await event(agent.id, 'pending', `Waiting for owner approval: ${action}`, { requestId: q.id,taskId:q.taskId||null });
     return { status: 202, body: { status: 'pending', request_id: q.id, message: 'Action is paused until the owner approves or denies it.' } };
   }
-  const { rec, out, error } = await runAndReceipt(agent, action, params, null, null);
+  const { rec, out, error } = await runAndReceipt(agent, action, params, null, null, taskId);
   if (error) return { status: 502, body: { status: 'failed', error, receipt_id: rec.id } };
   return { status: 200, body: { status: 'completed', result: out.data, receipt_id: rec.id } };
 }
 
-async function decide(reqId, decision) {
+async function decide(reqId,decision){const q=await getJ('fm:req:'+reqId);return q?.taskId?withJobLock(q.taskId,()=>decideUnlocked(reqId,decision)):decideUnlocked(reqId,decision);}
+async function decideUnlocked(reqId, decision) {
   const q = await getJ('fm:req:' + reqId); if (!q) return { status: 404, body: { error: 'not found' } };
   if (q.status !== 'pending') return { status: 409, body: { error: 'already ' + q.status, request: pub(q) } };
   const agent = await getJ('fm:agent:' + q.agentId);
@@ -453,7 +468,7 @@ async function decide(reqId, decision) {
     return { status: 200, body: { request: pub(q) } };
   }
   // approval: re-check policy NOW (agent may have been revoked / budget changed while paused). Mode treated as AUTO for this one action.
-  const blocked = await policy(agent, q.action, 'AUTO');
+  const blocked = await jobPolicy(agent,q.action,q.taskId,q.grantId) || await policy(agent, q.action, (agent.permissions||{})[q.action]==='NEVER'?'NEVER':'AUTO');
   if (blocked) {
     q.status = 'blocked'; q.decidedAt = now(); q.reason = blocked.reason; await finishReq(q);
     const rec = await receipt(agent, q.action, q.params, 'blocked', 0, `BLOCKED at approval: ${blocked.reason}`, q.id, { code: blocked.code });
@@ -461,7 +476,7 @@ async function decide(reqId, decision) {
     return { status: 200, body: { request: pub(q) } };
   }
   q.status = 'approved'; q.decidedAt = now(); bust(); await setJ('fm:req:' + q.id, q);
-  const { rec, out, error } = await runAndReceipt(agent, q.action, q.rawParams, q.id, 'owner:approve');
+  const { rec, out, error } = await runAndReceipt(agent, q.action, q.rawParams, q.id, 'owner:approve',q.taskId);
   q.status = error ? 'failed' : 'executed'; q.receiptId = rec.id; q.result = out ? out.data : { error }; await finishReq(q);
   return { status: 200, body: { request: pub(q), receipt: rec } };
 }
@@ -545,10 +560,11 @@ const MCP_TOOLS = [
   {name:'foreman_notifications',description:'Read your own approval/completion/block/failure events. Read-only, no task claim or presence. Persist nextCursor and pass after on later calls; cursor_expired requires an explicit reset. Notification delivery is the client automation responsibility.',inputSchema:{type:'object',properties:{after:{type:'string'}}}},
   { name: 'foreman_check_request', description: 'Check a paused (ASK) request. Once approved Foreman has already run it; the result is included.', inputSchema: { type: 'object', properties: { request_id: { type: 'string' } }, required: ['request_id'] } },
 ];
+for(const t of MCP_TOOLS.filter(t=>t.action)){t.inputSchema.properties.task_id={type:'string',description:'Active job ID. Required when this worker uses job-scoped permissions. Grant check rides this action call.'};}
 async function mcpCall(agent, name, args) {
   const t = MCP_TOOLS.find(x => x.name === name); if (!t) return { isError: true, content: [{ type: 'text', text: 'unknown tool' }] };
   let out;
-  if (t.action) { const g = await gatewayAct(agent, { action: t.action, params: args || {} }); out = g.body; }
+  if (t.action) { const g = await gatewayAct(agent, { action: t.action, params: args || {},task_id:args?.task_id }); out = g.body; }
   else if (name === 'foreman_report') out = (await reportEvent(agent, args || {}, 'mcp')).body;
   else if(name==='foreman_chat_task')out=(await chatTask(agent,args||{})).body;
   else if(name==='foreman_route_suggestion')out=await routing((args||{}).category||'');
@@ -813,6 +829,8 @@ async function routes(req, res, path, body, agentPre) {
     {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST')return send(await cardDecision(cm[1],cm[2],body.detailsHash));}
 
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
+    {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
+    {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
     if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started'); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
