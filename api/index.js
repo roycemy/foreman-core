@@ -677,6 +677,7 @@ async function routes(req, res, path, body, agentPre) {
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
       const agent = agentPre;
+      if(path==='/gateway/me'&&req.method==='GET'){if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked',reason:'Worker revoked or workspace paused'});res.setHeader('Cache-Control','no-store');return res.json({agent:{id:agent.id,name:agent.name,status:agent.status}});}
       if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway'});}
       if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
       if(path==='/gateway/spend-requests'&&req.method==='POST')return send(await newSpendRequest(agent,body));
