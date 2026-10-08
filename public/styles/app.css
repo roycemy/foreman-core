@@ -454,3 +454,12 @@ td{padding:10px;border-bottom:1px solid var(--c-border);vertical-align:top}
 }
 .view>h3:not(:first-child),.view>*:not(:first-child)>h3:first-child:not(.pwho h3){margin-top:var(--s-6)}
 .team-row.prepared .av{background:transparent!important;color:var(--c-text-2)!important;border:1.5px dashed var(--c-text-2)}
+/* Narrow phones: separate floor signs without changing rooms, desks or click targets. */
+@media (max-width:420px){
+ .zone-sign{font-size:8px;letter-spacing:0;padding:2px 3px}
+ .zone-sign[data-room="marketing"]{left:auto!important;right:4px;top:32%!important;transform:translateY(-100%)}
+ .zone-sign[data-room="ops"]{left:62%!important;top:51%!important}
+ .zone-sign[data-room="lounge"]{left:78%!important;top:64%!important}
+ .zone-sign.appr{left:57%!important;top:84%!important}
+ .zone-sign.arrivals{left:27%!important;top:73%!important}
+}
