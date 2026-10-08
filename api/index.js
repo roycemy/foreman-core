@@ -319,7 +319,7 @@ async function runAndReceipt(agent, action, params, reqId, approvedBy) {
 
 async function resolveAgent(req) {
   const key = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim(); if (!key) return null;
-  const oauth=await getJ('gl:oauth:token:'+sha(key));if(oauth){if(oauth.expires<Date.now())return null;if(oauth.grantId){const grant=await getJ('gl:oauth:grant:'+oauth.grantId);if(!grant||grant.revoked)return null;}const agent=await als.run({ws:oauth.ws},()=>getJ('fm:agent:'+oauth.agentId));return agent&&agent.status==='active'&&((oauth.epoch||0)===(agent.oauthEpoch||0))?{ws:oauth.ws,agent}:null;}
+  const oauth=await getJ('gl:oauth:token:'+sha(key));if(oauth){if(!oauth.grantId){await als.run({ws:oauth.ws},()=>setJ('fm:oauth:legacy:'+oauth.agentId,{seenAt:now(),epoch:oauth.epoch||0}));CACHES.delete(oauth.ws);}if(oauth.expires<Date.now())return null;if(oauth.grantId){const grant=await getJ('gl:oauth:grant:'+oauth.grantId);if(!grant||grant.revoked)return null;await als.run({ws:oauth.ws},()=>r(['SADD','fm:oauth:grants:'+oauth.agentId,oauth.grantId]));}const agent=await als.run({ws:oauth.ws},()=>getJ('fm:agent:'+oauth.agentId));return agent&&agent.status==='active'&&((oauth.epoch||0)===(agent.oauthEpoch||0))?{ws:oauth.ws,agent}:null;}
   const w = await r(['GET', 'gl:key:' + sha(key)]);
   if (w) { const agent = await als.run({ ws: w }, () => authAgent(req)); return agent ? { ws: w, agent } : null; }
   const agent = await als.run({ ws: 'legacy' }, () => authAgent(req)); return agent ? { ws: 'legacy', agent } : null;
@@ -387,7 +387,8 @@ async function fullState() {
   const day = now().slice(0, 10);
   const sp = agents.length ? await r(['MGET', ...agents.map(a => `fm:spend:${a.id}:${day}`)]) : [];
   const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
-  const agentsPub = agents.map((a, i) => ({ ...a, spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
+  const connections=await Promise.all(agents.map(connectionState));
+  const agentsPub = agents.map((a, i) => ({ ...a, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
   const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
   CACHES.set(wsId(), { t: Date.now(), v }); return v;
@@ -549,8 +550,30 @@ const validRedirect=u=>{try{const x=new URL(u);return !x.username&&!x.password&&
 async function revokeOAuthGrant(id){
  const key='gl:oauth:grant:'+id;
  for(let n=0;n<8;n++){const raw=await r(['GET',key]),g=raw&&JSON.parse(raw);if(!g||g.revoked)return;
- if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify({...g,revoked:true,revokedAt:now()})])===1)return;}
+ if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify({...g,revoked:true,revokedAt:now(),failureReason:'refresh_replay',failedAt:now()})])===1){CACHES.delete(g.ws);return;}}
  throw new Error('Concurrent connector update; retry');
+}
+// Owner-visible state derives from grants, never from a stale heartbeat alone.
+async function connectionState(a){
+ if(a.hosted)return {status:'not_applicable',persistent:false};
+ if(a.status!=='active')return {status:'revoked',persistent:false};
+ const ids=await r(['SMEMBERS','fm:oauth:grants:'+a.id]);
+ const grants=(await Promise.all(ids.map(id=>getJ('gl:oauth:grant:'+id)))).filter(g=>g&&g.ws===wsId()&&g.agentId===a.id&&g.epoch===(a.oauthEpoch||0));
+ const live=grants.filter(g=>!g.revoked).sort((a,b)=>String(b.renewedAt||b.createdAt).localeCompare(String(a.renewedAt||a.createdAt)));
+ if(live.length)return {status:'active',persistent:true,authorizedAt:live[0].createdAt,lastRenewedAt:live[0].renewedAt||null};
+ const failed=grants.filter(g=>g.failureReason).sort((a,b)=>String(b.failedAt).localeCompare(String(a.failedAt)))[0];
+ const seen=a.lastSeen||await r(['GET','fm:seen:'+a.id]),legacy=await getJ('fm:oauth:legacy:'+a.id),knownLegacy=legacy&&legacy.epoch===(a.oauthEpoch||0);
+ return {status:failed||knownLegacy||ids.length?'needs_reauth':seen?'verification_pending':'awaiting_bot',persistent:seen&&!failed&&!knownLegacy&&!ids.length?null:false,reason:failed?failed.failureReason:knownLegacy||ids.length?'persistent_grant_missing':seen?'grant_index_not_verified':'authorization_pending',failedAt:failed?failed.failedAt:null,reconnectEndpoint:'/api/agents/'+a.id+'/reconnect',requiresClientParameters:true};
+}
+async function reconnectAgent(id,body){
+ const a=await getJ('fm:agent:'+id);if(!a)return {status:404,body:{error:'not_found'}};
+ if(a.status!=='active'||a.hosted)return {status:409,body:{error:'bot_not_available'}};
+ if(!body.client_id||!body.redirect_uri||!body.code_challenge)return {status:409,body:{error:'client_reconnect_required',agentId:id,requires:['client_id','redirect_uri','code_challenge','code_challenge_method'],connection:await connectionState(a)}};
+ const client=await getJ('gl:oauth:client:'+body.client_id);
+ if(!client||!client.redirect_uris.includes(body.redirect_uri)||body.code_challenge_method!=='S256'||!/^[A-Za-z0-9_-]{43}$/.test(body.code_challenge))return {status:400,body:{error:'invalid_client_parameters'}};
+ const params=new URLSearchParams({client_id:body.client_id,redirect_uri:body.redirect_uri,response_type:'code',code_challenge_method:'S256',code_challenge:body.code_challenge,scope:'blackbox.bot',resource:OAUTH_ORIGIN+'/api/mcp',agent_id:id});
+ if(body.state)params.set('state',String(body.state));
+ return {status:200,body:{agentId:id,authorizationUrl:OAUTH_ORIGIN+'/oauth/authorize?'+params.toString(),createsBot:false}};
 }
 async function oauthRoutes(req,res,path,body){
  const send=(n,b)=>res.status(n).json(b),url=new URL(req.url,OAUTH_ORIGIN),params=Object.fromEntries(url.searchParams);
@@ -567,13 +590,14 @@ async function oauthRoutes(req,res,path,body){
  if(params.resource&&params.resource!==OAUTH_ORIGIN+'/api/mcp')return send(400,{error:'invalid_target'});
  const sess=await getSession(req);if(!sess)return send(401,{error:'auth'});
  const csrf=crypto.randomBytes(24).toString('hex');await setJ('gl:oauth:consent:'+sha(csrf),{ws:sess.ws,params,expires:Date.now()+600000});
- const bots=await als.run({ws:sess.ws},listAgents);return send(200,{client:c.client_name,redirectOrigin:new URL(params.redirect_uri).origin,bots:bots.filter(a=>a.status==='active'&&!a.hosted).map(a=>({id:a.id,name:a.name,provider:a.provider})),csrf});
+ const bots=await als.run({ws:sess.ws},listAgents);if(params.agent_id&&!bots.some(a=>a.id===params.agent_id&&a.status==='active'&&!a.hosted))return send(400,{error:'bot_not_available'});return send(200,{client:c.client_name,redirectOrigin:new URL(params.redirect_uri).origin,bots:bots.filter(a=>a.status==='active'&&!a.hosted&&(!params.agent_id||a.id===params.agent_id)).map(a=>({id:a.id,name:a.name,provider:a.provider})),csrf});
  }
  if(path==='/oauth/consent'&&req.method==='POST'){
  if(req.headers.origin!==OAUTH_ORIGIN)return send(403,{error:'origin'});
  const sess=await getSession(req),key='gl:oauth:consent:'+sha(String(body.csrf||'')),raw=await r(['GET',key]),v=raw&&JSON.parse(raw);
  if(!sess||!v||v.ws!==sess.ws||v.expires<Date.now())return send(403,{error:'Sign-in expired. Reconnect from your bot.'});
  const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify({used:true})]);if(won!==1)return send(409,{error:'Already authorized'});
+ if(v.params.agent_id&&body.agentId!==v.params.agent_id)return send(400,{error:'Choose the existing bot being reconnected'});
  const a=await als.run({ws:sess.ws},()=>getJ('fm:agent:'+body.agentId));if(!a||a.status!=='active'||a.hosted)return send(400,{error:'Choose an existing external bot'});
  const token='fm_oauth_'+crypto.randomBytes(32).toString('hex'),code=crypto.randomBytes(32).toString('hex');
  await setJ('gl:oauth:code:'+sha(code),{ws:sess.ws,agentId:a.id,clientId:v.params.client_id,redirect:v.params.redirect_uri,challenge:v.params.code_challenge,epoch:a.oauthEpoch||0,expires:Date.now()+120000,token:enc(token)});
@@ -588,6 +612,7 @@ async function oauthRoutes(req,res,path,body){
  if(!ref||ref.clientId!==body.client_id)return send(400,{error:'invalid_grant'});
  const key='gl:oauth:grant:'+ref.grantId,raw=await r(['GET',key]),grant=raw&&JSON.parse(raw);
  if(!grant||grant.revoked)return send(400,{error:'invalid_grant'});
+ await als.run({ws:grant.ws},()=>r(['SADD','fm:oauth:grants:'+grant.agentId,ref.grantId]));CACHES.delete(grant.ws);
  const a=await als.run({ws:grant.ws},()=>getJ('fm:agent:'+grant.agentId));
  if(!a||a.status!=='active'||grant.epoch!==(a.oauthEpoch||0))return send(400,{error:'invalid_grant'});
  if(grant.current!==hash){await revokeOAuthGrant(ref.grantId);return send(400,{error:'invalid_grant'});}
@@ -606,6 +631,7 @@ async function oauthRoutes(req,res,path,body){
  const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify({used:true})]);if(won!==1)return send(400,{error:'invalid_grant'});
  const token=dec(c.token),refresh='fm_refresh_'+crypto.randomBytes(32).toString('hex'),hash=sha(refresh),grantId=rid('grant'),epoch=a.oauthEpoch||0;
  await setJ('gl:oauth:grant:'+grantId,{ws:c.ws,agentId:c.agentId,clientId:c.clientId,epoch,current:hash,createdAt:now(),revoked:false});
+ await als.run({ws:c.ws},()=>r(['SADD','fm:oauth:grants:'+c.agentId,grantId]));CACHES.delete(c.ws);
  await setJ('gl:oauth:refresh:'+hash,{grantId,clientId:c.clientId});
  await setJ('gl:oauth:token:'+sha(token),{ws:c.ws,agentId:c.agentId,grantId,epoch,expires:Date.now()+3600000});
  return send(200,{access_token:token,refresh_token:refresh,token_type:'Bearer',expires_in:3600,scope:'blackbox.bot'});
@@ -673,6 +699,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started'); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
+    {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
     if (path === '/state') return res.json(await fullState());
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
