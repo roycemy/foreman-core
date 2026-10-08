@@ -118,10 +118,11 @@ async function chatTask(agent, body) {
   if (agent.status !== 'active' || await r(['GET','fm:kill'])) return {status:403,body:{status:'blocked',reason:'Worker is revoked or workspace paused'}};
   const sourceId = String(body.source_id || '').trim(), title = String(body.title || '').trim();
   if (!sourceId || sourceId.length > 200 || !title || title.length > 120) return {status:400,body:{error:'source_id (max 200) and title (max 120) required'}};
+  const category=String(body.category||'').trim().toLowerCase();
   const id = 'task_' + sha(agent.id + ':' + sourceId).slice(0,24);
   const old = await getJ('fm:task:' + id);
   if (old) return {status:200,body:{task:old,duplicate:true}};
-  const t = {id,title,brief:String(body.brief || '').slice(0,1500),assignee:agent.id,status:'running',parentId:null,createdBy:agent.id,createdAt:now(),startedAt:now(),result:null,origin:'chat',sourceId};
+  const t = {id,title,brief:String(body.brief || '').slice(0,1500),assignee:agent.id,status:'running',parentId:null,createdBy:agent.id,createdAt:now(),startedAt:now(),result:null,origin:'chat',sourceId,category};
   const won=await r(['SET','fm:task:' + id,JSON.stringify(t),'NX']);if(!won)return {status:200,body:{task:await getJ('fm:task:' + id),duplicate:true}};await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);
   await touchAgent(agent);
   await event(agent.id,'task_started','Started: '+title,{kind:'TASK_STARTED',taskId:id,source:'chat'});
@@ -391,6 +392,8 @@ async function decide(reqId, decision) {
 }
 const pub = q => { const { rawParams, ...rest } = q; return rest; };
 
+const TASK_CATEGORY_ROOMS={marketing:'marketing',creative:'marketing',research:'finance',finance:'finance',outreach:'sales',sales:'sales',execution:'ops',operations:'ops',ops:'ops',support:'support',lounge:'lounge'};
+function taskRoom(agent,tasks){const t=tasks.filter(t=>t.assignee===agent.id&&t.status==='running').sort((a,b)=>String(b.startedAt||b.createdAt).localeCompare(String(a.startedAt||a.createdAt)))[0];return t&&TASK_CATEGORY_ROOMS[t.category]||agent.room||null;}
 async function fullState() {
   { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 1500) return c.v; }
   const agents = await listAgents();
@@ -402,7 +405,7 @@ async function fullState() {
   const sp = agents.length ? await r(['MGET', ...agents.map(a => `fm:spend:${a.id}:${day}`)]) : [];
   const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
   const connections=await Promise.all(agents.map(connectionState));
-  const agentsPub = agents.map((a, i) => ({ ...a, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
+  const agentsPub = agents.map((a, i) => ({ ...a, visibleRoom:taskRoom(a,tasks), connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
   const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
   CACHES.set(wsId(), { t: Date.now(), v }); return v;
@@ -455,7 +458,7 @@ const MCP_TOOLS = [
   { name: 'foreman_enqueue', description: 'Queue an unassigned task in your own workspace. This does not start a hosted worker. Policy-gated, zero cost, maximum 10 per minute.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, brief: { type: 'string' } }, required: ['title'] }, action: 'work.enqueue' },
   { name: 'foreman_handoff', description: 'Hand a task to another Foreman agent.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, to: { type: 'string' }, brief: { type: 'string' } }, required: ['task_id', 'to'] }, action: 'work.handoff' },
   { name: 'foreman_report', description: 'Report your activity. kind is one of ' + KINDS.join(', '), inputSchema: { type: 'object', properties: { kind: { type: 'string' }, text: { type: 'string' } }, required: ['kind'] } },
-  {name:'foreman_chat_task',description:'Register a task you have actually begun from an owner chat. Does not execute work or infer from text.',inputSchema:{type:'object',properties:{source_id:{type:'string'},title:{type:'string'},brief:{type:'string'}},required:['source_id','title']}},
+  {name:'foreman_chat_task',description:'Register a task you have actually begun from an owner chat. Does not execute work or infer from text.',inputSchema:{type:'object',properties:{source_id:{type:'string'},title:{type:'string'},brief:{type:'string'},category:{type:'string',description:'Explicit task category: marketing/creative, research/finance, outreach/sales, execution/operations/ops, support or lounge. Routes visible room during running task without changing home.'}},required:['source_id','title']}},
   {name:'foreman_read_task',description:'Read your task or the result of a task you delegated.',inputSchema:{type:'object',properties:{task_id:{type:'string'}},required:['task_id']}},
   {name:'blackbox_card_proposal',description:'Request an owner decision for a synthetic card purchase. No real money moves.',inputSchema:{type:'object',properties:{sourceId:{type:'string'},merchant:{type:'string'},amountCents:{type:'integer'},currency:{type:'string',enum:['USD']},purpose:{type:'string'}},required:['sourceId','merchant','amountCents','currency','purpose']}},
   {name:'foreman_presence',description:'Report actual recent interaction with your owner. Does not claim work is running.',inputSchema:{type:'object',properties:{}}},
