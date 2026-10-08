@@ -1,8 +1,44 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect to Black Box</title><style>body{font:16px system-ui;color:#41321a;background:#f6efe0;margin:0;padding:24px}main{max-width:480px;margin:8vh auto;background:#fffdf5;padding:28px;border:1px solid #e8dab9;border-radius:20px}input,select,button{box-sizing:border-box;width:100%;padding:12px;margin:8px 0;font:inherit;border:1px solid #d9c69c;border-radius:10px}button{background:#9a641d;color:white;cursor:pointer}p{line-height:1.5;color:#7d6c4e}.error{color:#b42318}label{display:block;margin-top:12px}</style><main><h1>Connect to Black Box</h1><div id="content">Checking sign-in...</div><p id="error" class="error" role="alert"></p></main><script>
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-brand-title="Connect to {brand}">Connect to your workspace</title>
+<meta name="theme-color" content="#F4F4F1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23121212'/%3E%3Crect x='8' y='8' width='16' height='16' fill='none' stroke='%23F4F4F1' stroke-width='2.5'/%3E%3Crect x='11' y='11' width='10' height='3' fill='%23E2452B'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/styles/tokens.css">
+<script src="/brand.js"></script>
+<style>
+/* Layout + styling only. Every user-facing string below is the shipped copy; only the product name reads from BRAND. */
+body{min-height:100vh;margin:0;padding:var(--s-6) var(--s-4);background:var(--c-bg);color:var(--c-text);font:var(--fs-16)/var(--lh-body) var(--f-ui);display:grid;place-items:start center}
+.oa-top{width:min(520px,100%);display:flex;align-items:center;justify-content:space-between;margin:6vh 0 var(--s-4)}
+.oa-top .eyebrow{font-size:var(--fs-11)}
+main{width:min(520px,100%);background:var(--c-surface);border:1px solid var(--c-border);box-shadow:var(--sh-2);border-top:4px solid var(--c-text)}
+.oa-in{padding:var(--s-8) var(--s-8) var(--s-6)}
+h1{font:400 var(--fs-44)/1 var(--f-display);letter-spacing:var(--tr-display);margin:0 0 var(--s-5)}
+#content{display:grid;gap:var(--s-3)}
+#content p{margin:0;line-height:1.55;color:var(--c-text-2)}
+#content p:first-child{font-size:var(--fs-18);color:var(--c-text)}
+#content p:first-child b{font-weight:600}
+#content p.oa-scope{padding:var(--s-4);background:var(--c-bg);border-left:3px solid var(--c-text);color:var(--c-text);font-size:var(--fs-15)}
+#content p.oa-ret{font:400 var(--fs-13) var(--f-mono);color:var(--c-text-2);padding:var(--s-2) 0;border-top:1px solid var(--c-border);border-bottom:1px solid var(--c-border);overflow-wrap:anywhere}
+#content p.oa-foot{font-size:var(--fs-13)}
+label{display:grid;gap:6px;font:500 var(--fs-14) var(--f-ui);color:var(--c-text)}
+input,select{box-sizing:border-box;width:100%;min-height:48px;padding:0 12px;font:400 var(--fs-16) var(--f-ui);color:var(--c-text);background:var(--c-surface);border:1px solid var(--c-border-strong);border-radius:var(--r-1)}
+input:focus,select:focus{outline:2px solid var(--c-focus);outline-offset:1px;border-color:var(--c-text)}
+form{display:grid;gap:var(--s-3)}
+button{box-sizing:border-box;width:100%;min-height:52px;margin-top:var(--s-1);font:600 var(--fs-16) var(--f-ui);color:var(--c-on-accent);background:var(--c-accent-fill);border:1px solid var(--c-accent-fill);border-radius:var(--r-1);cursor:pointer}
+button:hover{background:var(--bb-danger);border-color:var(--bb-danger)}
+button:disabled{opacity:.5;cursor:not-allowed}
+button:focus-visible{outline:2px solid var(--c-focus);outline-offset:3px}
+.error{margin:0;padding:0 var(--s-8) var(--s-6);color:var(--bb-danger);font-size:var(--fs-14)}
+.error:empty{display:none}
+#content:not(:has(*)){color:var(--c-text-2);font:400 var(--fs-14) var(--f-mono)}
+@media (max-width:520px){.oa-in{padding:var(--s-6) var(--s-5) var(--s-5)}.error{padding:0 var(--s-5) var(--s-5)}h1{font-size:var(--fs-32)}.oa-top{margin-top:2vh}}
+</style>
+<div class="oa-top" aria-hidden="true"><span class="wm"><span class="mark"></span><span data-brand-wordmark>&nbsp;</span></span></div>
+<main><div class="oa-in"><h1>Connect to <span data-brand>your workspace</span></h1><div id="content">Checking sign-in...</div></div><p id="error" class="error" role="alert"></p></main><script>
 const root=document.querySelector('#content'),err=document.querySelector('#error'),params=location.search;let context;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,body){const r=await fetch('/api'+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});return r.json()}
-async function load(){context=await api('/oauth/context'+params);if(context.error==='auth'){root.innerHTML='<p>Sign into your Black Box workspace. Your bot stays signed into its own provider.</p><form id="login"><label>Email<input type="email" id="email" autocomplete="username" required></label><label>Password<input type="password" id="password" autocomplete="current-password" required minlength="8"></label><button>Sign in</button></form>';document.querySelector('#login').onsubmit=async e=>{e.preventDefault();const j=await api('/auth/login',{email:document.querySelector('#email').value,password:document.querySelector('#password').value});if(j.error)err.textContent=j.error;else{err.textContent='';await load()}};return}if(context.error){root.textContent=context.error;return}
-root.innerHTML='<p><b>'+esc(context.client)+'</b> wants to connect one bot to your workspace.</p><p>This connection can report activity and call Black Box tools under this bot\'s permissions. It cannot import your provider account, read other bots, or move money. This authorization can renew automatically in clients that support OAuth refresh. It stays available until you revoke this bot in Black Box.</p><label>Existing bot<select id="bot">'+context.bots.map(a=>'<option value="'+esc(a.id)+'">'+esc(a.name)+' ('+esc(a.provider)+')</option>').join('')+'</select></label><p>Return address: '+esc(context.redirectOrigin)+'</p><button id="allow" '+(context.bots.length?'':'disabled')+'>Authorize connection</button><p>If your bot is missing, open HQ and start Connect AI Employee first.</p>';document.querySelector('#allow').onclick=async()=>{document.querySelector('#allow').disabled=true;const j=await api('/oauth/consent',{csrf:context.csrf,agentId:document.querySelector('#bot').value});if(j.error){err.textContent=j.error;document.querySelector('#allow').disabled=false}else location.assign(j.redirect)}}
+async function load(){context=await api('/oauth/context'+params);if(context.error==='auth'){root.innerHTML='<p>Sign into your '+BRAND.name+' workspace. Your bot stays signed into its own provider.</p><form id="login"><label>Email<input type="email" id="email" autocomplete="username" required></label><label>Password<input type="password" id="password" autocomplete="current-password" required minlength="8"></label><button>Sign in</button></form>';document.querySelector('#login').onsubmit=async e=>{e.preventDefault();const j=await api('/auth/login',{email:document.querySelector('#email').value,password:document.querySelector('#password').value});if(j.error)err.textContent=j.error;else{err.textContent='';await load()}};return}if(context.error){root.textContent=context.error;return}
+root.innerHTML='<p><b>'+esc(context.client)+'</b> wants to connect one bot to your workspace.</p><p class="oa-scope">This connection can report activity and call '+BRAND.name+' tools under this bot\'s permissions. It cannot import your provider account, read other bots, or move money. This authorization can renew automatically in clients that support OAuth refresh. It stays available until you revoke this bot in '+BRAND.name+'.</p><label>Existing bot<select id="bot">'+context.bots.map(a=>'<option value="'+esc(a.id)+'">'+esc(a.name)+' ('+esc(a.provider)+')</option>').join('')+'</select></label><p class="oa-ret">Return address: '+esc(context.redirectOrigin)+'</p><button id="allow" '+(context.bots.length?'':'disabled')+'>Authorize connection</button><p class="oa-foot">If your bot is missing, open HQ and start Connect AI Employee first.</p>';document.querySelector('#allow').onclick=async()=>{document.querySelector('#allow').disabled=true;const j=await api('/oauth/consent',{csrf:context.csrf,agentId:document.querySelector('#bot').value});if(j.error){err.textContent=j.error;document.querySelector('#allow').disabled=false}else location.assign(j.redirect)}}
 load().catch(()=>{err.textContent='Could not load sign-in. Reconnect from your bot.'});
 </script></html>
