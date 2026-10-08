@@ -592,7 +592,7 @@ async function oauthRoutes(req,res,path,body){
  if(params.resource&&params.resource!==OAUTH_ORIGIN+'/api/mcp')return send(400,{error:'invalid_target'});
  const sess=await getSession(req);if(!sess)return send(401,{error:'auth'});
  const csrf=crypto.randomBytes(24).toString('hex');await setJ('gl:oauth:consent:'+sha(csrf),{ws:sess.ws,params,expires:Date.now()+600000});
- const bots=await als.run({ws:sess.ws},listAgents);if(params.agent_id&&!bots.some(a=>a.id===params.agent_id&&a.status==='active'&&!a.hosted))return send(400,{error:'bot_not_available'});return send(200,{client:c.client_name,redirectOrigin:new URL(params.redirect_uri).origin,bots:bots.filter(a=>a.status==='active'&&!a.hosted&&(!params.agent_id||a.id===params.agent_id)).map(a=>({id:a.id,name:a.name,provider:a.provider})),csrf});
+ const bots=await als.run({ws:sess.ws},listAgents);if(params.agent_id&&!bots.some(a=>a.id===params.agent_id&&a.status==='active'&&!a.hosted&&!a.harness&&!a.live))return send(400,{error:'bot_not_available'});return send(200,{client:c.client_name,redirectOrigin:new URL(params.redirect_uri).origin,bots:bots.filter(a=>a.status==='active'&&!a.hosted&&!a.harness&&!a.live&&(!params.agent_id||a.id===params.agent_id)).map(a=>({id:a.id,name:a.name,provider:a.provider})),csrf});
  }
  if(path==='/oauth/consent'&&req.method==='POST'){
  if(req.headers.origin!==OAUTH_ORIGIN)return send(403,{error:'origin'});
@@ -600,7 +600,7 @@ async function oauthRoutes(req,res,path,body){
  if(!sess||!v||v.ws!==sess.ws||v.expires<Date.now())return send(403,{error:'Sign-in expired. Reconnect from your bot.'});
  const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify({used:true})]);if(won!==1)return send(409,{error:'Already authorized'});
  if(v.params.agent_id&&body.agentId!==v.params.agent_id)return send(400,{error:'Choose the existing bot being reconnected'});
- const a=await als.run({ws:sess.ws},()=>getJ('fm:agent:'+body.agentId));if(!a||a.status!=='active'||a.hosted)return send(400,{error:'Choose an existing external bot'});
+ const a=await als.run({ws:sess.ws},()=>getJ('fm:agent:'+body.agentId));if(!a||a.status!=='active'||a.hosted||a.harness||a.live)return send(400,{error:'Choose an existing external bot'});
  const token='fm_oauth_'+crypto.randomBytes(32).toString('hex'),code=crypto.randomBytes(32).toString('hex');
  await setJ('gl:oauth:code:'+sha(code),{ws:sess.ws,agentId:a.id,clientId:v.params.client_id,redirect:v.params.redirect_uri,challenge:v.params.code_challenge,epoch:a.oauthEpoch||0,expires:Date.now()+120000,token:enc(token)});
  const target=new URL(v.params.redirect_uri);target.searchParams.set('code',code);if(v.params.state)target.searchParams.set('state',v.params.state);return send(200,{redirect:target.toString()});
@@ -668,7 +668,11 @@ async function routes(req, res, path, body, agentPre) {
   const send = (o) => res.status(o.status).json(o.body);
   const origin = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host;
   try {
-    if (wsId() === 'legacy') await seed();
+    if (wsId() === 'legacy') {await seed();
+      // Owner-approved cleanup of accidental OAuth authorization on the hidden demo.
+      const id=await r(['GET','fm:scout:id']),a=id&&await getJ('fm:agent:'+id);if(a&&a.harness){for(const gid of await r(['SMEMBERS','fm:oauth:grants:'+id])){const k='gl:oauth:grant:'+gid,raw=await r(['GET',k]),g=raw&&JSON.parse(raw);if(g&&g.ws==='legacy'&&g.agentId===id&&g.createdAt==='2026-10-08T21:15:49.442Z'&&!g.revoked){await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify({...g,revoked:true,revokedAt:now(),failureReason:'hidden_demo_authorization',failedAt:now()})]);bust();}}}
+    }
+
 
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
