@@ -1,1 +1,80 @@
-{"redirects": [{"source": "/", "has": [{"type": "cookie", "key": "fm_sess"}], "destination": "/hq", "permanent": false}], "rewrites": [{"source": "/.well-known/:path*", "destination": "/api/index"}, {"source": "/oauth/authorize", "destination": "/oauth.html"}, {"source": "/hq", "destination": "/app.html"}, {"source": "/api/(.*)", "destination": "/api/index"}], "headers": [{"source": "/", "headers": [{"key": "Cache-Control", "value": "no-cache, no-store, must-revalidate"}]}, {"source": "/index.html", "headers": [{"key": "Cache-Control", "value": "no-cache, no-store, must-revalidate"}]}, {"source": "/hq", "headers": [{"key": "Cache-Control", "value": "no-cache, no-store, must-revalidate"}]}, {"source": "/app.html", "headers": [{"key": "Cache-Control", "value": "no-cache, no-store, must-revalidate"}]}], "functions": {"api/index.js": {"maxDuration": 30}}}
+{
+  "redirects": [
+    {
+      "source": "/",
+      "has": [
+        {
+          "type": "cookie",
+          "key": "fm_sess"
+        }
+      ],
+      "destination": "/hq",
+      "permanent": false
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/runner",
+      "destination": "/runner.html"
+    },
+    {
+      "source": "/.well-known/:path*",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/oauth/authorize",
+      "destination": "/oauth.html"
+    },
+    {
+      "source": "/hq",
+      "destination": "/app.html"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/index.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/hq",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/app.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    }
+  ],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 30
+    }
+  }
+}
