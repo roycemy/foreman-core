@@ -199,12 +199,30 @@ async function capabilityProfiles(){
 async function routing(category){const bots=await capabilityProfiles(),rank=bots.map(b=>({b,p:b.capabilities[category]})).filter(x=>x.p).sort((a,b)=>b.p.successRate-a.p.successRate||b.p.samples-a.p.samples||(a.p.medianSeconds??Infinity)-(b.p.medianSeconds??Infinity));const best=rank[0];return {bots,suggested:best?{id:best.b.id,name:best.b.name,category,reason:best.p.completed+' completed / '+best.p.failed+' failed in '+category+'; '+best.p.samples+' reported outcomes'+(best.p.medianSeconds===null?'':'; median '+best.p.medianSeconds+'s')+'. Costs are not used unless tied to a job. This is a suggestion, not a quality guarantee.'}:null,basis:'Retained completed/failed job records only, up to latest 60 jobs. Outcomes are bot-reported, not independently graded. Empty categories and synthetic records excluded. No scored history means no suggestion; no automatic routing.'};}
 async function teammates(){return (await capabilityProfiles());}
 
+// Owner-confirmed identity correction. Preserve history; the target must claim.
+async function reassignTask(id,body){
+ if(body.confirmed!==true)return {status:400,body:{error:'Owner confirmation required'}};
+ if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}};
+ const key='fm:task:'+id,raw=await r(['GET',key]),t=raw&&JSON.parse(raw);
+ if(!t)return {status:404,body:{error:'Task not found'}};
+ if(!['queued','running'].includes(t.status))return {status:409,body:{error:'Only unfinished tasks can be transferred'}};
+ if(t.assignee!==body.expectedAssignee||t.status!==body.expectedStatus)return {status:409,body:{error:'Task changed. Review again'}};
+ const target=await getJ('fm:agent:'+body.assignee);
+ if(!target||target.status!=='active'||target.harness||target.hosted||target.id===t.assignee)return {status:400,body:{error:'Choose a different active external worker in this workspace'}};
+ const from=t.assignee,at=now(),next={...t,assignee:target.id,status:'queued',startedAt:null,reassignedAt:at,reassignments:[...(t.reassignments||[]),{from,to:target.id,at,previousStatus:t.status,previousStartedAt:t.startedAt||null,by:'owner',reason:String(body.reason||'Owner corrected worker identity').slice(0,300)}]};
+ if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return {status:409,body:{error:'Task changed. Review again'}};
+ bust();
+ if(from)await event(from,'handoff','Owner moved "'+t.title+'" to '+target.name+'. Stop reporting this job under the old identity.',{kind:'HANDOFF',taskId:id,toAgentId:target.id});
+ await event(target.id,'handoff','Owner assigned "'+t.title+'" to you. Read and claim this existing job before reporting or completing it.',{kind:'HANDOFF',taskId:id,fromAgentId:from});
+ return {status:200,body:{task:next}};
+}
+
 async function claimTask(agent) { if(agent.status!=='active'||await r(['GET','fm:kill']))return null;const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
   const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now();if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
-async function completeTask(agent, id, body) { const t = await getJ('fm:task:' + id); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
-  if(t.origin==='chat'&&t.createdBy!==agent.id&&t.status==='queued')return {status:409,body:{error:'Claim the assigned job before completing it'}};
+async function completeTask(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
+  if(t.status==='queued'&&(t.reassignedAt||(t.origin==='chat'&&t.createdBy!==agent.id)))return {status:409,body:{error:'Claim the assigned job before completing it'}};
   if (!['running','queued'].includes(t.status)) return {status:409,body:{error:'Task is already terminal',task:t}};
-  const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); await setJ('fm:task:' + id, t);
+  const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+id,raw,JSON.stringify(t)])!==1)return {status:409,body:{error:'Task changed. Read it again'}};
   await touchAgent(agent);
   await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id });
   if(t.createdBy&&t.createdBy!==agent.id&&t.createdBy!=='owner')await event(t.createdBy,failed?'failed':'completed','Delegate '+(failed?'failed: ':'finished: ')+t.title,{kind:failed?'FAILED':'COMPLETED',taskId:t.id,fromAgentId:agent.id});
@@ -217,7 +235,7 @@ async function notifications(agent, after) {
   const all=(await r(['LRANGE','fm:events',0,299])).filter(Boolean).map(x=>JSON.parse(x)).filter(e=>e.agentId===agent.id).reverse();
   const index=after?all.findIndex(e=>e.id===after):-1;
   if(after&&index<0)return {status:409,body:{error:'cursor_expired',resetRequired:true,message:'Cursor is outside the retained bot history. Fetch without after to reset; older events may have been lost.'}};
-  const kinds=new Set(['NEEDS_APPROVAL','COMPLETED','BLOCKED','FAILED']);
+  const kinds=new Set(['NEEDS_APPROVAL','COMPLETED','BLOCKED','FAILED','HANDOFF']);
   const events=all.slice(after?index+1:0).filter(e=>kinds.has(e.kind)).map(e=>({id:e.id,at:e.at,kind:e.kind,text:e.text,taskId:e.taskId||null,requestId:e.requestId||null}));
   const ids=await r(['SMEMBERS','fm:reqs']);
   const pending=ids.length?(await r(['MGET',...ids.map(id=>'fm:req:'+id)])).filter(Boolean).map(x=>JSON.parse(x)).filter(q=>q.agentId===agent.id&&q.status==='pending').map(q=>({id:q.id,action:q.action,label:q.label,createdAt:q.createdAt,status:q.status})):[];
@@ -794,6 +812,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/cards/proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+body.botId),body));
     {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST')return send(await cardDecision(cm[1],cm[2],body.detailsHash));}
 
+    {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started'); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
