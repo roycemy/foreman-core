@@ -111,6 +111,32 @@ async function execute(agent, action, params) {
   throw new Error('unknown action');
 }
 
+// Short-lived single-use browser pairing. Never persists the long credential in client storage.
+async function issuePairing(id) {
+ const a=await getJ('fm:agent:'+id);if(!a||a.status!=='active'||a.hosted)return {status:409,body:{error:'bot_not_available'}};
+ if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}};
+ const code=crypto.randomBytes(5).toString('hex').toUpperCase(),hash=sha(code),expires=Date.now()+300000;
+ await setJ('gl:pair:'+hash,{ws:wsId(),agentId:id,epoch:a.oauthEpoch||0,expires});await r(['EXPIRE','gl:pair:'+hash,300]);
+ await r(['SET','fm:pairLatest:'+id,hash]);return {status:200,body:{code:code.slice(0,5)+'-'+code.slice(5),expiresAt:new Date(expires).toISOString(),agent:{id:a.id,name:a.name}}};
+}
+async function redeemPairing(body,ip) {
+ const bucket=Math.floor(Date.now()/60000),rate='gl:pairRate:'+sha(ip||'unknown')+':'+bucket;
+ const n=await r(['INCRBY',rate,1]);await r(['EXPIRE',rate,120]);if(n>10)return {status:429,body:{error:'Too many attempts. Wait one minute.'}};
+ const code=String(body.code||'').replace(/[- ]/g,'').toUpperCase();if(!/^[A-F0-9]{10}$/.test(code))return {status:400,body:{error:'Invalid or expired pairing code'}};
+ const hash=sha(code),q=await getJ('gl:pair:'+hash);if(!q||q.expires<=Date.now()||q.agentId!==body.expected_agent_id)return {status:400,body:{error:'Invalid or expired pairing code'}};
+ return als.run({ws:q.ws},async()=>{
+ const a=await getJ('fm:agent:'+q.agentId);if(!a||a.status!=='active'||a.hosted||(a.oauthEpoch||0)!==q.epoch||await r(['GET','fm:kill'])||await r(['GET','fm:pairLatest:'+a.id])!==hash)return {status:403,body:{error:'Pairing no longer available'}};
+ const lock='fm:gatewayKeyLock:'+a.id,token=crypto.randomBytes(12).toString('hex');if(!await r(['SET',lock,token,'NX','PX',30000]))return {status:409,body:{error:'Connection change in progress; retry'}};
+ try {
+ if(!await r(['SET','gl:pairUsed:'+hash,'1','NX','PX',300000]))return {status:409,body:{error:'Pairing code already used'}};
+ const old=await r(['GET','fm:gatewayKeyHash:'+a.id]),key='fmk_'+crypto.randomBytes(20).toString('hex'),kh=sha(key);
+ const updated=await updateAgent(a.id,x=>{if(x.status!=='active'||(x.oauthEpoch||0)!==q.epoch)throw Error('Bot authorization changed');x.connectionMode='gateway';x.keyHint=key.slice(0,8)+'...'+key.slice(-4)});
+ if(old)await r(['DEL','fm:key:'+old,'gl:key:'+old]);await r(['SET','fm:gatewayKeyHash:'+a.id,kh]);await r(['SET','fm:key:'+kh,a.id]);await r(['SET','gl:key:'+kh,q.ws]);await r(['DEL','gl:pair:'+hash,'fm:gatewaySeen:'+a.id,'fm:seen:'+a.id]);bust();
+ return {status:200,body:{key,agent:{id:updated.id,name:updated.name}}};
+ }finally{if(await r(['GET',lock])===token)await r(['DEL',lock]);}
+ });
+}
+
 // ---------- work bus ----------
 // Chat adapters register only work that has actually started in their own runtime.
 // Idempotency is scoped to authenticated employee and workspace; this never starts hosted inference.
@@ -668,6 +694,7 @@ module.exports = async (req, res) => {
   let body = req.body; if (typeof body === 'string') { try { body = /application\/x-www-form-urlencoded/.test(req.headers['content-type']||'') ? Object.fromEntries(new URLSearchParams(body)) : JSON.parse(body); } catch { body = {}; } } body = body || {};
   try {
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
+    if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
     if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
     if (path.startsWith('/gateway') || path === '/ingest' || path === '/mcp') {
@@ -731,6 +758,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
+    {const pm=path.match(/^\/agents\/(\w+)\/pairing$/);if(pm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuePairing(pm[1]));}}
     if (path === '/state') return res.json(await fullState());
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
