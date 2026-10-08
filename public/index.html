@@ -156,7 +156,7 @@ svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var
           <div>
             <h3>Connect a bot you already run.</h3>
             <p>Pick Muse, Grok Bot or Instinct. <span data-brand>The app</span> gives you one address and a setup message. Paste it into the bot. Nothing is connected until that bot reports back.</p>
-            <div class="addrline"><span class="mono">https://foreman-core.vercel.app/api/mcp</span><span class="chip">Copy setup message</span></div>
+            <div class="addrline"><span class="mono">https://foreman-core.vercel.app/api/mcp</span><span class="chip">Install in Cursor</span></div>
           </div>
           <div class="states" aria-label="Connection states">
             <div><span class="av muse">MU</span><div><b>Muse</b><small>Prepared · not connected yet</small></div><span class="ind prep" aria-hidden="true"></span></div>
@@ -202,7 +202,7 @@ svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var
     <div>
       <div class="eyebrow">Security</div>
       <h2 class="disp">A connection is a narrow door, not a key to the building.</h2>
-      <p style="color:#B8B8B1;max-width:46ch">OAuth 2.1 with PKCE. Each bot has its own permissions: Auto, Ask or Never, per action. The kill switch stops every bot at once. Access to a connector lasts one hour.</p>
+      <p style="color:#B8B8B1;max-width:46ch">OAuth 2.1 with PKCE. Each bot has its own permissions: Auto, Ask or Never, per action. The kill switch stops every bot at once. Access tokens renew automatically in clients that support OAuth refresh. Authorization stays available until you revoke the bot.</p>
     </div>
     <div>
       <div class="eyebrow" style="margin-bottom:8px">A bot can never</div>
