@@ -666,8 +666,7 @@ async function routes(req, res, path, body, agentPre) {
   const origin = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host;
   try {
     if (wsId() === 'legacy') await seed();
-    // Retire OAuth grants accidentally issued to the hidden legacy demo harness.
-    if(wsId()==='legacy'){const id=await r(['GET','fm:scout:id']),a=id&&await getJ('fm:agent:'+id);if(a&&a.harness){for(const gid of await r(['SMEMBERS','fm:oauth:grants:'+id])){const g=await getJ('gl:oauth:grant:'+gid);if(g&&g.ws==='legacy'&&g.agentId===id&&!g.revoked)await setJ('gl:oauth:grant:'+gid,{...g,revoked:true,revokedAt:now(),failureReason:'hidden_demo_authorization',failedAt:now()});}}}
+
 
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
