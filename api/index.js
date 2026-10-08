@@ -665,7 +665,10 @@ async function routes(req, res, path, body, agentPre) {
   const send = (o) => res.status(o.status).json(o.body);
   const origin = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host;
   try {
-    if (wsId() === 'legacy') await seed();
+    if (wsId() === 'legacy') {await seed();
+      // Owner-approved cleanup of accidental OAuth authorization on the hidden demo.
+      const id=await r(['GET','fm:scout:id']),a=id&&await getJ('fm:agent:'+id);if(a&&a.harness){for(const gid of await r(['SMEMBERS','fm:oauth:grants:'+id])){const k='gl:oauth:grant:'+gid,raw=await r(['GET',k]),g=raw&&JSON.parse(raw);if(g&&g.ws==='legacy'&&g.agentId===id&&g.createdAt==='2026-10-08T21:15:49.442Z'&&!g.revoked){await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify({...g,revoked:true,revokedAt:now(),failureReason:'hidden_demo_authorization',failedAt:now()})]);bust();}}}
+    }
 
 
     // --- agent-facing gateway ---
