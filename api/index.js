@@ -319,7 +319,7 @@ async function runAndReceipt(agent, action, params, reqId, approvedBy) {
 
 async function resolveAgent(req) {
   const key = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim(); if (!key) return null;
-  const oauth=await getJ('gl:oauth:token:'+sha(key));if(oauth){if(oauth.expires<Date.now())return null;if(oauth.grantId){const grant=await getJ('gl:oauth:grant:'+oauth.grantId);if(!grant||grant.revoked)return null;await als.run({ws:oauth.ws},()=>r(['SADD','fm:oauth:grants:'+oauth.agentId,oauth.grantId]));}const agent=await als.run({ws:oauth.ws},()=>getJ('fm:agent:'+oauth.agentId));return agent&&agent.status==='active'&&((oauth.epoch||0)===(agent.oauthEpoch||0))?{ws:oauth.ws,agent}:null;}
+  const oauth=await getJ('gl:oauth:token:'+sha(key));if(oauth){if(!oauth.grantId){await als.run({ws:oauth.ws},()=>setJ('fm:oauth:legacy:'+oauth.agentId,{seenAt:now(),epoch:oauth.epoch||0}));CACHES.delete(oauth.ws);}if(oauth.expires<Date.now())return null;if(oauth.grantId){const grant=await getJ('gl:oauth:grant:'+oauth.grantId);if(!grant||grant.revoked)return null;await als.run({ws:oauth.ws},()=>r(['SADD','fm:oauth:grants:'+oauth.agentId,oauth.grantId]));}const agent=await als.run({ws:oauth.ws},()=>getJ('fm:agent:'+oauth.agentId));return agent&&agent.status==='active'&&((oauth.epoch||0)===(agent.oauthEpoch||0))?{ws:oauth.ws,agent}:null;}
   const w = await r(['GET', 'gl:key:' + sha(key)]);
   if (w) { const agent = await als.run({ ws: w }, () => authAgent(req)); return agent ? { ws: w, agent } : null; }
   const agent = await als.run({ ws: 'legacy' }, () => authAgent(req)); return agent ? { ws: 'legacy', agent } : null;
@@ -562,8 +562,8 @@ async function connectionState(a){
  const live=grants.filter(g=>!g.revoked).sort((a,b)=>String(b.renewedAt||b.createdAt).localeCompare(String(a.renewedAt||a.createdAt)));
  if(live.length)return {status:'active',persistent:true,authorizedAt:live[0].createdAt,lastRenewedAt:live[0].renewedAt||null};
  const failed=grants.filter(g=>g.failureReason).sort((a,b)=>String(b.failedAt).localeCompare(String(a.failedAt)))[0];
- const seen=a.lastSeen||await r(['GET','fm:seen:'+a.id]);
- return {status:failed||seen||ids.length?'needs_reauth':'awaiting_bot',persistent:false,reason:failed?failed.failureReason:seen||ids.length?'persistent_grant_missing':'authorization_pending',failedAt:failed?failed.failedAt:null,reconnectEndpoint:'/api/agents/'+a.id+'/reconnect',requiresClientParameters:true};
+ const seen=a.lastSeen||await r(['GET','fm:seen:'+a.id]),legacy=await getJ('fm:oauth:legacy:'+a.id),knownLegacy=legacy&&legacy.epoch===(a.oauthEpoch||0);
+ return {status:failed||knownLegacy||ids.length?'needs_reauth':seen?'verification_pending':'awaiting_bot',persistent:seen&&!failed&&!knownLegacy&&!ids.length?null:false,reason:failed?failed.failureReason:knownLegacy||ids.length?'persistent_grant_missing':seen?'grant_index_not_verified':'authorization_pending',failedAt:failed?failed.failedAt:null,reconnectEndpoint:'/api/agents/'+a.id+'/reconnect',requiresClientParameters:true};
 }
 async function reconnectAgent(id,body){
  const a=await getJ('fm:agent:'+id);if(!a)return {status:404,body:{error:'not_found'}};
