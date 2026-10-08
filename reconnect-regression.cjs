@@ -37,6 +37,8 @@ rc=await call('/api/oauth/context'+rq,'GET',{}, {cookie});let cs=await call('/ap
 assert.equal((await f.als.run({ws:'test'},()=>f.r(['SMEMBERS','fm:agents']))).length,1);
 // A pre-upgrade heartbeat does not establish persistent authorization.
 await f.als.run({ws:'test'},async()=>{await f.setJ('fm:agent:legacy',{id:'legacy',name:'Old worker',status:'active',lastSeen:new Date().toISOString()});await f.r(['SADD','fm:agents','legacy']);await f.setJ('fm:agent:new',{id:'new',status:'active'});await f.r(['SADD','fm:agents','new']);});
+assert.equal((await call('/api/agents/legacy/connection','GET',{}, {cookie})).j.connection.status,'verification_pending');
+await f.setJ('gl:oauth:token:'+hash('old-fixture'),{ws:'test',agentId:'legacy',expires:Date.now()-1});await call('/api/mcp','POST',{jsonrpc:'2.0',id:1,method:'initialize'},{authorization:'Bearer old-fixture'});
 assert.equal((await call('/api/agents/legacy/connection','GET',{}, {cookie})).j.connection.status,'needs_reauth');
 assert.equal((await call('/api/agents/new/connection','GET',{}, {cookie})).j.connection.status,'awaiting_bot');
 // Failed only grant is surfaced in state, not hidden behind lastSeen.
