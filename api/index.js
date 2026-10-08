@@ -152,6 +152,20 @@ async function completeTask(agent, id, body) { const t = await getJ('fm:task:' +
   await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id });
   if(t.parentId){const p=await getJ('fm:task:' + t.parentId);if(p&&p.assignee)await event(p.assignee,'result_returned','Delegate '+(failed?'failed: ':'result ready: ')+t.title,{kind:'WAITING',taskId:p.id,childTaskId:t.id,fromAgentId:agent.id});}
   return { status: 200, body: { task: t } }; }
+// Read-only, bot-scoped notifications. No task claim, presence update or external delivery.
+async function notifications(agent, after) {
+  if(agent.status!=='active'||await r(['GET','fm:kill']))return {status:403,body:{status:'blocked',reason:'Worker revoked or workspace paused'}};
+  if(after!==undefined&&after!==null&&(typeof after!=='string'||after.length>80))return {status:400,body:{error:'Invalid cursor'}};
+  const all=(await r(['LRANGE','fm:events',0,299])).filter(Boolean).map(x=>JSON.parse(x)).filter(e=>e.agentId===agent.id).reverse();
+  const index=after?all.findIndex(e=>e.id===after):-1;
+  if(after&&index<0)return {status:409,body:{error:'cursor_expired',resetRequired:true,message:'Cursor is outside the retained bot history. Fetch without after to reset; older events may have been lost.'}};
+  const kinds=new Set(['NEEDS_APPROVAL','COMPLETED','BLOCKED','FAILED']);
+  const events=all.slice(after?index+1:0).filter(e=>kinds.has(e.kind)).map(e=>({id:e.id,at:e.at,kind:e.kind,text:e.text,taskId:e.taskId||null,requestId:e.requestId||null}));
+  const ids=await r(['SMEMBERS','fm:reqs']);
+  const pending=ids.length?(await r(['MGET',...ids.map(id=>'fm:req:'+id)])).filter(Boolean).map(x=>JSON.parse(x)).filter(q=>q.agentId===agent.id&&q.status==='pending').map(q=>({id:q.id,action:q.action,label:q.label,createdAt:q.createdAt,status:q.status})):[];
+  return {status:200,body:{agentId:agent.id,events,pending,nextCursor:all.length?all[all.length-1].id:null,retention:'Latest 300 workspace events, filtered to this bot. Not a delivery channel.',delivery:'Client automation must poll and notify the owner; this endpoint does not send messages.'}};
+}
+
 async function reportEvent(agent, body, source) { const kind = normKind(body.kind || body.type || body.status || body.event); if (!kind) return { status: 400, body: { error: 'unrecognized event kind', allowed: KINDS } };
   await touchAgent(agent);
   if (agent.status !== 'active') { await event(agent.id, 'blocked', 'Blocked event report: access revoked', { kind: 'BLOCKED' }); return { status: 403, body: { status: 'blocked', reason: 'Access revoked by owner' } }; }
@@ -447,6 +461,7 @@ const MCP_TOOLS = [
   {name:'foreman_presence',description:'Report actual recent interaction with your owner. Does not claim work is running.',inputSchema:{type:'object',properties:{}}},
   { name: 'foreman_next_task', description: 'Claim the next task from the Foreman work bus.', inputSchema: { type: 'object', properties: {} } },
   { name: 'foreman_complete_task', description: 'Finish a task and store its result.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, result: { type: 'string' } }, required: ['task_id', 'result'] } },
+  {name:'foreman_notifications',description:'Read your own approval/completion/block/failure events. Read-only, no task claim or presence. Persist nextCursor and pass after on later calls; cursor_expired requires an explicit reset. Notification delivery is the client automation responsibility.',inputSchema:{type:'object',properties:{after:{type:'string'}}}},
   { name: 'foreman_check_request', description: 'Check a paused (ASK) request. Once approved Foreman has already run it; the result is included.', inputSchema: { type: 'object', properties: { request_id: { type: 'string' } }, required: ['request_id'] } },
 ];
 async function mcpCall(agent, name, args) {
@@ -460,6 +475,7 @@ async function mcpCall(agent, name, args) {
   else if(name==='foreman_presence'){if(agent.status!=='active'||await r(['GET','fm:kill']))out={status:'blocked'};else{await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'mcp'});out={status:'ok'};}}
   else if (name === 'foreman_next_task') { if (agent.status !== 'active') out = { status: 'blocked', reason: 'Access revoked by owner' }; else out = { task: await claimTask(agent) }; }
   else if (name === 'foreman_complete_task') out = (await completeTask(agent, (args || {}).task_id, args || {})).body;
+  else if(name==='foreman_notifications')out=(await notifications(agent,(args||{}).after)).body;
   else if (name === 'foreman_check_request') { const q = await getJ('fm:req:' + (args || {}).request_id); out = q && q.agentId === agent.id ? pub(q) : { error: 'not found' }; }
   return { isError: ['blocked', 'failed'].includes(out && out.status), content: [{ type: 'text', text: JSON.stringify(out) }] };
 }
@@ -674,9 +690,12 @@ async function routes(req, res, path, body, agentPre) {
     }
 
 
+    if(wsId()==='legacy') {const k='fm:req:req_97e4b111cd',raw=await r(['GET',k]),q=raw&&JSON.parse(raw),a=q&&await getJ('fm:agent:'+q.agentId);if(q&&q.agentId==='agent_a9c54ebb63'&&q.createdAt==='2026-10-06T20:48:23.766Z'&&q.status==='pending'&&a&&a.harness){const next={...q,status:'cancelled',reason:'Stale hidden demo request retired',decidedAt:now()};if(await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify(next)])===1)await finishReq(next);}}
+
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
       const agent = agentPre;
+      if(path==='/gateway/notifications'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return send(await notifications(agent,new URL(req.url,'https://local.invalid').searchParams.get('after')));}
       if(path==='/gateway/me'&&req.method==='GET'){if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked',reason:'Worker revoked or workspace paused'});res.setHeader('Cache-Control','no-store');return res.json({agent:{id:agent.id,name:agent.name,status:agent.status}});}
       if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway'});}
       if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
