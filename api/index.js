@@ -321,13 +321,13 @@ async function resolveAgent(req) {
   const key = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim(); if (!key) return null;
   const oauth=await getJ('gl:oauth:token:'+sha(key));if(oauth){if(!oauth.grantId){await als.run({ws:oauth.ws},()=>setJ('fm:oauth:legacy:'+oauth.agentId,{seenAt:now(),epoch:oauth.epoch||0}));CACHES.delete(oauth.ws);}if(oauth.expires<Date.now())return null;if(oauth.grantId){const grant=await getJ('gl:oauth:grant:'+oauth.grantId);if(!grant||grant.revoked)return null;await als.run({ws:oauth.ws},()=>r(['SADD','fm:oauth:grants:'+oauth.agentId,oauth.grantId]));}const agent=await als.run({ws:oauth.ws},()=>getJ('fm:agent:'+oauth.agentId));return agent&&agent.status==='active'&&((oauth.epoch||0)===(agent.oauthEpoch||0))?{ws:oauth.ws,agent}:null;}
   const w = await r(['GET', 'gl:key:' + sha(key)]);
-  if (w) { const agent = await als.run({ ws: w }, () => authAgent(req)); return agent ? { ws: w, agent } : null; }
-  const agent = await als.run({ ws: 'legacy' }, () => authAgent(req)); return agent ? { ws: 'legacy', agent } : null;
+  if (w) { const agent = await als.run({ ws: w }, () => authAgent(req)); return agent ? { ws: w, agent, apiKey: true } : null; }
+  const agent = await als.run({ ws: 'legacy' }, () => authAgent(req)); return agent ? { ws: 'legacy', agent, apiKey: true } : null;
 }
 async function authAgent(req) {
   const h = req.headers['authorization'] || ''; const key = h.replace(/^Bearer\s+/i, '').trim(); if (!key) return null;
   const id = await r(['GET', 'fm:key:' + sha(key)]); if (!id) return null;
-  return getJ('fm:agent:' + id);
+  const current=await r(['GET','fm:gatewayKeyHash:'+id]);if(current&&current!==sha(key))return null;return getJ('fm:agent:' + id);
 }
 
 async function gatewayAct(agent, body) {
@@ -397,8 +397,8 @@ async function finishReq(q) { bust(); await setJ('fm:req:' + q.id, q); await r([
 async function createAgent(name, role, provider, harness, opts) { opts = opts || {};
   const id = rid('agent'); const key = 'fmk_' + crypto.randomBytes(20).toString('hex');
   const agent = { id, name: String(name || 'Agent').slice(0, 40), role: String(role || '').slice(0, 60), provider: (PROVIDERS.find(p => p.id === provider) || { name: 'Custom agent' }).name, providerId: provider || 'custom', harness: !!harness, status: 'active', permissions: { ...(PRESETS[opts.preset] || DEFAULT_PERMS) }, hosted: !!opts.hosted, model: opts.model || null, limits: { perActionCents: 10, dailyCents: 50 }, createdAt: now(), lastSeen: null, keyHint: key.slice(0, 8) + '...' + key.slice(-4) };
-  bust(); await setJ('fm:agent:' + id, agent); await r(['SET', 'fm:key:' + sha(key), id]); await r(['SET', 'gl:key:' + sha(key), wsId()]); await r(['SADD', 'fm:agents', id]);
-  await event(id, 'connected', `${agent.name} connected to Foreman`);
+  bust(); await setJ('fm:agent:' + id, agent); await r(['SET','fm:gatewayKeyHash:'+id,sha(key)]); await r(['SET', 'fm:key:' + sha(key), id]); await r(['SET', 'gl:key:' + sha(key), wsId()]); await r(['SADD', 'fm:agents', id]);
+  await event(id, 'prepared', `${agent.name} connection prepared; waiting for the bot`);
   return { agent, key };
 }
 
@@ -557,10 +557,12 @@ async function revokeOAuthGrant(id){
 async function connectionState(a){
  if(a.hosted)return {status:'not_applicable',persistent:false};
  if(a.status!=='active')return {status:'revoked',persistent:false};
+ const gateway=await getJ('fm:gatewaySeen:'+a.id);
  const ids=await r(['SMEMBERS','fm:oauth:grants:'+a.id]);
  const grants=(await Promise.all(ids.map(id=>getJ('gl:oauth:grant:'+id)))).filter(g=>g&&g.ws===wsId()&&g.agentId===a.id&&g.epoch===(a.oauthEpoch||0));
  const live=grants.filter(g=>!g.revoked).sort((a,b)=>String(b.renewedAt||b.createdAt).localeCompare(String(a.renewedAt||a.createdAt)));
  if(live.length)return {status:'active',persistent:true,authorizedAt:live[0].createdAt,lastRenewedAt:live[0].renewedAt||null};
+ if(a.connectionMode==='gateway')return gateway&&gateway.epoch===(a.oauthEpoch||0)?{status:'active',transport:'gateway',persistent:false,authorizedAt:gateway.seenAt}:{status:'awaiting_bot',transport:'gateway',persistent:false,reason:'gateway_call_pending'};
  const failed=grants.filter(g=>g.failureReason).sort((a,b)=>String(b.failedAt).localeCompare(String(a.failedAt)))[0];
  const seen=a.lastSeen||await r(['GET','fm:seen:'+a.id]),legacy=await getJ('fm:oauth:legacy:'+a.id),knownLegacy=legacy&&legacy.epoch===(a.oauthEpoch||0);
  return {status:failed||knownLegacy||ids.length?'needs_reauth':seen?'verification_pending':'awaiting_bot',persistent:seen&&!failed&&!knownLegacy&&!ids.length?null:false,reason:failed?failed.failureReason:knownLegacy||ids.length?'persistent_grant_missing':seen?'grant_index_not_verified':'authorization_pending',failedAt:failed?failed.failedAt:null,reconnectEndpoint:'/api/agents/'+a.id+'/reconnect',requiresClientParameters:true};
@@ -653,6 +655,7 @@ module.exports = async (req, res) => {
       const ra = await resolveAgent(req);
       if(!ra&&path==='/mcp')res.setHeader('WWW-Authenticate','Bearer resource_metadata="'+OAUTH_ORIGIN+'/.well-known/oauth-protected-resource/api/mcp"');
       if (!ra) return path === '/mcp' ? res.status(401).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unknown or invalid agent key' } }) : res.status(401).json({ status: 'unauthorized', reason: 'Unknown or invalid agent key' });
+      req.gatewayKeyAuth=!!ra.apiKey;
       return await als.run({ ws: ra.ws }, () => routes(req, res, path, body, ra.agent));
     }
     const sess = await getSession(req);
@@ -674,6 +677,7 @@ async function routes(req, res, path, body, agentPre) {
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
       const agent = agentPre;
+      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway'});}
       if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
       if(path==='/gateway/spend-requests'&&req.method==='POST')return send(await newSpendRequest(agent,body));
       {const sm=path.match(/^\/gateway\/spend-requests\/(spend_[a-f0-9]+)$/);if(sm&&req.method==='GET'){const q=await getJ('fm:spendRequest:'+sm[1]);return q&&q.agentId===agent.id?res.json({request:q}):res.status(404).json({error:'not found'});}}
@@ -707,6 +711,19 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/state') return res.json(await fullState());
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
+    {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
+      if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});
+      const a=await getJ('fm:agent:'+km[1]);if(!a||a.status!=='active'||a.hosted)return res.status(409).json({error:'bot_not_available'});
+      if(await r(['GET','fm:kill']))return res.status(403).json({error:'Workspace is paused'});
+      const lock=crypto.randomBytes(12).toString('hex'),lockKey='fm:gatewayKeyLock:'+a.id;if(!await r(['SET',lockKey,lock,'NX','PX',30000]))return res.status(409).json({error:'Key rotation already in progress; retry'});
+      try{const oldHash=await r(['GET','fm:gatewayKeyHash:'+a.id]);
+      const key='fmk_'+crypto.randomBytes(20).toString('hex'),hash=sha(key);
+      const updated=await updateAgent(a.id,x=>{if(x.status!=='active')throw new Error('Bot revoked during setup');x.connectionMode='gateway';x.keyHint=key.slice(0,8)+'...'+key.slice(-4);});
+      if(oldHash)await r(['DEL','fm:key:'+oldHash,'gl:key:'+oldHash]);await r(['SET','fm:gatewayKeyHash:'+a.id,hash]);
+      await r(['SET','fm:key:'+hash,a.id]);await r(['SET','gl:key:'+hash,wsId()]);await r(['DEL','fm:gatewaySeen:'+a.id,'fm:seen:'+a.id]);bust();
+      res.setHeader('Cache-Control','no-store');return res.json({agent:updated,key,connectionStatus:'awaiting_bot'});
+      }finally{if(await r(['GET',lockKey])===lock)await r(['DEL',lockKey]);}
+    }}
     if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
     if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits|room)$/)) && req.method === 'POST') {
       const op=m[2];
