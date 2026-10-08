@@ -319,6 +319,7 @@ async function runAndReceipt(agent, action, params, reqId, approvedBy) {
 
 async function resolveAgent(req) {
   const key = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim(); if (!key) return null;
+  const oauth=await getJ('gl:oauth:token:'+sha(key));if(oauth){if(oauth.expires<Date.now())return null;const agent=await als.run({ws:oauth.ws},()=>getJ('fm:agent:'+oauth.agentId));return agent&&agent.status==='active'?{ws:oauth.ws,agent}:null;}
   const w = await r(['GET', 'gl:key:' + sha(key)]);
   if (w) { const agent = await als.run({ ws: w }, () => authAgent(req)); return agent ? { ws: w, agent } : null; }
   const agent = await als.run({ ws: 'legacy' }, () => authAgent(req)); return agent ? { ws: 'legacy', agent } : null;
@@ -441,6 +442,7 @@ const MCP_TOOLS = [
   { name: 'foreman_report', description: 'Report your activity. kind is one of ' + KINDS.join(', '), inputSchema: { type: 'object', properties: { kind: { type: 'string' }, text: { type: 'string' } }, required: ['kind'] } },
   {name:'foreman_chat_task',description:'Register a task you have actually begun from an owner chat. Does not execute work or infer from text.',inputSchema:{type:'object',properties:{source_id:{type:'string'},title:{type:'string'},brief:{type:'string'}},required:['source_id','title']}},
   {name:'foreman_read_task',description:'Read your task or the result of a task you delegated.',inputSchema:{type:'object',properties:{task_id:{type:'string'}},required:['task_id']}},
+  {name:'blackbox_card_proposal',description:'Request an owner decision for a synthetic card purchase. No real money moves.',inputSchema:{type:'object',properties:{sourceId:{type:'string'},merchant:{type:'string'},amountCents:{type:'integer'},currency:{type:'string',enum:['USD']},purpose:{type:'string'}},required:['sourceId','merchant','amountCents','currency','purpose']}},
   {name:'foreman_presence',description:'Report actual recent interaction with your owner. Does not claim work is running.',inputSchema:{type:'object',properties:{}}},
   { name: 'foreman_next_task', description: 'Claim the next task from the Foreman work bus.', inputSchema: { type: 'object', properties: {} } },
   { name: 'foreman_complete_task', description: 'Finish a task and store its result.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, result: { type: 'string' } }, required: ['task_id', 'result'] } },
@@ -453,6 +455,7 @@ async function mcpCall(agent, name, args) {
   else if (name === 'foreman_report') out = (await reportEvent(agent, args || {}, 'mcp')).body;
   else if(name==='foreman_chat_task')out=(await chatTask(agent,args||{})).body;
   else if(name==='foreman_read_task'){const task=await taskForAgent(agent,(args||{}).task_id);out=task?{task}:{error:'not found'};}
+  else if(name==='blackbox_card_proposal')out=(await cardPropose(await getJ('fm:agent:'+agent.id),args||{})).body;
   else if(name==='foreman_presence'){if(agent.status!=='active'||await r(['GET','fm:kill']))out={status:'blocked'};else{await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'mcp'});out={status:'ok'};}}
   else if (name === 'foreman_next_task') { if (agent.status !== 'active') out = { status: 'blocked', reason: 'Access revoked by owner' }; else out = { task: await claimTask(agent) }; }
   else if (name === 'foreman_complete_task') out = (await completeTask(agent, (args || {}).task_id, args || {})).body;
@@ -461,7 +464,7 @@ async function mcpCall(agent, name, args) {
 }
 async function mcpHandle(agent, m) {
   const ok = result => ({ jsonrpc: '2.0', id: m.id, result });
-  if (m.method === 'initialize') return ok({ protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'foreman', version: '9.0.0' } });
+  if (m.method === 'initialize') {await touchAgent(agent);await event(agent.id,'interaction','MCP client connected',{kind:'INTERACTION',source:'mcp'});return ok({ protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'foreman', version: '9.0.0' } });}
   if (m.method === 'tools/list') return ok({ tools: MCP_TOOLS.map(({ action, ...t }) => t) });
   if (m.method === 'tools/call') return ok(await mcpCall(agent, m.params && m.params.name, m.params && m.params.arguments));
   if (m.method === 'ping') return ok({});
@@ -493,17 +496,106 @@ async function reviewSpend(id,decision,detailsHash){const key='fm:spendRequest:'
  const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(q)]);if(won===1){bust();return {status:200,body:{request:q,receipt:q.decisionReceipt}};}}
  return {status:409,body:{error:'Another decision is being saved; refresh'}};
 }
+
+// Synthetic card rails. Separate from gateway policy and existing money decisions.
+// Provider contract: execute({id, amountCents, currency, merchant, purpose, botId}).
+// Real providers are deliberately not selectable or credentialed in this build.
+const CARD_PROVIDER = Object.freeze({id:'sandbox', live:false, async execute(q){
+ return {provider:'sandbox',providerReference:'sim_'+q.id,simulatedCents:q.amountCents,chargedCents:0,currency:q.currency};
+}});
+async function cardData(){
+ const ids=await r(['SMEMBERS','fm:cards:proposals']);
+ const proposals=ids.length?(await r(['MGET',...ids.map(id=>'fm:cards:q:'+id)])).filter(Boolean).map(JSON.parse).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)):[];
+ return {mode:'sandbox',liveMoneyEnabled:false,provider:'sandbox',killed:!!await r(['GET','fm:cards:kill']),proposals,ledger:proposals.filter(q=>q.receipt).map(q=>q.receipt),bots:await Promise.all((await listAgents()).map(async a=>({id:a.id,name:a.name,status:a.status,dailyLimitCents:Number((await r(['GET','fm:cards:cap:'+a.id]))??10000),simulatedTodayCents:Number(await r(['GET','fm:cards:spent:'+a.id+':'+now().slice(0,10)])||0)})))};
+}
+async function cardPropose(a,b){
+ if(!a||a.status!=='active'||await r(['GET','fm:kill'])||await r(['GET','fm:cards:kill']))return {status:403,body:{error:'Card proposals paused or worker revoked'}};
+ if(!Number.isSafeInteger(b.amountCents)||b.amountCents<1||b.amountCents>100000000||b.currency!=='USD'||!['merchant','purpose','sourceId'].every(k=>typeof b[k]==='string'&&b[k].trim().length>0&&b[k].length<=500))return {status:400,body:{error:'Exact USD cents, merchant, purpose and sourceId required'}};
+ const details={botId:a.id,merchant:b.merchant.trim(),amountCents:b.amountCents,currency:'USD',purpose:b.purpose.trim()},hash=sha(JSON.stringify(details)),id='card_'+sha(a.id+':'+b.sourceId).slice(0,24),key='fm:cards:q:'+id;
+ const q={id,...details,detailsHash:hash,botName:a.name,status:'pending',mode:'sandbox',createdAt:now(),expiresAt:new Date(Date.now()+86400000).toISOString(),chargedCents:0};
+ const won=await r(['SET',key,JSON.stringify(q),'NX']);const old=won?q:await getJ(key);if(old.detailsHash!==hash)return {status:409,body:{error:'sourceId has different details'}};
+ await r(['SADD','fm:cards:proposals',id]);return {status:won?201:200,body:{proposal:old}};
+}
+async function cardDecision(id,decision,hash){
+ const key='fm:cards:q:'+id;
+ // Serialize all sandbox decisions in the workspace, including cap changes and kill.
+ const lock='fm:cards:lock';if(!await r(['SET',lock,'1','NX','EX',30]))return {status:409,body:{error:'Another card change is saving. Try again.'}};
+ try{
+ const q=await getJ(key);if(!q)return {status:404,body:{error:'not found'}};
+ if(q.detailsHash!==hash)return {status:409,body:{error:'Review exact details again'}};
+ if(q.status!=='pending')return {status:200,body:{proposal:q}};
+ const a=await getJ('fm:agent:'+q.botId),day=now().slice(0,10),spentKey='fm:cards:spent:'+q.botId+':'+day,spent=Number(await r(['GET',spentKey])||0),cap=Number((await r(['GET','fm:cards:cap:'+q.botId]))??10000);
+ q.status=decision==='deny'?'denied':Date.parse(q.expiresAt)<=Date.now()?'expired':!a||a.status!=='active'||await r(['GET','fm:kill'])||await r(['GET','fm:cards:kill'])?'blocked':spent+q.amountCents>cap?'limit_blocked':'executing_sandbox';
+ // Persist admission before provider invocation. A crash stays visibly unresolved, never recharged.
+ if(q.status==='executing_sandbox'){await setJ(key,q);const out=await CARD_PROVIDER.execute(q);q.providerResult=out;q.status='simulated';await r(['INCRBY',spentKey,q.amountCents]);}
+ q.decidedAt=now();q.receipt={id:'ledger_'+q.id,requestId:q.id,at:q.decidedAt,botId:q.botId,botName:q.botName,merchant:q.merchant,purpose:q.purpose,amountCents:q.amountCents,currency:q.currency,outcome:q.status,provider:'sandbox',detailsHash:q.detailsHash,simulatedCents:q.status==='simulated'?q.amountCents:0,chargedCents:0,note:'Synthetic ledger. No card issued, no funds moved, no vendor receipt.'};
+ await setJ(key,q);return {status:200,body:{proposal:q,receipt:q.receipt}};
+ }finally{await r(['DEL',lock]);}
+}
+async function cardControl(body){
+ if(body.dailyLimitCents!=null&&(!Number.isSafeInteger(body.dailyLimitCents)||body.dailyLimitCents<0||body.dailyLimitCents>100000000))return {status:400,body:{error:'Daily limit must be integer cents'}};
+ if(body.botId&&!await getJ('fm:agent:'+body.botId))return {status:404,body:{error:'Unknown bot'}};
+ const lock='fm:cards:lock';if(!await r(['SET',lock,'1','NX','EX',30]))return {status:409,body:{error:'Another card change is saving. Try again.'}};
+ try{if(typeof body.killed==='boolean'){if(body.killed)await r(['SET','fm:cards:kill','1']);else await r(['DEL','fm:cards:kill']);}
+ if(body.botId&&body.dailyLimitCents!=null)await r(['SET','fm:cards:cap:'+body.botId,body.dailyLimitCents]);return {status:200,body:await cardData()};}finally{await r(['DEL',lock]);}
+}
+
+
+// OAuth for outbound MCP connections. Providers never lend us their account password.
+const OAUTH_ORIGIN='https://foreman-core.vercel.app';
+const validRedirect=u=>{try{const x=new URL(u);return !x.username&&!x.password&&!x.hash&&(x.protocol==='https:'||x.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(x.hostname));}catch{return false;}};
+async function oauthRoutes(req,res,path,body){
+ const send=(n,b)=>res.status(n).json(b),url=new URL(req.url,OAUTH_ORIGIN),params=Object.fromEntries(url.searchParams);
+ if(path==='/.well-known/oauth-protected-resource'||path==='/.well-known/oauth-protected-resource/api/mcp')return send(200,{resource:OAUTH_ORIGIN+'/api/mcp',authorization_servers:[OAUTH_ORIGIN],scopes_supported:['blackbox.bot'],bearer_methods_supported:['header']});
+ if(path==='/.well-known/oauth-authorization-server')return send(200,{issuer:OAUTH_ORIGIN,authorization_endpoint:OAUTH_ORIGIN+'/oauth/authorize',token_endpoint:OAUTH_ORIGIN+'/api/oauth/token',registration_endpoint:OAUTH_ORIGIN+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['blackbox.bot']});
+ if(path==='/oauth/register'&&req.method==='POST'){
+ if(!Array.isArray(body.redirect_uris)||body.redirect_uris.length<1||body.redirect_uris.length>5||!body.redirect_uris.every(validRedirect))return send(400,{error:'invalid_redirect_uri'});
+ const ip=String(req.headers['x-forwarded-for']||'local').split(',')[0],n=await r(['INCRBY','gl:oauth:rate:'+sha(ip),1]);await r(['EXPIRE','gl:oauth:rate:'+sha(ip),3600]);if(n>30)return send(429,{error:'rate_limited'});
+ const c={client_id:rid('client'),client_name:String(body.client_name||'MCP client').slice(0,100),redirect_uris:body.redirect_uris,token_endpoint_auth_method:'none',grant_types:['authorization_code'],response_types:['code']};await setJ('gl:oauth:client:'+c.client_id,c);return send(201,c);
+ }
+ if(path==='/oauth/context'&&req.method==='GET'){
+ const c=await getJ('gl:oauth:client:'+params.client_id);if(!c||!c.redirect_uris.includes(params.redirect_uri)||params.response_type!=='code'||params.code_challenge_method!=='S256'||!/^[A-Za-z0-9_-]{43}$/.test(params.code_challenge||''))return send(400,{error:'Invalid sign-in request. Return to your bot and reconnect.'});
+ if(params.resource&&params.resource!==OAUTH_ORIGIN+'/api/mcp')return send(400,{error:'invalid_target'});
+ const sess=await getSession(req);if(!sess)return send(401,{error:'auth'});
+ const csrf=crypto.randomBytes(24).toString('hex');await setJ('gl:oauth:consent:'+sha(csrf),{ws:sess.ws,params,expires:Date.now()+600000});
+ const bots=await als.run({ws:sess.ws},listAgents);return send(200,{client:c.client_name,redirectOrigin:new URL(params.redirect_uri).origin,bots:bots.filter(a=>a.status==='active'&&!a.hosted).map(a=>({id:a.id,name:a.name,provider:a.provider})),csrf});
+ }
+ if(path==='/oauth/consent'&&req.method==='POST'){
+ if(req.headers.origin!==OAUTH_ORIGIN)return send(403,{error:'origin'});
+ const sess=await getSession(req),key='gl:oauth:consent:'+sha(String(body.csrf||'')),raw=await r(['GET',key]),v=raw&&JSON.parse(raw);
+ if(!sess||!v||v.ws!==sess.ws||v.expires<Date.now())return send(403,{error:'Sign-in expired. Reconnect from your bot.'});
+ const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify({used:true})]);if(won!==1)return send(409,{error:'Already authorized'});
+ const a=await als.run({ws:sess.ws},()=>getJ('fm:agent:'+body.agentId));if(!a||a.status!=='active'||a.hosted)return send(400,{error:'Choose an existing external bot'});
+ const token='fm_oauth_'+crypto.randomBytes(32).toString('hex'),code=crypto.randomBytes(32).toString('hex');
+ await setJ('gl:oauth:code:'+sha(code),{ws:sess.ws,agentId:a.id,clientId:v.params.client_id,redirect:v.params.redirect_uri,challenge:v.params.code_challenge,expires:Date.now()+120000,token:enc(token)});
+ const target=new URL(v.params.redirect_uri);target.searchParams.set('code',code);if(v.params.state)target.searchParams.set('state',v.params.state);return send(200,{redirect:target.toString()});
+ }
+ if(path==='/oauth/token'&&req.method==='POST'){
+ if(body.grant_type!=='authorization_code')return send(400,{error:'unsupported_grant_type'});
+ if(!/^[A-Za-z0-9._~-]{43,128}$/.test(body.code_verifier||''))return send(400,{error:'invalid_grant'});
+ const key='gl:oauth:code:'+sha(String(body.code||'')),raw=await r(['GET',key]),c=raw&&JSON.parse(raw),challenge=crypto.createHash('sha256').update(body.code_verifier).digest('base64url');
+ if(!c||c.used||c.expires<Date.now()||c.clientId!==body.client_id||c.redirect!==body.redirect_uri||c.challenge!==challenge)return send(400,{error:'invalid_grant'});
+ const a=await als.run({ws:c.ws},()=>getJ('fm:agent:'+c.agentId));if(!a||a.status!=='active')return send(400,{error:'invalid_grant'});
+ const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify({used:true})]);if(won!==1)return send(400,{error:'invalid_grant'});
+ const token=dec(c.token);await setJ('gl:oauth:token:'+sha(token),{ws:c.ws,agentId:c.agentId,expires:Date.now()+3600000});
+ return send(200,{access_token:token,token_type:'Bearer',expires_in:3600,scope:'blackbox.bot'});
+ }
+ return send(404,{error:'not found'});
+}
+
 // ---------- http ----------
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   if (req.method === 'OPTIONS') return res.status(204).end();
   const path = (req.url || '').split('?')[0].replace(/^\/api/, '').replace(/\/$/, '') || '/';
-  let body = req.body; if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } } body = body || {};
+  let body = req.body; if (typeof body === 'string') { try { body = /application\/x-www-form-urlencoded/.test(req.headers['content-type']||'') ? Object.fromEntries(new URLSearchParams(body)) : JSON.parse(body); } catch { body = {}; } } body = body || {};
   try {
+    if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
     if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
     if (path.startsWith('/gateway') || path === '/ingest' || path === '/mcp') {
       const ra = await resolveAgent(req);
+      if(!ra&&path==='/mcp')res.setHeader('WWW-Authenticate','Bearer resource_metadata="'+OAUTH_ORIGIN+'/.well-known/oauth-protected-resource/api/mcp"');
       if (!ra) return path === '/mcp' ? res.status(401).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unknown or invalid agent key' } }) : res.status(401).json({ status: 'unauthorized', reason: 'Unknown or invalid agent key' });
       return await als.run({ ws: ra.ws }, () => routes(req, res, path, body, ra.agent));
     }
@@ -522,6 +614,7 @@ async function routes(req, res, path, body, agentPre) {
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
       const agent = agentPre;
+      if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
       if(path==='/gateway/spend-requests'&&req.method==='POST')return send(await newSpendRequest(agent,body));
       {const sm=path.match(/^\/gateway\/spend-requests\/(spend_[a-f0-9]+)$/);if(sm&&req.method==='GET'){const q=await getJ('fm:spendRequest:'+sm[1]);return q&&q.agentId===agent.id?res.json({request:q}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/chat-task' && req.method === 'POST') return send(await chatTask(agent,body));
@@ -542,6 +635,11 @@ async function routes(req, res, path, body, agentPre) {
       if (Array.isArray(body)) { const outs = (await Promise.all(body.map(m => mcpHandle(agent, m)))).filter(Boolean); return outs.length ? res.json(outs) : res.status(202).end(); }
       const o = await mcpHandle(agent, body); return o ? res.json(o) : res.status(202).end(); }
     // --- owner-facing ---
+    if(path==='/cards'&&req.method==='GET')return res.json(await cardData());
+    if(path==='/cards/control'&&req.method==='POST')return send(await cardControl(body));
+    if(path==='/cards/proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+body.botId),body));
+    {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST')return send(await cardDecision(cm[1],cm[2],body.detailsHash));}
+
     if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started'); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
@@ -576,7 +674,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/connect' && req.method === 'POST') {
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
       const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = origin;
-      if (prov === 'muse') {
+      if (prov === 'muse' && body.connectionMode !== 'existing') {
         let k = String(body.apiKey || '').trim().replace(/^MODEL_API_KEY=/i, '').replace(/^Bearer\s+/i, '').trim(); if (k.length > 1 && ((k[0] === '"' && k.endsWith('"')) || (k[0] === "'" && k.endsWith("'")))) k = k.slice(1, -1).trim();
         if (!/^LLM(?:_[^\s_|]+_[^\s|]+|\|[^\s|]+\|[^\s|]+)$/.test(k)) return res.status(400).json({ error: 'Paste your Meta Model API key from dev.meta.ai. It starts with LLM_ (LLM_<id>_<secret>).' });
         let models; try { models = await museModels(k); } catch (e) { return res.status(400).json({ error: e.message }); }
@@ -589,7 +687,7 @@ async function routes(req, res, path, body, agentPre) {
         await r(['SET', 'fm:secret:' + c.agent.id, enc(k)]);
         await track('connected', { provider: 'muse' }); return res.json({ agent: c.agent, hosted: true, noFirstTask: true });
       }
-      if (prov === 'grok') {
+      if (prov === 'grok' && body.connectionMode !== 'existing') {
         const k = String(body.apiKey || '').trim(); if (!/^xai-[A-Za-z0-9]{20,}$/.test(k)) { await mark('connect_failed', { reason: 'bad_key_format' }); return res.status(400).json({ error: 'Paste the key from console.x.ai (it starts with xai-)' }); }
         const model = String(body.model || 'grok-4.3').replace(/[^\w.\-]/g, '').slice(0, 40);
         try { await xaiChat(k, model, 'Reply with the word ready.', 5); } catch (e) { await mark('connect_failed', { reason: /recognise/.test(e.message) ? 'bad_key_format' : /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'xai_other' }); return res.status(400).json({ error: e.message + '. Check the key and that your xAI account has credits.' }); }
@@ -600,7 +698,7 @@ async function routes(req, res, path, body, agentPre) {
       }
       const c = await createAgent(name, String(body.role || '').trim(), prov, false, { preset });
       const msg = `You are joining my Foreman workspace as "${name}". Foreman controls what you can do. Your key: ${c.key}\nBase URL: ${base}/api\n1) Get work: GET ${base}/api/gateway/tasks/next with header "Authorization: Bearer <key>". It returns {"task":...} or null.\n2) Do real things only through POST ${base}/api/gateway/act with {"action":"web.fetch"|"notes.write"|"work.handoff","params":{...}}. Foreman answers completed, pending (wait for my approval and poll GET ${base}/api/gateway/requests/<id>) or blocked. Never work around a block.\n3) Finish with POST ${base}/api/gateway/tasks/<task_id>/complete {"result":"..."}.\n4) Report progress with POST ${base}/api/gateway/events {"kind":"TASK_STARTED|TOOL_USED|COMPLETED|FAILED","text":"...","task_id":"..."}.\nMCP clients can use ${base}/api/mcp with the same key.`;
-      await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, instructions: msg, key: c.key });
+      await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, noFirstTask: true, connectionStatus: 'awaiting_bot', instructions: msg, mcpUrl: base + '/api/mcp', key: c.key });
     }
     if (path === '/track' && req.method === 'POST') { if (['connect_started', 'first_task_started', 'approval_shown'].includes(body.step)) await track(body.step, body.provider ? { provider: String(body.provider).slice(0, 20) } : null); return res.json({ ok: true }); }
     // --- live demo agent ---
