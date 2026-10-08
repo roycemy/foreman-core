@@ -62,10 +62,11 @@ const ACTIONS = {
   'web.fetch':   { label: 'Fetch a live web page', costCents: 1, risk: 'read' },
   'notes.write': { label: 'Write a note to the shared workspace', costCents: 2, risk: 'write' },
   'notes.delete':{ label: 'Delete a note from the shared workspace', costCents: 5, risk: 'destructive' },
+  'work.assign':{label:'Assign a job to another bot',costCents:0,risk:'write'},
   'work.enqueue':{ label: 'Queue an unassigned task', costCents: 0, risk: 'write' },
   'work.handoff':{ label: 'Hand a task to another agent', costCents: 0, risk: 'write' },
 };
-const DEFAULT_PERMS = { 'web.fetch': 'AUTO', 'notes.write': 'ASK', 'notes.delete': 'NEVER', 'work.handoff': 'AUTO', 'work.enqueue': 'ASK' };
+const DEFAULT_PERMS = { 'web.fetch': 'AUTO', 'notes.write': 'ASK', 'notes.delete': 'NEVER', 'work.handoff': 'AUTO', 'work.enqueue': 'ASK', 'work.assign':'ASK' };
 
 function blockedHost(u) {
   try {
@@ -89,6 +90,16 @@ async function execute(agent, action, params) {
   if (action === 'notes.delete') {
     await r(['DEL', 'fm:notes']);
     return { summary: 'Deleted all notes', data: {} };
+  }
+  if(action==='work.assign'){
+   const to=await getJ('fm:agent:'+params.assignee);if(!to||to.status!=='active'||to.harness||to.hosted||to.id===agent.id)throw Error('Choose an active external bot in this workspace');
+   const title=String(params.title||'').trim(),source=String(params.source_id||'').trim();if(!title||title.length>120||!source||source.length>200)throw Error('Title and stable source ID required');
+   const id='task_'+sha(agent.id+':'+source).slice(0,24),old=await getJ('fm:task:'+id);if(old){if(old.assignee!==to.id)throw Error('Source ID already belongs to a different assignment');return {summary:'Assignment already registered: '+old.title,data:{task_id:id,status:old.status,assignee:old.assignee,duplicate:true}};}
+   const advice=await routing(String(params.category||'').toLowerCase());
+   const t={id,title,routingReason:advice.suggested?advice.suggested.reason:'No scored category history. Explicit bot choice.',suggestedBotId:advice.suggested?.id||null,brief:String(params.brief||'').slice(0,1500),category:String(params.category||'').toLowerCase(),assignee:to.id,status:'queued',createdBy:agent.id,createdAt:now(),result:null,origin:'chat',sourceId:source};
+   if(!await r(['SET','fm:task:'+id,JSON.stringify(t),'NX']))throw Error('Assignment registered concurrently; read the task before retrying');await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);
+   await event(agent.id,'handoff','Assigned "'+title+'" to '+to.name,{kind:'HANDOFF',taskId:id,toAgentId:to.id});await event(to.id,'assigned',agent.name+' assigned "'+title+'"',{kind:'WAITING',taskId:id,fromAgentId:agent.id});
+   return {summary:'Assigned "'+title+'" to '+to.name,data:{task_id:id,status:'queued',assignee:to.id}};
   }
   if (action === 'work.enqueue') {
     if (typeof params.title !== 'string' || !params.title.trim()) throw new Error('title required');
@@ -144,6 +155,7 @@ async function chatTask(agent, body) {
   if (agent.status !== 'active' || await r(['GET','fm:kill'])) return {status:403,body:{status:'blocked',reason:'Worker is revoked or workspace paused'}};
   const sourceId = String(body.source_id || '').trim(), title = String(body.title || '').trim();
   if (!sourceId || sourceId.length > 200 || !title || title.length > 120) return {status:400,body:{error:'source_id (max 200) and title (max 120) required'}};
+  if(body.assignee&&body.assignee!==agent.id)return gatewayAct(agent,{action:'work.assign',params:body});
   const category=String(body.category||'').trim().toLowerCase();
   const id = 'task_' + sha(agent.id + ':' + sourceId).slice(0,24);
   const old = await getJ('fm:task:' + id);
@@ -170,13 +182,31 @@ async function newTask(o) { const t = { id: rid('task'), title: String(o.title |
   if (t.assignee) { const ag = await getJ('fm:agent:' + t.assignee); if (ag && ag.hosted && ag.status === 'active') await runHosted(ag, t); }
   return t; }
 async function listTasks() { const ids = await r(['LRANGE', 'fm:tasklist', 0, 29]); if (!ids.length) return []; return (await r(['MGET', ...ids.map(i => 'fm:task:' + i)])).filter(Boolean).map(x => JSON.parse(x)); }
-async function claimTask(agent) { const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
-  t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); await setJ('fm:task:' + t.id, t); await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
+async function inbox(agent){return (await listTasks()).filter(t=>t.assignee===agent.id||t.createdBy===agent.id);}
+async function capabilityProfiles(){
+ const ids=await r(['LRANGE','fm:tasklist',0,59]),ts=ids.length?(await r(['MGET',...ids.map(id=>'fm:task:'+id)])).filter(Boolean).map(x=>JSON.parse(x)):[];
+ const rs=(await r(['LRANGE','fm:receipts',0,299])).filter(Boolean).map(x=>JSON.parse(x));
+ return (await listAgents()).filter(a=>a.status==='active'&&!a.harness&&!a.hosted).map(a=>{const categories={};
+ for(const t of ts.filter(t=>t.assignee===a.id&&['done','failed'].includes(t.status)&&t.category&&!t.synthetic)){
+ const k=t.category,c=categories[k]||(categories[k]={completed:0,failed:0,durations:[],trackedCostCents:0,costTrackedJobs:0});t.status==='done'?c.completed++:c.failed++;
+ const ms=Date.parse(t.finishedAt)-Date.parse(t.startedAt);if(Number.isFinite(ms)&&ms>=0)c.durations.push(ms);
+ const linked=rs.filter(r=>r.taskId===t.id);if(linked.length){c.trackedCostCents+=linked.reduce((v,r)=>v+(Number(r.costCents)||0),0);c.costTrackedJobs++;}
+ }
+ const profile={};for(const [k,c] of Object.entries(categories)){c.durations.sort((a,b)=>a-b);profile[k]={completed:c.completed,failed:c.failed,samples:c.completed+c.failed,successRate:c.completed/(c.completed+c.failed),medianSeconds:c.durations.length?Math.round(c.durations[Math.floor(c.durations.length/2)]/1000):null,trackedCostCents:c.costTrackedJobs?c.trackedCostCents:null,costTrackedJobs:c.costTrackedJobs};}
+ return {id:a.id,name:a.name,provider:a.provider,capabilities:profile};});
+}
+async function routing(category){const bots=await capabilityProfiles(),rank=bots.map(b=>({b,p:b.capabilities[category]})).filter(x=>x.p).sort((a,b)=>b.p.successRate-a.p.successRate||b.p.samples-a.p.samples||(a.p.medianSeconds??Infinity)-(b.p.medianSeconds??Infinity));const best=rank[0];return {bots,suggested:best?{id:best.b.id,name:best.b.name,category,reason:best.p.completed+' completed / '+best.p.failed+' failed in '+category+'; '+best.p.samples+' reported outcomes'+(best.p.medianSeconds===null?'':'; median '+best.p.medianSeconds+'s')+'. Costs are not used unless tied to a job. This is a suggestion, not a quality guarantee.'}:null,basis:'Retained completed/failed job records only, up to latest 60 jobs. Outcomes are bot-reported, not independently graded. Empty categories and synthetic records excluded. No scored history means no suggestion; no automatic routing.'};}
+async function teammates(){return (await capabilityProfiles());}
+
+async function claimTask(agent) { if(agent.status!=='active'||await r(['GET','fm:kill']))return null;const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
+  const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now();if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
 async function completeTask(agent, id, body) { const t = await getJ('fm:task:' + id); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
+  if(t.origin==='chat'&&t.createdBy!==agent.id&&t.status==='queued')return {status:409,body:{error:'Claim the assigned job before completing it'}};
   if (!['running','queued'].includes(t.status)) return {status:409,body:{error:'Task is already terminal',task:t}};
   const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); await setJ('fm:task:' + id, t);
   await touchAgent(agent);
   await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id });
+  if(t.createdBy&&t.createdBy!==agent.id&&t.createdBy!=='owner')await event(t.createdBy,failed?'failed':'completed','Delegate '+(failed?'failed: ':'finished: ')+t.title,{kind:failed?'FAILED':'COMPLETED',taskId:t.id,fromAgentId:agent.id});
   if(t.parentId){const p=await getJ('fm:task:' + t.parentId);if(p&&p.assignee)await event(p.assignee,'result_returned','Delegate '+(failed?'failed: ':'result ready: ')+t.title,{kind:'WAITING',taskId:p.id,childTaskId:t.id,fromAgentId:agent.id});}
   return { status: 200, body: { task: t } }; }
 // Read-only, bot-scoped notifications. No task claim, presence update or external delivery.
@@ -484,7 +514,10 @@ const MCP_TOOLS = [
   { name: 'foreman_enqueue', description: 'Queue an unassigned task in your own workspace. This does not start a hosted worker. Policy-gated, zero cost, maximum 10 per minute.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, brief: { type: 'string' } }, required: ['title'] }, action: 'work.enqueue' },
   { name: 'foreman_handoff', description: 'Hand a task to another Foreman agent.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, to: { type: 'string' }, brief: { type: 'string' } }, required: ['task_id', 'to'] }, action: 'work.handoff' },
   { name: 'foreman_report', description: 'Report your activity. kind is one of ' + KINDS.join(', '), inputSchema: { type: 'object', properties: { kind: { type: 'string' }, text: { type: 'string' } }, required: ['kind'] } },
-  {name:'foreman_chat_task',description:'Register a task you have actually begun from an owner chat. Does not execute work or infer from text.',inputSchema:{type:'object',properties:{source_id:{type:'string'},title:{type:'string'},brief:{type:'string'},category:{type:'string',description:'Explicit task category: marketing/creative, research/finance, outreach/sales, execution/operations/ops, support or lounge. Routes visible room during running task without changing home.'}},required:['source_id','title']}},
+  {name:'foreman_chat_task',description:'Register a task you have actually begun from an owner chat. Does not execute work or infer from text.',inputSchema:{type:'object',properties:{source_id:{type:'string'},title:{type:'string'},brief:{type:'string'},assignee:{type:'string',description:'Target bot ID. Another bot creates a policy-gated queued assignment, not running work.'},category:{type:'string',description:'Explicit task category: marketing/creative, research/finance, outreach/sales, execution/operations/ops, support or lounge. Routes visible room during running task without changing home.'}},required:['source_id','title']}},
+  {name:'foreman_route_suggestion',description:'Suggest a bot using retained reported job outcomes by category. No assignment or guarantee.',inputSchema:{type:'object',properties:{category:{type:'string'}},required:['category']}},
+  {name:'foreman_inbox',description:'Read your assigned jobs and jobs you assigned. Does not claim work.',inputSchema:{type:'object',properties:{}}},
+  {name:'foreman_teammates',description:'List active external bots in your workspace for explicit job assignment.',inputSchema:{type:'object',properties:{}}},
   {name:'foreman_read_task',description:'Read your task or the result of a task you delegated.',inputSchema:{type:'object',properties:{task_id:{type:'string'}},required:['task_id']}},
   {name:'blackbox_card_proposal',description:'Request an owner decision for a synthetic card purchase. No real money moves.',inputSchema:{type:'object',properties:{sourceId:{type:'string'},merchant:{type:'string'},amountCents:{type:'integer'},currency:{type:'string',enum:['USD']},purpose:{type:'string'}},required:['sourceId','merchant','amountCents','currency','purpose']}},
   {name:'foreman_presence',description:'Report actual recent interaction with your owner. Does not claim work is running.',inputSchema:{type:'object',properties:{}}},
@@ -499,6 +532,9 @@ async function mcpCall(agent, name, args) {
   if (t.action) { const g = await gatewayAct(agent, { action: t.action, params: args || {} }); out = g.body; }
   else if (name === 'foreman_report') out = (await reportEvent(agent, args || {}, 'mcp')).body;
   else if(name==='foreman_chat_task')out=(await chatTask(agent,args||{})).body;
+  else if(name==='foreman_route_suggestion')out=await routing((args||{}).category||'');
+  else if(name==='foreman_inbox')out={tasks:await inbox(agent)};
+  else if(name==='foreman_teammates')out={bots:await teammates()};
   else if(name==='foreman_read_task'){const task=await taskForAgent(agent,(args||{}).task_id);out=task?{task}:{error:'not found'};}
   else if(name==='blackbox_card_proposal')out=(await cardPropose(await getJ('fm:agent:'+agent.id),args||{})).body;
   else if(name==='foreman_presence'){if(agent.status!=='active'||await r(['GET','fm:kill']))out={status:'blocked'};else{await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'mcp'});out={status:'ok'};}}
@@ -725,6 +761,9 @@ async function routes(req, res, path, body, agentPre) {
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
       const agent = agentPre;
+      if(path==='/gateway/routing'&&req.method==='GET')return res.json(await routing(new URL(req.url,'https://local.invalid').searchParams.get('category')||''));
+      if(path==='/gateway/inbox'&&req.method==='GET')return res.json({tasks:await inbox(agent)});
+      if(path==='/gateway/teammates'&&req.method==='GET')return res.json({bots:await teammates()});
       if(path==='/gateway/notifications'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return send(await notifications(agent,new URL(req.url,'https://local.invalid').searchParams.get('after')));}
       if(path==='/gateway/me'&&req.method==='GET'){if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked',reason:'Worker revoked or workspace paused'});res.setHeader('Cache-Control','no-store');return res.json({agent:{id:agent.id,name:agent.name,status:agent.status}});}
       if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway'});}
@@ -759,6 +798,7 @@ async function routes(req, res, path, body, agentPre) {
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
     {const pm=path.match(/^\/agents\/(\w+)\/pairing$/);if(pm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuePairing(pm[1]));}}
+    if(path==='/routing'&&req.method==='GET')return res.json(await routing(new URL(req.url,'https://local.invalid').searchParams.get('category')||''));
     if (path === '/state') return res.json(await fullState());
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
