@@ -11,13 +11,14 @@
   /* ---------- rooms: backend keys stay ops/sales/marketing/finance/support/lounge; presentation maps to room types ---------- */
   const ROOMK = ['ops', 'sales', 'marketing', 'finance', 'support', 'lounge'];
   const BOXW = { finance: [4, 4, 42, 42], marketing: [50, 4, 116, 40], sales: [4, 50, 40, 116], ops: [50, 48, 82, 82], lounge: [88, 48, 116, 78] };
-  BOXW.support = BOXW.sales;
+  BOXW.support = BOXW.sales; BOXW.call = [60, 85, 80, 102];
   const SEATW = { finance: [[12, 18.6], [26, 18.6], [12, 32.6], [26, 32.6]], marketing: [[60, 16.6], [74, 16.6], [88, 16.6], [60, 31.6]], sales: [[12, 64.6], [26, 64.6], [12, 80.6], [26, 80.6]], ops: [[58, 59.6], [72, 59.6], [58, 73.6], [72, 73.6]], lounge: [[95, 57.5], [100, 57.5], [95, 68], [100, 68]] };
   SEATW.support = SEATW.sales;
   const ROOM_TYPES = { studio: { name: 'Studio', props: ['easel', 'canvases', 'tripod'], verb: 'designing' }, library: { name: 'Library', props: ['bookcase', 'bookcase', 'armchair'], verb: 'reading' },
     workshop: { name: 'Workshop', props: ['bench', 'toolbox', 'crates'], verb: 'building' }, mailroom: { name: 'Mailroom', props: ['pigeonholes', 'parcels', 'cart'], verb: 'writing' },
-    lounge: { name: 'Lounge', props: ['records', 'mugs', 'beanbag'], verb: 'taking a break' } };
-  const ROOM_MAP = Object.assign({ finance: 'library', marketing: 'studio', sales: 'mailroom', support: 'mailroom', ops: 'workshop', lounge: 'lounge' }, window.HQ_ROOMS || {});
+    lounge: { name: 'Lounge', props: ['records', 'mugs', 'beanbag'], verb: 'taking a break' },
+    callcenter: { name: 'Call center', props: [], verb: 'with you' } };
+  const ROOM_MAP = Object.assign({ finance: 'library', marketing: 'studio', sales: 'mailroom', support: 'mailroom', ops: 'workshop', lounge: 'lounge', call: 'callcenter' }, window.HQ_ROOMS || {});
   const typeOf = k => ROOM_TYPES[ROOM_MAP[k]] || ROOM_TYPES.workshop;
   BB.roomName = k => typeOf(k).name;
   BB.ROOMS = ['finance', 'marketing', 'sales', 'ops', 'lounge'];
@@ -143,7 +144,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
 
   function build() {
     const f = floorEl(); if (!f || built) return; built = true;
-    const roomPolys = BB.ROOMS.map(k => { const b = BOXW[k], pts = [W2P(b[0], b[1]), W2P(b[2], b[1]), W2P(b[2], b[3]), W2P(b[0], b[3])]; return `<polygon data-room="${k}" tabindex="0" role="img" points="${pts.map(p => p.join(',')).join(' ')}"><title>${esc(typeOf(k).name)}</title></polygon>`; }).join('');
+    const roomPolys = BB.ROOMS.concat('call').map(k => { const b = BOXW[k], pts = [W2P(b[0], b[1]), W2P(b[2], b[1]), W2P(b[2], b[3]), W2P(b[0], b[3])]; return `<polygon data-room="${k}" tabindex="0" role="img" points="${pts.map(p => p.join(',')).join(' ')}"><title>${esc(typeOf(k).name)}</title></polygon>`; }).join('');
     f.innerHTML = `<img class="environment" src="/hq/floor.svg" alt="" draggable="false">`
       + `<svg class="layer" id="rooms" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Rooms">${roomPolys}</svg>`
       + `<svg class="layer" id="fx" viewBox="${PJ.X0} ${PJ.Y0} ${PJ.W} ${PJ.H}" aria-hidden="true"><defs><radialGradient id="pvLamp"><stop offset="0" stop-color="#FFE7B0" stop-opacity=".55"/><stop offset="1" stop-color="#FFE7B0" stop-opacity="0"/></radialGradient></defs><g id="tray">${islandB()}</g><g id="ring"><ellipse cx="0" cy="0" rx="24" ry="9.5" fill="rgba(18,18,18,.06)" stroke="#121212" stroke-opacity=".55" stroke-width="1.3"/></g><g id="collab"></g></svg>`
@@ -166,7 +167,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const st = stageEl(), f = floorEl(); if (!st || !f) return;
     const W = st.clientWidth, H = st.clientHeight; if (!W) return;
     const phone = BB.phone();
-    const base = phone ? Math.max(W * 1.55, 560) : Math.min(W * .875, (H - 40) * .9 * ASPECT);
+    const base = phone ? W - 16 : Math.min(W * .875, (H - 40) * .9 * ASPECT);
     fw = Math.max(320, base * zoom);
     const shift = !phone && BB.panelOpen && BB.panelOpen() && W > 1100 ? -200 : 0;
     f.style.setProperty('--fw', fw + 'px'); f.style.setProperty('--figw', (fw * .0475) + 'px');
@@ -178,6 +179,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   BB.floorReset = () => { zoom = 1; pan = [0, 0]; fit(); };
 
   function roomInfo(k) {
+    if (k === 'call') { const w = BB.agents().filter(a => BB.withOwner(a)); return { line: w.length ? (w.length === 1 ? w[0].name + ' is with you' : w.length + ' bots are with you') + ' · ' + w.length + ' here' : 'Nobody is with you right now', n: w.length }; }
     const here = BB.agents().filter(a => !BB.isGhost(a) && BB.presence(a) !== 'revoked' && !(F[a.id] && F[a.id].tk === 'tray') && (k === 'sales' ? ['sales', 'support'].includes(BB.roomOf(a)) : BB.roomOf(a) === k));
     if (!here.length) return { line: 'Nobody here right now', n: 0 };
     const a = here[0], s = BB.botState(a);
@@ -206,6 +208,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     if (BB.isGhost(a)) { const g = BB.agents().filter(BB.isGhost); return { k: 'arr', p: ARRIVALS[Math.max(0, g.findIndex(b => b.id === a.id)) % ARRIVALS.length] }; }
     const wi = waitList.indexOf(a.id);
     if (wi >= 0 && wi < TRAY_SLOTS.length) return { k: 'tray', p: TRAY_SLOTS[wi] };
+    if (BB.withOwner(a)) { const seated = BB.agents().filter(b => BB.withOwner(b)), i = Math.max(0, seated.findIndex(b => b.id === a.id)); return { k: 'call:' + i, p: W2P(65 + (i % 2) * 5, 91 + Math.floor(i / 2) * 5) }; }
     const room = BB.roomOf(a), same = BB.agents().filter(b => !BB.isGhost(b) && (['sales', 'support'].includes(room) ? ['sales', 'support'].includes(BB.roomOf(b)) : BB.roomOf(b) === room));
     const slot = Math.max(0, same.findIndex(b => b.id === a.id)), seats = SEATW[room] || SEATW.ops, v = seats[slot % 4];
     const pt = W2P(v[0] + Math.floor(slot / 4) * 2.2, v[1] + Math.floor(slot / 4) * 1.6);
@@ -229,7 +232,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   function draw(r) {
     const a = BB.agent(r.id); if (!a) return;
     const ghost = BB.isGhost(a), s = BB.botState(a), walking = r.el.classList.contains('walk') && !BB.reduced();
-    const pose = walking ? 'walk' : (s.kind === 'run' && r.tk && r.tk.startsWith('home') ? 'sit' : 'stand');
+    const pose = BB.withOwner(a) && !walking && r.tk && r.tk.startsWith('call') ? 'sit' : walking ? 'walk' : (s.kind === 'run' && BB.signal(a) === 'working' && r.tk && r.tk.startsWith('home') ? 'sit' : 'stand');
     const key = [ghost, pose, a.name, BB.cast(a).k].join('|'); if (r.key === key) return; r.key = key;
     r.el.querySelector('.avs').innerHTML = figureSVG(a, { ghost, pose });
   }
@@ -248,7 +251,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const waitList = []; waitingItems().forEach(i => { if (!waitList.includes(i.a.id)) waitList.push(i.a.id); });
     as.forEach((a, i) => {
       const r = ensure(a, i), t = targetOf(a, waitList), s = BB.botState(a);
-      r.el.classList.toggle('ghost', BB.isGhost(a)); r.el.classList.toggle('paused', s.kind === 'off');
+      r.el.classList.toggle('ghost', BB.isGhost(a)); r.el.classList.toggle('paused', s.kind === 'off'); r.el.dataset.signal = BB.signal(a); r.el.classList.toggle('dark', s.kind === 'dark');
       r.el.setAttribute('aria-label', a.name + ': ' + BB.statusLine(a) + '. Open details');
       const moved = r.tk !== t.k || !r.tp || Math.abs(r.tp[0] - t.p[0]) + Math.abs(r.tp[1] - t.p[1]) > .3;
       r.tk = t.k; r.tp = t.p;

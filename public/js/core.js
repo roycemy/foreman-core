@@ -156,27 +156,48 @@
     if (p === 'waiting') return { kind: 'ghost', text: 'Waiting to connect' };
     if (BB.S && BB.S.killed) return { kind: 'off', text: 'Paused (emergency stop)' };
     if (a.paused) return { kind: 'off', text: 'Paused' };
+    if (BB.withOwner(a)) return { kind: 'talk', text: 'With you' };
     if (BB.onYou().some(i => i.a && i.a.id === a.id && ['approval', 'spend', 'card'].includes(i.type))) return { kind: 'needs', text: 'Waiting for you' };
-    const t = BB.runningTask(a); if (t) return { kind: 'run', text: t.title, task: t };
+    if (recentBlocked(a)) return { kind: 'blocked', text: 'Blocked' };
+    const t = BB.runningTask(a);
+    /* PR #28: authorization is not activity. No accepted activity in 60s means quiet, whatever the job list says. */
+    if (BB.wentDark(a)) return { kind: 'dark', text: (t ? BB.sentenceCase(t.title) + ' · ' : '') + 'Went dark ' + BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago'), task: t };
+    if (BB.signal(a) === 'inactive') return { kind: 'quiet', text: t ? BB.sentenceCase(t.title) + ' · no recent activity' : a.hosted ? 'Runs when you assign a job' : 'No recent activity', task: t };
+    if (t) return { kind: 'run', text: t.title, task: t };
     const st = a.state, age = st ? (Date.now() - Date.parse(st.at)) / 1000 : 1e9;
-    if (talking(a)) return { kind: 'talk', text: 'Talking with you' };
     if (st && age < 120 && st.kind === 'COMPLETED') return { kind: 'idle', text: 'Just finished' };
     return { kind: 'idle', text: 'Available' };
   };
+  /* PR #29 (withOwner): explicit owner-conversation telemetry only, never heartbeats or presence. Cleared by an end event,
+     60s without a real update, later work on a job, pause, revoke or the emergency stop. */
+  BB.withOwner = function (a, at) {
+    at = at || Date.now(); const c = a && a.ownerConversation;
+    return !!c && c.phase !== 'end' && a.status === 'active' && BB.presence(a) === 'connected' && !a.paused && !(BB.S && BB.S.killed)
+      && at - Date.parse(c.at) < 60000 && at >= Date.parse(c.at)
+      && !(['TASK_STARTED', 'TOOL_USED', 'ACTION_REQUESTED', 'HANDOFF'].includes(a.state && a.state.kind) && Date.parse(a.state.at) >= Date.parse(c.at));
+  };
+  /* PR #28 (floorActivitySignal): activity is evidence-based; authorization is not activity. */
+  BB.signal = function (a, at) {
+    at = at || Date.now(); const seen = Date.parse((a && a.lastSeen) || '');
+    if (!a || BB.presence(a) !== 'connected' || !Number.isFinite(seen) || at - seen >= 60000 || a.status === 'revoked' || (BB.S && BB.S.killed) || a.paused || recentBlocked(a)) return 'inactive';
+    return BB.withOwner(a, at) || BB.runningTask(a) ? 'working' : 'available';
+  };
+  /* round 3 liveness: connected over OAuth or the gateway, but no accepted activity for 60s. Authorization may still be saved. */
+  BB.wentDark = (a, at) => !!a && a.status === 'active' && !!a.connection && a.connection.status === 'active' && !!a.lastSeen && (at || Date.now()) - Date.parse(a.lastSeen) >= 60000;
+  BB.SIGNAL_COPY = { working: 'Working', available: 'Available', inactive: 'No recent activity' };
   BB.statusLine = a => { const s = BB.botState(a); return s.kind === 'run' ? BB.sentenceCase(s.text) : s.text; };
   BB.sentenceCase = s => { s = String(s || ''); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; };
 
   /* ---------- activity: shown only while it is happening; message > research > write ---------- */
   const RECENT = 75;
   const recent = a => ((BB.S && BB.S.events) || []).filter(e => e.agentId === a.id && (Date.now() - Date.parse(e.at)) / 1000 < RECENT);
-  /* talking to the owner = an explicit INTERACTION report, or MCP presence (its contract is "actual recent interaction").
-     The gateway presence call is the runner console's 30s heartbeat, so it never counts. */
-  function talking(a) { return recent(a).some(e => e.kind === 'INTERACTION' && (e.type === 'reported' || (e.type === 'interaction' && e.source === 'mcp' && !/client connected/i.test(e.text)))); }
+  /* the old shell's "blocked" state: a blocked or failed event in the last 9 seconds */
+  function recentBlocked(a) { return ((BB.S && BB.S.events) || []).some(e => e.agentId === a.id && ['blocked', 'failed'].includes(e.type) && (Date.now() - Date.parse(e.at)) / 1000 < 9); }
   BB.activity = function (a) {
     if (!BB.S || BB.isGhost(a) || BB.presence(a) !== 'connected' || a.status !== 'active' || a.paused || BB.S.killed) return null;
-    if (['needs', 'off', 'reconnect'].includes(BB.botState(a).kind)) return null;
+    if (BB.withOwner(a)) return 'message';
+    if (BB.signal(a) === 'inactive' || ['needs', 'off', 'reconnect', 'blocked'].includes(BB.botState(a).kind)) return null;
     const evs = recent(a);
-    if (talking(a)) return 'message';
     if (evs.some(e => (e.type === 'attempt' && e.action === 'web.fetch') || (e.kind === 'TOOL_USED' && /fetch|search|research|read|brows|look/i.test(e.text)))) return 'research';
     if (evs.some(e => (e.type === 'attempt' && e.action === 'notes.write') || (e.kind === 'TOOL_USED' && /writ|draft|note|edit|calling/i.test(e.text)))) return 'write';
     return null;

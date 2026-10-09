@@ -352,6 +352,24 @@ async function notifications(agent, after) {
   return {status:200,body:{agentId:agent.id,events,pending,nextCursor:all.length?all[all.length-1].id:null,retention:'Latest 300 workspace events, filtered to this bot. Not a delivery channel.',delivery:'Client automation must poll and notify the owner; this endpoint does not send messages.'}};
 }
 
+// Explicit owner conversation telemetry, separate from connection heartbeats.
+async function ownerConversation(agent,b,source){return withJobLock('conversation:'+agent.id,async()=>{
+ if(agent.status!=='active'||await r(['GET','fm:kill']))return {status:403,body:{status:'blocked',reason:'Worker unavailable or workspace paused'}};
+ const valid=x=>typeof x==='string'&&/^[A-Za-z0-9_.:-]{1,100}$/.test(x);
+ if(!valid(b.session_id)||!valid(b.event_id)||!Number.isSafeInteger(b.sequence)||b.sequence<1||!['start','update','end'].includes(b.phase))return {status:400,body:{error:'session_id, event_id, positive sequence and start/update/end required. Send no conversation content.'}};
+ const key='fm:conversation:'+agent.id,old=await getJ(key),epoch=agent.oauthEpoch||0;
+ if(old&&old.epoch===epoch){
+  if(old.eventId===b.event_id)return {status:200,body:{status:'ok',duplicate:true,conversation:old}};
+  if(old.sessionId===b.session_id&&(b.sequence<=old.sequence||old.phase==='end'))return {status:409,body:{error:'Stale or closed conversation event'}};
+  if(old.sessionId!==b.session_id&&b.phase!=='start')return {status:409,body:{error:'Conversation session changed; old event rejected'}};
+ }else if(b.phase!=='start')return {status:409,body:{error:'Start the real conversation first'}};
+ if(b.phase==='start'&&old?.sessionId!==b.session_id&&old?.epoch===epoch&&old.phase!=='end'&&Date.now()-Date.parse(old.at)<60000)return {status:409,body:{error:'End the current conversation before starting another'}};
+ if(b.phase==='start'&&b.sequence!==1)return {status:400,body:{error:'A new conversation starts at sequence 1'}};
+ if(b.phase==='start'&&!await r(['SET','fm:conversationSession:'+agent.id+':'+epoch+':'+b.session_id,'used','NX']))return {status:409,body:{error:'Conversation session already used'}};
+ const c={sessionId:b.session_id,eventId:b.event_id,sequence:b.sequence,phase:b.phase,at:now(),source,epoch};await setJ(key,c);await touchAgent(agent);
+ await event(agent.id,'owner_conversation',b.phase==='end'?'Owner conversation ended':'With you: client-reported owner conversation',{kind:'INTERACTION',source,conversationPhase:b.phase});bust();
+ return {status:200,body:{status:'ok',conversation:c}};
+ });}
 async function reportEvent(agent, body, source) { const kind = normKind(body.kind || body.type || body.status || body.event); if (!kind) return { status: 400, body: { error: 'unrecognized event kind', allowed: KINDS } };
   await touchAgent(agent);
   if (agent.status !== 'active') { await event(agent.id, 'blocked', 'Blocked event report: access revoked', { kind: 'BLOCKED' }); return { status: 403, body: { status: 'blocked', reason: 'Access revoked by owner' } }; }
@@ -604,8 +622,8 @@ async function fullState() {
   const day = now().slice(0, 10);
   const sp = agents.length ? await r(['MGET', ...agents.map(a => `fm:spend:${a.id}:${day}`)]) : [];
   const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
-  const connections=await Promise.all(agents.map(connectionState));
-  const agentsPub = agents.map((a, i) => ({ ...a, visibleRoom:taskRoom(a,tasks), connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
+  const connections=await Promise.all(agents.map(connectionState));const conversations=await Promise.all(agents.map(a=>getJ('fm:conversation:'+a.id)));
+  const agentsPub = agents.map((a, i) => ({ ...a, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
   const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
   CACHES.set(wsId(), { t: Date.now(), v }); return v;
@@ -664,6 +682,7 @@ const MCP_TOOLS = [
   {name:'foreman_teammates',description:'List active external bots in your workspace for explicit job assignment.',inputSchema:{type:'object',properties:{}}},
   {name:'foreman_read_task',description:'Read your task or the result of a task you delegated.',inputSchema:{type:'object',properties:{task_id:{type:'string'}},required:['task_id']}},
   {name:'blackbox_card_proposal',description:'Request an owner decision for a synthetic card purchase. No real money moves.',inputSchema:{type:'object',properties:{sourceId:{type:'string'},merchant:{type:'string'},amountCents:{type:'integer'},currency:{type:'string',enum:['USD']},purpose:{type:'string'}},required:['sourceId','merchant','amountCents','currency','purpose']}},
+  {name:'foreman_owner_conversation',description:'Report an actual owner conversation start, update or end. Never call on a schedule, notification read, connection or idle heartbeat. No chat content. Start sequence 1; increment per real event; retry the same event_id. With-you expires after 60s without a real update.',inputSchema:{type:'object',properties:{session_id:{type:'string'},event_id:{type:'string'},sequence:{type:'integer',minimum:1},phase:{type:'string',enum:['start','update','end']}},required:['session_id','event_id','sequence','phase']}},
   {name:'foreman_presence',description:'Report actual recent interaction with your owner. Does not claim work is running.',inputSchema:{type:'object',properties:{}}},
   { name: 'foreman_next_task', description: 'Claim the next task from the Foreman work bus.', inputSchema: { type: 'object', properties: {} } },
   { name: 'foreman_complete_task', description: 'Finish a task and store its result. Optionally report what your own model usage for this task cost, in USD.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, result: { type: 'string' }, model_cost_usd: { type: 'number', description: 'Your model/API cost for this task in USD, if you know it. Leave it out if unknown; never estimate.' } }, required: ['task_id', 'result'] } },
@@ -682,6 +701,7 @@ async function mcpCall(agent, name, args) {
   else if(name==='foreman_teammates')out={bots:await teammates()};
   else if(name==='foreman_read_task'){const task=await taskForAgent(agent,(args||{}).task_id);out=task?{task}:{error:'not found'};}
   else if(name==='blackbox_card_proposal')out=(await cardPropose(await getJ('fm:agent:'+agent.id),args||{})).body;
+  else if(name==='foreman_owner_conversation')out=(await ownerConversation(agent,args||{},'mcp')).body;
   else if(name==='foreman_presence'){if(agent.status!=='active'||await r(['GET','fm:kill']))out={status:'blocked'};else{await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'mcp'});out={status:'ok'};}}
   else if (name === 'foreman_next_task') { if (agent.status !== 'active') out = { status: 'blocked', reason: 'Access revoked by owner' }; else out = { task: await claimTask(agent) }; }
   else if (name === 'foreman_complete_task') out = (await completeTask(agent, (args || {}).task_id, args || {})).body;
@@ -920,6 +940,7 @@ async function routes(req, res, path, body, agentPre) {
       if(path==='/gateway/spend-requests'&&req.method==='POST')return send(await newSpendRequest(agent,body));
       {const sm=path.match(/^\/gateway\/spend-requests\/(spend_[a-f0-9]+)$/);if(sm&&req.method==='GET'){const q=await getJ('fm:spendRequest:'+sm[1]);return q&&q.agentId===agent.id?res.json({request:q}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/chat-task' && req.method === 'POST') return send(await chatTask(agent,body));
+      if(path==='/gateway/owner-conversation'&&req.method==='POST')return send(await ownerConversation(agent,body,'gateway'));
       if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'chat'});return res.json({status:'ok'});}
       {const tm=path.match(/^\/gateway\/tasks\/(\w+)$/);if(tm&&tm[1]!=='next'&&req.method==='GET'){const t=await taskForAgent(agent,tm[1]);return t?res.json({task:t}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/act' && req.method === 'POST') return send(await gatewayAct(agent, body));

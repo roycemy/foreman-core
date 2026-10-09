@@ -132,14 +132,14 @@
   const crew = $('#crew'), roster = $('#roster');
   function paintCrew() {
     const as = BB.agents().filter(a => a.status !== 'revoked'); if (!as.length) { crew.hidden = true; roster.classList.remove('on'); return; } crew.hidden = false;
-    const needs = BB.onYou().length, busy = as.filter(a => BB.botState(a).kind === 'run').length;
+    const needs = BB.onYou().length, busy = as.filter(a => BB.signal(a) === 'working').length;
     crew.innerHTML = `<span class="stack">${as.slice(0, 5).map((a, i) => BB.av(a, '', BB.glyph(a, -(i * .37)))).join('')}</span><p><b>${as.length} on the floor</b> · ${needs ? needs + ' need' + (needs === 1 ? 's' : '') + ' you' : busy ? busy + ' busy' : 'all on track'}</p>`;
     crew.setAttribute('aria-label', as.length + ' bots on the floor. Open crew');
     if (roster.classList.contains('on')) paintRoster();
   }
   function paintRoster() {
     const as = BB.agents();
-    roster.innerHTML = `<h3>Crew <span>${as.length}</span></h3>` + as.map(a => `<button class="r" type="button" data-bot="${a.id}">${BB.av(a)}<span class="t"><b>${esc(a.name)}</b><small>${esc(BB.statusLine(a))}</small></span>${BB.presence(a) === 'reconnect' ? '<span class="st need"><i></i></span>' : ''}</button>`).join('') + `<button class="add" type="button" data-act="connect">${BB.ICON.plus} Connect a bot</button>`;
+    roster.innerHTML = `<h3>Crew <span>${as.length}</span></h3>` + as.map(a => `<button class="r" type="button" data-bot="${a.id}">${BB.av(a)}<span class="t"><b>${esc(a.name)}</b><small>${esc(BB.statusLine(a))}</small></span>${BB.presence(a) === 'reconnect' ? '<span class="st need"><i></i></span>' : BB.wentDark(a) ? '<span class="badge-dark" title="Last accepted activity: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Went dark</span>' : BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span>`}</button>`).join('') + `<button class="add" type="button" data-act="connect">${BB.ICON.plus} Connect a bot</button>`;
     roster.querySelectorAll('[data-bot]').forEach(b => b.onclick = () => { setRoster(false); BB.openInspector && BB.openInspector(b.dataset.bot); });
   }
   function setRoster(on) { roster.classList.toggle('on', on); crew.setAttribute('aria-expanded', on); if (on) paintRoster(); }
@@ -153,6 +153,10 @@
     [['#icount', n], ['#tcount', n]].forEach(([s, v]) => { const e = $(s); if (!e) return; e.hidden = !v; e.textContent = v; });
     $('#ibtn').setAttribute('aria-label', 'Inbox' + (n ? ', ' + n + ' on you' : ''));
     $('#pausedbar').hidden = !(BB.S && BB.S.killed);
+    /* round 3 liveness, kept: a connected bot with no accepted activity for 60s "went dark" */
+    const dark = BB.agents().filter(a => BB.wentDark(a)), bar = $('#darkbar');
+    bar.hidden = !dark.length || !!(BB.S && BB.S.killed);
+    if (dark.length) bar.querySelector('span').textContent = dark.map(a => a.name).join(', ') + ' went dark: no accepted activity for 60s. Authorization may still be saved.';
   }
   BB.on(() => { paintTop(); paintCrew(); });
 

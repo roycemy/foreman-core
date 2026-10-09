@@ -82,7 +82,7 @@
     return `<div class="kv"><span class="k">Role</span><span class="v">${esc(a.role || 'Not set')}</span></div>
       <div class="kv"><span class="k">Provider</span><span class="v">${esc(a.provider || 'Custom')}${a.model ? ' · ' + esc(a.model) : ''}</span></div>
       <div class="kv"><span class="k">Home room</span><span class="choice"><select data-room aria-label="Home room">${BB.ROOMS.map(k => `<option value="${k}"${home === k || (k === 'sales' && home === 'support') ? ' selected' : ''}>${esc(BB.roomName(k))}</option>`).join('')}</select></span></div>
-      <div class="kv"><span class="k">Connection</span><span class="v"><span class="st ${p === 'connected' ? 'run' : p === 'reconnect' ? 'need' : 'q'}"><i></i>${esc(conn)}</span><br><small class="meta">${esc(seen)}</small></span></div>
+      <div class="kv"><span class="k">Connection</span><span class="v"><span class="st ${p === 'connected' ? 'run' : p === 'reconnect' ? 'need' : 'q'}"><i></i>${esc(conn)}</span><br><small class="meta">${esc(seen)}</small>${BB.wentDark(a) ? `<br><span class="badge-dark">Went dark · last activity ${esc(new Date(a.lastSeen).toLocaleTimeString())}</span>` : ''}</span></div>
       ${a.keyHint ? `<div class="kv"><span class="k">Key</span><span class="v"><code>${esc(a.keyHint)}</code></span></div>` : ''}
       <div class="kv"><span class="k">Bot ID</span><span class="v"><code>${esc(a.id)}</code></span></div>
       <div style="padding:16px 24px;display:flex;gap:8px;flex-wrap:wrap">
@@ -96,7 +96,7 @@
     if (!P.classList.contains('on')) return; const a = BB.agent(cur); if (!a) return BB.closeInspector();
     const sc = P.querySelector('.scroll'), top = sc && !fresh ? sc.scrollTop : 0, focused = document.activeElement && P.contains(document.activeElement) ? document.activeElement.dataset : null;
     const body = tab === 'permissions' ? permissions(a) : tab === 'profile' ? profile(a) : activity(a);
-    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2><p>${esc(BB.statusLine(a))}</p></div><button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
+    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2><p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p></div><button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
       <div class="seg" role="tablist" aria-label="${esc(a.name)}">${['activity', 'permissions', 'profile'].map(k => `<button type="button" role="tab" aria-selected="${tab === k}" data-tab="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
       <div class="scroll" role="tabpanel">${body}</div>`;
     const s2 = P.querySelector('.scroll'); s2.scrollTop = top;
