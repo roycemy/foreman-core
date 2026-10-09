@@ -30,7 +30,7 @@
       "destination": "/app.html"
     },
     {
-      "source": "/r/:token",
+      "source": "/receipt/:token",
       "destination": "/api/index"
     },
     {
@@ -84,7 +84,7 @@
       ]
     },
     {
-      "source": "/r/(.*)",
+      "source": "/receipt/(.*)",
       "headers": [
         {
           "key": "Referrer-Policy",
@@ -92,7 +92,11 @@
         },
         {
           "key": "X-Robots-Tag",
-          "value": "noindex"
+          "value": "noindex, nofollow"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
         }
       ]
     }

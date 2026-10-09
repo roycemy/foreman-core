@@ -270,50 +270,90 @@ function timelineOf(t,events,requests,receipts,kids,name){
  if(t.status==='failed')out.push({at:t.finishedAt,text:'Stopped without a result',kind:'denied',end:true,detail:t.result?String(t.result).slice(0,160):null});
  return out.filter(x=>x.at).sort((a,b)=>String(a.at).localeCompare(String(b.at))||(a.end?1:0)-(b.end?1:0));}
 
-// ---------- public receipts: redacted, revocable snapshots ----------
-// Redact by default. A share is a frozen snapshot of what the owner chose to show; nothing else from the job leaves the
-// workspace (no brief or prompt, no file paths or URLs, no tool names or tool output, no other bots, no spend details).
-const cleanText=(v,n)=>String(v==null?'':v).replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/\s+/g,' ').trim().slice(0,n);
-function shareDuration(t){const ms=t.finishedAt?Date.parse(t.finishedAt)-Date.parse(t.createdAt):null;return Number.isFinite(ms)&&ms>=0?ms:null;}
-async function createShare(taskId,body){
- const j=await jobDetail(taskId);if(!j)return {status:404,body:{error:'Job not found'}};const t=j.task;
- if(!['done','failed'].includes(t.status))return {status:409,body:{error:'Only finished jobs have a receipt to share'}};
- const s=body.show||{},show={result:s.result===true,cost:s.cost!==false,steps:s.steps!==false,botNotes:s.botNotes===true};
- const bot=(await listAgents()).find(a=>a.id===t.assignee)||{name:'A bot'};
- const headline=cleanText(body.headline,120),lede=cleanText(body.lede,200);if(!headline)return {status:400,body:{error:'Add a headline'}};
- const color=/^#[0-9a-f]{6}$/i.test(String(body.color||''))?body.color:'#121212';
- const lines=String(t.result||'').split(/\n+/).map(x=>x.trim()).filter(Boolean),words=String(t.result||'').trim()?String(t.result).trim().split(/\s+/).length:0;
- const snap={v:1,bot:{name:cleanText(bot.name,40),initials:cleanText(bot.name,40).split(/\s+/).filter(Boolean).map(w=>w[0]).join('').slice(0,2).toUpperCase()||'?',color},
-  at:t.finishedAt||t.createdAt,status:t.status,headline,lede:lede||null,
-  artifact:show.result&&lines.length?{title:lines[0].replace(/^\d+[.)]\s*/,'').slice(0,90),text:lines.slice(1).join(' · ').slice(0,220),words,name:lede||'Result',full:String(t.result).slice(0,4000)}:null,
-  costUsd:show.cost&&t.modelCostUsd!=null?Number(t.modelCostUsd):null,showCost:show.cost,
-  approvals:j.timeline.filter(x=>/^Owner approved/.test(x.text)).length,durationMs:shareDuration(t),
-  timeline:show.steps?j.timeline.filter(x=>show.botNotes||!x.reported).map(x=>({at:x.at,text:x.reported?cleanText(x.text,140):x.text,kind:x.kind,end:!!x.end})):[]};
- const token=crypto.randomBytes(16).toString('base64url'),rec={token,ws:wsId(),taskId,createdAt:now(),revoked:false,show,hash:sha(JSON.stringify(snap)),snap};
- await r(['SET','gl:share:'+token,JSON.stringify(rec)]);await r(['SADD','fm:shares:'+taskId,token]);
- await event(t.assignee,'shared','Owner shared the receipt for "'+t.title+'"',{taskId});
- return {status:200,body:{share:shareView(rec)}};
-}
-const shareView=x=>({token:x.token,path:'/r/'+x.token,createdAt:x.createdAt,revoked:!!x.revoked,revokedAt:x.revokedAt||null,show:x.show,headline:x.snap.headline});
-async function listShares(taskId){const ts=await r(['SMEMBERS','fm:shares:'+taskId]);if(!ts.length)return [];return (await r(['MGET',...ts.map(t=>'gl:share:'+t)])).filter(Boolean).map(JSON.parse).filter(x=>x.ws===wsId()).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(shareView);}
-async function revokeShare(token){const k='gl:share:'+token;for(let i=0;i<8;i++){const raw=await r(['GET',k]),x=raw&&JSON.parse(raw);if(!x||x.ws!==wsId())return {status:404,body:{error:'Link not found'}};if(x.revoked)return {status:200,body:{share:shareView(x)}};const n={...x,revoked:true,revokedAt:now()};if(await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify(n)])===1)return {status:200,body:{share:shareView(n)}};}return {status:409,body:{error:'Try again'}};}
-async function publicShare(token){if(!/^[A-Za-z0-9_-]{16,40}$/.test(String(token||'')))return null;const x=await getJ('gl:share:'+token);return x&&!x.revoked?x:null;}
-// "Run this job": a stranger gets a copy of the job's public title in their own workspace. Unassigned, so nothing runs until they connect a bot.
-async function cloneShare(token){const x=await publicShare(token);if(!x)return {status:404,body:{error:'This receipt link was revoked or does not exist'}};
- const title=cleanText(x.snap.lede||x.snap.headline,120);const t=await newTask({title,brief:'Copied from a shared receipt. Assign a bot to run it.',createdBy:'owner'});t.origin='receipt';await setJ('fm:task:'+t.id,t);return {status:200,body:{task:t}};}
+// ---------- public receipts: owner-reviewed, allowlisted snapshots (the PR #33 boundary, extended) ----------
+// A public receipt is never a serialization of the task. The owner writes the public title, summary and reusable template
+// (blank to start), reviews the exact snapshot, confirms the public audience, then publishes. The public payload carries no
+// bot or owner identity, no task/child titles or IDs, no step notes, no raw result, no params, URLs, file paths or tool details.
+const PUBLIC_TTL_DAYS=30;
+const publicText=(x,max)=>typeof x==='string'&&x.trim().length>0&&x.trim().length<=max&&!/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(x);
+// Conservative rejection that supplements the owner's exact review; it does not "sanitize" and it never claims to.
+const PRIVATE_CHECKS=[
+ ['secret',/\b(?:fmk_|sk[-_][A-Za-z0-9]|xai-|LLM_|ghp_|gho_|github_pat_|xox[abposr]-|AKIA[0-9A-Z]{12,}|AIza[0-9A-Za-z_-]{20,})|Bearer\s+\S|-----BEGIN|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|\b(?:api[_ -]?key|password|passwd|secret|token|credential)s?\s*[:=]|[A-Za-z0-9+/_-]{32,}/i],
+ ['internal id',/\b(?:task|agent|req|rcpt|spend|card|grant|user|note|ev|lock|ledger|review)_[a-f0-9]{6,}\b|\bws[a-f0-9]{12}\b/i],
+ ['contact',/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:^|[^\w@])@[A-Za-z0-9_]{2,}\b|\b(?:\+?\d[\d ().-]{8,}\d)\b/i],
+ ['link',/https?:\/\/|\bwww\.|\blocalhost\b|\b[a-z0-9-]+\.(?:com|net|org|io|ai|dev|app|co|uk|de|gov|edu|xyz|sh|cloud)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b/i],
+ ['file path',/(?:^|[\s("'`])(?:~|\.{1,2})?\/[\w.@-]+\/|[A-Za-z]:\\|\\\\[\w.$-]+\\|\b[\w-]+\.(?:md|txt|pdf|docx?|xlsx?|pptx?|csv|tsv|json|ya?ml|js|ts|py|rb|go|sql|env|pem|key|html?|log|zip)\b/i],
+ ['tool detail',/\b(?:web\.fetch|notes\.(?:write|delete)|work\.(?:handoff|assign|enqueue)|foreman_\w+|blackbox_\w+|mcp|gateway|tool[_ ]?calls?|function[_ ]?calls?|curl|stack ?trace|json-rpc)\b|\/api\b|\b(?:GET|POST|PUT|PATCH|DELETE)\s+\//i],
+];
+// Bot names that are ordinary words are not treated as private.
+const GENERIC_NAMES=['bot','agent','assistant','ai','helper','worker','robot'];
+function publicProblems(fields,names){const out=[];
+ for(const [field,v] of Object.entries(fields)){for(const [kind,re] of PRIVATE_CHECKS)if(re.test(v))out.push({field,kind});
+  for(const n of names){const s=String(n||'').trim();if(s.length>=3&&!GENERIC_NAMES.includes(s.toLowerCase())&&new RegExp('(^|[^\\w])'+s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'($|[^\\w])','i').test(v))out.push({field,kind:'private name'});}}
+ return out.filter((x,i,a)=>a.findIndex(y=>y.field===x.field&&y.kind===x.kind)===i);}
+// Steps are fixed-vocabulary codes only; the public page renders them from its own word list.
+const PUBLIC_STEPS=['assigned','claimed','actions','approved','denied','blocked','handoff','part_done','delivered','stopped'];
+function publicSteps(t,requests,receipts,kids){const s=[],at=x=>x&&Number.isFinite(Date.parse(x))?new Date(x).toISOString():null;
+ s.push({at:at(t.createdAt),code:'assigned'});if(t.startedAt)s.push({at:at(t.startedAt),code:'claimed'});
+ const acts=receipts.filter(x=>x.outcome==='completed'&&!x.requestId);if(acts.length)s.push({at:at(acts[0].at),code:'actions',n:acts.length});
+ for(const q of requests){if(['approved','executed','failed'].includes(q.status))s.push({at:at(q.decidedAt||q.createdAt),code:'approved'});else if(q.status==='denied')s.push({at:at(q.decidedAt||q.createdAt),code:'denied'});else if(q.status==='blocked')s.push({at:at(q.decidedAt||q.createdAt),code:'blocked'});}
+ for(const k of kids){s.push({at:at(k.createdAt),code:'handoff'});if(['done','failed'].includes(k.status))s.push({at:at(k.finishedAt),code:'part_done'});}
+ if(t.finishedAt)s.push({at:at(t.finishedAt),code:t.status==='done'?'delivered':'stopped'});
+ return s.filter(x=>x.at&&PUBLIC_STEPS.includes(x.code)).sort((a,b)=>a.at.localeCompare(b.at)||(['delivered','stopped'].includes(a.code)?1:0)-(['delivered','stopped'].includes(b.code)?1:0));}
+async function publicSource(taskId){const j=await jobDetail(taskId);if(!j)return null;const t=j.task;
+ return {j,hash:sha(JSON.stringify({id:t.id,status:t.status,result:t.result,title:t.title,startedAt:t.startedAt,finishedAt:t.finishedAt,cost:t.modelCostUsd??null,receipts:j.receipts.map(x=>({id:x.id,hash:x.hash,costCents:x.costCents})),requests:j.requests.map(q=>({id:q.id,status:q.status})),kids:j.children.map(k=>({id:k.id,status:k.status}))}))};}
+// Pre-filled budget for the reusable template: what this job recorded (bot-reported model costs + gateway ledger), rounded up to cents.
+function suggestedBudgetCents(t,receipts){const ledger=receipts.reduce((v,x)=>v+(Number.isSafeInteger(x.costCents)&&x.costCents>0?x.costCents:0),0),model=t.modelCostUsd!=null?Math.ceil(Math.round(Number(t.modelCostUsd)*1e8)/1e6):0;return ledger+model;}
+async function publicReceiptReview(taskId,b){
+ const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};
+ const t=src.j.task,fields={title:b.title,summary:b.summary,template:b.template};
+ if(!publicText(fields.title,100)||!publicText(fields.summary,700)||!publicText(fields.template,1500))return {status:400,body:{error:'Write a public title (up to 100 characters), a short description (700) and a reusable template (1500). Plain text only.',problems:[]}};
+ for(const k of Object.keys(fields))fields[k]=fields[k].trim().replace(/\s+\n/g,'\n');
+ const budget=b.budgetCents==null||b.budgetCents===''?null:Number(b.budgetCents);if(budget!=null&&(!Number.isSafeInteger(budget)||budget<0||budget>1000000))return {status:400,body:{error:'Budget must be whole cents between 0 and 1,000,000',problems:[]}};
+ const names=[...(await listAgents()).map(a=>a.name),t.title,...src.j.children.map(k=>k.title)];
+ const problems=publicProblems(fields,names);
+ if(problems.length)return {status:400,body:{error:'Remove private details before sharing: '+problems.map(p=>p.kind+' in '+p.field).join(', ')+'.',problems}};
+ const started=Date.parse(t.startedAt),ended=Date.parse(t.finishedAt),ms=ended-started,ledger=src.j.receipts.filter(x=>Number.isSafeInteger(x.costCents)&&x.costCents>=0);
+ const snapshot={version:2,title:fields.title,summary:fields.summary,template:fields.template,budgetCents:budget,outcome:t.status==='done'?'completed':'failed',
+  elapsedSeconds:Number.isFinite(started)&&Number.isFinite(ended)&&ms>=0?Math.round(ms/1000):null,
+  reportedModelCostUsd:t.modelCostUsd!=null&&Number.isFinite(Number(t.modelCostUsd))?Math.round(Number(t.modelCostUsd)*1e6)/1e6:null,externalCost:null,
+  ledgerCents:ledger.length?ledger.reduce((v,x)=>v+x.costCents,0):null,trackedActions:src.j.receipts.length,
+  approvals:src.j.requests.filter(q=>['approved','executed','failed'].includes(q.status)).length,
+  steps:publicSteps(t,src.j.requests,src.j.receipts,src.j.children),
+  provenance:'Outcome and model costs are reported by the bot, not verified. Title, description and template were written and reviewed by the owner. Elapsed is wall-clock time, not active work time. The gateway ledger covers retained linked actions only; it is not provider spending or a complete job cost.'};
+ const reviewId=crypto.randomBytes(18).toString('hex'),expiresAt=new Date(Date.now()+600000).toISOString();
+ await setJ('fm:publicReview:'+reviewId,{snapshot,hash:sha(JSON.stringify(snapshot)),taskId,sourceHash:src.hash,expiresAt});await r(['EXPIRE','fm:publicReview:'+reviewId,600]);
+ return {status:200,body:{reviewId,expiresAt,snapshot,hash:sha(JSON.stringify(snapshot)),suggestedBudgetCents:suggestedBudgetCents(t,src.j.receipts),audience:'Anyone with the link, for '+PUBLIC_TTL_DAYS+' days or until you revoke it. People who already saw or copied it keep what they saw.'}};}
+// Suggested budget for the review form, before the owner writes anything public.
+async function publicReceiptDraft(taskId){const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};return {status:200,body:{suggestedBudgetCents:suggestedBudgetCents(src.j.task,src.j.receipts),title:'',summary:'',template:''}};}
+async function publicReceiptPublish(b){
+ if(b.confirmed!==true||b.audience!=='public'||typeof b.reviewId!=='string'||!/^[a-f0-9]{36}$/.test(b.reviewId))return {status:400,body:{error:'Review the exact snapshot and confirm its public audience'}};
+ const k='fm:publicReview:'+b.reviewId,review=await getJ(k);if(!review||Date.parse(review.expiresAt)<=Date.now())return {status:409,body:{error:'Review expired; review again'}};
+ if(b.hash!==review.hash)return {status:409,body:{error:'This is not the snapshot you reviewed. Review again'}};
+ return withJobLock('public:'+b.reviewId,async()=>{const live=await getJ(k);if(!live||live.published)return {status:409,body:{error:'Already published or unavailable'}};
+  const src=await publicSource(live.taskId);if(!src||src.hash!==live.sourceHash)return {status:409,body:{error:'The job changed since your review. Review again'}};
+  const token=crypto.randomBytes(24).toString('hex'),publishedAt=now(),expiresAt=new Date(Date.now()+PUBLIC_TTL_DAYS*86400000).toISOString();
+  await setJ('gl:publicReceipt:'+token,{snapshot:live.snapshot,hash:live.hash,ownerWs:wsId(),taskId:live.taskId,revoked:false,publishedAt,expiresAt});await r(['EXPIRE','gl:publicReceipt:'+token,PUBLIC_TTL_DAYS*86400]);
+  await r(['SADD','fm:publicReceipts',token]);await setJ(k,{...live,published:token});
+  return {status:201,body:{token,path:'/receipt/'+token,publishedAt,expiresAt,snapshot:live.snapshot,hash:live.hash}};});}
+// Public read: only the allowlisted snapshot, its fingerprint and the dates.
+async function publicReceiptRead(token){if(!/^[a-f0-9]{48}$/.test(String(token||'')))return null;const p=await getJ('gl:publicReceipt:'+token);
+ return !p||p.revoked||Date.parse(p.expiresAt)<=Date.now()||!p.snapshot||p.snapshot.version!==2?null:{token,snapshot:p.snapshot,hash:p.hash,publishedAt:p.publishedAt,expiresAt:p.expiresAt};}
+async function publicReceiptRevoke(token){if(!/^[a-f0-9]{48}$/.test(String(token||'')))return {status:404,body:{error:'not found'}};const k='gl:publicReceipt:'+token,p=await getJ(k);if(!p||p.ownerWs!==wsId())return {status:404,body:{error:'not found'}};await setJ(k,{...p,revoked:true,revokedAt:now()});return {status:200,body:{revoked:true}};}
+async function publicReceiptList(taskId){const ids=await r(['SMEMBERS','fm:publicReceipts']);return {receipts:(await Promise.all(ids.map(async token=>{const p=await getJ('gl:publicReceipt:'+token);return p&&p.ownerWs===wsId()&&(!taskId||p.taskId===taskId)?{token,path:'/receipt/'+token,title:p.snapshot.title,revoked:!!p.revoked,expired:Date.parse(p.expiresAt)<=Date.now(),publishedAt:p.publishedAt,expiresAt:p.expiresAt}:null}))).filter(Boolean).sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt))};}
 const htmlEsc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function receiptPage(x,origin,brand){
- const s=x?x.snap:null,title=s?s.headline:'Receipt not available',desc=s?(s.lede||'A verified receipt of finished work.'):'This receipt link was revoked or does not exist.';
- const og=s?origin+'/og/'+x.token+'.png':origin+'/og/missing.png',url=s?origin+'/r/'+x.token:origin;
- const data=s?JSON.stringify({token:x.token,hash:x.hash,snap:s}).replace(/</g,'\\u003c'):'null';
+ const s=x?x.snapshot:null,title=s?s.title:'Receipt not available',desc=s?s.summary:'This receipt link was revoked, expired or never existed.';
+ const og=s?origin+'/og/'+x.token+'.png':origin+'/og/missing.png',url=s?origin+'/receipt/'+x.token:origin;
+ const data=s?JSON.stringify(x).replace(/</g,'\\u003c'):'null';
  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${htmlEsc(title)} · ${htmlEsc(brand)}</title><meta name="description" content="${htmlEsc(desc)}"><meta name="theme-color" content="#F4F4F1"><meta name="robots" content="${s?'noindex':'noindex,nofollow'}">
+<title>${htmlEsc(title)} · ${htmlEsc(brand)}</title><meta name="description" content="${htmlEsc(desc)}"><meta name="theme-color" content="#F4F4F1"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
 <meta property="og:type" content="article"><meta property="og:title" content="${htmlEsc(title)}"><meta property="og:description" content="${htmlEsc(desc)}"><meta property="og:url" content="${htmlEsc(url)}"><meta property="og:image" content="${htmlEsc(og)}"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:site_name" content="${htmlEsc(brand)}">
 <meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${htmlEsc(title)}"><meta name="twitter:description" content="${htmlEsc(desc)}"><meta name="twitter:image" content="${htmlEsc(og)}">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23121212'/%3E%3Crect x='8' y='8' width='16' height='16' rx='4' fill='none' stroke='%23F4F4F1' stroke-width='2.5'/%3E%3Crect x='11' y='11' width='10' height='3' rx='1' fill='%23E2452B'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/styles/tokens.css"><link rel="stylesheet" href="/styles/app.css"><link rel="stylesheet" href="/styles/receipt.css"><script src="/brand.js"></script>
-</head><body class="public"><main class="rc" id="rc">${s?'':`<div class="gone"><div class="mark"><i aria-hidden="true"></i><span data-brand>${htmlEsc(brand)}</span></div><h1>This receipt isn't available</h1><p class="lede">The owner revoked the link, or it never existed.</p></div>`}</main>
+</head><body class="public"><main class="rc" id="rc">${s?'':`<div class="gone"><div class="mark"><i aria-hidden="true"></i><span data-brand>${htmlEsc(brand)}</span></div><h1>This receipt isn't available</h1><p class="lede">The owner revoked the link, it expired, or it never existed. No private job details are shown.</p></div>`}</main>
 <script>window.__RECEIPT=${data};</script><script src="/js/receipt-doc.js"></script><script src="/js/receipt-public.js"></script></body></html>`;
 }
 
@@ -899,8 +939,8 @@ module.exports = async (req, res) => {
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
-    { const rm = path.match(/^\/(?:api\/)?r\/([A-Za-z0-9_-]+)$/) || (req.url || '').split('?')[0].match(/^\/r\/([A-Za-z0-9_-]+)$/); if (rm && req.method === 'GET') { const x = await publicShare(rm[1]); const host = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex'); res.setHeader('Referrer-Policy', 'no-referrer'); return res.status(x ? 200 : 404).send(receiptPage(x, host, BRAND_NAME)); } }
-    { const pm = path.match(/^\/public\/receipts\/([A-Za-z0-9_-]+)$/); if (pm && req.method === 'GET') { const x = await publicShare(pm[1]); res.setHeader('Cache-Control', 'no-store'); return x ? res.json({ token: x.token, hash: x.hash, snap: x.snap }) : res.status(404).json({ error: 'not_found' }); } }
+    { const rm = (req.url || '').split('?')[0].match(/^\/receipt\/([^/?#]+)$/) || path.match(/^\/receipt\/([^/?#]+)$/); if (rm && req.method === 'GET') { const x = await publicReceiptRead(rm[1]); const host = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); res.setHeader('Referrer-Policy', 'no-referrer'); return res.status(x ? 200 : 404).send(receiptPage(x, host, BRAND_NAME)); } }
+    { const pm = path.match(/^\/public-receipts\/([a-f0-9]{48})$/); if (pm && req.method === 'GET') { res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); const x = await publicReceiptRead(pm[1]); return x ? res.json(x) : res.status(404).json({ error: 'Receipt unavailable or expired' }); } }
     if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
     if (path.startsWith('/gateway') || path === '/ingest' || path === '/mcp') {
       const ra = await resolveAgent(req);
@@ -964,9 +1004,12 @@ async function routes(req, res, path, body, agentPre) {
     {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST')return send(await cardDecision(cm[1],cm[2],body.detailsHash));}
 
     {const am=path.match(/^\/tasks\/(\w+)\/assign$/);if(am&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await assignTask(am[1],body));}}
-    {const sm=path.match(/^\/jobs\/(\w+)\/shares$/);if(sm){if(req.method==='GET')return res.json({shares:await listShares(sm[1])});if(req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await createShare(sm[1],body));}}}
-    {const rv=path.match(/^\/shares\/([A-Za-z0-9_-]+)\/revoke$/);if(rv&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await revokeShare(rv[1]));}}
-    if(path==='/receipts/clone'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cloneShare(body.token));}
+    if(path.startsWith('/public-receipts'))res.setHeader('Cache-Control','no-store');
+    if(path==='/public-receipts'&&req.method==='GET')return res.json(await publicReceiptList(new URL(req.url,'https://local.invalid').searchParams.get('taskId')));
+    if(path==='/public-receipts/draft'&&req.method==='GET')return send(await publicReceiptDraft(new URL(req.url,'https://local.invalid').searchParams.get('taskId')));
+    if(path==='/public-receipts/review'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptReview(body.taskId,body));}
+    if(path==='/public-receipts/publish'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptPublish(body));}
+    {const rv=path.match(/^\/public-receipts\/([a-f0-9]{48})\/revoke$/);if(rv&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptRevoke(rv[1]));}}
     {const jm=path.match(/^\/jobs\/(\w+)$/);if(jm&&req.method==='GET'){const j=await jobDetail(jm[1]);return j?res.json(j):res.status(404).json({error:'not found'});}}
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
@@ -1059,4 +1102,4 @@ async function routes(req, res, path, body, agentPre) {
 };
 
 // For api/og.js: read a public share without a session.
-module.exports.publicShare = token => als.run({ ws: 'legacy' }, () => publicShare(token));
+module.exports.publicReceiptRead = token => als.run({ ws: 'legacy' }, () => publicReceiptRead(token));

@@ -231,16 +231,33 @@
   };
   BB.sharedJobFor = t => BB.sharedJobs().find(g => g.tasks.some(x => x.id === t.id) || g.id === t.id) || null;
 
-  /* ---------- "on you": approvals + reconnects + unassigned jobs ---------- */
+  /* ---------- "on you": approvals + reconnects + bots that went dark + unassigned jobs ---------- */
   BB.onYou = function () {
     const items = [];
     BB.pendingReqs().forEach(q => { const a = BB.agent(q.agentId); items.push({ type: 'approval', id: 'req:' + q.id, at: q.createdAt, a, q }); });
     ((BB.money && BB.money.requests) || []).filter(q => q.status === 'pending_review' && Date.parse(q.expiresAt) > Date.now()).forEach(q => items.push({ type: 'spend', id: 'spend:' + q.id, at: q.createdAt, a: BB.agent(q.agentId), q }));
     ((BB.cards && BB.cards.proposals) || []).filter(q => q.status === 'pending' && Date.parse(q.expiresAt) > Date.now()).forEach(q => items.push({ type: 'card', id: 'card:' + q.id, at: q.createdAt, a: BB.agent(q.botId), q }));
     BB.agents().filter(a => BB.presence(a) === 'reconnect').forEach(a => items.push({ type: 'reconnect', id: 'rec:' + a.id, at: (a.connection && a.connection.failedAt) || a.lastSeen, a }));
+    /* the same 60-second rule as the went-dark banner: a dark bot is something the owner should know about */
+    BB.agents().filter(a => BB.wentDark(a)).forEach(a => items.push({ type: 'dark', id: 'dark:' + a.id, at: a.lastSeen, a }));
     BB.tasks().filter(t => t.status === 'queued' && !t.assignee).forEach(t => items.push({ type: 'unassigned', id: 'task:' + t.id, at: t.createdAt, t }));
-    const rank = { approval: 0, spend: 0, card: 0, reconnect: 1, unassigned: 2 };
+    const rank = { approval: 0, spend: 0, card: 0, reconnect: 1, dark: 1, unassigned: 2 };
     return items.sort((x, y) => rank[x.type] - rank[y.type] || String(y.at || '').localeCompare(String(x.at || '')));
+  };
+  /* One summary for the crew pill, the pop-down, the rail and the phone Inbox, all on the 60-second activity rule.
+     It never says "all on track" or "handling it" while a bot is dark or anything needs the owner. */
+  BB.teamSummary = function (at) {
+    at = at || Date.now();
+    const as = BB.agents().filter(a => a.status !== 'revoked'), dark = as.filter(a => BB.wentDark(a, at));
+    const active = as.filter(a => BB.signal(a, at) !== 'inactive'), working = as.filter(a => BB.signal(a, at) === 'working');
+    const needs = BB.onYou().filter(i => i.type !== 'dark').length;
+    const running = BB.tasks().filter(t => t.status === 'running' && t.assignee && BB.agent(t.assignee) && BB.signal(BB.agent(t.assignee), at) === 'working').length;
+    const parts = [];
+    if (needs) parts.push(needs + (needs === 1 ? ' needs' : ' need') + ' you');
+    if (dark.length) parts.push(dark.length === 1 ? dark[0].name + ' went dark' : dark.length + ' went dark');
+    const calm = !needs && !dark.length;
+    if (calm) parts.push(working.length ? working.length + ' busy' : 'all on track');
+    return { total: as.length, active: active.length, working: working.length, dark, needs, running, calm, count: active.length + ' of ' + as.length + ' active', parts, text: active.length + ' of ' + as.length + ' active · ' + parts.join(' · ') };
   };
 
   /* ---------- decisions ---------- */

@@ -48,6 +48,7 @@
     if (i.type === 'spend') { line = esc(i.q.purpose) + ' · no payment rail is connected'; acts = `<button class="b pri grow" type="button" data-d="approve">Approve</button><button class="b out grow" type="button" data-d="deny">Deny</button>`; }
     if (i.type === 'card') { line = esc(i.q.purpose) + ' · example card'; acts = `<button class="b pri grow" type="button" data-d="approve">Approve</button><button class="b out grow" type="button" data-d="deny">Deny</button>`; }
     if (i.type === 'reconnect') { title = 'Reconnect needed'; line = esc(i.a.name) + ' lost access. Reconnect to resume its jobs.'; acts = `<button class="b ink" type="button" data-rec="${i.a.id}">Reconnect</button><button class="b ghost" type="button" data-later="${esc(i.id)}">Later</button>`; }
+    if (i.type === 'dark') { title = i.a.name + ' went dark'; line = 'No accepted activity for ' + esc(BB.dur(Date.now() - Date.parse(i.at))) + '. Authorization may still be saved.'; acts = `<button class="b out" type="button" data-bot="${i.a.id}">Check on it</button>`; }
     if (i.type === 'unassigned') { line = 'Waiting for someone to take it'; acts = `<span class="assign"><button class="b out" type="button" data-assign="${i.t.id}" aria-haspopup="menu">Assign ▾</button></span>`; }
     return `<div class="appr" data-item="${esc(i.id)}"><div class="who">${who}</div><h4>${title}</h4><p>${line}</p><div class="btns">${acts}</div></div>`;
   };
@@ -63,6 +64,7 @@
     root.querySelectorAll('[data-rec]').forEach(b => b.onclick = e => { e.stopPropagation(); BB.closeTop && BB.closeTop(); BB.reconnect && BB.reconnect(b.dataset.rec); });
     root.querySelectorAll('[data-later]').forEach(b => b.onclick = e => { e.stopPropagation(); const card = b.closest('[data-item]'); BB.collapse(card); setTimeout(() => BB.snooze(b.dataset.later), 440); });
     root.querySelectorAll('[data-assign]').forEach(b => b.onclick = e => { e.stopPropagation(); BB.assignMenu(b, b.dataset.assign); });
+    root.querySelectorAll('[data-item] [data-bot]').forEach(b => b.onclick = e => { e.stopPropagation(); BB.closePop && BB.closePop(true); BB.closeSheet && BB.sheetOpen && BB.sheetOpen() && BB.closeSheet(); BB.openInspector(b.dataset.bot, { tab: 'profile' }); });
   };
   /* approved row: fade 200ms, then the list reflows 240ms */
   BB.collapse = function (el) {
@@ -80,7 +82,7 @@
   function paintRail() {
     if (!rail.classList.contains('on')) return;
     const needs = BB.needsYou(), jobs = BB.jobs().slice(0, 40), sc = rail.querySelector('.scroll'), top = sc ? sc.scrollTop : 0;
-    rail.innerHTML = `<div class="ph"><h2 id="rail-h">Inbox</h2><span class="meta">${needs.length ? needs.length + ' need' + (needs.length === 1 ? 's' : '') + ' you' : 'Nothing on you'}</span><button class="x" type="button" aria-label="Close inbox" data-close-rail>${BB.ICON.x}</button></div>
+    rail.innerHTML = `<div class="ph"><h2 id="rail-h">Inbox</h2><span class="meta">${esc(BB.teamSummary().calm ? 'Nothing on you' : BB.teamSummary().parts.join(' · '))}</span><button class="x" type="button" aria-label="Close inbox" data-close-rail>${BB.ICON.x}</button></div>
       <div class="scroll">${needs.length ? `<div class="sec">Needs you</div>${needs.map(i => BB.itemCard(i)).join('')}` : ''}
       <div class="sec" style="padding-top:14px">Latest</div>${jobs.length ? jobs.map(row).join('') : `<div class="empty"><b>No jobs yet</b><small>Ask the team for something from the floor.</small></div>`}</div>`;
     const s2 = rail.querySelector('.scroll'); if (s2) s2.scrollTop = top;
@@ -106,8 +108,8 @@
     const v = $('#v-inbox'); if (!v || !v.classList.contains('on')) return;
     const needs = BB.needsYou(), jobs = BB.jobs(), today = new Date(); today.setHours(0, 0, 0, 0);
     const todays = jobs.filter(t => Date.parse(jobAt(t)) >= today || ['running', 'queued'].includes(t.status)).slice(0, 30);
-    const running = jobs.filter(t => t.status === 'running').length;
-    const sub = needs.length ? needs.length + ' need' + (needs.length === 1 ? 's' : '') + ' you' : running ? running + ' running' : 'Nothing on you';
+    const sum = BB.teamSummary();
+    const sub = !sum.calm ? sum.parts.join(' · ') : sum.running ? sum.running + ' running' : 'Nothing on you';
     const card = i => {
       const g = i.a ? BB.glyph(i.a) : '';
       const kav = i.a ? `<span class="kav" style="--av:${BB.avColor(i.a)}">${esc(BB.initials(i.a.name))}${g}</span>` : '<span class="kav merch">?</span>';
@@ -118,6 +120,7 @@
         b = `<div class="kbtns"><button class="b pri" type="button" data-d="approve">Approve</button><button class="b out" type="button" data-d="deny">Deny</button></div>`;
         return `<div class="swipe" data-item="${esc(i.id)}"><div class="under" aria-hidden="true">Approve</div><div class="kr">${kav}<div class="t"><b>${t}</b><small>${l}</small>${b}</div></div></div>`;
       }
+      if (i.type === 'dark') return `<div class="kr" data-item="${esc(i.id)}">${kav}<div class="t"><b>${esc(i.a.name)} went dark</b><small>No accepted activity for ${esc(BB.dur(Date.now() - Date.parse(i.at)))}</small></div><button class="b out" type="button" style="height:36px;border-radius:11px" data-bot="${i.a.id}">Check</button></div>`;
       l = esc(i.a.name) + ' lost access' + (i.at ? ' ' + esc(BB.ago(i.at)) + (BB.ago(i.at) === 'just now' ? '' : ' ago') : '');
       return `<div class="kr" data-item="${esc(i.id)}">${kav}<div class="t"><b>Reconnect ${esc(i.a.name)}</b><small>${l}</small></div><button class="b out" type="button" style="height:36px;border-radius:11px" data-rec="${i.a.id}">Reconnect</button></div>`;
     };

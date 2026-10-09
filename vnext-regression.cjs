@@ -1,10 +1,12 @@
-// vNext owner endpoints: assign an unassigned job, pause a bot, job detail timeline, reported model costs.
+// vNext owner endpoints: assign, pause, job detail, reported model costs, and the public receipt boundary (PR #33).
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const src=fs.readFileSync(require('path').join(__dirname,'api/index.js'),'utf8')+'\nmodule.exports.t={routes,r,setJ,getJ,als,sha,createAgent,newTask};';
-const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:()=>{throw Error('NO NETWORK')},setTimeout,clearTimeout,URL,AbortSignal};vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
+const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:()=>{throw Error('NO NETWORK')},setTimeout,clearTimeout,URL,AbortSignal};vm.runInNewContext(src,ctx);const f=ctx.module.exports.t,h=ctx.module.exports;
 const H={host:'localhost',origin:'http://localhost'};
-async function call(method,path,body,agent){let out;const res={status(n){this.code=n;return this},json(j){out={code:this.code||200,j};return out},setHeader(){},end(){out={code:this.code||204};return out}};await f.routes({method,headers:H,url:'/api'+path},res,path,body||{},agent||null);return out;}
+async function call(method,path,body,agent){let out;const res={status(n){this.code=n;return this},json(j){out={code:this.code||200,j};return out},setHeader(){},end(){out={code:this.code||204};return out}};await f.routes({method,headers:H,url:'/api'+path},res,path.split('?')[0],body||{},agent||null);return out;}
 const gw=(agent,method,path,body)=>call(method,'/gateway'+path,body,agent);
+// public, no session: through the real top-level handler
+async function pubGet(path){let out;const res={headers:{},setHeader(k,v){this.headers[k.toLowerCase()]=v;return this},status(n){this.code=n;return this},json(j){out={code:this.code||200,j,hd:this.headers};return out},send(b){out={code:this.code||200,b,hd:this.headers};return out}};await h({method:'GET',url:'/api'+path,headers:{host:'localhost'}},res);return out;}
 (async()=>{await f.als.run({ws:'vnexttest'},async()=>{
  const {agent:bot}=await f.createAgent('Bot','Ops','custom',false,{preset:'balanced'});
  const {agent:other}=await f.createAgent('Other','Ops','custom',false,{preset:'balanced'});
@@ -40,25 +42,61 @@ const gw=(agent,method,path,body)=>call(method,'/gateway'+path,body,agent);
  assert.equal(texts[0],'Owner assigned the job');assert.ok(texts.includes('Bot took the job'));assert.ok(d.j.timeline.some(x=>x.kind==='approval'&&/^Owner approved: save a note/.test(x.text)));assert.equal(texts[texts.length-1],'Delivered');
  assert.equal(d.j.requests.length,1);assert.equal((await call('GET','/jobs/task_missing')).code,404);
  console.log('PASS job detail: timeline, linked approvals, 404 for unknown');
- // public receipts: redacted snapshot, owner choices, revocable, clone stays unassigned
- const t3=await f.newTask({title:'Secret client: Acme hero copy',brief:'Use /home/owner/acme/brief.md and the API key',assignee:bot.id});await gw(live,'GET','/tasks/next');
- await gw(live,'POST','/events',{kind:'TOOL_USED',text:'Opened /home/owner/acme/brief.md',task_id:t3.id});
- await gw(live,'POST','/tasks/'+t3.id+'/complete',{result:'Ship the quiet way.',model_cost_usd:0.84});
- const sh=await call('POST','/jobs/'+t3.id+'/shares',{headline:'Bot built this',lede:'Hero copy',color:'#121212'});assert.equal(sh.code,200);
- const rec=await f.getJ('gl:share:'+sh.j.share.token),snapText=JSON.stringify(rec.snap);
- assert.ok(!/Acme|home\/owner|API key|brief\.md/.test(snapText),'snapshot leaks private text');assert.equal(rec.snap.artifact,null);assert.equal(rec.snap.costUsd,0.84);
- assert.ok(rec.snap.timeline.every(x=>!('detail' in x)&&!('meta' in x)));
- const sh2=await call('POST','/jobs/'+t3.id+'/shares',{headline:'x',show:{result:true,cost:false,steps:false}});const r2=(await f.getJ('gl:share:'+sh2.j.share.token)).snap;
- assert.equal(r2.artifact.title,'Ship the quiet way.');assert.equal(r2.costUsd,null);assert.equal(r2.showCost,false);assert.equal(r2.timeline.length,0);
- assert.equal((await call('POST','/jobs/'+t3.id+'/shares',{headline:''})).code,400);
- assert.equal((await call('GET','/jobs/'+t3.id+'/shares')).j.shares.length,2);
- const cl=await call('POST','/receipts/clone',{token:sh.j.share.token});assert.equal(cl.code,200);assert.equal(cl.j.task.title,'Hero copy');assert.equal(cl.j.task.assignee,null);assert.equal(cl.j.task.status,'queued');
- assert.equal((await call('POST','/shares/'+sh.j.share.token+'/revoke')).code,200);
- assert.equal((await call('POST','/receipts/clone',{token:sh.j.share.token})).code,404);
- assert.equal((await call('POST','/jobs/'+t2.id+'/shares',{headline:'x'})).code,409);
- console.log('PASS public receipts: redacted by default, owner choices, revoke, clone unassigned, finished jobs only');
+ // ---- public receipts: the PR #33 boundary (owner-written, exact review, allowlisted payload, copy-only template) ----
+ const t3=await f.newTask({title:'Acme Corp hero copy',brief:'Use /home/owner/acme/brief.md and the API key sk-live-123',assignee:bot.id});await gw(live,'GET','/tasks/next');
+ await gw(live,'POST','/events',{kind:'TOOL_USED',text:'Opened /home/owner/acme/brief.md for Acme',task_id:t3.id});
+ await gw(live,'POST','/act',{action:'web.fetch',params:{url:'https://acme.example/brief'},task_id:t3.id});
+ const hand=await gw(live,'POST','/act',{action:'work.handoff',params:{task_id:t3.id,to:'Other',title:'Acme secret subproject',brief:'private'},task_id:t3.id});assert.equal(hand.j.status,'completed');
+ await gw(live,'POST','/tasks/'+t3.id+'/complete',{result:'RAW RESULT: Acme launch plan for jane@acme.com',model_cost_usd:0.84});
+ const draft={taskId:t3.id,title:'A launch page in an afternoon',summary:'A bot drafted three hero lines for a product launch page. The owner approved one save step.',template:'Write three short hero lines for a product launch page.\nAsk for the audience and tone before writing anything.'};
+ // blank fields are rejected: nothing is prefilled from the private job
+ assert.equal((await call('POST','/public-receipts/review',{taskId:t3.id,title:'',summary:'',template:''})).code,400);
+ const dr=await call('GET','/public-receipts/draft?taskId='+t3.id);assert.equal(dr.code,200);assert.equal(dr.j.title,'');assert.equal(dr.j.summary,'');assert.equal(dr.j.template,'');
+ assert.equal(dr.j.suggestedBudgetCents,84);// gateway ledger 0¢ (no network in tests, so the fetch failed and cost nothing; handoff is 0¢) + 0.84 model costs = 84¢
+ // exact pre-share review rejects secrets, contacts, URLs, file paths, tool details, internal IDs and private names
+ const bad={secret:['sk-live-abcdef123','fmk_0123456789abcdef','xai-AbCdEf123456','Bearer abc.def','api key: hunter2','password=hunter2','AKIAABCDEFGHIJKLMNOP','eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0NTY3','a'.repeat(40)],
+  contact:['mail jane@acme.com','call +1 (650) 555-0101','ping @janedoe'],link:['see https://x.test/a','www.example.org','acme.com launch'],
+  'file path':['notes in /home/owner/acme/','C:\\Users\\owner\\brief','~/drafts/x','read brief.md first'],
+  'tool detail':['used web.fetch twice','then notes.write','foreman_next_task loop','POST /gateway/act','the /api gateway','via MCP'],
+  'internal id':['job task_0123abcd','bot agent_0123abcdef'],'private name':['Other wrote this','Acme Corp hero copy','Acme secret subproject plan']};
+ for(const [kind,list] of Object.entries(bad))for(const v of list)for(const field of ['title','summary','template']){
+  const r=await call('POST','/public-receipts/review',{...draft,[field]:v.slice(0,field==='title'?100:700)});
+  assert.equal(r.code,400,kind+' not rejected in '+field+': '+v);assert.ok(r.j.problems.some(p=>p.field===field&&p.kind===kind),kind+' not named for '+field+': '+v+' -> '+JSON.stringify(r.j.problems));}
+ assert.equal((await call('POST','/public-receipts/review',{...draft,budgetCents:-1})).code,400);
+ // the reviewed snapshot is allowlisted: no bot names, child titles, step notes, raw results, params or IDs
+ const rv=await call('POST','/public-receipts/review',{...draft,budgetCents:84});assert.equal(rv.code,200,JSON.stringify(rv.j));const snap=rv.j.snapshot,sj=JSON.stringify(snap);
+ assert.deepEqual(Object.keys(snap),['version','title','summary','template','budgetCents','outcome','elapsedSeconds','reportedModelCostUsd','externalCost','ledgerCents','trackedActions','approvals','steps','provenance']);
+ for(const leak of ['Bot','Other','Acme','acme','Secret','secret','RAW RESULT','jane@','/home/','brief.md','web.fetch','work.handoff','task_','agent_','req_','rcpt_','Opened','http'])assert.ok(!sj.includes(leak),'public snapshot leaks '+leak);
+ for(const s of snap.steps){assert.deepEqual(Object.keys(s).filter(k=>!['at','code','n'].includes(k)),[]);assert.ok(['assigned','claimed','actions','approved','denied','blocked','handoff','part_done','delivered','stopped'].includes(s.code));}
+ assert.ok(snap.steps.some(s=>s.code==='handoff'));assert.equal(snap.reportedModelCostUsd,0.84);assert.equal(snap.externalCost,null);assert.equal(snap.budgetCents,84);
+ assert.equal(rv.j.hash,f.sha(sj));
+ // publishing needs the exact reviewed snapshot and an explicit public audience
+ assert.equal((await call('POST','/public-receipts/publish',{reviewId:rv.j.reviewId,hash:rv.j.hash,confirmed:true})).code,400);
+ assert.equal((await call('POST','/public-receipts/publish',{reviewId:rv.j.reviewId,hash:'0'.repeat(64),confirmed:true,audience:'public'})).code,409);
+ const both=await Promise.all([call('POST','/public-receipts/publish',{reviewId:rv.j.reviewId,hash:rv.j.hash,confirmed:true,audience:'public'}),call('POST','/public-receipts/publish',{reviewId:rv.j.reviewId,hash:rv.j.hash,confirmed:true,audience:'public'})]);
+ assert.equal(both.filter(x=>x.code===201).length,1);const pub=both.find(x=>x.code===201).j;assert.match(pub.token,/^[a-f0-9]{48}$/);assert.equal(pub.path,'/receipt/'+pub.token);
+ // the public payload: only the snapshot, its fingerprint and dates
+ const out=await pubGet('/public-receipts/'+pub.token);assert.equal(out.hd['cache-control'],'no-store');assert.equal(out.code,200);assert.deepEqual(Object.keys(out.j).sort(),['expiresAt','hash','publishedAt','snapshot','token']);assert.equal(out.j.hash,f.sha(JSON.stringify(out.j.snapshot)));
+ // the public page: noindex, no private text, and the footer says what the hash proves (no "Verified receipt")
+ let page;await h({method:'GET',url:'/receipt/'+pub.token,headers:{host:'localhost'}},{headers:{},setHeader(k,v){this.headers[k.toLowerCase()]=v;return this},status(n){this.code=n;return this},send(b){page={code:this.code,b,hd:this.headers};return this},json(b){page={code:this.code,b:JSON.stringify(b)}}});
+ assert.equal(page.code,200);assert.ok(/noindex/.test(page.hd['x-robots-tag']));assert.equal(page.hd['referrer-policy'],'no-referrer');assert.ok(!/Verified receipt/.test(page.b));
+ for(const leak of ['Other wrote','Acme','RAW RESULT','jane@',bot.name+' ','task_'])assert.ok(!page.b.includes(leak),'page leaks '+leak);
+ const doc=fs.readFileSync(require('path').join(__dirname,'public/js/receipt-doc.js'),'utf8');assert.ok(!/Verified receipt/.test(doc));assert.ok(/does not prove the work itself, its timing or its cost/.test(doc));
+ // a source change after review blocks publishing
+ const rv2=await call('POST','/public-receipts/review',draft);const live3=await f.getJ('fm:task:'+t3.id);live3.result='changed';await f.setJ('fm:task:'+t3.id,live3);
+ assert.equal((await call('POST','/public-receipts/publish',{reviewId:rv2.j.reviewId,hash:rv2.j.hash,confirmed:true,audience:'public'})).code,409);
+ // "Run this job" never creates anything server-side: the old clone route is gone
+ assert.equal((await call('POST','/receipts/clone',{token:pub.token})).code,404);assert.equal((await call('POST','/jobs/'+t3.id+'/shares',{headline:'x'})).code,404);
+ // revoke and expiry
+ await f.als.run({ws:'elsewhere'},async()=>assert.equal((await call('POST','/public-receipts/'+pub.token+'/revoke')).code,404));
+ assert.equal((await call('GET','/public-receipts?taskId='+t3.id)).j.receipts.length,1);
+ assert.equal((await call('POST','/public-receipts/'+pub.token+'/revoke')).code,200);assert.equal((await pubGet('/public-receipts/'+pub.token)).code,404);
+ const rv3=await call('POST','/public-receipts/review',{...draft,taskId:t.id});const p3=await call('POST','/public-receipts/publish',{reviewId:rv3.j.reviewId,hash:rv3.j.hash,confirmed:true,audience:'public'});assert.equal(p3.code,201);
+ const rec=await f.getJ('gl:publicReceipt:'+p3.j.token);rec.expiresAt=new Date(Date.now()-1000).toISOString();await f.setJ('gl:publicReceipt:'+p3.j.token,rec);assert.equal((await pubGet('/public-receipts/'+p3.j.token)).code,404);
+ assert.equal((await call('POST','/public-receipts/review',{...draft,taskId:t2.id})).code,404);
+ console.log('PASS public receipts: blank owner fields, exact review rejects secrets/contacts/links/paths/tool details/IDs/private names, allowlisted payload, explicit audience, source-change guard, fingerprint, copy-only (no clone), revoke, expiry');
 });
 await f.als.run({ws:'elsewhere'},async()=>{assert.equal((await call('GET','/jobs/x')).code,404);});
-await f.als.run({ws:'elsewhere'},async()=>{const ts=await f.r(['SMEMBERS','fm:shares:x']);assert.equal(ts.length,0);});
+await f.als.run({ws:'elsewhere'},async()=>{assert.equal((await call('GET','/public-receipts')).j.receipts.length,0);});
 console.log('PASS workspace isolation. ZERO network calls.');
 })().catch(e=>{console.error(e);process.exit(1)});

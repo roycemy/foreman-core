@@ -132,9 +132,9 @@
   const crew = $('#crew'), roster = $('#roster');
   function paintCrew() {
     const as = BB.agents().filter(a => a.status !== 'revoked'); if (!as.length) { crew.hidden = true; roster.classList.remove('on'); return; } crew.hidden = false;
-    const needs = BB.onYou().length, busy = as.filter(a => BB.signal(a) === 'working').length;
-    crew.innerHTML = `<span class="stack">${as.slice(0, 5).map((a, i) => BB.av(a, '', BB.glyph(a, -(i * .37)))).join('')}</span><p><b>${as.length} on the floor</b> · ${needs ? needs + ' need' + (needs === 1 ? 's' : '') + ' you' : busy ? busy + ' busy' : 'all on track'}</p>`;
-    crew.setAttribute('aria-label', as.length + ' bots on the floor. Open crew');
+    const sum = BB.teamSummary();
+    crew.innerHTML = `<span class="stack">${as.slice(0, 5).map((a, i) => BB.av(a, '', BB.glyph(a, -(i * .37)))).join('')}</span><p><b>${esc(sum.count)}</b> · ${esc(sum.parts.join(' · '))}</p>`;
+    crew.setAttribute('aria-label', sum.text + '. Open crew');
     if (roster.classList.contains('on')) paintRoster();
   }
   function paintRoster() {
@@ -187,7 +187,7 @@
     if (who.error) return needAuth();
     au.classList.remove('on');
     $('#acctmail').textContent = who.email; acct.textContent = BB.initials(who.email.split('@')[0].replace(/[._-]+/g, ' ')); acct.setAttribute('aria-label', 'Account (' + who.email + ')');
-    BB.who = who; applyRoute(); await BB.sync(true); BB.startPolling(); BB.booted && BB.booted();
+    BB.who = who; applyRoute(); await BB.sync(true); BB.startPolling();
   }
   BB.boot = boot;
   if (window.BRAND) BB.t = BRAND.t;

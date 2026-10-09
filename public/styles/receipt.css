@@ -6,3 +6,5 @@ body.public .gone .mark{margin-bottom:40px}
 body.public .gone h1{margin-top:0}
 @media (max-width:640px){body.public .rc,body.public .rc.wide{padding:40px 24px 32px}body.public .rc h1{font-size:var(--t-display)}}
 @media print{body.public{background:#fff}.cta,.cta+p{display:none}}
+button.cta{border:0;cursor:pointer;font-family:inherit}
+.copied{color:var(--stone);font-size:13px;text-align:center;margin-top:8px;min-height:1em}

@@ -46,7 +46,7 @@
   function paintDetail(j) {
     const t = j.task, d = BB.receiptData(j), done = ['done', 'failed'].includes(t.status);
     V.innerHTML = `<div class="rc wide"><a class="back" href="#receipts">‹ Receipts</a><div style="height:28px"></div>${receiptDoc(d, { fullResult: true })}
-      ${done ? `<div class="share-box" id="share-box"><h3>Share this receipt</h3><p>Make a public link. You pick what it shows; private prompts, file paths and tool details are never included.</p><div class="acts" style="justify-content:flex-start;margin-top:14px"><button class="b ink" type="button" data-share>Share…</button></div></div>` : `<p class="meta" style="margin-top:24px">This job is ${esc(BB.jobStatus(t).word.toLowerCase())}. Its receipt is final once it finishes.</p>`}
+      ${done ? `<div class="share-box" id="share-box"><h3>Share a public receipt</h3><p>You write a public title, description and reusable template, review the exact page, then publish. Nothing from the private job is copied in. Links expire in 30 days.</p><div class="acts" style="justify-content:flex-start;margin-top:14px"><button class="b ink" type="button" data-share>Share…</button></div></div>` : `<p class="meta" style="margin-top:24px">This job is ${esc(BB.jobStatus(t).word.toLowerCase())}. Its receipt is final once it finishes.</p>`}
       <div class="foot"><span class="mark"><i aria-hidden="true"></i>${esc(BRAND.name)}</span>· Receipt</div></div>`;
     receiptBind(V);
     const sb = V.querySelector('[data-share]'); if (sb) sb.onclick = () => BB.openShare ? BB.openShare(t.id) : null;

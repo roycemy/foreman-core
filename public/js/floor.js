@@ -312,7 +312,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     card.style.left = (tr[0] + .7) + '%'; card.style.top = (tt[1] - 7.9) + '%'; card.classList.add('on');
   }
   BB.floorPlace = place;
-  BB.itemTitle = i => i.type === 'approval' ? BB.reqTitle(i.q) : i.type === 'spend' ? 'Spend ' + BB.usd(i.q.amountCents) + ' on ' + i.q.merchant : i.type === 'card' ? 'Charge ' + BB.usd(i.q.amountCents) + ' at ' + i.q.merchant : i.type === 'reconnect' ? 'Reconnect ' + i.a.name : i.t ? i.t.title : '';
+  BB.itemTitle = i => i.type === 'approval' ? BB.reqTitle(i.q) : i.type === 'spend' ? 'Spend ' + BB.usd(i.q.amountCents) + ' on ' + i.q.merchant : i.type === 'card' ? 'Charge ' + BB.usd(i.q.amountCents) + ' at ' + i.q.merchant : i.type === 'reconnect' ? 'Reconnect ' + i.a.name : i.type === 'dark' ? i.a.name + ' went dark' : i.t ? i.t.title : '';
   BB.figureSVG = figureSVG;
   BB.on(render);
   setInterval(() => { if (BB.S && !document.hidden) place(); }, 15000);
