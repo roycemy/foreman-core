@@ -467,6 +467,7 @@ async function gatewayActUnlocked(agent, body) {
     const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: now(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
     bust(); await setJ('fm:req:' + q.id, q); await r(['SADD', 'fm:reqs', q.id]);
     await event(agent.id, 'pending', `Waiting for owner approval: ${action}`, { requestId: q.id,taskId:q.taskId||null });
+    try{await smsAlert(q);}catch(e){await setJ('fm:sms:error',{at:now(),reason:'Alert dispatch unavailable; decision remains in app'});}
     return { status: 202, body: { status: 'pending', request_id: q.id, message: 'Action is paused until the owner approves or denies it.' } };
   }
   const { rec, out, error } = await runAndReceipt(agent, action, params, null, null, taskId);
@@ -474,7 +475,7 @@ async function gatewayActUnlocked(agent, body) {
   return { status: 200, body: { status: 'completed', result: out.data, receipt_id: rec.id } };
 }
 
-async function decide(reqId,decision){const q=await getJ('fm:req:'+reqId);return q?.taskId?withJobLock(q.taskId,()=>decideUnlocked(reqId,decision)):decideUnlocked(reqId,decision);}
+async function decide(reqId,decision,expectedFingerprint,smsBinding){return withJobLock('request:'+reqId,async()=>{const q=await getJ('fm:req:'+reqId);if(smsBinding){const owner=await getJ('fm:sms:owner');if(!owner?.verified||owner.optedOut||owner.enrollmentId!==smsBinding.enrollmentId||owner.phone!==smsBinding.phone||Date.parse(smsBinding.expiresAt)<=Date.now())return {status:409,body:{error:'SMS binding expired or changed'}};}if(expectedFingerprint&&smsFingerprint(q)!==expectedFingerprint)return {status:409,body:{error:'Decision changed; review in app'}};return q?.taskId?withJobLock(q.taskId,()=>decideUnlocked(reqId,decision)):decideUnlocked(reqId,decision);});}
 async function decideUnlocked(reqId, decision) {
   const q = await getJ('fm:req:' + reqId); if (!q) return { status: 404, body: { error: 'not found' } };
   if (q.status !== 'pending') return { status: 409, body: { error: 'already ' + q.status, request: pub(q) } };
@@ -777,6 +778,53 @@ async function oauthRoutes(req,res,path,body){
  return send(404,{error:'not found'});
 }
 
+// SMS only gates existing gateway requests. No payment rails or provider credentials.
+// Environment flags are server-only; no account settings or secret values enter the bundle.
+const SMS_TTL_MS=15*60*1000;
+const SMS_ENV=()=>({enabled:process.env.BLACKBOX_SMS_LIVE==='true',sid:process.env.TWILIO_ACCOUNT_SID||'',token:process.env.TWILIO_AUTH_TOKEN||'',from:process.env.TWILIO_SMS_FROM||'',base:process.env.BLACKBOX_PUBLIC_ORIGIN||''});
+const smsFingerprint=q=>q&&sha(JSON.stringify({id:q.id,agentId:q.agentId,action:q.action,rawParams:q.rawParams,costCents:q.costCents,taskId:q.taskId,grantId:q.grantId}));
+const smsPhone=x=>typeof x==='string'&&/^\+[1-9]\d{7,14}$/.test(x);
+const smsRoute=(from,to)=>'gl:sms:route:'+sha(from+'|'+to);
+async function smsSettings(){const e=SMS_ENV(),c=await getJ('fm:sms:owner');return {liveEnabled:e.enabled,providerConfigured:!!(e.sid&&e.token&&smsPhone(e.from)&&/^https:\/\//.test(e.base)),sender:e.from||null,phone:c?.phone||null,verified:!!c?.verified,optedOut:!!c?.optedOut,replyMode:'request_code',expiryMinutes:15,scope:'Existing gateway approvals only. No merchant/card payments. SMS is not a bot execution engine.',lastError:await getJ('fm:sms:error')};}
+async function smsEnroll(body){const e=SMS_ENV();if(body.confirmed!==true||!smsPhone(body.phone))return {status:400,body:{error:'Confirm your SMS number in international format'}};if(!smsPhone(e.from))return {status:503,body:{error:'Sender not configured. No SMS sent.'}};
+ const old=await getJ('fm:sms:owner');if(old?.phone){const route=await getJ(smsRoute(old.phone,e.from));if(route?.ws===wsId())await r(['DEL',smsRoute(old.phone,e.from)]);}
+ const code=crypto.randomBytes(12).toString('hex').toUpperCase(),expiresAt=new Date(Date.now()+SMS_TTL_MS).toISOString();await setJ('gl:sms:enroll:'+sha(code),{ws:wsId(),phone:body.phone,to:e.from,expiresAt});await r(['EXPIRE','gl:sms:enroll:'+sha(code),900]);await setJ('fm:sms:owner',{phone:body.phone,verified:false,optedOut:false,enrollmentId:sha(code),enrolledAt:now()});
+ return {status:200,body:{sender:e.from,instruction:'From your own phone, text START '+code+' to '+e.from+'. This verifies ownership and opts in to approval alerts. Reply STOP any time.',expiresAt,noOutboundMessageSent:true}};
+}
+async function smsDisable(){const c=await getJ('fm:sms:owner'),e=SMS_ENV();if(c?.phone){const route=await getJ(smsRoute(c.phone,e.from));if(route?.ws===wsId())await r(['DEL',smsRoute(c.phone,e.from)]);}if(c)await setJ('fm:sms:owner',{...c,verified:false,optedOut:true,enrollmentId:rid('disabled')});return {status:200,body:{disabled:true}};}
+function smsMessage(q,code){const text='Black Box: '+q.agentName+' requests '+q.action+'. Gateway ledger '+q.costCents+'c (not a merchant charge). Details: '+JSON.stringify(q.rawParams||{})+'. Reply YES '+code+' or NO '+code+'. Expires in 15 min. STOP opts out.';
+ // Never truncate decision details, send secrets, or turn an unreadably long request into blind consent.
+ if(/\b(YES|NO|START|STOP)\s+[A-F0-9]{8,}\b/i.test(JSON.stringify(q.rawParams||{})))return null;
+ if(text.length>500||/[^\x20-\x7e]/.test(text)||/password|secret|token|api.?key|credential|authorization/i.test(JSON.stringify(q.rawParams||{})))return null;return text;}
+async function smsAlert(q){const e=SMS_ENV(),c=await getJ('fm:sms:owner');if(!e.enabled||!c?.verified||c.optedOut||!e.sid||!e.token||!smsPhone(e.from)||!/^https:\/\//.test(e.base))return {status:'disabled'};
+ if(q.status!=='pending')return {status:'not_pending'};
+ const alertKey='fm:sms:alert:'+q.id;if(await getJ(alertKey))return {status:'already_attempted'};
+ const code=crypto.randomBytes(6).toString('hex').toUpperCase(),body=smsMessage(q,code);if(!body){await setJ(alertKey,{requestId:q.id,status:'in_app_only',reason:'Decision cannot be safely represented in SMS',at:now()});return {status:'in_app_only'};}
+ const a={requestId:q.id,code,status:'sending',fingerprint:smsFingerprint(q),phone:c.phone,to:e.from,expiresAt:new Date(Date.now()+SMS_TTL_MS).toISOString(),at:now()};if(!await r(['SET',alertKey,JSON.stringify(a),'NX']))return {status:'already_attempted'};
+ await setJ('fm:sms:code:'+code,{requestId:q.id,fingerprint:a.fingerprint,phone:c.phone,to:e.from,enrollmentId:c.enrollmentId,expiresAt:a.expiresAt});await r(['EXPIRE','fm:sms:code:'+code,900]);
+ try{const form=new URLSearchParams({To:c.phone,From:e.from,Body:body,StatusCallback:e.base+'/api/sms/status'});const response=await fetch('https://api.twilio.com/2010-04-01/Accounts/'+e.sid+'/Messages.json',{method:'POST',headers:{Authorization:'Basic '+Buffer.from(e.sid+':'+e.token).toString('base64'),'Content-Type':'application/x-www-form-urlencoded'},body:form.toString(),signal:AbortSignal.timeout(10000)});const j=await response.json();if(!response.ok||!/^SM[0-9a-f]{32}$/i.test(j.sid||'')){a.status='failed';a.reason='Provider rejected alert';}else{a.status=j.status||'queued';a.messageSid=j.sid;await setJ('gl:sms:message:'+j.sid,{ws:wsId(),requestId:q.id});}await setJ(alertKey,a);return {status:a.status};}
+ catch{a.status='unknown';a.reason='Delivery acceptance unknown. No automatic retry.';await setJ(alertKey,a);return {status:a.status};}
+}
+function smsValidWebhook(req,body,path){const e=SMS_ENV();if(!e.enabled||!e.sid||!e.token||!/^https:\/\//.test(e.base)||req.method!=='POST'||req.url?.includes('?')||!/^application\/x-www-form-urlencoded(?:;|$)/i.test(req.headers['content-type']||''))return false;if(body.AccountSid!==e.sid||!/^SM[0-9a-f]{32}$/i.test(body.MessageSid||''))return false;
+ return require('twilio').validateRequest(e.token,req.headers['x-twilio-signature']||'',e.base+'/api'+path,body);
+}
+async function smsWebhook(req,body,path){if(!smsValidWebhook(req,body,path))return {status:403,body:{error:'Invalid webhook'}};const e=SMS_ENV();
+ if(path==='/sms/status'){const bind=await getJ('gl:sms:message:'+body.MessageSid);if(!bind)return {status:200,body:{ignored:true}};return als.run({ws:bind.ws},async()=>{const a=await getJ('fm:sms:alert:'+bind.requestId);if(!a||a.messageSid!==body.MessageSid)return {status:200,body:{ignored:true}};if(['failed','undelivered','delivered'].includes(a.status))return {status:200,body:{ignored:true}};if(['queued','sending','sent','delivered','failed','undelivered'].includes(body.MessageStatus)){a.status=body.MessageStatus;await setJ('fm:sms:alert:'+bind.requestId,a);}return {status:200,body:{accepted:true}};});}
+ if(!smsPhone(body.From)||body.To!==e.from)return {status:403,body:{error:'Unbound sender'}};
+ const text=String(body.Body||'').trim().toUpperCase(),start=text.match(/^START ([A-F0-9]{24})$/);
+ if(start){const k='gl:sms:enroll:'+sha(start[1]),c=await getJ(k);if(!c||c.phone!==body.From||c.to!==body.To||Date.parse(c.expiresAt)<=Date.now())return {status:200,body:{ignored:true}};return als.run({ws:c.ws},async()=>{const owner=await getJ('fm:sms:owner');if(!owner||owner.phone!==c.phone||owner.enrollmentId!==sha(start[1]))return {status:200,body:{ignored:true}};const existing=await getJ(smsRoute(c.phone,c.to));if(existing&&existing.ws!==c.ws)return {status:409,body:{error:'Phone already enrolled to another workspace'}};if(!await r(['SET',smsRoute(c.phone,c.to),JSON.stringify({ws:c.ws,phone:c.phone,to:c.to}),'NX'])&&!existing)return {status:409,body:{error:'Enrollment busy'}};await setJ('fm:sms:owner',{...owner,verified:true,optedOut:false,verifiedAt:now()});await setJ(smsRoute(c.phone,c.to),{ws:c.ws,phone:c.phone,to:c.to});await r(['DEL',k]);return {status:200,body:{verified:true}};});}
+ const binding=await getJ(smsRoute(body.From,body.To));if(!binding)return {status:200,body:{ignored:true}};
+ return als.run({ws:binding.ws},async()=>{const c=await getJ('fm:sms:owner');if(!c?.verified||c.phone!==body.From)return {status:200,body:{ignored:true}};
+ if(['STOP','STOPALL','UNSUBSCRIBE','CANCEL','END','QUIT','REVOKE','OPTOUT'].includes(text)){await smsDisable();return {status:200,body:{optedOut:true}};}
+ const m=text.match(/^(YES|NO) ([A-F0-9]{12})$/);if(!m)return {status:200,body:{ignored:true,reason:'Reply with YES or NO and the code from that alert'}};
+ const k='fm:sms:code:'+m[2],bind=await getJ(k),a=bind&&await getJ('fm:sms:alert:'+bind.requestId);if(!bind||bind.phone!==body.From||bind.to!==body.To||Date.parse(bind.expiresAt)<=Date.now()||!a?.messageSid||['failed','undelivered','unknown','sending'].includes(a.status))return {status:200,body:{ignored:true,reason:'Stale or undelivered decision'}};
+ const messageKey='gl:sms:inbound:'+body.MessageSid;if(!await r(['SET',messageKey,'processing','NX','EX',86400]))return {status:200,body:{duplicate:true}};
+ const result=await decide(bind.requestId,m[1]==='YES'?'approve':'deny',bind.fingerprint,bind);
+ await r(['SET',messageKey,'processed','EX',86400]);if(result.status===200){await r(['DEL',k]);a.decision=m[1];a.decidedAt=now();await setJ('fm:sms:alert:'+bind.requestId,a);await event('owner','sms_decision','Owner replied '+m[1]+' to the bound SMS decision',{kind:'INTERACTION',source:'sms',requestId:bind.requestId});}
+ return {status:200,body:{accepted:result.status===200,requestId:bind.requestId,outcome:result.body.request?.status||null}};
+ });
+}
+
 // ---------- http ----------
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -784,6 +832,7 @@ module.exports = async (req, res) => {
   const path = (req.url || '').split('?')[0].replace(/^\/api/, '').replace(/\/$/, '') || '/';
   let body = req.body; if (typeof body === 'string') { try { body = /application\/x-www-form-urlencoded/.test(req.headers['content-type']||'') ? Object.fromEntries(new URLSearchParams(body)) : JSON.parse(body); } catch { body = {}; } } body = body || {};
   try {
+    if(['/sms/inbound','/sms/status'].includes(path)){const o=await smsWebhook(req,body,path);if(o.status===200){res.setHeader('Content-Type','text/xml');return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response/>');}return res.status(o.status).json(o.body);}
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
@@ -813,6 +862,9 @@ async function routes(req, res, path, body, agentPre) {
 
     if(wsId()==='legacy') {const k='fm:req:req_97e4b111cd',raw=await r(['GET',k]),q=raw&&JSON.parse(raw),a=q&&await getJ('fm:agent:'+q.agentId);if(q&&q.agentId==='agent_a9c54ebb63'&&q.createdAt==='2026-10-06T20:48:23.766Z'&&q.status==='pending'&&a&&a.harness){const next={...q,status:'cancelled',reason:'Stale hidden demo request retired',decidedAt:now()};if(await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify(next)])===1)await finishReq(next);}}
 
+    if(path==='/sms/settings'&&req.method==='GET')return res.json(await smsSettings());
+    if(path==='/sms/enroll'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await smsEnroll(body));}
+    if(path==='/sms/disable'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await smsDisable());}
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
       const agent = agentPre;
