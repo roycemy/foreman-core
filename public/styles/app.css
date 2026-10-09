@@ -287,7 +287,7 @@ button.row:hover{background:var(--surface-2)}
 .art .prev{min-height:220px;background:linear-gradient(135deg,#1b1b1a,#2a2826);position:relative;padding:56px 22px 22px;color:#fff;display:flex;flex-direction:column;justify-content:flex-end}
 .art .prev h3{font-size:26px;font-weight:600;letter-spacing:-.03em;line-height:1.05;text-wrap:balance}
 .art .prev p{opacity:.72;font-size:13px;margin-top:8px;white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
-.art .prev .chip{position:absolute;left:22px;top:20px;font-size:12px;opacity:.7}
+.art .prev .tag{position:absolute;left:22px;top:20px;font-size:12px;opacity:.7}
 .art .prev .sw{position:absolute;right:22px;top:22px;width:46px;height:46px;border-radius:12px;background:var(--vermilion)}
 .art .meta-row{display:flex;align-items:center;padding:14px 18px;gap:10px}
 .art .meta-row b{font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -444,7 +444,7 @@ h3.h{font-size:15px;font-weight:600;margin:44px 0 12px;letter-spacing:-.015em}
   .ks{padding:2px 24px 20px;color:var(--stone);font-size:14px}
   .kl{padding:20px 24px 8px;font-size:13px;font-weight:600;color:var(--ink)}
   /* full-bleed rows, 16px vertical padding, hairline starts under the text */
-  .kr{display:flex;gap:14px;padding:16px 24px;align-items:flex-start;position:relative;width:100%;text-align:left;background:var(--porcelain-phone)}
+  .kr{display:flex;gap:14px;padding:16px 24px;align-items:flex-start;position:relative;width:100%;text-align:left;background:var(--porcelain-phone);text-decoration:none;color:inherit}
   .kr::after{content:"";position:absolute;left:74px;right:0;bottom:0;height:1px;background:var(--line)}
   .kr .t{flex:1;min-width:0}
   .kr b{display:block;font-weight:500;font-size:15.5px;letter-spacing:-.01em;line-height:1.3}

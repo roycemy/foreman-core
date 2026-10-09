@@ -116,7 +116,7 @@
     if (m < 1) return Math.max(1, Math.round(ms / 1000)) + ' s'; if (m < 60) return Math.round(m) + ' min';
     const h = m / 60; if (h < 24) return (h < 10 ? Math.round(h * 10) / 10 : Math.round(h)) + ' h'; return Math.round(h / 24) + ' d';
   };
-  BB.durWords = ms => { const s = BB.dur(ms); return s.replace(/ min$/, ' minutes').replace(/ h$/, s === '1 h' ? ' hour' : ' hours').replace(/ s$/, ' seconds').replace(/ d$/, ' days').replace(/^1 minutes$/, '1 minute').replace(/^1 days$/, '1 day'); };
+  BB.durWords = ms => { const s = BB.dur(ms), n = parseFloat(s), one = n === 1; const unit = { s: 'second', min: 'minute', h: 'hour', d: 'day' }[s.split(' ')[1]] || ''; return s ? s.split(' ')[0] + ' ' + unit + (one ? '' : 's') : ''; };
   BB.usd = c => '$' + (Number(c || 0) / 100).toFixed(2);
   BB.usdShort = c => { const v = Number(c || 0) / 100; return '$' + (v % 1 ? v.toFixed(2) : v.toFixed(0)); };
   /* model costs are stored in USD (fractional cents allowed) and only exist when a provider or bot reported them */
