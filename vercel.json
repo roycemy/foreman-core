@@ -14,6 +14,10 @@
   ],
   "rewrites": [
     {
+      "source": "/receipt/:token",
+      "destination": "/receipt.html"
+    },
+    {
       "source": "/runner",
       "destination": "/runner.html"
     },
@@ -68,6 +72,23 @@
         {
           "key": "Cache-Control",
           "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/receipt/:token",
+      "headers": [
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
         }
       ]
     }

@@ -777,6 +777,25 @@ async function oauthRoutes(req,res,path,body){
  return send(404,{error:'not found'});
 }
 
+// Public receipt snapshots are owner-reviewed copies, never raw task serialization.
+const publicText=(x,max)=>typeof x==='string'&&x.trim().length>0&&x.trim().length<=max&&!/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(x);
+const privatePattern=/\b(?:fmk_|sk[-_]|Bearer\s|api[_ -]?key\s*[:=]|password\s*[:=]|secret\s*[:=]|token\s*[:=]|task_[a-f0-9]+|agent_[a-f0-9]+|req_[a-f0-9]+|rcpt_[a-f0-9]+)|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|https?:\/\/|\b(?:\+?\d[\d ()-]{8,}\d)\b/i;
+function publicDraftFields(b){const fields={title:b.title,summary:b.summary,template:b.template};if(!publicText(fields.title,100)||!publicText(fields.summary,700)||!publicText(fields.template,1500))return null;for(const k of Object.keys(fields))fields[k]=fields[k].trim();if(Object.values(fields).some(x=>privatePattern.test(x)))return null;return fields;}
+async function publicReceiptReview(taskId,b){const t=await getJ('fm:task:'+taskId);if(!t||!['done','failed'].includes(t.status))return {status:404,body:{error:'A finished task is required'}};const fields=publicDraftFields(b);if(!fields)return {status:400,body:{error:'Use plain public-safe text only. Remove links, emails, phone numbers, IDs and credentials. Keep private details out of the reusable template.'}};
+ const started=Date.parse(t.startedAt),ended=Date.parse(t.finishedAt),ms=ended-started;
+ const linked=(await r(['LRANGE','fm:receipts',0,299])).filter(Boolean).map(x=>JSON.parse(x)).filter(x=>x.taskId===t.id);
+ const amounts=linked.map(x=>x.costCents);const ledgerCents=amounts.length&&amounts.every(x=>Number.isSafeInteger(x)&&x>=0)?amounts.reduce((v,x)=>v+x,0):null;
+ const snap={version:1,title:fields.title,summary:fields.summary,template:fields.template,outcome:t.status==='done'?'completed':'failed',elapsedSeconds:Number.isFinite(started)&&Number.isFinite(ended)&&ms>=0?Math.round(ms/1000):null,ledgerCents,trackedActions:linked.length,externalCost:null,provenance:'Task outcome reported by its bot. Public description and reusable template reviewed by the owner. Elapsed wall-clock time, not active work time. Ledger covers retained linked gateway actions only; it is not provider spending or a complete job cost.'};
+ const sourceHash=sha(JSON.stringify({taskId:t.id,status:t.status,result:t.result,startedAt:t.startedAt,finishedAt:t.finishedAt,linked:linked.map(x=>({id:x.id,hash:x.hash,costCents:x.costCents}))}));const reviewId=crypto.randomBytes(18).toString('hex'),expiresAt=new Date(Date.now()+10*60*1000).toISOString();await setJ('fm:publicReview:'+reviewId,{snapshot:snap,taskId,sourceHash,expiresAt});await r(['EXPIRE','fm:publicReview:'+reviewId,600]);return {status:200,body:{reviewId,expiresAt,snapshot:snap,audience:'Anyone with the link. Public disclosure cannot be undone for people who already copied it.'}};
+}
+async function publicReceiptPublish(b){if(b.confirmed!==true||b.audience!=='public'||!b.reviewId)return {status:400,body:{error:'Review the exact snapshot and confirm its public audience'}};const k='fm:publicReview:'+b.reviewId,review=await getJ(k);if(!review||Date.parse(review.expiresAt)<=Date.now())return {status:409,body:{error:'Review expired; review again'}};return withJobLock('public:'+b.reviewId,async()=>{const live=await getJ(k);if(!live||live.published)return {status:409,body:{error:'Already published or unavailable'}};
+ const t=await getJ('fm:task:'+live.taskId),linked=(await r(['LRANGE','fm:receipts',0,299])).filter(Boolean).map(x=>JSON.parse(x)).filter(x=>x.taskId===live.taskId);const sourceHash=sha(JSON.stringify({taskId:t?.id,status:t?.status,result:t?.result,startedAt:t?.startedAt,finishedAt:t?.finishedAt,linked:linked.map(x=>({id:x.id,hash:x.hash,costCents:x.costCents}))}));if(sourceHash!==live.sourceHash)return {status:409,body:{error:'Source changed. Review again'}};
+ const token=crypto.randomBytes(24).toString('hex'),expiresAt=new Date(Date.now()+30*86400000).toISOString(),publishedAt=now();await setJ('gl:publicReceipt:'+token,{snapshot:live.snapshot,ownerWs:wsId(),revoked:false,publishedAt,expiresAt});await r(['EXPIRE','gl:publicReceipt:'+token,30*86400]);await r(['SADD','fm:publicReceipts',token]);await setJ(k,{...live,published:token});return {status:201,body:{token,path:'/receipt/'+token,expiresAt,publishedAt,snapshot:live.snapshot}};
+ });}
+async function publicReceiptRead(token){if(!/^[a-f0-9]{48}$/.test(token))return null;const p=await getJ('gl:publicReceipt:'+token);return !p||p.revoked||Date.parse(p.expiresAt)<=Date.now()?null:{...p.snapshot,publishedAt:p.publishedAt,expiresAt:p.expiresAt};}
+async function publicReceiptRevoke(token){const k='gl:publicReceipt:'+token,p=await getJ(k);if(!p||p.ownerWs!==wsId())return {status:404,body:{error:'not found'}};await setJ(k,{...p,revoked:true,revokedAt:now()});return {status:200,body:{revoked:true}};}
+async function publicReceiptList(){const ids=await r(['SMEMBERS','fm:publicReceipts']);return {receipts:(await Promise.all(ids.map(async token=>{const p=await getJ('gl:publicReceipt:'+token);return p&&p.ownerWs===wsId()?{token,path:'/receipt/'+token,title:p.snapshot.title,revoked:p.revoked,expiresAt:p.expiresAt,publishedAt:p.publishedAt}:null}))).filter(Boolean)};}
+
 // ---------- http ----------
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -784,6 +803,8 @@ module.exports = async (req, res) => {
   const path = (req.url || '').split('?')[0].replace(/^\/api/, '').replace(/\/$/, '') || '/';
   let body = req.body; if (typeof body === 'string') { try { body = /application\/x-www-form-urlencoded/.test(req.headers['content-type']||'') ? Object.fromEntries(new URLSearchParams(body)) : JSON.parse(body); } catch { body = {}; } } body = body || {};
   try {
+    if(path==='/public-receipts/example'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return res.json({title:'Your bot did the work. Share the proof.',summary:'Design example only. Published receipts show an owner-reviewed description, the recorded outcome and honest timing and cost labels.',template:'Create a launch outline for a fictional consumer product. Ask for its audience, budget and launch date before taking any action.',outcome:'example',elapsedSeconds:null,ledgerCents:null,trackedActions:0,externalCost:null,provenance:'Design example. No real job or private account data. No invented work, time or cost.',publishedAt:null,expiresAt:null});}
+    const publicMatch=path.match(/^\/public-receipts\/([a-f0-9]{48})$/);if(publicMatch&&req.method==='GET'){res.setHeader('Cache-Control','no-store');res.setHeader('X-Robots-Tag','noindex, nofollow');const p=await publicReceiptRead(publicMatch[1]);return p?res.json(p):res.status(404).json({error:'Receipt unavailable or expired'});}
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
@@ -813,6 +834,11 @@ async function routes(req, res, path, body, agentPre) {
 
     if(wsId()==='legacy') {const k='fm:req:req_97e4b111cd',raw=await r(['GET',k]),q=raw&&JSON.parse(raw),a=q&&await getJ('fm:agent:'+q.agentId);if(q&&q.agentId==='agent_a9c54ebb63'&&q.createdAt==='2026-10-06T20:48:23.766Z'&&q.status==='pending'&&a&&a.harness){const next={...q,status:'cancelled',reason:'Stale hidden demo request retired',decidedAt:now()};if(await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify(next)])===1)await finishReq(next);}}
 
+    if(path.startsWith('/public-receipts'))res.setHeader('Cache-Control','no-store');
+    if(path==='/public-receipts'&&req.method==='GET')return res.json(await publicReceiptList());
+    if(path==='/public-receipts/review'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptReview(body.taskId,body));}
+    if(path==='/public-receipts/publish'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptPublish(body));}
+    const revokePublic=path.match(/^\/public-receipts\/([a-f0-9]{48})\/revoke$/);if(revokePublic&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptRevoke(revokePublic[1]));}
     // --- agent-facing gateway ---
     if (path.startsWith('/gateway')) {
       const agent = agentPre;
