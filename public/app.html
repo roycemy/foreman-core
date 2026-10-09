@@ -1325,4 +1325,8 @@ function capsFix(root){if(!root)return;const w=document.createTreeWalker(root,No
 {let raf=0;const run=()=>{raf=0;['#strip','#floor','.fa-top'].forEach(s=>document.querySelectorAll(s).forEach(capsFix))};run();new MutationObserver(()=>{if(!raf)raf=requestAnimationFrame(run)}).observe(document.body,{childList:true,subtree:true})}
 })();
 </script>
+<script>
+/* Room names appear only while pointing at a room. No overlay blocks workers. */
+(function(){const bounds={finance:[4,4,42,42],marketing:[50,4,116,40],sales:[4,50,40,116],ops:[50,48,82,82],lounge:[88,48,116,78]};const base=buildFloor;function attach(){const floor=document.querySelector('#floor');if(!floor||floor.querySelector('#room-hover-label'))return;let tip=document.createElement('div');tip.id='room-hover-label';tip.role='tooltip';tip.hidden=true;floor.appendChild(tip);const hide=()=>{tip.hidden=true;floor.querySelectorAll('.zone-sign[data-room]').forEach(x=>x.removeAttribute('data-hover'))};floor.onpointerleave=hide;floor.onpointermove=e=>{if(e.pointerType==='touch'||!matchMedia('(hover:hover)').matches||e.target.closest('.ch,.floor-label,.zone-sign.appr')){hide();return}const r=floor.getBoundingClientRect(),px=(e.clientX-r.left)/r.width*100,py=(e.clientY-r.top)/r.height*100,[x,y]=HQ_FLOOR.P2W(px,py);const key=Object.keys(bounds).find(k=>{const b=bounds[k];return x>=b[0]&&x<=b[2]&&y>=b[1]&&y<=b[3]});if(!key){hide();return}tip.textContent=roomName(key);tip.hidden=false;tip.style.left=Math.max(8,Math.min(r.width-tip.offsetWidth-8,e.clientX-r.left+14))+'px';tip.style.top=Math.max(8,Math.min(r.height-tip.offsetHeight-8,e.clientY-r.top-36))+'px';};}buildFloor=function(){base();attach()};attach();})();
+</script>
 </body></html>
