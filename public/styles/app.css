@@ -36,7 +36,7 @@ body.app.scrolly{overflow:auto}
 .menu .danger{color:var(--vermilion-press)}
 
 /* ---------- views ---------- */
-main{position:fixed;inset:var(--h-top) 0 0 0}
+body.app>main{position:fixed;inset:var(--h-top) 0 0 0}
 .view{position:absolute;inset:0;display:none}
 .view.on{display:block}
 .view.page{overflow:auto}
@@ -429,7 +429,7 @@ h3.h{font-size:15px;font-weight:600;margin:44px 0 12px;letter-spacing:-.015em}
 @media (max-width:760px){
   body.app{background:var(--porcelain-phone)}
   .top{display:none}
-  main{inset:0 0 0 0}
+  body.app>main{inset:0 0 0 0}
   .desk-only{display:none!important}
   .phone-only{display:revert}
   .view.page{padding-bottom:calc(var(--h-tabs) + 16px)}

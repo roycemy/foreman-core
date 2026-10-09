@@ -174,8 +174,8 @@ input[readonly].t,input[readonly].in{background:var(--surface-2);font-family:var
 .mono{font-family:var(--font)}
 .chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:1px solid var(--line);border-radius:var(--r-pill);font-size:12.5px;font-weight:500;background:var(--surface)}
 .wm{display:inline-flex;align-items:center;gap:10px;font-weight:600;font-size:15px;letter-spacing:-.02em;text-decoration:none;color:var(--ink)}
-span.mark,.wm>.mark{width:18px;height:18px;border:2px solid currentColor;border-radius:5px;position:relative;flex:none;display:inline-block}
-span.mark::after,.wm>.mark::after{content:"";position:absolute;left:2px;right:2px;top:2px;height:3px;background:var(--vermilion);border-radius:1px}
+span.mark:empty,.wm>.mark:empty{width:18px;height:18px;border:2px solid currentColor;border-radius:5px;position:relative;flex:none;display:inline-block}
+span.mark:empty::after,.wm>.mark:empty::after{content:"";position:absolute;left:2px;right:2px;top:2px;height:3px;background:var(--vermilion);border-radius:1px}
 .av.grok{--av:#121212}.av.instinct{--av:#1F6F5C}.av.muse{--av:#2F55A4}.av.scout{--av:#5B4470}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
 .dot.live{background:var(--ink)}.dot.need{background:var(--vermilion)}.dot.prep{border:1.5px dashed var(--mute)}.dot.idle{background:var(--mute)}

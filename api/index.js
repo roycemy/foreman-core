@@ -54,6 +54,7 @@ async function updateAgent(id, patch) {
   throw new Error('Concurrent policy update; retry');
 }
 const now = () => new Date().toISOString();
+const BRAND_NAME = process.env.BRAND_NAME || 'Black Box'; // keep in step with public/brand.js
 const rid = p => p + '_' + crypto.randomBytes(5).toString('hex');
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -268,6 +269,53 @@ function timelineOf(t,events,requests,receipts,kids,name){
  if(t.status==='done')out.push({at:t.finishedAt,text:'Delivered',kind:'step',end:true});
  if(t.status==='failed')out.push({at:t.finishedAt,text:'Stopped without a result',kind:'denied',end:true,detail:t.result?String(t.result).slice(0,160):null});
  return out.filter(x=>x.at).sort((a,b)=>String(a.at).localeCompare(String(b.at))||(a.end?1:0)-(b.end?1:0));}
+
+// ---------- public receipts: redacted, revocable snapshots ----------
+// Redact by default. A share is a frozen snapshot of what the owner chose to show; nothing else from the job leaves the
+// workspace (no brief or prompt, no file paths or URLs, no tool names or tool output, no other bots, no spend details).
+const cleanText=(v,n)=>String(v==null?'':v).replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/\s+/g,' ').trim().slice(0,n);
+function shareDuration(t){const ms=t.finishedAt?Date.parse(t.finishedAt)-Date.parse(t.createdAt):null;return Number.isFinite(ms)&&ms>=0?ms:null;}
+async function createShare(taskId,body){
+ const j=await jobDetail(taskId);if(!j)return {status:404,body:{error:'Job not found'}};const t=j.task;
+ if(!['done','failed'].includes(t.status))return {status:409,body:{error:'Only finished jobs have a receipt to share'}};
+ const s=body.show||{},show={result:s.result===true,cost:s.cost!==false,steps:s.steps!==false,botNotes:s.botNotes===true};
+ const bot=(await listAgents()).find(a=>a.id===t.assignee)||{name:'A bot'};
+ const headline=cleanText(body.headline,120),lede=cleanText(body.lede,200);if(!headline)return {status:400,body:{error:'Add a headline'}};
+ const color=/^#[0-9a-f]{6}$/i.test(String(body.color||''))?body.color:'#121212';
+ const lines=String(t.result||'').split(/\n+/).map(x=>x.trim()).filter(Boolean),words=String(t.result||'').trim()?String(t.result).trim().split(/\s+/).length:0;
+ const snap={v:1,bot:{name:cleanText(bot.name,40),initials:cleanText(bot.name,40).split(/\s+/).filter(Boolean).map(w=>w[0]).join('').slice(0,2).toUpperCase()||'?',color},
+  at:t.finishedAt||t.createdAt,status:t.status,headline,lede:lede||null,
+  artifact:show.result&&lines.length?{title:lines[0].replace(/^\d+[.)]\s*/,'').slice(0,90),text:lines.slice(1).join(' · ').slice(0,220),words,name:lede||'Result',full:String(t.result).slice(0,4000)}:null,
+  costUsd:show.cost&&t.modelCostUsd!=null?Number(t.modelCostUsd):null,showCost:show.cost,
+  approvals:j.timeline.filter(x=>/^Owner approved/.test(x.text)).length,durationMs:shareDuration(t),
+  timeline:show.steps?j.timeline.filter(x=>show.botNotes||!x.reported).map(x=>({at:x.at,text:x.reported?cleanText(x.text,140):x.text,kind:x.kind,end:!!x.end})):[]};
+ const token=crypto.randomBytes(16).toString('base64url'),rec={token,ws:wsId(),taskId,createdAt:now(),revoked:false,show,hash:sha(JSON.stringify(snap)),snap};
+ await r(['SET','gl:share:'+token,JSON.stringify(rec)]);await r(['SADD','fm:shares:'+taskId,token]);
+ await event(t.assignee,'shared','Owner shared the receipt for "'+t.title+'"',{taskId});
+ return {status:200,body:{share:shareView(rec)}};
+}
+const shareView=x=>({token:x.token,path:'/r/'+x.token,createdAt:x.createdAt,revoked:!!x.revoked,revokedAt:x.revokedAt||null,show:x.show,headline:x.snap.headline});
+async function listShares(taskId){const ts=await r(['SMEMBERS','fm:shares:'+taskId]);if(!ts.length)return [];return (await r(['MGET',...ts.map(t=>'gl:share:'+t)])).filter(Boolean).map(JSON.parse).filter(x=>x.ws===wsId()).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(shareView);}
+async function revokeShare(token){const k='gl:share:'+token;for(let i=0;i<8;i++){const raw=await r(['GET',k]),x=raw&&JSON.parse(raw);if(!x||x.ws!==wsId())return {status:404,body:{error:'Link not found'}};if(x.revoked)return {status:200,body:{share:shareView(x)}};const n={...x,revoked:true,revokedAt:now()};if(await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify(n)])===1)return {status:200,body:{share:shareView(n)}};}return {status:409,body:{error:'Try again'}};}
+async function publicShare(token){if(!/^[A-Za-z0-9_-]{16,40}$/.test(String(token||'')))return null;const x=await getJ('gl:share:'+token);return x&&!x.revoked?x:null;}
+// "Run this job": a stranger gets a copy of the job's public title in their own workspace. Unassigned, so nothing runs until they connect a bot.
+async function cloneShare(token){const x=await publicShare(token);if(!x)return {status:404,body:{error:'This receipt link was revoked or does not exist'}};
+ const title=cleanText(x.snap.lede||x.snap.headline,120);const t=await newTask({title,brief:'Copied from a shared receipt. Assign a bot to run it.',createdBy:'owner'});t.origin='receipt';await setJ('fm:task:'+t.id,t);return {status:200,body:{task:t}};}
+const htmlEsc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function receiptPage(x,origin,brand){
+ const s=x?x.snap:null,title=s?s.headline:'Receipt not available',desc=s?(s.lede||'A verified receipt of finished work.'):'This receipt link was revoked or does not exist.';
+ const og=s?origin+'/og/'+x.token+'.png':origin+'/og/missing.png',url=s?origin+'/r/'+x.token:origin;
+ const data=s?JSON.stringify({token:x.token,hash:x.hash,snap:s}).replace(/</g,'\\u003c'):'null';
+ return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${htmlEsc(title)} · ${htmlEsc(brand)}</title><meta name="description" content="${htmlEsc(desc)}"><meta name="theme-color" content="#F4F4F1"><meta name="robots" content="${s?'noindex':'noindex,nofollow'}">
+<meta property="og:type" content="article"><meta property="og:title" content="${htmlEsc(title)}"><meta property="og:description" content="${htmlEsc(desc)}"><meta property="og:url" content="${htmlEsc(url)}"><meta property="og:image" content="${htmlEsc(og)}"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:site_name" content="${htmlEsc(brand)}">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${htmlEsc(title)}"><meta name="twitter:description" content="${htmlEsc(desc)}"><meta name="twitter:image" content="${htmlEsc(og)}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23121212'/%3E%3Crect x='8' y='8' width='16' height='16' rx='4' fill='none' stroke='%23F4F4F1' stroke-width='2.5'/%3E%3Crect x='11' y='11' width='10' height='3' rx='1' fill='%23E2452B'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/styles/tokens.css"><link rel="stylesheet" href="/styles/app.css"><link rel="stylesheet" href="/styles/receipt.css"><script src="/brand.js"></script>
+</head><body class="public"><main class="rc" id="rc">${s?'':`<div class="gone"><div class="mark"><i aria-hidden="true"></i><span data-brand>${htmlEsc(brand)}</span></div><h1>This receipt isn't available</h1><p class="lede">The owner revoked the link, or it never existed.</p></div>`}</main>
+<script>window.__RECEIPT=${data};</script><script src="/js/receipt-doc.js"></script><script src="/js/receipt-public.js"></script></body></html>`;
+}
 
 // Job grants restrict gated actions, not authentication or ordinary replies.
 async function withJobLock(id,fn){const k='fm:joblock:'+id,v=rid('lock');if(!await r(['SET',k,v,'NX','PX',120000]))return {status:409,body:{error:'Job is busy. Retry after the current action finishes'}};try{return await fn()}finally{if(await r(['GET',k])===v)await r(['DEL',k]);}}
@@ -831,6 +879,8 @@ module.exports = async (req, res) => {
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
+    { const rm = path.match(/^\/(?:api\/)?r\/([A-Za-z0-9_-]+)$/) || (req.url || '').split('?')[0].match(/^\/r\/([A-Za-z0-9_-]+)$/); if (rm && req.method === 'GET') { const x = await publicShare(rm[1]); const host = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex'); res.setHeader('Referrer-Policy', 'no-referrer'); return res.status(x ? 200 : 404).send(receiptPage(x, host, BRAND_NAME)); } }
+    { const pm = path.match(/^\/public\/receipts\/([A-Za-z0-9_-]+)$/); if (pm && req.method === 'GET') { const x = await publicShare(pm[1]); res.setHeader('Cache-Control', 'no-store'); return x ? res.json({ token: x.token, hash: x.hash, snap: x.snap }) : res.status(404).json({ error: 'not_found' }); } }
     if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
     if (path.startsWith('/gateway') || path === '/ingest' || path === '/mcp') {
       const ra = await resolveAgent(req);
@@ -893,6 +943,9 @@ async function routes(req, res, path, body, agentPre) {
     {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST')return send(await cardDecision(cm[1],cm[2],body.detailsHash));}
 
     {const am=path.match(/^\/tasks\/(\w+)\/assign$/);if(am&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await assignTask(am[1],body));}}
+    {const sm=path.match(/^\/jobs\/(\w+)\/shares$/);if(sm){if(req.method==='GET')return res.json({shares:await listShares(sm[1])});if(req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await createShare(sm[1],body));}}}
+    {const rv=path.match(/^\/shares\/([A-Za-z0-9_-]+)\/revoke$/);if(rv&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await revokeShare(rv[1]));}}
+    if(path==='/receipts/clone'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cloneShare(body.token));}
     {const jm=path.match(/^\/jobs\/(\w+)$/);if(jm&&req.method==='GET'){const j=await jobDetail(jm[1]);return j?res.json(j):res.status(404).json({error:'not found'});}}
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
@@ -983,3 +1036,6 @@ async function routes(req, res, path, body, agentPre) {
     return res.status(404).json({ error: 'not found', path });
   } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
 };
+
+// For api/og.js: read a public share without a session.
+module.exports.publicShare = token => als.run({ ws: 'legacy' }, () => publicShare(token));
