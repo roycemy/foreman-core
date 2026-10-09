@@ -812,3 +812,16 @@ body:has(#v-office.on.has-card) #strip,body:has(#v-approvals.on) #strip{display:
 #floor-workers [data-signal=working] .d,.floor-label[data-signal=working] .d,.ch[data-signal=working] .sdot{background:var(--floor-working);border-color:var(--floor-working)}
 #floor-workers [data-signal=inactive] .d,.floor-label[data-signal=inactive] .d,.ch[data-signal=inactive] .sdot{background:var(--floor-inactive);border-color:var(--floor-inactive)}
 @media(max-width:759px){#v-office.compact .floorwrap{padding:8px 0!important} #v-office.compact .floorwrap>#floor{margin:0 auto}}
+
+/* Minimal floor: quiet room names, one status line per worker, details on tap. */
+#floor .zone-sign:not(.appr){background:transparent!important;box-shadow:none!important;padding:0!important;color:var(--c-text-2);font-size:11px!important;font-weight:500!important;gap:0}
+#floor .zone-sign:not(.appr) svg,#floor .zone-sign:not(.appr) [id^="ct-"]{display:none}
+#floor .zone-sign.arrivals{display:none}
+.conversation-bubble{position:absolute;left:50%;top:-8px;transform:translateX(-50%);display:flex;gap:3px;align-items:center;justify-content:center;width:32px;height:22px;background:#fff;border:1px solid #d6dbd8;border-radius:11px;box-shadow:0 2px 5px #172c2520;pointer-events:none;z-index:20;color:#1f6f6b}
+.conversation-bubble:after{content:"";position:absolute;bottom:-4px;left:12px;width:6px;height:6px;background:#fff;border-right:1px solid #d6dbd8;border-bottom:1px solid #d6dbd8;transform:rotate(45deg)}
+.conversation-bubble i{width:4px;height:4px;border-radius:50%;background:#1f6f6b;animation:conversation-dot 1.1s infinite ease-in-out}
+.conversation-bubble i:nth-child(2){animation-delay:.15s}.conversation-bubble i:nth-child(3){animation-delay:.3s}.conversation-bubble svg{width:14px;height:14px}
+@keyframes conversation-dot{0%,60%,100%{opacity:.45;transform:translateY(0)}30%{opacity:1;transform:translateY(-2px)}}
+@media(prefers-reduced-motion:reduce){.conversation-bubble i{animation:none;opacity:1}}
+
+#floor .zone-sign:not(.appr){border:none!important;border-radius:0!important}#floor .zone-sign:not(.appr) .zs-name{background:transparent!important}
