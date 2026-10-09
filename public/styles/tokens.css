@@ -22,13 +22,14 @@
   --c-focus:var(--bb-signal); --c-live:var(--bb-live); --c-inverse:var(--bb-ink); --c-on-inverse:var(--bb-porcelain);
   --c-scrim:rgba(18,18,18,.42);
   /* type */
-  --f-display:'Instrument Serif', Georgia, 'Times New Roman', serif;
+  --f-display:'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; /* 3.3: one sans family; hierarchy from weight + size */
   --f-ui:'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --f-mono:'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --f-mono:'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; /* 3.3: UI labels/meta are sans (legacy name kept so nothing breaks) */
+  --f-code:'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; /* only for real code: connector address, ids, keys */
   --fs-11:11px; --fs-12:12px; --fs-13:13px; --fs-14:14px; --fs-15:15px; --fs-16:16px; --fs-18:18px; --fs-20:20px;
   --fs-24:24px; --fs-32:32px; --fs-44:44px; --fs-60:60px; --fs-80:80px; --fs-104:104px;
   --lh-tight:.95; --lh-snug:1.2; --lh-body:1.5;
-  --tr-display:-.015em; --tr-caps:.08em;
+  --tr-display:-.02em; --tr-caps:0;
   /* spacing (4px base) */
   --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:20px; --s-6:24px; --s-8:32px; --s-10:40px;
   --s-12:48px; --s-16:64px; --s-20:80px; --s-24:96px; --s-32:128px;
@@ -57,7 +58,7 @@ a{color:inherit}
 .disp{font-family:var(--f-display);font-weight:400;letter-spacing:var(--tr-display);line-height:var(--lh-tight)}
 .disp em{font-style:italic;color:var(--c-accent-fill)}
 .mono{font-family:var(--f-mono)}
-.eyebrow{font-family:var(--f-mono);font-size:var(--fs-12);letter-spacing:var(--tr-caps);text-transform:uppercase;color:var(--c-text-2)}
+.eyebrow{font-family:var(--f-mono);font-size:var(--fs-12);letter-spacing:var(--tr-caps);text-transform:none;color:var(--c-text-2)}
 .muted{color:var(--c-text-2)}
 kbd{font:500 var(--fs-11) var(--f-mono);min-width:20px;height:20px;padding:0 5px;display:inline-grid;place-items:center;border:1px solid currentColor;border-radius:var(--r-2);opacity:.9}
 
@@ -106,3 +107,9 @@ input[readonly].t{background:var(--c-sunken);font-family:var(--f-mono);font-size
 .btn.reconnect{background:var(--c-surface);border:1.5px solid var(--p-reconnect);color:var(--p-reconnect)}
 .btn.reconnect:hover{background:var(--p-reconnect-wash)}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+/* ===== 3.3 type: Geist sans only. Weight 500/600 + size for hierarchy, tight tracking on big numbers; mono only for code ===== */
+h1,h2,h3,h4,.disp{font-family:var(--f-ui);font-weight:600;letter-spacing:-.02em}
+.eyebrow{font:500 var(--fs-13) var(--f-ui);letter-spacing:0;text-transform:none;color:var(--c-text-2)}
+code,pre,samp,.code,input[readonly].t,[data-code]{font-family:var(--f-code)}
+kbd{display:none!important} /* shortcuts still work; the hint boxes are gone */
