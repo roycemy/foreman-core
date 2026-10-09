@@ -1,0 +1,10 @@
+/* Public receipt page (D): a single 600px column, no login and no nav. Reads tokens.css + app.css. */
+body.public{min-height:100vh;overflow:auto;background:radial-gradient(1200px 500px at 50% -10%,#FFFFFF,var(--porcelain)) no-repeat,var(--porcelain)}
+body.public .rc{padding-bottom:48px}
+body.public .gone{padding-top:12vh}
+body.public .gone .mark{margin-bottom:40px}
+body.public .gone h1{margin-top:0}
+@media (max-width:640px){body.public .rc,body.public .rc.wide{padding:40px 24px 32px}body.public .rc h1{font-size:var(--t-display)}}
+@media print{body.public{background:#fff}.cta,.cta+p{display:none}}
+button.cta{border:0;cursor:pointer;font-family:inherit}
+.copied{color:var(--stone);font-size:13px;text-align:center;margin-top:8px;min-height:1em}

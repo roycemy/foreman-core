@@ -30,6 +30,18 @@
       "destination": "/app.html"
     },
     {
+      "source": "/receipt/:token",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/og/:file",
+      "destination": "/api/og"
+    },
+    {
+      "source": "/api/og/:file",
+      "destination": "/api/og"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index"
     }
@@ -70,11 +82,32 @@
           "value": "no-cache, no-store, must-revalidate"
         }
       ]
+    },
+    {
+      "source": "/receipt/(.*)",
+      "headers": [
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
     }
   ],
   "functions": {
     "api/index.js": {
       "maxDuration": 30
+    },
+    "api/og.js": {
+      "maxDuration": 15,
+      "includeFiles": "api/fonts/**"
     }
   }
 }
