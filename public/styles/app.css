@@ -825,3 +825,8 @@ body:has(#v-office.on.has-card) #strip,body:has(#v-approvals.on) #strip{display:
 @media(prefers-reduced-motion:reduce){.conversation-bubble i{animation:none;opacity:1}}
 
 #floor .zone-sign:not(.appr){border:none!important;border-radius:0!important}#floor .zone-sign:not(.appr) .zs-name{background:transparent!important}
+
+/* Hover-only room tooltip: the floor carries no permanent room-name bars. */
+#floor .zone-sign[data-room]{display:none!important}
+#room-hover-label{position:absolute;z-index:1600;padding:7px 11px;background:#fff;color:var(--c-text);border:1px solid #d9dad4;border-radius:8px;box-shadow:0 3px 12px #22251c12;font:500 12px/1.3 var(--f-ui);white-space:nowrap;pointer-events:none}
+#room-hover-label[hidden]{display:none}
