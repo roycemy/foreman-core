@@ -804,3 +804,11 @@ body:has(#v-office.on.has-card) #strip,body:has(#v-approvals.on) #strip{display:
 [style*="system-ui"][style*="text-transform:uppercase"]{text-transform:capitalize!important}
 /* Install in Cursor was removed on main (15fbf68): a lone step-2 action spans the row */
 .cw-actions>.btn:only-child{grid-column:1/-1}
+
+/* Owner-selected activity palette: independent of permission and connection chips. */
+:root{--floor-available:#2563EB;--floor-working:#15803D;--floor-inactive:#C4321D}
+#v-office:not(.compact).on{grid-template-columns:260px minmax(0,1fr)}
+#floor-workers [data-signal=available] .d,.floor-label[data-signal=available] .d,.ch[data-signal=available] .sdot{background:var(--floor-available);border-color:var(--floor-available)}
+#floor-workers [data-signal=working] .d,.floor-label[data-signal=working] .d,.ch[data-signal=working] .sdot{background:var(--floor-working);border-color:var(--floor-working)}
+#floor-workers [data-signal=inactive] .d,.floor-label[data-signal=inactive] .d,.ch[data-signal=inactive] .sdot{background:var(--floor-inactive);border-color:var(--floor-inactive)}
+@media(max-width:759px){#v-office.compact .floorwrap{padding:8px 0!important} #v-office.compact .floorwrap>#floor{margin:0 auto}}
