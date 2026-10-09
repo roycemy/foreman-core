@@ -227,13 +227,27 @@ async function grantJob(id,body){return withJobLock(id,async()=>{const t=await g
 async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return {code:'unknown_action',reason:'Action is not in the catalog'};if(agent.permissionScope!=='job')return null;if(!taskId)return {code:'job_required',reason:'Register or claim the real job first; gated actions require an owner job grant'};const t=await getJ('fm:task:'+taskId),g=t?.jobGrant;if(!t||t.assignee!==agent.id||t.status!=='running')return {code:'job_inactive',reason:'Job is not running under this worker'};if(!g||g.status!=='active'||g.agentId!==agent.id||grantId&&g.id!==grantId)return {code:'job_grant_required',reason:'Owner must grant actions and a ledger budget for this job'};if(!g.actions[action])return {code:'job_action',reason:'Action is outside the job grant'};if(Number(g.spentCents||0)+ACTIONS[action].costCents>g.budgetCents)return {code:'limit_job',reason:'Job ledger budget would be exceeded'};return null;}
 async function closeJobGrant(t,reason){if(t.jobGrant){t.jobGrant={...t.jobGrant,status:'closed',closedAt:now(),closeReason:reason};}await cancelJobRequests(t.id,reason);}
 
+// Owner cancellation is not a successful worker outcome. Keep the original record.
+async function cancelTask(id,body){return withJobLock(id,async()=>{
+ if(body.confirmed!==true)return {status:400,body:{error:'Review and confirm cancellation'}};
+ const k='fm:task:'+id,raw=await r(['GET',k]),t=raw&&JSON.parse(raw);
+ if(!t)return {status:404,body:{error:'Task not found'}};
+ if(!['queued','running'].includes(t.status)||t.assignee!==body.expectedAssignee||t.status!==body.expectedStatus)return {status:409,body:{error:'Task changed. Review again',task:t}};
+ const reason=String(body.reason||'').trim().slice(0,1000);if(!reason)return {status:400,body:{error:'Cancellation note required'}};
+ const at=now();t.status='cancelled';t.finishedAt=at;t.closedAt=at;t.closedBy='owner';t.closeReason=reason;
+ await closeJobGrant(t,'Job cancelled by owner; action grant expired');
+ if(await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify(t)])!==1)return {status:409,body:{error:'Task changed. Read it again'}};
+ bust();await event(t.assignee||'owner','cancelled','Owner cancelled: '+t.title,{kind:'INTERACTION',taskId:id,source:'owner'});
+ return {status:200,body:{task:t}};
+ });}
+
 async function claimTask(agent) { if(agent.status!=='active'||await r(['GET','fm:kill']))return null;const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
   const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now();if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
 async function completeTask(agent,id,body){return withJobLock(id,()=>completeTaskUnlocked(agent,id,body));}
 async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
   if(t.status==='queued'&&(t.reassignedAt||(t.origin==='chat'&&t.createdBy!==agent.id)))return {status:409,body:{error:'Claim the assigned job before completing it'}};
   if (!['running','queued'].includes(t.status)) return {status:409,body:{error:'Task is already terminal',task:t}};
-  const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); await closeJobGrant(t,'Job finished; action grant expired'); if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+id,raw,JSON.stringify(t)])!==1)return {status:409,body:{error:'Task changed. Read it again'}};
+  const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); t.closedAt=t.finishedAt; t.closedBy='terminal_state'; await closeJobGrant(t,'Job finished; action grant expired'); if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+id,raw,JSON.stringify(t)])!==1)return {status:409,body:{error:'Task changed. Read it again'}};
   await touchAgent(agent);
   await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id });
   if(t.createdBy&&t.createdBy!==agent.id&&t.createdBy!=='owner')await event(t.createdBy,failed?'failed':'completed','Delegate '+(failed?'failed: ':'finished: ')+t.title,{kind:failed?'FAILED':'COMPLETED',taskId:t.id,fromAgentId:agent.id});
@@ -320,18 +334,16 @@ async function runHosted(agent, t) {
   t.status = 'running'; t.startedAt = now(); await setJ('fm:task:' + t.id, t);
   await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id });
   const stop = live.status !== 'active' ? 'Access revoked by owner' : (await r(['GET', 'fm:kill'])) ? 'Owner kill switch is on' : null;
-  if (stop) { t.status = 'failed'; t.result = 'Not run: ' + stop; t.finishedAt = now(); await setJ('fm:task:' + t.id, t); await event(agent.id, 'blocked', 'Blocked task: ' + stop, { kind: 'BLOCKED', taskId: t.id }); return; }
+  if (stop) { await completeTask(agent,t.id,{status:'failed',result:'Not run: '+stop}); return; }
   try {
     const key = dec(await r(['GET', 'fm:secret:' + agent.id])); const meta = live.providerId === 'muse'; const model = live.model || (meta ? 'muse-spark-1.3' : 'grok-4.3');
     await event(agent.id, 'tool_used', 'Calling ' + (meta ? 'Muse Spark' : 'Grok') + ' (' + model + ')', { kind: 'TOOL_USED', taskId: t.id });
     const prompt = 'Task: ' + t.title + '\nBrief: ' + t.brief + (t.context ? '\nContext from the previous agent (via Foreman):\n' + t.context : '');
     const out = await (meta ? museChat(key, model, prompt) : xaiChat(key, model, prompt));
-    t.status = 'done'; t.result = out.slice(0, 4000); t.finishedAt = now(); await setJ('fm:task:' + t.id, t);
-    await event(agent.id, 'completed', 'Finished: ' + t.title, { kind: 'COMPLETED', taskId: t.id });
+    const finished=await completeTask(agent,t.id,{result:out.slice(0,4000)});if(finished.status!==200)return;
     try { await gatewayAct(live, { action: 'notes.write', params: { title: ('Result: ' + t.title).slice(0, 80), text: out.slice(0, 1500) } }); } catch (e) {}
   } catch (e) {
-    await mark('first_task_failed', { reason: /recognise/.test(e.message) ? 'bad_key_format' : /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'run_error' }); t.status = 'failed'; t.result = String(e.message).slice(0, 300); t.finishedAt = now(); await setJ('fm:task:' + t.id, t);
-    await event(agent.id, 'failed', 'Failed: ' + t.title + ' (' + t.result + ')', { kind: 'FAILED', taskId: t.id });
+    await mark('first_task_failed', { reason: /recognise/.test(e.message) ? 'bad_key_format' : /rejected/.test(e.message) ? 'xai_rejected' : /credit|rate/.test(e.message) ? 'xai_credits' : 'run_error' }); await completeTask(agent,t.id,{status:'failed',result:String(e.message).slice(0,300)});
   }
 }
 // owner accounts: email + password (scrypt), session cookie, one workspace per account
@@ -849,6 +861,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/cards/proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+body.botId),body));
     {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST')return send(await cardDecision(cm[1],cm[2],body.detailsHash));}
 
+    {const cm=path.match(/^\/tasks\/(\w+)\/cancel$/);if(cm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cancelTask(cm[1],body));}}
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
