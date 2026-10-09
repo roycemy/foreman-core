@@ -1324,4 +1324,22 @@ function capsFix(root){if(!root)return;const w=document.createTreeWalker(root,No
 {let raf=0;const run=()=>{raf=0;['#strip','#floor','.fa-top'].forEach(s=>document.querySelectorAll(s).forEach(capsFix))};run();new MutationObserver(()=>{if(!raf)raf=requestAnimationFrame(run)}).observe(document.body,{childList:true,subtree:true})}
 })();
 </script>
+<script>
+/* Close terminal jobs in the view without deleting records or changing worker scores. */
+(function(){const base=vWork;let historyOpen=false,review=null;const notes={};
+vWork=function(){base();const root=$('#v-work'),tl=$('#tl'),ts=(LS&&LS.tasks)||[];
+ root.querySelector('.task-history')?.remove();
+ const history=document.createElement('details');history.className='task-history';history.open=historyOpen;history.ontoggle=()=>{historyOpen=history.open};
+ const summary=document.createElement('summary');history.append(summary);let closed=0,active=0;
+ [...tl.children].forEach((card,i)=>{const t=ts[i];if(!t)return;card.dataset.taskId=t.id;
+ if(['done','failed','cancelled','completed'].includes(t.status)){closed++;history.append(card);if(t.closeReason){const note=document.createElement('p');note.className='sum';note.textContent='Closed by owner: '+t.closeReason;card.append(note);}return;}
+ active++;if(!['queued','running'].includes(t.status))return;
+ const b=document.createElement('button');b.className='btn';b.textContent=review===t.id?'Confirm cancellation':'Review cancellation';b.style.marginTop='10px';card.append(b);
+ if(review===t.id){const label=document.createElement('label');label.textContent='Cancellation note';label.style.display='block';const input=document.createElement('textarea');input.style.width='100%';input.value=notes[t.id]||'';input.setAttribute('aria-label','Cancellation note for '+t.title);input.oninput=()=>{notes[t.id]=input.value};label.append(input);card.append(label);const p=document.createElement('p');p.className='sum';p.textContent='Cancel "'+t.title+'"? It moves to history, ends its job grant and blocks pending job actions. This does not count as worker success or failure.';card.append(p);const back=document.createElement('button');back.className='btn';back.textContent='Keep task';back.onclick=()=>{review=null;vWork()};card.append(back);}
+ b.onclick=async()=>{if(review!==t.id){review=t.id;vWork();return;}const reason=(notes[t.id]||'').trim();if(!reason){toast('Add a cancellation note');return;}b.disabled=true;try{await api('/api/tasks/'+t.id+'/cancel','POST',{confirmed:true,expectedAssignee:t.assignee,expectedStatus:t.status,reason});review=null;delete notes[t.id];toast('Task cancelled. History kept.');await sync();}catch(e){review=null;toast(e.message||'Cancellation failed');await sync();}};
+ });
+ summary.textContent='Task history ('+closed+')';const hint=document.createElement('p');hint.className='sum';hint.textContent='Finished, failed and cancelled tasks close automatically. Records and job activity stay in history.';history.insertBefore(hint,history.children[1]||null);tl.after(history);
+ if(!active)tl.innerHTML='<div class="card">No active tasks.</div>';
+};})();
+</script>
 </body></html>
