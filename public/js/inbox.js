@@ -25,7 +25,7 @@
   BB.jobs = () => BB.tasks().slice().sort((x, y) => String(jobAt(y)).localeCompare(String(jobAt(x))));
   BB.jobWho = t => { const shared = BB.sharedJobFor(t); if (shared) return shared.bots; const a = t.assignee && BB.agent(t.assignee); return a ? [a] : []; };
   BB.jobMeta = t => { const who = BB.jobWho(t); return (who.length ? who.map(a => a.name).join(' + ') : 'Unassigned') + ' · ' + BB.ago(jobAt(t)); };
-  BB.jobAv = (t, size) => { const who = BB.jobWho(t); if (who.length > 1) return BB.duo(who, size === 's36' ? 's28' : ''); return who.length ? BB.av(who[0], size) : `<span class="av ghost ${size || ''}" aria-hidden="true">?</span>`; };
+  BB.jobAv = (t, size) => { const who = BB.jobWho(t); if (who.length > 1) return BB.duo(who, size || ''); return who.length ? BB.av(who[0], size) : `<span class="av ghost ${size || ''}" aria-hidden="true">?</span>`; };
 
   /* Assign ▾ : pick a bot for an unassigned job */
   BB.assignMenu = function (btn, taskId) {

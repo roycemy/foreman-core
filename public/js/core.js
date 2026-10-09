@@ -92,7 +92,7 @@
   BB.initials = n => String(n || '?').split(/\s+/).filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
   BB.avColor = a => !a ? '#8C8C86' : BB.isGhost(a) ? '#8C8C86' : BB.cast(a).av;
   BB.av = (a, cls, extra) => `<span class="av ${cls || ''}" style="--av:${BB.avColor(a)}" aria-hidden="true">${esc(BB.initials(a ? a.name : '?'))}${extra || ''}</span>`;
-  BB.duo = (list, size) => { const shown = list.slice(0, 3); return `<span class="duo">${shown.map(a => BB.av(a, size || 's22')).join('')}${list.length > 3 ? `<span class="more">+${list.length - 3}</span>` : ''}</span>`; };
+  BB.duo = (list, size) => { const shown = list.slice(0, 3); return `<span class="duo">${shown.map(a => BB.av(a, size == null ? 's22' : size)).join('')}${list.length > 3 ? `<span class="more">+${list.length - 3}</span>` : ''}</span>`; };
 
   /* ---------- time and money ---------- */
   const DAY = 864e5;
@@ -159,7 +159,7 @@
     if (BB.onYou().some(i => i.a && i.a.id === a.id && ['approval', 'spend', 'card'].includes(i.type))) return { kind: 'needs', text: 'Waiting for you' };
     const t = BB.runningTask(a); if (t) return { kind: 'run', text: t.title, task: t };
     const st = a.state, age = st ? (Date.now() - Date.parse(st.at)) / 1000 : 1e9;
-    if (st && age < 120 && st.kind === 'INTERACTION') return { kind: 'talk', text: 'Talking with you' };
+    if (talking(a)) return { kind: 'talk', text: 'Talking with you' };
     if (st && age < 120 && st.kind === 'COMPLETED') return { kind: 'idle', text: 'Just finished' };
     return { kind: 'idle', text: 'Available' };
   };
@@ -168,13 +168,15 @@
 
   /* ---------- activity: shown only while it is happening; message > research > write ---------- */
   const RECENT = 75;
+  const recent = a => ((BB.S && BB.S.events) || []).filter(e => e.agentId === a.id && (Date.now() - Date.parse(e.at)) / 1000 < RECENT);
+  /* talking to the owner = an explicit INTERACTION report, or MCP presence (its contract is "actual recent interaction").
+     The gateway presence call is the runner console's 30s heartbeat, so it never counts. */
+  function talking(a) { return recent(a).some(e => e.kind === 'INTERACTION' && (e.type === 'reported' || (e.type === 'interaction' && e.source === 'mcp' && !/client connected/i.test(e.text)))); }
   BB.activity = function (a) {
     if (!BB.S || BB.isGhost(a) || BB.presence(a) !== 'connected' || a.status !== 'active' || a.paused || BB.S.killed) return null;
     if (['needs', 'off', 'reconnect'].includes(BB.botState(a).kind)) return null;
-    const evs = (BB.S.events || []).filter(e => e.agentId === a.id && (Date.now() - Date.parse(e.at)) / 1000 < RECENT);
-    /* talking to the owner = an explicit INTERACTION report, or MCP presence (its contract is "actual recent interaction").
-       The gateway presence call is the runner console's 30s heartbeat, so it never counts. */
-    if (evs.some(e => e.kind === 'INTERACTION' && (e.type === 'reported' || (e.type === 'interaction' && e.source === 'mcp' && !/client connected/i.test(e.text))))) return 'message';
+    const evs = recent(a);
+    if (talking(a)) return 'message';
     if (evs.some(e => (e.type === 'attempt' && e.action === 'web.fetch') || (e.kind === 'TOOL_USED' && /fetch|search|research|read|brows|look/i.test(e.text)))) return 'research';
     if (evs.some(e => (e.type === 'attempt' && e.action === 'notes.write') || (e.kind === 'TOOL_USED' && /writ|draft|note|edit|calling/i.test(e.text)))) return 'write';
     return null;
