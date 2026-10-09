@@ -57,7 +57,7 @@
   function paintSheet() {
     if (!sheet.classList.contains('on')) return; const items = BB.onYou();
     sheet.innerHTML = `<div class="grab" aria-hidden="true"></div>` + (items.length
-      ? `<div class="sh"><b>Anything on me?</b><span>${things(items.length)}</span></div>${items.map(i => `<div class="kr" data-item="${esc(i.id)}">${avOf(i, true)}<div class="t"><b>${esc(i.type === 'reconnect' ? 'Reconnect ' + i.a.name : i.type === 'approval' ? ((BB.ACTION_COPY[i.q.action] || {}).ask || i.q.label) : title(i))}</b><small>${esc(i.type === 'approval' ? i.a.name + ' · ' + ((i.q.params && (i.q.params.title || i.q.params.url)) || '') + ' · ' + i.q.costCents + '¢' : i.type === 'reconnect' ? 'Lost access ' + BB.ago(i.at) + (BB.ago(i.at) === 'just now' ? '' : ' ago') : line(i))}</small>${acts(i, true)}</div>${i.type === 'reconnect' ? `<button class="b out" type="button" style="height:36px;border-radius:11px" data-rec="${i.a.id}">Reconnect</button>` : ''}</div>`).join('')}`
+      ? `<div class="sh"><b>Anything on me?</b><span>${things(items.length)}</span></div>${items.map(i => `<div class="kr" data-item="${esc(i.id)}">${avOf(i, true)}<div class="t"><b>${esc(i.type === 'reconnect' ? 'Reconnect ' + i.a.name : i.type === 'approval' ? ((BB.ACTION_COPY[i.q.action] || {}).ask || i.q.label) : title(i))}</b><small>${esc(i.type === 'approval' ? i.a.name + ' · ' + ((i.q.params && (i.q.params.title || i.q.params.url)) || '') + ' · ' + i.q.costCents + '¢' : i.type === 'reconnect' ? 'Lost access' + (i.at ? ' ' + BB.ago(i.at) + (BB.ago(i.at) === 'just now' ? '' : ' ago') : '') : line(i))}</small>${acts(i, true)}</div>${i.type === 'reconnect' ? `<button class="b out" type="button" style="height:36px;border-radius:11px" data-rec="${i.a.id}">Reconnect</button>` : ''}</div>`).join('')}`
       : `<div class="empty"><div class="ok">${BB.GLYPH.tick}</div><b>Nothing on you.</b><small>Your team's handling it.</small></div>`)
       + `<div class="open"><button type="button" data-open>Open inbox</button></div>`;
     BB.bindItems(sheet, items);
@@ -66,14 +66,14 @@
   function openSheet() { lastFocus = document.activeElement; sheet.classList.add('on'); scrim.classList.add('on'); paintSheet(); requestAnimationFrame(() => { const f = sheet.querySelector('button'); f && f.focus(); }); }
   function closeSheet() { sheet.classList.remove('on'); scrim.classList.remove('on'); if (lastFocus && lastFocus.focus) lastFocus.focus(); }
   BB.openSheet = openSheet; BB.closeSheet = closeSheet;
-  scrim.onclick = closeSheet;
+  scrim.onclick = () => { if (sheet.classList.contains('on')) closeSheet(); else { BB.closeInspector && BB.closeInspector(); scrim.classList.remove('on'); } };
   sheet.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
   /* drag the grab handle down to close */
   let y0 = null; sheet.addEventListener('touchstart', e => { if (e.target.closest('.grab,.sh')) y0 = e.touches[0].clientY; }, { passive: true });
   sheet.addEventListener('touchmove', e => { if (y0 == null) return; const dy = Math.max(0, e.touches[0].clientY - y0); sheet.style.transform = 'translateY(' + dy + 'px)'; }, { passive: true });
   sheet.addEventListener('touchend', e => { if (y0 == null) return; const dy = parseFloat((sheet.style.transform.match(/[\d.]+/) || [0])[0]); sheet.style.transform = ''; y0 = null; if (dy > 80) closeSheet(); });
   /* the Inbox tab badge opens the sheet from any tab */
-  const tc = $('#tcount'); if (tc) { tc.setAttribute('role', 'button'); tc.setAttribute('aria-label', 'Anything on me?'); tc.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); openSheet(); }); }
+  document.addEventListener('click', e => { if (!e.target.closest('#tcount')) return; e.preventDefault(); e.stopPropagation(); openSheet(); }, true);
 
   /* ---------- keys: I opens the inbox; A / D act on the first request while the pop-down is open ---------- */
   BB.keys = function (e) {

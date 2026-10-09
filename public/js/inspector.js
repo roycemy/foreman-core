@@ -14,12 +14,12 @@
     if (BB.route().v !== 'floor' && !BB.phone()) BB.go('#floor');
     if (cur !== id) { tab = 'activity'; openJob = null; }
     cur = id; BB.inspected = id; if (o.tab) tab = o.tab; if (o.job) { tab = 'activity'; openJob = o.job; }
-    P.classList.add('on'); $('#stage') && $('#stage').classList.add('dim'); P.setAttribute('aria-label', a.name);
+    P.classList.add('on'); $('#stage') && $('#stage').classList.add('dim'); P.setAttribute('aria-label', a.name); if (BB.phone()) $('#scrim').classList.add('on');
     paint(true); BB.floorFit && BB.floorFit(); BB.floorPlace && BB.floorPlace();
     if (openJob) loadJob(openJob);
   };
   BB.closeInspector = function (keepFocus) {
-    if (!P.classList.contains('on')) return; P.classList.remove('on'); cur = null; BB.inspected = null;
+    if (!P.classList.contains('on')) return; P.classList.remove('on'); cur = null; BB.inspected = null; if (!$('#sheet').classList.contains('on')) $('#scrim').classList.remove('on');
     if (!BB.panelOpen()) $('#stage') && $('#stage').classList.remove('dim');
     BB.floorFit && BB.floorFit(); BB.floorPlace && BB.floorPlace();
     if (!keepFocus && lastFocus && lastFocus.focus) lastFocus.focus();

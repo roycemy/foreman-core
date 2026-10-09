@@ -118,7 +118,7 @@
         b = `<div class="kbtns"><button class="b pri" type="button" data-d="approve">Approve</button><button class="b out" type="button" data-d="deny">Deny</button></div>`;
         return `<div class="swipe" data-item="${esc(i.id)}"><div class="under" aria-hidden="true">Approve</div><div class="kr">${kav}<div class="t"><b>${t}</b><small>${l}</small>${b}</div></div></div>`;
       }
-      l = esc(i.a.name) + ' lost access ' + esc(BB.ago(i.at)) + ' ago';
+      l = esc(i.a.name) + ' lost access' + (i.at ? ' ' + esc(BB.ago(i.at)) + (BB.ago(i.at) === 'just now' ? '' : ' ago') : '');
       return `<div class="kr" data-item="${esc(i.id)}">${kav}<div class="t"><b>Reconnect ${esc(i.a.name)}</b><small>${l}</small></div><button class="b out" type="button" style="height:36px;border-radius:11px" data-rec="${i.a.id}">Reconnect</button></div>`;
     };
     const jrow = t => {
