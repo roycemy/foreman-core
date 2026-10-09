@@ -682,10 +682,12 @@ async function reviewSpend(id,decision,detailsHash){const key='fm:spendRequest:'
 const CARD_PROVIDER = Object.freeze({id:'sandbox', live:false, async execute(q){
  return {provider:'sandbox',providerReference:'sim_'+q.id,simulatedCents:q.amountCents,chargedCents:0,currency:q.currency};
 }});
+// The sandbox card's identity (last four digits) is generated once per workspace. It is not an issued card.
+async function sandboxCard(){let c=await getJ('fm:cards:card');if(!c){await r(['SET','fm:cards:card',JSON.stringify({last4:String(crypto.randomInt(0,10000)).padStart(4,'0'),label:'Team card',kind:'virtual',issued:false,createdAt:now()}),'NX']);c=await getJ('fm:cards:card');}return c;}
 async function cardData(){
  const ids=await r(['SMEMBERS','fm:cards:proposals']);
  const proposals=ids.length?(await r(['MGET',...ids.map(id=>'fm:cards:q:'+id)])).filter(Boolean).map(JSON.parse).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)):[];
- return {mode:'sandbox',liveMoneyEnabled:false,provider:'sandbox',killed:!!await r(['GET','fm:cards:kill']),proposals,ledger:proposals.filter(q=>q.receipt).map(q=>q.receipt),bots:await Promise.all((await listAgents()).map(async a=>({id:a.id,name:a.name,status:a.status,dailyLimitCents:Number((await r(['GET','fm:cards:cap:'+a.id]))??10000),simulatedTodayCents:Number(await r(['GET','fm:cards:spent:'+a.id+':'+now().slice(0,10)])||0)})))};
+ return {mode:'sandbox',liveMoneyEnabled:false,provider:'sandbox',card:await sandboxCard(),day:now().slice(0,10),killed:!!await r(['GET','fm:cards:kill']),proposals,ledger:proposals.filter(q=>q.receipt).map(q=>q.receipt),bots:await Promise.all((await listAgents()).map(async a=>({id:a.id,name:a.name,status:a.status,dailyLimitCents:Number((await r(['GET','fm:cards:cap:'+a.id]))??10000),simulatedTodayCents:Number(await r(['GET','fm:cards:spent:'+a.id+':'+now().slice(0,10)])||0)})))};
 }
 async function cardPropose(a,b){
  if(!a||a.status!=='active'||await r(['GET','fm:kill'])||await r(['GET','fm:cards:kill']))return {status:403,body:{error:'Card proposals paused or worker revoked'}};

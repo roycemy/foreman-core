@@ -165,6 +165,17 @@
     BB.keys && BB.keys(e);
   });
 
+  /* ---------- phone account button: the top bar is hidden on phones ---------- */
+  BB.acctAv = () => `<button class="av" type="button" data-acct aria-label="Account">${esc(acct.textContent)}</button>`;
+  document.addEventListener('click', e => {
+    if (!e.target.closest('[data-acct]')) return;
+    const box = BB.modal(`<h3>${esc((BB.who && BB.who.email) || 'Account')}</h3><div class="stackf">
+      <button class="b out lg block" type="button" data-a="connect">Connect a bot</button><button class="b out lg block" type="button" data-a="newjob">New job</button>
+      <button class="b out lg block" type="button" data-a="perms">All permissions</button><button class="b out lg block" type="button" data-a="floor">View floor</button>
+      <button class="b out lg block" type="button" data-a="emergency" style="color:var(--vermilion-press)">Emergency stop</button><button class="b ghost lg block" type="button" data-a="signout">Sign out</button></div>`, { label: 'Account' });
+    box.querySelectorAll('[data-a]').forEach(b => b.onclick = () => { const k = b.dataset.a; BB.closeModal(); if (k === 'newjob') BB.newJob(); else if (k === 'floor') BB.go('#floor'); else BB.act(k); });
+  });
+
   /* ---------- boot ---------- */
   let who = null;
   async function boot() {
