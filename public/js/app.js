@@ -12,8 +12,7 @@
   const VIEWS = ['floor', 'inbox', 'receipts', 'card'];
   BB.route = () => { const h = location.hash.replace(/^#/, ''); const [v, ...rest] = h.split('/'); return { v: VIEWS.includes(v) ? v : (BB.phone() ? 'inbox' : 'floor'), arg: rest.join('/') || null }; };
   BB.go = h => { if (location.hash !== h) location.hash = h; else applyRoute(); };
-  const routeHooks = [];
-  BB.onRoute = fn => routeHooks.push(fn);
+  const routeHooks = BB._routeHooks;
   function applyRoute() {
     let r = BB.route();
     /* desktop has no Inbox page: the Inbox is a rail on the floor */

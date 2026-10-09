@@ -298,7 +298,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   function placeTrayCard() {
     const card = $('#islcard'); if (!card) return;
     const items = waitingItems(), first = items.find(i => { const r = F[i.a.id]; return r && r.tk === 'tray' && !r.el.classList.contains('walk'); });
-    if (!first || BB.phone()) { card.classList.remove('on'); card.dataset.id = ''; return; }
+    if (!first || BB.phone() || (BB.panelOpen && BB.panelOpen())) { card.classList.remove('on'); card.dataset.id = ''; return; }
     if (card.dataset.id !== first.id || card.dataset.n !== String(items.length)) {
       card.dataset.id = first.id; card.dataset.n = items.length;
       card.innerHTML = `<div class="who">${BB.av(first.a, 's22')}${esc(first.a.name)} · ${esc(BB.ago(first.at))}</div><b>${esc(BB.itemTitle(first))}</b><div class="btns"><button class="b pri" data-d="approve">Approve</button><button class="b out" data-d="deny">Deny</button></div>${items.length > 1 ? `<div class="more">${items.length - 1} more waiting · <button class="link" data-open>Open inbox</button></div>` : ''}`;

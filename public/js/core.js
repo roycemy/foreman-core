@@ -20,6 +20,9 @@
     j._status = r.status; return j;
   };
 
+  /* ---------- route hooks (the router lives in app.js) ---------- */
+  BB._routeHooks = []; BB.onRoute = fn => BB._routeHooks.push(fn);
+
   /* ---------- state ---------- */
   const subs = new Set();
   BB.S = null; BB.money = { requests: [] }; BB.cards = { proposals: [], bots: [], ledger: [] };
