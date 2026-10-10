@@ -971,6 +971,38 @@ async function joinWaitlist(req,res,body){
  return res.json({ok:true});
 }
 
+// Runner sessions: scoped HttpOnly cookie; bearer stored encrypted server-side only.
+const RUNNER_TTL=2592000;
+const runnerCookieName=id=>'ar_'+sha(id).slice(0,16);
+async function startRunnerSession(res,ws,agentId,key){
+ const a=await als.run({ws},()=>getJ('fm:agent:'+agentId));if(!a||a.status!=='active')throw Error('Bot unavailable');
+ const token=crypto.randomBytes(32).toString('hex'),csrf=crypto.randomBytes(24).toString('hex');
+ await setJ('gl:runner:'+sha(token),{ws,agentId,epoch:a.oauthEpoch||0,key:enc(key),csrf,expires:Date.now()+RUNNER_TTL*1000});await r(['EXPIRE','gl:runner:'+sha(token),RUNNER_TTL]);
+ res.setHeader('Set-Cookie',runnerCookieName(agentId)+'='+token+'; HttpOnly; Secure; SameSite=Strict; Path=/api/runner/'+agentId+'; Max-Age='+RUNNER_TTL);
+ return {agent:{id:a.id,name:a.name},csrf,persistent:true};
+}
+async function runnerSession(req,id){
+ const match=String(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(runnerCookieName(id)+'='));if(!match)return null;
+ const token=match.slice(match.indexOf('=')+1);if(!/^[a-f0-9]{64}$/.test(token))return null;
+ const sess=await getJ('gl:runner:'+sha(token));if(!sess||sess.agentId!==id||sess.expires<=Date.now())return null;
+ const a=await als.run({ws:sess.ws},()=>getJ('fm:agent:'+id));if(!a||a.status!=='active'||(a.oauthEpoch||0)!==sess.epoch)return null;
+ const key=dec(sess.key),kh=await als.run({ws:sess.ws},()=>r(['GET','fm:gatewayKeyHash:'+id]));if(kh!==sha(key))return null;
+ return {...sess,agent:a,tokenHash:sha(token)};
+}
+async function runnerRoutes(req,res,path,body){
+ res.setHeader('Cache-Control','no-store');
+ const m=path.match(/^\/runner\/(agent_[a-f0-9]+)\/(.*)$/);if(!m)return res.status(404).json({error:'Runner not found'});
+ const id=m[1],action=m[2],sess=await runnerSession(req,id);if(!sess)return res.status(401).json({error:'Runner session unavailable. Pair this bot again.'});
+ if(req.headers.origin&&req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});
+ if(req.headers['sec-fetch-site']==='cross-site')return res.status(403).json({error:'cross-site'});
+ if(req.method!=='GET'&&(req.headers.origin!==OAUTH_ORIGIN||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
+ if(action==='session'&&req.method==='GET')return res.json({agent:{id:sess.agent.id,name:sess.agent.name},csrf:sess.csrf,persistent:true,expiresAt:new Date(sess.expires).toISOString()});
+ if(action==='disconnect'&&req.method==='POST'){await r(['DEL','gl:runner:'+sess.tokenHash]);res.setHeader('Set-Cookie',runnerCookieName(id)+'=; HttpOnly; Secure; SameSite=Strict; Path=/api/runner/'+id+'; Max-Age=0');return res.json({ok:true});}
+ if(!action.startsWith('gateway/'))return res.status(404).json({error:'Runner action unavailable'});
+ if(req.headers['x-alter-csrf']!==sess.csrf)return res.status(403).json({error:'csrf'});
+ req.gatewayKeyAuth=true;return als.run({ws:sess.ws},()=>routes(req,res,'/'+action,body,sess.agent));
+}
+
 // ---------- http ----------
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -980,7 +1012,8 @@ module.exports = async (req, res) => {
   try {
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
-    if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);return res.status(o.status).json(o.body);}
+    if(path.startsWith('/runner/'))return await runnerRoutes(req,res,path,body);
+    if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);if(o.status===200&&body.persistent===true){const ws=await r(['GET','gl:key:'+sha(o.body.key)]);const out=await startRunnerSession(res,ws,o.body.agent.id,o.body.key);return res.status(200).json(out);}return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
     { const rm = (req.url || '').split('?')[0].match(/^\/receipt\/([^/?#]+)$/) || path.match(/^\/receipt\/([^/?#]+)$/); if (rm && req.method === 'GET') { const x = await publicReceiptRead(rm[1]); const host = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); res.setHeader('Referrer-Policy', 'no-referrer'); return res.status(x ? 200 : 404).send(receiptPage(x, host, BRAND_NAME)); } }
     { const pm = path.match(/^\/public-receipts\/([a-f0-9]{48})$/); if (pm && req.method === 'GET') { res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); const x = await publicReceiptRead(pm[1]); return x ? res.json(x) : res.status(404).json({ error: 'Receipt unavailable or expired' }); } }
