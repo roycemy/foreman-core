@@ -54,7 +54,7 @@ async function updateAgent(id, patch) {
   throw new Error('Concurrent policy update; retry');
 }
 const now = () => new Date().toISOString();
-const BRAND_NAME = process.env.BRAND_NAME || 'Black Box'; // keep in step with public/brand.js
+const BRAND_NAME = process.env.BRAND_NAME || 'Alter'; // keep in step with public/brand.js
 const rid = p => p + '_' + crypto.randomBytes(5).toString('hex');
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -487,7 +487,7 @@ async function runHosted(agent, t) {
 const COOKIE = 'fm_sess';
 const LEGACY_CLAIM_HASH = '939eed690d2af252b4940442b755cb84ba4c27be515142877a44b1a32424454d';
 const cookieOf = req => { const m = String(req.headers.cookie || '').match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)')); return m ? m[1] : null; };
-async function getSession(req) { const t = cookieOf(req); if (!t) return null; const v = await r(['GET', 'gl:sess:' + sha(t)]); return v ? JSON.parse(v) : null; }
+async function getSession(req) { const t = cookieOf(req); if (!t) return null; const v = await r(['GET', 'gl:sess:' + sha(t)]);if(!v)return null;const sess=JSON.parse(v),u=await getJ('gl:user:'+sha(sess.email));return u&&u.id===sess.uid&&u.ws===sess.ws?sess:null; }
 const setCookie = (res, v, maxAge) => res.setHeader('Set-Cookie', `${COOKIE}=${v}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`);
 async function startSession(res, user) { const t = crypto.randomBytes(32).toString('hex'); await r(['SET', 'gl:sess:' + sha(t), JSON.stringify({ uid: user.id, email: user.email, ws: user.ws }), 'EX', 2592000]); setCookie(res, t, 2592000); }
 // funnel instrumentation: first time each workspace reaches a step, record it once
@@ -513,8 +513,33 @@ async function funnel(only) {
 }
 function funnelHtml(f) { const e = x => String(x == null ? '' : x).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); const S = f.summary;
   return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Foreman test sessions</title><body style="font:14px system-ui;margin:24px;color:#0f172a"><h2>Foreman test sessions</h2><p>${S.sessions} sessions - ${S.reachedFirstReceipt} reached first receipt - ${S.returnedAfterReceipt} returned after - median signup to receipt: ${S.medianSecondsSignupToReceipt == null ? 'n/a' : S.medianSecondsSignupToReceipt + 's'}</p><table cellpadding=6 style="border-collapse:collapse"><tr style="background:#f1f5f9"><th align=left>Step<th>Sessions<th>% of previous</tr>${f.steps.map(x => `<tr><td>${e(x.step)}<td align=center>${x.sessions}<td align=center>${x.pctOfPrevious == null ? '' : x.pctOfPrevious + '%'}</tr>`).join('')}</table><p>Failures: ${e(JSON.stringify(S.failures))}</p><h3>Each session</h3><table cellpadding=6 border=1 style="border-collapse:collapse;border-color:#e2e8f0"><tr style="background:#f1f5f9"><th>Session<th>Provider<th>Signed up<th>Stopped / stuck at<th>Idle since last step<th>Slow steps<th>Failures<th>Receipt<th>Returned</tr>${f.sessions.map(x => `<tr><td>${e(x.id)}<td>${e(x.provider || '-')}<td>${e(x.signupAt)}<td>${e(x.stuckAt || 'finished')}<td>${x.stuckAt ? e(x.secondsSinceLastStep) + 's' : '-'}<td>${e(x.slowSteps.map(y => y.step + ' ' + y.seconds + 's').join(', ') || '-')}<td>${e(x.failures.map(y => y.kind + (y.reason ? ':' + y.reason : '')).join(', ') || '-')}<td>${x.reachedFirstReceipt ? 'yes' + (x.secondsSignupToReceipt != null ? ' (' + x.secondsSignupToReceipt + 's)' : '') : 'no'}<td>${x.returnedAfterReceipt ? 'yes' : 'no'}</tr>`).join('')}</table></body>`; }
+async function resetOwnerWorkspace(req,res,body){
+ const sess=await getSession(req);if(!sess)return res.status(401).json({error:'Sign in required'});
+ const origin=(/^localhost/.test(req.headers.host)?'http://':'https://')+req.headers.host;
+ if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});
+ if(body.confirmed!==true||body.expectedWorkspace!==sess.ws)return res.status(400).json({error:'Confirm the current workspace reset'});
+ const key='gl:user:'+sha(sess.email),raw=await r(['GET',key]),u=raw&&JSON.parse(raw);
+ if(!u||u.id!==sess.uid||u.ws!==sess.ws)return res.status(409).json({error:'Account changed'});
+ if(sess.ws==='legacy'&&await r(['GET','gl:legacy-owner'])!==sess.email)return res.status(403).json({error:'Legacy owner required'});
+ return als.run({ws:sess.ws},async()=>{
+  const agents=(await listAgents()).filter(a=>!a.harness&&!a.hosted),actual=agents.map(a=>a.id).sort();
+  if(JSON.stringify(actual)!==JSON.stringify((body.expectedAgentIds||[]).slice().sort()))return res.status(409).json({error:'Bot roster changed; review again'});
+  if(!await r(['SET','fm:ownerResetLock','1','NX','EX',120]))return res.status(409).json({error:'Reset busy'});
+  try{
+   const oldWs=sess.ws,newWs='ws'+crypto.randomBytes(6).toString('hex');
+   for(const a of agents){await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await r(['DEL','fm:secret:'+a.id]);const kh=await r(['GET','fm:gatewayKeyHash:'+a.id]);if(kh){await r(['DEL','fm:key:'+kh]);await r(['DEL','gl:key:'+kh]);}
+    for(const gid of await r(['SMEMBERS','fm:oauth:grants:'+a.id])){const g=await getJ('gl:oauth:grant:'+gid);if(g&&g.ws===oldWs&&g.agentId===a.id)await setJ('gl:oauth:grant:'+gid,{...g,revoked:true,revokedAt:now(),failureReason:'owner_workspace_reset'});}}
+   for(const token of await r(['SMEMBERS','fm:publicReceipts'])){const p=await getJ('gl:publicReceipt:'+token);if(p&&p.ownerWs===oldWs)await setJ('gl:publicReceipt:'+token,{...p,revoked:true,revokedAt:now()});}
+   for(const t of await listTasks())for(const token of await r(['SMEMBERS','fm:shares:'+t.id])){const p=await getJ('gl:share:'+token);if(p&&p.ws===oldWs)await setJ('gl:share:'+token,{...p,revoked:true,revokedAt:now()});}
+   const next={...u,ws:newWs,previousWorkspace:oldWs,resetAt:now()};
+   if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return res.status(409).json({error:'Account changed after revocation; sign in and review reset'});
+   bust();await startSession(res,next);return res.json({ok:true,workspace:newWs,archivedWorkspace:oldWs,botsRevoked:actual,empty:true});
+  }finally{await r(['DEL','fm:ownerResetLock']);}
+ });
+}
 async function handleAuth(req, res, path, body) {
-  if (path === '/me') { const s = await getSession(req); if (!s) return res.status(401).json({ error: 'auth' }); if (s.ws !== 'legacy') await mark('visit', null, s.ws); return res.json({ email: s.email, legacy: s.ws === 'legacy' }); }
+  if(path==='/auth/reset-workspace'&&req.method==='POST')return resetOwnerWorkspace(req,res,body);
+  if (path === '/me') { const s = await getSession(req); if (!s) return res.status(401).json({ error: 'auth' }); if (s.ws !== 'legacy') await mark('visit', null, s.ws); return res.json({ email: s.email, legacy: s.ws === 'legacy', workspace:s.ws }); }
   if (path === '/auth/logout') { const t = cookieOf(req); if (t) await r(['DEL', 'gl:sess:' + sha(t)]); setCookie(res, '', 0); return res.json({ ok: true }); }
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
   const email = String(body.email || '').trim().toLowerCase(), pw = String(body.password || '');
