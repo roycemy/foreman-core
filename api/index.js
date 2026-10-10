@@ -954,6 +954,23 @@ async function oauthRoutes(req,res,path,body){
  return send(404,{error:'not found'});
 }
 
+// Public waitlist: explicit request only, no auto-mail or third-party sharing.
+async function joinWaitlist(req,res,body){
+ res.setHeader('Cache-Control','no-store');
+ if(req.method!=='POST')return res.status(405).json({error:'POST required'});
+ if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});
+ if(body.website)return res.json({ok:true});
+ const email=String(body.email||'').trim().toLowerCase();
+ if(email.length>254||! /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||body.consent!==true)return res.status(400).json({error:'Enter your email and agree to an access update.'});
+ const ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();
+ const rate='gl:waitlistRate:'+sha(ip)+':'+Math.floor(Date.now()/3600000),n=await r(['INCRBY',rate,1]);await r(['EXPIRE',rate,3600]);
+ if(n>10)return res.status(429).json({error:'Too many attempts. Try again later.'});
+ const key='gl:waitlist:'+sha(email),entry={email,requestedAt:now(),consent:'Access availability email only',source:'alter-site'};
+ const added=await r(['SET',key,JSON.stringify(entry),'NX']);
+ if(added)await r(['SADD','gl:waitlist',sha(email)]);
+ return res.json({ok:true});
+}
+
 // ---------- http ----------
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -961,6 +978,7 @@ module.exports = async (req, res) => {
   const path = (req.url || '').split('?')[0].replace(/^\/api/, '').replace(/\/$/, '') || '/';
   let body = req.body; if (typeof body === 'string') { try { body = /application\/x-www-form-urlencoded/.test(req.headers['content-type']||'') ? Object.fromEntries(new URLSearchParams(body)) : JSON.parse(body); } catch { body = {}; } } body = body || {};
   try {
+    if(path==='/waitlist')return await joinWaitlist(req,res,body);
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
