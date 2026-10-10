@@ -62,8 +62,20 @@
     if (k === 'connect') return BB.openConnect ? BB.openConnect() : null;
     if (k === 'perms') return BB.openPermsOverview ? BB.openPermsOverview() : null;
     if (k === 'emergency') return openEmergency();
+    if (k === 'reset-workspace') return resetWorkspace();
     if (k === 'signout') return signOut();
   };
+  async function resetWorkspace() {
+    const me = await BB.api('/api/me');
+    const ids = BB.S.agents.filter(a => !a.harness && !a.hosted).map(a => a.id);
+    const box = BB.modal(`<h3>Fresh workspace</h3><p>This turns off your current bots and public receipt links, signs out old sessions, and starts empty onboarding. Your login and password stay the same. Old jobs and receipts are archived, not deleted.</p><p>Current bots: ${ids.map(id => esc(BB.agent(id).name)).join(', ') || 'none'}.</p><div class="acts"><button class="b ghost" data-close>Cancel</button><button class="b ink" id="reset-confirm">Start fresh workspace</button></div>`, {label:'Fresh workspace'});
+    box.querySelector('#reset-confirm').onclick = async () => {
+      box.querySelector('#reset-confirm').disabled = true;
+      const out = await BB.api('/api/auth/reset-workspace','POST',{confirmed:true,expectedWorkspace:me.legacy?'legacy':me.workspace,expectedAgentIds:ids});
+      if(out.error){BB.toast(out.error);box.querySelector('#reset-confirm').disabled=false;return;}
+      location.href='/hq';
+    };
+  }
   async function signOut() { await fetch('/api/auth/logout', { method: 'POST' }); location.reload(); }
 
   /* ---------- modal helper (focus trap, Escape, restore focus) ---------- */
