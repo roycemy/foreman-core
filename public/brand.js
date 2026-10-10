@@ -4,7 +4,7 @@
    Load this file synchronously in <head> BEFORE any other script. */
 window.BRAND = (function (prev) {
   var B = Object.assign({
-    name: 'Black Box',            // <-- the one line to change
+    name: 'Alter',            // <-- the one line to change
     upper: null,                  // derived: wordmark/caps text
     short: null,                  // derived: initials for compact marks
     siteUrl: null,                // public marketing site URL (null = no "Back to the site" link). Owner decides routing.
