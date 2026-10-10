@@ -4,8 +4,9 @@
 (function () {
   'use strict';
   const BB = window.BB, $ = BB.$, esc = BB.esc;
+  const PRODUCTION_ORIGIN = 'https://foreman-core.vercel.app';
   let W = {}, timer = null;
-  const P = [['instinct', 'Instinct'], ['grok', 'Grok Bot'], ['muse', 'Muse']];
+  const P = [['instinct', 'Instinct'], ['grok', 'Grok Bot'], ['studio', 'Studio'], ['muse', 'Muse']];
   const toast = m => BB.toast(m);
   const stop = () => { clearInterval(timer); timer = null; BB.linkWaiting = null; };
   function shell(html) {
@@ -20,8 +21,9 @@
     catch (e) { const f = $(fallbackSel); if (f) { f.hidden = false; f.value = text; f.focus(); f.select(); toast('Select and copy the message below.'); } }
   }
 
-  BB.openConnect = function () { stop(); W = { step: 0 }; draw(); };
+  BB.openConnect = function () { if(location.origin !== PRODUCTION_ORIGIN){BB.toast('Connect bots on the live Alter site, not a preview.');location.href=PRODUCTION_ORIGIN+'/hq';return;} stop(); W = { step: 0 }; draw(); };
   BB.reconnect = function (id) {
+    if(location.origin !== PRODUCTION_ORIGIN){location.href=PRODUCTION_ORIGIN+'/hq';return;}
     const d = BB.agent(id); if (!d) return; stop(); BB.closeInspector && BB.closeInspector(true);
     const pid = (d.providerId || d.provider || '').toLowerCase(), hit = P.find(p => p[0] === pid);
     W = { step: 2, p: hit ? hit[0] : pid, label: hit ? hit[1] : (d.provider || 'assistant'), agent: { id: d.id, name: d.name }, reconnect: BB.presence(d) === 'reconnect', reason: d.connection && d.connection.reason };
@@ -29,11 +31,12 @@
   };
 
   function draw() {
-    if (W.gateway || (W.step === 2 && ['muse', 'instinct'].includes(W.p))) return drawGateway();
+    if (W.step === 2 && !W.oauth && !W.gateway) return drawPairing();
+    if (W.gateway) return drawGateway();
     if (W.step === 0) {
       const box = shell(`<h3>Connect your existing bot</h3><p>Keep the bot you already use, its account and its credits. ${esc(BRAND.name)} sees only work reported through this connection.</p>
-        ${P.map(p => `<button class="opt" type="button" data-link="${p[0]}"><span class="av" style="--av:${{ grok: '#121212', instinct: '#1F6F5C', muse: '#2F55A4' }[p[0]]}" aria-hidden="true">${BB.initials(p[1])}</span><span><b>${p[1]}</b><small>Choose your bot, authorize ${esc(BRAND.name)}, verify its connection</small></span></button>`).join('')}
-        <button class="opt" type="button" data-link="custom"><span class="av ghost" aria-hidden="true">+</span><span><b>Another bot</b><small>Any bot that can use Remote MCP or make HTTPS calls</small></span></button>`);
+        ${P.map(p => `<button class="opt" type="button" data-link="${p[0]}"><span class="av" style="--av:${{ grok: '#121212', instinct: '#1F6F5C', muse: '#2F55A4' }[p[0]]}" aria-hidden="true">${BB.initials(p[1])}</span><span><b>${p[1]}</b><small>Open its browser console, then verify the connection</small></span></button>`).join('')}
+        <button class="opt" type="button" data-link="custom"><span class="av ghost" aria-hidden="true">+</span><span><b>Another bot</b><small>A bot with a browser, Remote MCP, or HTTPS tools</small></span></button>`);
       box.querySelectorAll('[data-link]').forEach(b => b.onclick = () => { W.p = b.dataset.link; W.label = (P.find(p => p[0] === W.p) || [0, 'your bot'])[1]; W.step = 1; draw(); });
       return;
     }
@@ -61,7 +64,7 @@
     const box = shell(`<h3>${W.reconnect ? 'Reconnect ' + esc(W.agent.name) : 'Authorize ' + esc(W.agent.name)}</h3>
       ${W.reconnect ? `<div class="box2"><b>${esc(W.agent.name)} lost access${esc(why)}.</b><p>Run the same connection again in this bot and authorize it. This reconnects the existing bot; nothing new is created.</p></div>` : ''}
       <p>${esc(guidance)}</p>
-      <label>${esc(BRAND.name)} connector address<input class="in" readonly value="${esc(location.origin)}/api/mcp"></label>
+      <label>${esc(BRAND.name)} connector address<input class="in" readonly value="${esc(PRODUCTION_ORIGIN)}/api/mcp"></label>
       <div class="acts" style="justify-content:flex-start"><button class="b ink" type="button" id="copysetup">Copy setup message</button><button class="b ghost" type="button" id="copylink">Copy connector address</button></div>
       <p>Paste the setup message into your existing bot. If it can install connectors, it can guide setup from there. You still review and authorize in ${esc(BRAND.name)}. At the sign-in screen, select <b>${esc(W.agent.name)}</b> and authorize. No provider password or API key is needed.</p>
       <textarea id="setupfallback" class="in" readonly hidden aria-label="Setup message to copy" style="min-height:200px;margin-top:12px"></textarea>
@@ -71,7 +74,7 @@
     status(W.reconnect ? 'reconnect' : 'waiting', W.reconnect ? '<b>Reconnect needed.</b> Waiting for ' + esc(W.agent.name) + ' to authorize again.' : 'Waiting for your bot. No live connection confirmed yet.');
     box.querySelector('#gatewayroute').onclick = () => { clearInterval(timer); W.gateway = true; drawGateway(); };
     box.querySelector('#copysetup').onclick = () => copy(setupMessageFor(), 'Setup message copied. Paste it into your existing bot.', '#setupfallback');
-    box.querySelector('#copylink').onclick = () => navigator.clipboard.writeText(location.origin + '/api/mcp').then(() => toast('Connector address copied')).catch(() => toast('Copy the address from the field above.'));
+    box.querySelector('#copylink').onclick = () => navigator.clipboard.writeText(PRODUCTION_ORIGIN + '/api/mcp').then(() => toast('Connector address copied')).catch(() => toast('Copy the address from the field above.'));
     poll(a => {
       const pr = BB.presence(a);
       if (a.lastSeen && pr === 'connected' && (!W.reconnect || (a.connection && a.connection.status === 'active'))) { status('connected', '<b>Connected: ' + esc(a.name) + '</b><br>Your bot reported to ' + esc(BRAND.name) + ' at ' + esc(new Date(a.lastSeen).toLocaleTimeString()) + '.'); BB.linkWaiting = null; clearInterval(timer); }
@@ -80,22 +83,26 @@
   }
   /* browser console pairing (Muse, Instinct): a short one-time code, no long key to type */
   function drawPairing() {
-    BB.linkWaiting = W.agent.id; const label = W.p === 'muse' ? 'Muse' : 'your assistant';
-    const box = shell(`<h3>Connect ${esc(W.agent.name)}</h3><ol class="steps-n">
+    BB.linkWaiting = W.agent.id; const label = W.label || 'your assistant';
+    const box = shell(`<h3>Copy this message. Paste it into your assistant bot.</h3><p>Keep using ${esc(W.agent.name)}. Paste the setup message below to start its connection.</p><ol class="steps-n">
       <li><b>Copy the setup message.</b><p>Paste it to ${label}. It opens its own browser and waits.</p><button class="b ink sm" type="button" id="copypairmsg" style="margin-top:8px">Copy setup message</button></li>
-      <li><b>Get a short pairing code.</b><p>Only pair if a new connection is needed. Using the code replaces this bot's previous gateway key. Existing connection still works until then.</p><button class="b out sm" type="button" id="makepair" style="margin-top:8px">Get pairing code</button><p class="pair-code" id="paircode" aria-live="polite"></p><p class="meta" id="pairexpiry"></p></li>
+      <li><b>Get a short pairing code.</b><p>Only pair if a new connection is needed. This replaces the previous connection key for this exact bot, including a stale pre-reset connection.</p><button class="b out sm" type="button" id="makepair" style="margin-top:8px">Get pairing code</button><p class="pair-code" id="paircode" aria-live="polite"></p><p class="meta" id="pairexpiry"></p></li>
       <li><b>Type the short code in ${label}'s browser.</b><p>Take control, enter it into Pairing code, then return control. ${label} clicks Pair and connect. No long key to type.</p></li></ol>
       <p class="meta" style="margin-top:12px">Expected bot: ${esc(W.agent.name)} · <code>${esc(W.agent.id)}</code></p><p class="err" id="pairerr" role="alert"></p>
       <textarea id="pairfallback" class="in" readonly hidden style="min-height:200px" aria-label="Setup message"></textarea>
-      <div class="status" id="linkstatus" role="status" aria-live="polite"></div>`);
+      <div class="status" id="linkstatus" role="status" aria-live="polite"></div><p class="meta">Browser console is the first path. The short code is entered securely in the browser, not pasted into bot chat. Closing the console requires re-pairing.</p><details><summary>My bot cannot open a browser</summary><p>Only use an alternative your assistant supports.</p><div class="acts"><button class="b ghost sm" id="chooseoauth">MCP connector help</button><button class="b ghost sm" id="choosehttp">Secure HTTP help</button></div></details><div class="acts" id="connectionfinish" hidden><button class="b out" id="anotherbot">Connect another bot</button><button class="b ink" id="finishsetup">Finish connections</button></div>`);
     status('waiting', 'Waiting for an accepted connection.');
+    box.querySelector('#chooseoauth').onclick=()=>{W.oauth=true;draw();};
+    box.querySelector('#choosehttp').onclick=()=>{W.gateway=true;draw();};
+    box.querySelector('#anotherbot').onclick=()=>BB.openConnect();
+    box.querySelector('#finishsetup').onclick=()=>accessFinale();
     box.querySelector('#makepair').onclick = async () => { const b = $('#makepair'); b.disabled = true; try { const j = await BB.api('/api/agents/' + W.agent.id + '/pairing', 'POST', {}); if (j.error) throw Error(j.error); $('#paircode').textContent = j.code; $('#pairexpiry').textContent = 'One use. Expires at ' + new Date(j.expiresAt).toLocaleTimeString() + '. Keep this code out of chat.'; } catch (e) { $('#pairerr').textContent = e.message; } finally { b.disabled = false; } };
     box.querySelector('#copypairmsg').onclick = () => copy(runnerMessage(), 'Setup copied. No credential included.', '#pairfallback');
-    poll(a => { if (a.connection && a.connection.transport === 'gateway' && BB.presence(a) === 'connected' && a.lastSeen) { status('connected', '<b>Connected: ' + esc(a.name) + '</b><br>Gateway call accepted at ' + esc(new Date(a.lastSeen).toLocaleTimeString()) + '.'); BB.linkWaiting = null; clearInterval(timer); } });
+    poll(a => { if (a.connection && a.connection.transport === 'gateway' && BB.presence(a) === 'connected' && a.lastSeen) { status('connected', '<b>Connected: ' + esc(a.name) + '</b><br>Gateway call accepted at ' + esc(new Date(a.lastSeen).toLocaleTimeString()) + '.'); BB.linkWaiting = null; clearInterval(timer); $('#connectionfinish').hidden=false; } });
   }
   /* HTTP gateway: key shown once, setup message never contains it */
   function drawGateway() {
-    if (['muse', 'instinct'].includes(W.p)) return drawPairing();
+
     BB.linkWaiting = W.agent.id;
     const box = shell(`<h3>HTTP gateway: ${esc(W.agent.name)}</h3><p>Reference for clients with authenticated HTTPS tools and secure credential storage. A message alone does not add these tools.</p>
       <div class="box2"><b>Keep the key out of chat</b><p>Install it in your bot client's secure credential settings. The setup message contains only a placeholder, never the key.</p></div>
@@ -118,10 +125,22 @@
     box.querySelector('#backoauth').onclick = () => { clearInterval(timer); W.gateway = false; draw(); };
     poll(a => { if (a.connection && a.connection.transport === 'gateway' && BB.presence(a) === 'connected' && a.lastSeen) { status('connected', '<b>Connected: ' + esc(a.name) + '</b><br>Gateway call accepted at ' + esc(new Date(a.lastSeen).toLocaleTimeString()) + '.'); BB.linkWaiting = null; clearInterval(timer); } });
   }
+
+  async function accessFinale(){
+    await BB.sync(true);
+    const bots=BB.S.agents.filter(a=>!a.harness&&!a.hosted&&a.status==='active');
+    const pending=bots.filter(a=>!a.lastSeen||BB.presence(a)!=='connected');
+    if(!bots.length||pending.length){toast(pending.length?'Finish connecting '+pending.map(a=>a.name).join(', ')+'.':'Connect a bot before finishing.');return;}
+    stop();
+    const box=BB.modal(`<div class="access-finale"><div class="access-card" aria-hidden="true"><span>${esc(BRAND.name)}</span><strong>Workspace access</strong><small>Your AI team, one HQ</small></div><h3>Access card granted</h3><p>Your ${bots.length===1?'bot has':'bots have'} reported to ${esc(BRAND.name)}. This is your workspace access card, not a payment card. No real money moves.</p><button class="b ink" id="enterhq">Enter HQ</button><button class="b ghost" id="morebots">Connect another bot</button></div>`,{label:'Access card granted'});
+    box.querySelector('#enterhq').onclick=()=>{box.querySelector('[data-close]')?.click();location.hash='floor';};
+    box.querySelector('#morebots').onclick=()=>BB.openConnect();
+  }
   /* setup copy: unchanged from the shipped wizard (brand from BRAND) */
   function setupMessageFor(){return [
 'Connect my existing '+W.label+' assistant, '+W.agent.name+', to my '+BRAND.name+' workspace. Keep your own provider account and credits. Do not create another provider bot, buy credits, ask for an API key, or ask for my password in chat.',
-''+BRAND.name+' Remote HTTPS MCP address: '+location.origin+'/api/mcp',
+''+BRAND.name+' Remote HTTPS MCP address: '+PRODUCTION_ORIGIN+'/api/mcp',
+'If an old Alter/Black Box connector says Connected but calls fail after a reset, remove only that stale connector and add it again. Never delete your provider account or unrelated connections. Use the exact bot ID '+W.agent.id+'.',
 'If you can add custom connectors, add '+BRAND.name+' using that address and account sign-in/OAuth. If you cannot install connectors yourself, tell me exactly which connector control I need to open. If your client does not support Remote MCP with OAuth, stop and say what is missing; do not pretend it connected.',
 'Open the real '+BRAND.name+' authorization page when the client requests it. I will sign into the same '+BRAND.name+' workspace, check the client and return address, select '+W.agent.name+', and click Authorize connection. Never ask me to paste tokens or passwords into chat.',
 'For each actual conversation with me, call foreman_owner_conversation with a new opaque session_id, event_id, phase start and sequence 1 when you begin responding. Send update only on real conversation events and end when you finish the response. Increment sequence for updates/end and retry with the same event_id. Never emit from a timer or notification poll; do not send chat content. A quiet or unsupported client will not show With you. This signal is separate from jobs and grants.',
@@ -131,7 +150,8 @@
 'Success: '+BRAND.name+' changes the waiting card to Connected: '+W.agent.name+' with a real report time, and the worker shows recent interaction in HQ. Do not claim success until the server accepts the tool call. '+BRAND.name+' provides automatic OAuth renewal for clients that support refresh tokens. Keep the refresh token securely in connector storage, never in chat. The authorization stays available until I revoke it; if renewal is unsupported or a token is lost, ask me to reconnect.'
 ].join('\n\n')}
 function museMessage(){return [
-'Set up my existing Muse assistant '+W.agent.name+' with '+BRAND.name+'. Open '+location.origin+'/runner?agent='+encodeURIComponent(W.agent.id)+' in your own browser and wait for me. I will take control to type a short one-time pairing code into Pairing code, then return control. Never request or copy the key in chat, code, logs or URLs. If you cannot drive the browser, stop and explain.',
+'Set up my existing Muse assistant '+W.agent.name+' with '+BRAND.name+'. FIRST open '+PRODUCTION_ORIGIN+'/runner?agent='+encodeURIComponent(W.agent.id)+' in your own browser and wait for me. Do not open an OAuth card or remembered connector flow for this browser-console path. I will take control to type a short one-time pairing code into Pairing code, then return control. Never request or copy the key in chat, code, logs or URLs. If you cannot drive the browser, stop and explain.',
+'A remembered provider-side Connected label is not evidence. A workspace reset revokes old grants. Do not reuse an old bot ID, key or pairing code. For this console, use only the exact link and bot ID here. If I explicitly choose the MCP alternative, remove the stale Alter/Black Box connector from your provider settings and add it again with the live address; do not delete unrelated provider accounts.',
 'After I return control, click Pair and connect. Verify the page shows '+W.agent.name+' with exact ID '+W.agent.id+'. Stop on a mismatch or rejection. Only accepted presence confirms connection. Keep this page open and visible while you are active. No new provider bot, paid model API or credits.',
 'Use the Owner conversation controls only when actually responding to me: Start with you, update only for real conversation events, then End with you when done. Never use periodic presence as conversation evidence. No chat content is sent.',
 'Keep this standing workflow for each actual work request I give you in Muse: before doing the work, use Register started work in this console. Enter a short title, brief, stable source ID for this request, and category: marketing for creative/social/campaign work; research for research; outreach for outreach; ops for other execution. Use the same source ID on retries. Greetings and steering messages do not create tasks. If the prior task is still running, finish or report its real failure before registering another; do not falsely complete it.',
@@ -142,8 +162,9 @@ function museMessage(){return [
 ].join('\n\n')}
 function runnerMessage(){if(W.p==='muse')return museMessage();return [
 'Connect my existing '+W.label+' assistant '+W.agent.name+' to '+BRAND.name+' using the browser agent console. Keep my provider account and credits. Do not create another bot or buy credits.',
-'Open '+location.origin+'/runner?agent='+encodeURIComponent(W.agent.id)+' in YOUR own browser. If you cannot drive web pages, stop and explain the missing capability. This path does not require a remote MCP connector, raw HTTP tools or an OpenAPI build.',
-'I will take control once to type a short one-time pairing code into Pairing code. The full credential is exchanged server-side and stays in page memory. Never ask for the key in chat or put it in code, logs or URLs. If a key was exposed, rotate it in my owner UI before using it.',
+'FIRST open '+PRODUCTION_ORIGIN+'/runner?agent='+encodeURIComponent(W.agent.id)+' in YOUR own browser. Do not open an OAuth card, add a connector, or reuse a remembered sign-in flow for this browser-console path. If you cannot drive web pages, stop and explain the missing capability. This path does not require a remote MCP connector, raw HTTP tools or an OpenAPI build.',
+'I will take control once to type a short one-time pairing code into Pairing code. The full credential is exchanged server-side and stays in page memory. Never ask for the key in chat or put it in code, logs or URLs. If a key was exposed, stop and ask me to rotate it in owner settings.',
+'A remembered provider-side Connected label is not evidence. A workspace reset revokes old grants. Do not reuse an old bot ID, key or pairing code. For this console, use only the exact link and bot ID here. If I explicitly choose the MCP alternative, remove the stale Alter/Black Box connector from your provider settings and add it again with the live address; do not delete unrelated provider accounts.',
 'After I return browser control, click Pair and connect. The console must show the expected bot '+W.agent.name+' with ID '+W.agent.id+'. Stop on a mismatch or rejected key. Only accepted identity and presence confirm the connection; opening the page alone does not.',
 'Use Owner conversation controls for real responses to me: Start with you when you begin, Real conversation update only for actual response activity, then End with you when done. Never drive these from a timer, heartbeat or notification poll. No chat content is sent.',
 'Use only explicit console controls. Claim next task only when ready to do that real work; it changes the task to running. No automatic claims. Register work you actually start with a stable source ID, route supported actions through policy, report only real work and complete only after the actual result. Stop on blocked, denied or failed actions; never bypass.',
@@ -154,7 +175,7 @@ function runnerMessage(){if(W.p==='muse')return museMessage();return [
 function gatewayMessage(){return [
 'Connect my existing bot '+W.agent.name+' to '+BRAND.name+' through its HTTP gateway. Keep your provider account and credits. Do not create a provider bot or buy credits.',
 'You need authenticated HTTPS requests and a secure credential store. If either is unavailable, stop and explain what is missing. Do not claim a connection. Never ask me to paste a key or password into chat. I will install the '+BRAND.name+' gateway key in your secure credential settings separately. Use it as Authorization: Bearer <ALTER_GATEWAY_KEY>. This is not a provider/model key.',
-'Base URL: '+location.origin+'/api. First POST /gateway/presence with {}. Only an accepted call confirms connection. GET /gateway/tasks/next returns {task: ...} or {task: null}. Poll only while running, at a sensible interval.',
+'Base URL: '+PRODUCTION_ORIGIN+'/api. First POST /gateway/presence with {}. Only an accepted call confirms connection. GET /gateway/tasks/next returns {task: ...} or {task: null}. Poll only while running, at a sensible interval.',
 'For actual conversation responses, POST /gateway/owner-conversation {session_id, event_id, sequence, phase}. Start a new opaque session at sequence 1 and phase start, increment for real updates/end, retry with the same event_id. End when done. Never emit on timers or notification polls; send no chat content. With you clears after 60 seconds without actual activity.',
 'For live chat work POST /gateway/chat-task with {title, brief, source_id, category}; use a stable source_id for retries. Report only work you actually do with POST /gateway/events {kind: "TASK_STARTED|TOOL_USED|COMPLETED|FAILED", text, task_id}.',
 'Route supported actions through POST /gateway/act {action: "web.fetch|notes.write|work.handoff", params: {...}}. A completed response is success; pending means tell me you are waiting, then GET /gateway/requests/<request_id> about every 30 seconds until resolved. Check back in after the waiting message. Approval already runs the action: read its result, do not submit it again. Resume, report the actual outcome, and complete the task. If you cannot keep checking between turns, explain that limit and ask me to prompt another check after approval. Blocked or failed means stop, never bypass. Finish your task with POST /gateway/tasks/<task_id>/complete {result: "..."}.',

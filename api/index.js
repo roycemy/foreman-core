@@ -1090,7 +1090,7 @@ async function routes(req, res, path, body, agentPre) {
     // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
     if (path === '/connect' && req.method === 'POST') {
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
-      const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = origin;
+      const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = OAUTH_ORIGIN;
       if (prov === 'muse' && body.connectionMode !== 'existing') {
         let k = String(body.apiKey || '').trim().replace(/^MODEL_API_KEY=/i, '').replace(/^Bearer\s+/i, '').trim(); if (k.length > 1 && ((k[0] === '"' && k.endsWith('"')) || (k[0] === "'" && k.endsWith("'")))) k = k.slice(1, -1).trim();
         if (!/^LLM(?:_[^\s_|]+_[^\s|]+|\|[^\s|]+\|[^\s|]+)$/.test(k)) return res.status(400).json({ error: 'Paste your Meta Model API key from dev.meta.ai. It starts with LLM_ (LLM_<id>_<secret>).' });
@@ -1114,8 +1114,8 @@ async function routes(req, res, path, body, agentPre) {
         await track('connected', { provider: 'grok' }); return res.json({ agent: c.agent, hosted: true });
       }
       const c = await createAgent(name, String(body.role || '').trim(), prov, false, { preset });
-      const msg = `You are joining my Foreman workspace as "${name}". Foreman controls what you can do. Your key: ${c.key}\nBase URL: ${base}/api\n1) Get work: GET ${base}/api/gateway/tasks/next with header "Authorization: Bearer <key>". It returns {"task":...} or null.\n2) Do real things only through POST ${base}/api/gateway/act with {"action":"web.fetch"|"notes.write"|"work.handoff","params":{...}}. Foreman answers completed, pending (wait for my approval and poll GET ${base}/api/gateway/requests/<id>) or blocked. Never work around a block.\n3) Finish with POST ${base}/api/gateway/tasks/<task_id>/complete {"result":"..."}.\n4) Report progress with POST ${base}/api/gateway/events {"kind":"TASK_STARTED|TOOL_USED|COMPLETED|FAILED","text":"...","task_id":"..."}.\nMCP clients can use ${base}/api/mcp with the same key.`;
-      await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, noFirstTask: true, connectionStatus: 'awaiting_bot', instructions: msg, mcpUrl: base + '/api/mcp', key: c.key });
+      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${OAUTH_ORIGIN}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it requires re-pairing. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
+      await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, noFirstTask: true, connectionStatus: 'awaiting_bot', instructions: msg, mcpUrl: base + '/api/mcp', runnerUrl: base + '/runner?agent=' + encodeURIComponent(c.agent.id) });
     }
     if (path === '/track' && req.method === 'POST') { if (['connect_started', 'first_task_started', 'approval_shown'].includes(body.step)) await track(body.step, body.provider ? { provider: String(body.provider).slice(0, 20) } : null); return res.json({ ok: true }); }
     // --- live demo agent ---

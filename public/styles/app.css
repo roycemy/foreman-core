@@ -536,3 +536,6 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .problems{margin:10px 0 0;padding-left:18px;color:var(--vermilion-press);font-size:13px}
 .consent{display:flex;gap:10px;align-items:flex-start;margin-top:14px;font-size:13px;color:var(--stone)}
 .consent input{margin-top:3px;flex:none}
+
+/* Connection payoff: workspace access only, never a funded payment card. */
+.access-finale{text-align:center;padding:18px 4px}.access-card{width:min(100%,320px);height:190px;margin:12px auto 30px;border-radius:22px;background:linear-gradient(125deg,#101010,#252525 65%,#633327);color:#fff;box-shadow:0 22px 35px #0002;display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;padding:24px;text-align:left;animation:access-reveal 1.5s ease-out both}.access-card strong{font-size:22px}.access-card small{opacity:.65}@keyframes access-reveal{from{transform:perspective(700px) rotateY(-300deg) translateY(65px);opacity:0}to{transform:perspective(700px) rotateY(0) translateY(0);opacity:1}}@media(prefers-reduced-motion:reduce){.access-card{animation:none}}
