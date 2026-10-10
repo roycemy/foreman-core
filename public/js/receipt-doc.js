@@ -48,7 +48,7 @@
   const usd = c => '$' + (c / 100).toFixed(2);
   window.publicTemplateText = s => s.template + (s.budgetCents != null ? '\n\nBudget: up to ' + usd(s.budgetCents) + '.' : '');
   window.publicReceiptDoc = function (x, o) {
-    o = o || {}; const s = x.snapshot, brand = (window.BRAND && window.BRAND.name) || 'Black Box';
+    o = o || {}; const s = x.snapshot, brand = (window.BRAND && window.BRAND.name) || 'Alter';
     const tl = String(s.template).split(/\n+/).map(v => v.trim()).filter(Boolean);
     const first = s.steps && s.steps[0], sameDay = first && s.steps.every(t => day(t.at) === day(first.at));
     const steps = (s.steps || []).map((t, i) => { const txt = typeof STEP[t.code] === 'function' ? STEP[t.code](t.n || 0) : STEP[t.code]; if (!txt) return ''; return `<li class="${t.code === 'approved' ? 'ap' : ['denied', 'blocked', 'stopped'].includes(t.code) ? 'no' : ''}">${esc(txt)}<small>${esc((i === 0 || !sameDay ? day(t.at) + ' · ' : '') + clock(t.at))}</small></li>`; }).join('');
