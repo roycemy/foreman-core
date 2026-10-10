@@ -6,7 +6,7 @@ const { Resvg } = require('@resvg/resvg-js');
 const { publicReceiptRead } = require('./index.js');
 const FONT_DIR = path.join(__dirname, 'fonts');
 const FONTS = { 400: 'Geist-Regular.ttf', 500: 'Geist-Medium.ttf', 600: 'Geist-SemiBold.ttf' };
-const BRAND = process.env.BRAND_NAME || 'Black Box';
+const BRAND = process.env.BRAND_NAME || 'Alter';
 
 /* --- advance widths straight from the font (cmap format 4 + hmtx), for line breaking --- */
 const METRICS = {};
@@ -79,13 +79,14 @@ function render(svg) {
   return r.render().asPng();
 }
 module.exports = async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   try {
     const q = req.query || Object.fromEntries(new URL(req.url || '/', 'http://x').searchParams);
     const m = String(req.url || '').split('?')[0].match(/\/og\/([A-Za-z0-9_-]+)(?:\.png)?$/) || [null, String(q.file || q.token || '').replace(/\.png$/, '')];
     const x = m[1] && m[1] !== 'missing' ? await publicReceiptRead(m[1]) : null;
     const png = render(x ? card(x.snapshot) : missing());
     res.setHeader('Content-Type', 'image/png');
-    res.setHeader('Cache-Control', x ? 'public, max-age=300, s-maxage=300' : 'no-store');
+    res.setHeader('Cache-Control', 'no-store');
     res.statusCode = x || m[1] === 'missing' ? 200 : 404; res.end(png);
   } catch (e) { res.statusCode = 500; res.setHeader('Content-Type', 'text/plain'); res.end('og error'); }
 };
