@@ -29,13 +29,15 @@
   BB.on = fn => { subs.add(fn); return () => subs.delete(fn); };
   BB.emit = () => { subs.forEach(fn => { try { fn(BB.S); } catch (e) { console.error(e); } }); };
   let syncing = null, lastSide = 0;
+  let clockOffset = 0; BB.now = () => Date.now() + clockOffset;
+  BB.timeZone = 'America/New_York';
   BB.sync = async function (full) {
     if (syncing) return syncing;
     syncing = (async () => {
       try {
         const side = full || Date.now() - lastSide > 9000;
         const [s, m, c] = await Promise.all([BB.api('/api/state'), side ? BB.api('/api/money').catch(() => null) : null, side ? BB.api('/api/cards').catch(() => null) : null]);
-        if (s && !s.error) BB.S = s;
+        if (s && !s.error) { BB.S = s; const serverNow = Date.parse(s.now || ''); if (Number.isFinite(serverNow)) clockOffset = serverNow - Date.now(); }
         if (m && !m.error) BB.money = m;
         if (c && !c.error) BB.cards = c;
         if (side) lastSide = Date.now();
@@ -48,6 +50,8 @@
   };
   let timer = null;
   BB.startPolling = () => { clearInterval(timer); timer = setInterval(() => { if (!document.hidden) BB.sync(); }, 4000); };
+  // Local redraw only, no network and no telemetry: expire typing/availability promptly even during a dropped fetch.
+  setInterval(() => { if (!document.hidden && BB.S) BB.emit(); }, 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && BB.S) BB.sync(true); });
 
   /* ---------- lookups ---------- */
@@ -97,20 +101,20 @@
   /* ---------- time and money ---------- */
   const DAY = 864e5;
   BB.ago = iso => {
-    if (!iso) return ''; const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+    if (!iso) return ''; const s = Math.max(0, (BB.now() - Date.parse(iso)) / 1000);
     if (s < 45) return 'just now'; if (s < 3600) return Math.round(s / 60) + ' min'; if (s < 86400) return Math.round(s / 3600) + ' h';
-    const d = new Date(iso); if (Date.now() - d < 7 * DAY) return d.toLocaleDateString([], { weekday: 'short' });
+    const d = new Date(iso); if (BB.now() - d < 7 * DAY) return d.toLocaleDateString([], { weekday: 'short' });
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
+  const dayKey = iso => new Date(iso).toLocaleDateString('en-CA', { timeZone: BB.timeZone });
   BB.when = iso => {
-    if (!iso) return ''; const d = new Date(iso), t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    if (d >= today) return 'Today ' + t; if (d >= today - DAY) return 'Yesterday';
-    if (Date.now() - d < 7 * DAY) return d.toLocaleDateString([], { weekday: 'long' });
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    if (!iso) return ''; const d = new Date(iso), t = BB.clock(iso);
+    if (dayKey(iso) === dayKey(BB.now())) return 'Today ' + t;
+    if (dayKey(iso) === dayKey(BB.now() - DAY)) return 'Yesterday';
+    return d.toLocaleDateString('en-US', { timeZone: BB.timeZone, month: 'short', day: 'numeric', year: 'numeric' });
   };
-  BB.clock = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
-  BB.dateLong = iso => iso ? new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  BB.clock = iso => iso ? new Date(iso).toLocaleTimeString('en-US', { timeZone: BB.timeZone, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) + ' ET' : '';
+  BB.dateLong = iso => iso ? new Date(iso).toLocaleDateString('en-US', { timeZone: BB.timeZone, month: 'short', day: 'numeric', year: 'numeric' }) : '';
   BB.dur = ms => {
     if (!(ms >= 0)) return ''; const m = ms / 60000;
     if (m < 1) return Math.max(1, Math.round(ms / 1000)) + ' s'; if (m < 60) return Math.round(m) + ' min';
@@ -164,40 +168,42 @@
     if (BB.wentDark(a)) return { kind: 'dark', text: (t ? BB.sentenceCase(t.title) + ' · ' : '') + 'Went dark ' + BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago'), task: t };
     if (BB.signal(a) === 'inactive') return { kind: 'quiet', text: t ? BB.sentenceCase(t.title) + ' · no recent activity' : a.hosted ? 'Runs when you assign a job' : 'No recent activity', task: t };
     if (t) return { kind: 'run', text: t.title, task: t };
-    const st = a.state, age = st ? (Date.now() - Date.parse(st.at)) / 1000 : 1e9;
+    const st = a.state, age = st ? (BB.now() - Date.parse(st.at)) / 1000 : 1e9;
     if (st && age < 120 && st.kind === 'COMPLETED') return { kind: 'idle', text: 'Just finished' };
     return { kind: 'idle', text: 'Available' };
   };
   /* PR #29 (withOwner): explicit owner-conversation telemetry only, never heartbeats or presence. Cleared by an end event,
      60s without a real update, later work on a job, pause, revoke or the emergency stop. */
   BB.withOwner = function (a, at) {
-    at = at || Date.now(); const c = a && a.ownerConversation;
+    at = at || BB.now(); const c = a && a.ownerConversation;
     return !!c && c.phase !== 'end' && a.status === 'active' && BB.presence(a) === 'connected' && !a.paused && !(BB.S && BB.S.killed)
       && at - Date.parse(c.at) < 60000 && at >= Date.parse(c.at)
       && !(['TASK_STARTED', 'TOOL_USED', 'ACTION_REQUESTED', 'HANDOFF'].includes(a.state && a.state.kind) && Date.parse(a.state.at) >= Date.parse(c.at));
   };
   /* PR #28 (floorActivitySignal): activity is evidence-based; authorization is not activity. */
   BB.signal = function (a, at) {
-    at = at || Date.now(); const seen = Date.parse((a && a.lastSeen) || '');
+    at = at || BB.now(); const seen = Date.parse((a && a.lastSeen) || '');
     if (!a || BB.presence(a) !== 'connected' || !Number.isFinite(seen) || at - seen >= 60000 || a.status === 'revoked' || (BB.S && BB.S.killed) || a.paused || recentBlocked(a)) return 'inactive';
     return BB.withOwner(a, at) || BB.runningTask(a) ? 'working' : 'available';
   };
   /* round 3 liveness: connected over OAuth or the gateway, but no accepted activity for 60s. Authorization may still be saved. */
-  BB.wentDark = (a, at) => !!a && a.status === 'active' && !!a.connection && a.connection.status === 'active' && !!a.lastSeen && (at || Date.now()) - Date.parse(a.lastSeen) >= 60000;
+  BB.wentDark = (a, at) => !!a && a.status === 'active' && !!a.connection && a.connection.status === 'active' && !!a.lastSeen && (at || BB.now()) - Date.parse(a.lastSeen) >= 60000;
   BB.SIGNAL_COPY = { working: 'Working', available: 'Available', inactive: 'No recent activity' };
   BB.statusLine = a => { const s = BB.botState(a); return s.kind === 'run' ? BB.sentenceCase(s.text) : s.text; };
   BB.sentenceCase = s => { s = String(s || ''); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; };
 
   /* ---------- activity: shown only while it is happening; message > research > write ---------- */
   const RECENT = 75;
-  const recent = a => ((BB.S && BB.S.events) || []).filter(e => e.agentId === a.id && (Date.now() - Date.parse(e.at)) / 1000 < RECENT);
+  const recent = a => ((BB.S && BB.S.events) || []).filter(e => e.agentId === a.id && (BB.now() - Date.parse(e.at)) / 1000 < RECENT);
   /* the old shell's "blocked" state: a blocked or failed event in the last 9 seconds */
-  function recentBlocked(a) { return ((BB.S && BB.S.events) || []).some(e => e.agentId === a.id && ['blocked', 'failed'].includes(e.type) && (Date.now() - Date.parse(e.at)) / 1000 < 9); }
+  function recentBlocked(a) { return ((BB.S && BB.S.events) || []).some(e => e.agentId === a.id && ['blocked', 'failed'].includes(e.type) && (BB.now() - Date.parse(e.at)) / 1000 < 9); }
   BB.activity = function (a) {
     if (!BB.S || BB.isGhost(a) || BB.presence(a) !== 'connected' || a.status !== 'active' || a.paused || BB.S.killed) return null;
     if (BB.withOwner(a)) return 'message';
     if (BB.signal(a) === 'inactive' || ['needs', 'off', 'reconnect', 'blocked'].includes(BB.botState(a).kind)) return null;
-    const evs = recent(a);
+    const evs = recent(a).sort((x, y) => Date.parse(y.at) - Date.parse(x.at));
+    const latest = evs.find(e => !e.presenceOnly && e.type !== 'owner_conversation');
+    if (latest && ['COMPLETED', 'FAILED', 'WAITING', 'BLOCKED'].includes(latest.kind)) return null;
     if (evs.some(e => (e.type === 'attempt' && e.action === 'web.fetch') || (e.kind === 'TOOL_USED' && /fetch|search|research|read|brows|look/i.test(e.text)))) return 'research';
     if (evs.some(e => (e.type === 'attempt' && e.action === 'notes.write') || (e.kind === 'TOOL_USED' && /writ|draft|note|edit|calling/i.test(e.text)))) return 'write';
     return null;
@@ -235,8 +241,8 @@
   BB.onYou = function () {
     const items = [];
     BB.pendingReqs().forEach(q => { const a = BB.agent(q.agentId); items.push({ type: 'approval', id: 'req:' + q.id, at: q.createdAt, a, q }); });
-    ((BB.money && BB.money.requests) || []).filter(q => q.status === 'pending_review' && Date.parse(q.expiresAt) > Date.now()).forEach(q => items.push({ type: 'spend', id: 'spend:' + q.id, at: q.createdAt, a: BB.agent(q.agentId), q }));
-    ((BB.cards && BB.cards.proposals) || []).filter(q => q.status === 'pending' && Date.parse(q.expiresAt) > Date.now()).forEach(q => items.push({ type: 'card', id: 'card:' + q.id, at: q.createdAt, a: BB.agent(q.botId), q }));
+    ((BB.money && BB.money.requests) || []).filter(q => q.status === 'pending_review' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'spend', id: 'spend:' + q.id, at: q.createdAt, a: BB.agent(q.agentId), q }));
+    ((BB.cards && BB.cards.proposals) || []).filter(q => q.status === 'pending' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'card', id: 'card:' + q.id, at: q.createdAt, a: BB.agent(q.botId), q }));
     BB.agents().filter(a => BB.presence(a) === 'reconnect').forEach(a => items.push({ type: 'reconnect', id: 'rec:' + a.id, at: (a.connection && a.connection.failedAt) || a.lastSeen, a }));
     /* the same 60-second rule as the went-dark banner: a dark bot is something the owner should know about */
     BB.agents().filter(a => BB.wentDark(a)).forEach(a => items.push({ type: 'dark', id: 'dark:' + a.id, at: a.lastSeen, a }));
@@ -247,7 +253,7 @@
   /* One summary for the crew pill, the pop-down, the rail and the phone Inbox, all on the 60-second activity rule.
      It never says "all on track" or "handling it" while a bot is dark or anything needs the owner. */
   BB.teamSummary = function (at) {
-    at = at || Date.now();
+    at = at || BB.now();
     const as = BB.agents().filter(a => a.status !== 'revoked'), dark = as.filter(a => BB.wentDark(a, at));
     const active = as.filter(a => BB.signal(a, at) !== 'inactive'), working = as.filter(a => BB.signal(a, at) === 'working');
     const needs = BB.onYou().filter(i => i.type !== 'dark').length;
