@@ -116,6 +116,12 @@ function blockedHost(u) {
     return false;
   } catch { return true; }
 }
+// Request-content validation, evaluated as policy BEFORE any owner approval round-trip: an invalid request
+// is denied outright (clean 4xx + Denied receipt + request ID), never a 502 after execution has started.
+function invalidParams(action, params) {
+  if (action === 'web.fetch' && blockedHost(params && params.url)) return { code: 'url_not_allowed', reason: 'url must be a public https address' };
+  return null;
+}
 async function execute(agent, action, params) {
   if (action === 'web.fetch') {
     if (blockedHost(params.url)) throw new Error('url not allowed');
@@ -679,6 +685,14 @@ async function gatewayActUnlocked(agent, body) {
     await event(agent.id, 'blocked', `Blocked ${action}: ${blocked.reason}`, { receiptId: rec.id, code: blocked.code });
     return { status: 403, body: { status: 'blocked', code: blocked.code, reason: blocked.reason, receipt_id: rec.id } };
   }
+  const invalid = invalidParams(action, params);
+  if (invalid) {
+    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: 0, status: 'denied', createdAt: now(), decidedAt: now(), reason: invalid.reason, taskId: taskId || null };
+    await finishReq(q);
+    const rec = await receipt(agent, action, params, 'denied', 0, 'Denied: ' + invalid.reason, q.id, { code: invalid.code, approvedBy: 'policy:validation' });
+    await event(agent.id, 'denied', `Denied ${action}: ${invalid.reason}`, { requestId: q.id, receiptId: rec.id, code: invalid.code });
+    return { status: 400, body: { status: 'denied', code: invalid.code, reason: invalid.reason, request_id: q.id, receipt_id: rec.id } };
+  }
   if (mode === 'ASK') {
     const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: now(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
     bust(); await setJ('fm:req:' + q.id, q); await r(['SADD', 'fm:reqs', q.id]); if (q.taskId) await r(['SADD', 'fm:taskreqs:' + q.taskId, q.id]);
@@ -932,8 +946,9 @@ async function connectionState(a){
  if(a.hosted)return {status:'not_applicable',persistent:false};
  if(a.status!=='active')return {status:'revoked',persistent:false};
  {const bid=await r(['GET','bl:agentBot:'+wsId()+':'+a.id]),b=bid&&await botLink.getJ('bl:bot:'+bid);if(b){const s=botLink.statusOf(b);
-  // Connected only from a real call in the window; Quiet is not proven now, so HQ shows Waiting; Needs re-paste maps to Reconnect needed.
-  return {status:s.state==='connected'?'active':s.state==='needs_repaste'?'needs_reauth':s.state==='quiet'?'verification_pending':'awaiting_bot',transport:'botlink',persistent:false,reason:s.reason||s.state,lastRealCallAt:s.lastSpokeAt,botId:b.id};}}
+  // Connected = a real call proved the key inside the window; Quiet = verified key, no recent calls. Both are live links with a real
+  // last-call time, so HQ shows Connected (never "Waiting to connect" for a bot that already verified); Needs re-paste maps to Reconnect needed.
+  return {status:s.state==='connected'||s.state==='quiet'?'active':s.state==='needs_repaste'?'needs_reauth':'awaiting_bot',transport:'botlink',persistent:false,reason:s.reason||s.state,lastRealCallAt:s.lastSpokeAt,botId:b.id};}}
  const gateway=await getJ('fm:gatewaySeen:'+a.id);
  const ids=await r(['SMEMBERS','fm:oauth:grants:'+a.id]);
  const grants=(await Promise.all(ids.map(id=>getJ('gl:oauth:grant:'+id)))).filter(g=>g&&g.ws===wsId()&&g.agentId===a.id&&g.epoch===(a.oauthEpoch||0));
@@ -1096,6 +1111,8 @@ const botLink=new BL.BotLink({store:blStore,
  // Governed is earned only when policy actually evaluated the action (a receipt or an approval request exists).
  executeAct:(b,{action,params})=>als.run({ws:b.ws},async()=>{const a=await getJ('fm:agent:'+b.agentId);if(!a||a.status!=='active')return {status:403,body:{status:'blocked',reason:'Worker revoked'},governed:false};
   const o=await gatewayAct(a,{action,params});await touchAgent(a);return {status:o.status,body:o.body,governed:!!(o.body&&(o.body.receipt_id||o.body.request_id))};}),
+ // An accepted link call (echo included) is real accepted activity: stamp the agent's last-seen so HQ shows the connection honestly.
+ onRealCall:(b,{op})=>b.agentId?als.run({ws:b.ws},async()=>{const a=await getJ('fm:agent:'+b.agentId);if(a)await touchAgent(a);}):null,
  // Runs BEFORE the bot record is revoked: the agent is blocked first, so an in-flight act fails policy.
  onRevoke:b=>b.agentId?als.run({ws:b.ws},async()=>{await updateAgent(b.agentId,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await rejectPendingBrokerFor(b.agentId);}):null,
  onAlert:a=>als.run({ws:a.ws},()=>event(null,'alert',a.kind==='pairing_second_caller'?'A second caller used a pairing link. Pairing cancelled.':'A bot key was used twice. That bot needs a re-paste.',{kind:'ALERT',code:a.kind}))});
