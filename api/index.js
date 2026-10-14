@@ -1030,13 +1030,16 @@ async function joinWaitlist(req,res,body){
 }
 
 // Runner sessions: scoped HttpOnly cookie; bearer stored encrypted server-side only.
+// Rolling 30-day idle lifetime. Only an authenticated session restore renews it.
+// Saved authorization never manufactures executor presence or work.
 const RUNNER_TTL=2592000;
+const runnerCookie=(id,token,age=RUNNER_TTL)=>runnerCookieName(id)+'='+token+'; HttpOnly; Secure; SameSite=Strict; Path=/api/runner/'+id+'; Max-Age='+age;
 const runnerCookieName=id=>'ar_'+sha(id).slice(0,16);
 async function startRunnerSession(res,ws,agentId,key){
  const a=await als.run({ws},()=>getJ('fm:agent:'+agentId));if(!a||a.status!=='active')throw Error('Bot unavailable');
  const token=crypto.randomBytes(32).toString('hex'),csrf=crypto.randomBytes(24).toString('hex');
  await setJ('gl:runner:'+sha(token),{ws,agentId,epoch:a.oauthEpoch||0,key:enc(key),csrf,expires:Date.now()+RUNNER_TTL*1000});await r(['EXPIRE','gl:runner:'+sha(token),RUNNER_TTL]);
- res.setHeader('Set-Cookie',runnerCookieName(agentId)+'='+token+'; HttpOnly; Secure; SameSite=Strict; Path=/api/runner/'+agentId+'; Max-Age='+RUNNER_TTL);
+ res.setHeader('Set-Cookie',runnerCookie(agentId,token));
  return {agent:{id:a.id,name:a.name},csrf,persistent:true};
 }
 async function runnerSession(req,id){
@@ -1054,7 +1057,17 @@ async function runnerRoutes(req,res,path,body){
  if(req.headers.origin&&req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});
  if(req.headers['sec-fetch-site']==='cross-site')return res.status(403).json({error:'cross-site'});
  if(req.method!=='GET'&&(req.headers.origin!==OAUTH_ORIGIN||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
- if(action==='session'&&req.method==='GET')return res.json({agent:{id:sess.agent.id,name:sess.agent.name},csrf:sess.csrf,persistent:true,expiresAt:new Date(sess.expires).toISOString()});
+ if(action==='session'&&req.method==='GET'){
+  // Validation above checks exact bot, epoch, gateway key, expiry and request origin.
+  // Preserve the token and CSRF value so simultaneous tabs do not invalidate each other.
+  const expires=Date.now()+RUNNER_TTL*1000;
+  await setJ('gl:runner:'+sess.tokenHash,{ws:sess.ws,agentId:id,epoch:sess.epoch,key:sess.key,csrf:sess.csrf,expires});
+  await r(['EXPIRE','gl:runner:'+sess.tokenHash,RUNNER_TTL]);
+  const raw=String(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(runnerCookieName(id)+'=')).split('=')[1];
+  res.setHeader('Set-Cookie',runnerCookie(id,raw));
+  const seen=Date.parse(sess.agent.lastSeen||'');
+  return res.json({agent:{id:sess.agent.id,name:sess.agent.name},csrf:sess.csrf,persistent:true,authorization:'saved',idleLifetimeSeconds:RUNNER_TTL,expiresAt:new Date(expires).toISOString(),executor:{state:Number.isFinite(seen)&&Date.now()-seen<60000?'recent_presence':'stale',lastSeen:sess.agent.lastSeen||null,staleAfterSeconds:60},note:'Authorization is saved. Executor presence and actual work require the executor to be running; restore does not send presence.'});
+ }
  if(action==='disconnect'&&req.method==='POST'){await r(['DEL','gl:runner:'+sess.tokenHash]);res.setHeader('Set-Cookie',runnerCookieName(id)+'=; HttpOnly; Secure; SameSite=Strict; Path=/api/runner/'+id+'; Max-Age=0');return res.json({ok:true});}
  if(!action.startsWith('gateway/'))return res.status(404).json({error:'Runner action unavailable'});
  if(req.headers['x-alter-csrf']!==sess.csrf)return res.status(403).json({error:'csrf'});
@@ -1231,7 +1244,7 @@ async function routes(req, res, path, body, agentPre) {
         await track('connected', { provider: 'grok' }); return res.json({ agent: c.agent, hosted: true });
       }
       const c = await createAgent(name, String(body.role || '').trim(), prov, false, { preset });
-      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${OAUTH_ORIGIN}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it requires re-pairing. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
+      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${OAUTH_ORIGIN}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it stops presence; reopening this exact link in the saved browser resumes the pair unless revoked, reset or expired. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
       await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, noFirstTask: true, connectionStatus: 'awaiting_bot', instructions: msg, mcpUrl: base + '/api/mcp', runnerUrl: base + '/runner?agent=' + encodeURIComponent(c.agent.id) });
     }
     if (path === '/track' && req.method === 'POST') { if (['connect_started', 'first_task_started', 'approval_shown'].includes(body.step)) await track(body.step, body.provider ? { provider: String(body.provider).slice(0, 20) } : null); return res.json({ ok: true }); }
