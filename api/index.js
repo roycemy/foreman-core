@@ -785,6 +785,8 @@ const MCP_TOOLS = [
   {name:'foreman_inbox',description:'Read your assigned jobs and jobs you assigned. Does not claim work.',inputSchema:{type:'object',properties:{}}},
   {name:'foreman_teammates',description:'List active external bots in your workspace for explicit job assignment.',inputSchema:{type:'object',properties:{}}},
   {name:'foreman_read_task',description:'Read your task or the result of a task you delegated.',inputSchema:{type:'object',properties:{task_id:{type:'string'}},required:['task_id']}},
+  {name:'alter_broker_request',description:'Request exact owner review for a server-executed route. No credentials released. Only fixture.echo executes; paid xai.chat is disabled. Not native-provider interception.',inputSchema:{type:'object',properties:{sourceId:{type:'string'},taskId:{type:'string'},route:{type:'string',enum:['fixture.echo','xai.chat']},input:{type:'string'},maxCents:{type:'integer'}},required:['sourceId','taskId','route','input','maxCents']}},
+  {name:'alter_broker_check',description:'Read your broker request result. Approval executes once; never resubmit it.',inputSchema:{type:'object',properties:{requestId:{type:'string'}},required:['requestId']}},
   {name:'blackbox_card_proposal',description:'Request an owner decision for a synthetic card purchase. No real money moves.',inputSchema:{type:'object',properties:{sourceId:{type:'string'},merchant:{type:'string'},amountCents:{type:'integer'},currency:{type:'string',enum:['USD']},purpose:{type:'string'}},required:['sourceId','merchant','amountCents','currency','purpose']}},
   {name:'foreman_owner_conversation',description:'Report an actual owner conversation start, update or end. Never call on a schedule, notification read, connection or idle heartbeat. No chat content. Start sequence 1; increment per real event; retry the same event_id. With-you expires after 60s without a real update.',inputSchema:{type:'object',properties:{session_id:{type:'string'},event_id:{type:'string'},sequence:{type:'integer',minimum:1},phase:{type:'string',enum:['start','update','end']}},required:['session_id','event_id','sequence','phase']}},
   {name:'foreman_presence',description:'Report actual recent interaction with your owner. Does not claim work is running.',inputSchema:{type:'object',properties:{}}},
@@ -804,6 +806,8 @@ async function mcpCall(agent, name, args) {
   else if(name==='foreman_inbox')out={tasks:await inbox(agent)};
   else if(name==='foreman_teammates')out={bots:await teammates()};
   else if(name==='foreman_read_task'){const task=await taskForAgent(agent,(args||{}).task_id);out=task?{task}:{error:'not found'};}
+  else if(name==='alter_broker_request')out=(await brokerRequest(agent,args||{})).body;
+  else if(name==='alter_broker_check'){const q=await getJ('fm:broker:q:'+(args||{}).requestId);out=q&&q.agentId===agent.id?{request:brokerPublic(q)}:{error:'not found'};}
   else if(name==='blackbox_card_proposal')out=(await cardPropose(await getJ('fm:agent:'+agent.id),args||{})).body;
   else if(name==='foreman_owner_conversation')out=(await ownerConversation(agent,args||{},'mcp')).body;
   else if(name==='foreman_presence'){if(agent.status!=='active'||await r(['GET','fm:kill']))out={status:'blocked'};else{await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'mcp'});out={status:'ok'};}}
@@ -1108,6 +1112,8 @@ async function routes(req, res, path, body, agentPre) {
       if(path==='/gateway/me'&&req.method==='GET'){if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked',reason:'Worker revoked or workspace paused'});res.setHeader('Cache-Control','no-store');return res.json({agent:{id:agent.id,name:agent.name,status:agent.status}});}
       if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway'});}
       if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
+      if(path==='/gateway/broker/requests'&&req.method==='POST')return send(await brokerRequest(agent,body));
+      {const bm=path.match(/^\/gateway\/broker\/requests\/(broker_[a-f0-9]+)$/);if(bm&&req.method==='GET'){const q=await getJ('fm:broker:q:'+bm[1]);return q&&q.agentId===agent.id?res.json({request:brokerPublic(q)}):res.status(404).json({error:'not found'});}}
       if(path==='/gateway/spend-requests'&&req.method==='POST')return send(await newSpendRequest(agent,body));
       {const sm=path.match(/^\/gateway\/spend-requests\/(spend_[a-f0-9]+)$/);if(sm&&req.method==='GET'){const q=await getJ('fm:spendRequest:'+sm[1]);return q&&q.agentId===agent.id?res.json({request:q}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/chat-task' && req.method === 'POST') return send(await chatTask(agent,body));
@@ -1130,6 +1136,8 @@ async function routes(req, res, path, body, agentPre) {
       const o = await mcpHandle(agent, body); return o ? res.json(o) : res.status(202).end(); }
     // --- owner-facing ---
     if(path==='/cards'&&req.method==='GET')return res.json(await cardData());
+    if(path==='/broker'&&req.method==='GET')return res.json(await brokerState());
+    {const bm=path.match(/^\/broker\/(broker_[a-f0-9]+)\/(approve|deny)$/);if(bm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await brokerDecision(bm[1],{...body,decision:bm[2]}));}}
     if(path==='/authorization/demo'&&req.method==='GET')return res.json(AUTHZ.demo());
     if(path==='/issuer/test/mandate'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuerMandate(body));}
     if(path==='/issuer/test/status'&&req.method==='GET')return res.json({mode:'stripe_test_only',configured:!!process.env.STRIPE_ISSUING_TEST_WEBHOOK_SECRET,liveEnabled:false,issuerDeliveryVerified:false,responseBudgetMs:1000,note:'Deployment is not issuer delivery verification. Configure a Stripe sandbox endpoint with decline-on-timeout.'});
@@ -1278,3 +1286,31 @@ async function issuerProcess(event,deadline){
  return deny('concurrent_admission');
 }
 module.exports.issuerProcess=(event,deadline)=>!URL_?Promise.resolve({approved:false,reason:'durable_storage_required'}):als.run({issuerDeadline:deadline},()=>issuerProcess(event,deadline));
+
+// Credential-isolated broker. No reusable credential ever leaves the server.
+// Paid adapters remain hard-disabled until explicit implementation + owner approval.
+const BROKER_COVERAGE={grok:'Runner/HTTP/MCP broker requests only. Native Grok billing and direct keys are outside Alter.',instinct:'Runner/MCP broker requests only. Native tools, wallets and purchases remain outside Alter.',muse:'Existing Muse Poster via runner browser controls. Native Muse credits, vault and purchases remain outside Alter.'};
+function brokerPublic(q){const {rawInput,...rest}=q;return rest;}
+async function brokerRequest(agent,b){
+ const a=await getJ('fm:agent:'+agent.id),t=await getJ('fm:task:'+b.taskId);
+ if(!a||a.status!=='active'||a.paused||await r(['GET','fm:kill']))return {status:403,body:{error:'Bot or workspace stopped'}};
+ if(!t||t.assignee!==a.id||t.status!=='running')return {status:403,body:{error:'Assigned running job required'}};
+ if(!['fixture.echo','xai.chat'].includes(b.route)||typeof b.sourceId!=='string'||!b.sourceId.trim()||b.sourceId.length>120||typeof b.input!=='string'||!b.input.trim()||b.input.length>10000||!Number.isSafeInteger(b.maxCents)||b.maxCents<0||b.maxCents>1000000)return {status:400,body:{error:'Known route, stable sourceId, input and exact maximum cents required'}};
+ if(b.route==='fixture.echo'&&b.maxCents!==0)return {status:400,body:{error:'Fixture costs zero'}};
+ const details={route:b.route,input:b.input,taskId:t.id,maxCents:b.maxCents},hash=sha(JSON.stringify(details)),id='broker_'+sha(a.id+':'+b.sourceId).slice(0,24),key='fm:broker:q:'+id;
+ const q={id,agentId:a.id,agentName:a.name,taskId:t.id,route:b.route,input:b.input,maxCents:b.maxCents,detailsHash:hash,status:'pending',createdAt:now(),expires:Date.now()+600000,note:b.route==='fixture.echo'?'Disposable echo only. No paid provider.':'xAI paid execution disabled. Approval cannot call provider.'};
+ const won=await r(['SET',key,JSON.stringify(q),'NX']),old=won?q:await getJ(key);if(old.detailsHash!==hash)return {status:409,body:{error:'sourceId already has different details'}};await r(['SADD','fm:broker:requests',id]);return {status:won?202:200,body:{request:brokerPublic(old)}};
+}
+async function brokerDecision(id,b){const q=await getJ('fm:broker:q:'+id);return q?withJobLock(q.taskId,()=>brokerDecisionUnlocked(id,b)):{status:404,body:{error:'not found'}};}
+async function brokerDecisionUnlocked(id,b){
+ if(!['approve','deny'].includes(b.decision))return {status:400,body:{error:'Approve or deny required'}};
+ const key='fm:broker:q:'+id,q=await getJ(key);if(!q)return {status:404,body:{error:'not found'}};if(q.detailsHash!==b.detailsHash)return {status:409,body:{error:'Review exact destination, input and maximum again'}};if(q.status!=='pending')return {status:200,body:{request:brokerPublic(q)}};
+ const a=await getJ('fm:agent:'+q.agentId),t=await getJ('fm:task:'+q.taskId),killed=await r(['GET','fm:kill']);
+ const reason=b.decision==='deny'?'owner_denied':Date.now()>=q.expires?'expired':!a||a.status!=='active'||a.paused||killed?'bot_stopped':!t||t.assignee!==q.agentId||t.status!=='running'?'job_inactive':q.route!=='fixture.echo'?'paid_adapter_disabled':null;
+ const policy=AUTHZ.evaluate({botId:q.agentId,taskId:q.taskId,amountCents:1,currency:'USD',category:'fixture'},{active:a?.status==='active',paused:a?.paused,killed:!!killed,ownerApproved:true,spentToday:0,dailyLimit:1,policy:{allowedCategories:['fixture']},recentCount:0,jobRequired:true,job:t?{...t,sandboxGrant:{botId:q.agentId,status:'active',budgetCents:1,spentCents:0}}:null});
+ q.status=reason?'blocked':'executing';q.reason=reason||policy.code;q.decidedAt=now();
+ // Fail closed on unsupported/paid routes. The only executable adapter is credentialless echo.
+ if(reason||policy.decision!=='ALLOW_SANDBOX'){q.status=b.decision==='deny'?'denied':'blocked';await setJ(key,q);return {status:200,body:{request:brokerPublic(q)}};}
+ await setJ(key,q);q.result={text:q.input,adapter:'fixture.echo',fixture:true,chargedCents:0};q.status='completed';q.receipt={id:'receipt_'+q.id,taskId:q.taskId,agentId:q.agentId,at:now(),destination:q.route,detailsHash:q.detailsHash,approvedBy:'owner:exact_review',chargedCents:0,note:'Fixture echo executed inside Alter. Not a provider purchase or universal interception proof.'};await setJ(key,q);return {status:200,body:{request:brokerPublic(q)}};
+}
+async function brokerState(){const ids=await r(['SMEMBERS','fm:broker:requests']);return {mode:'fixture_only',credentialsReleased:false,paidExecutionEnabled:false,coverage:BROKER_COVERAGE,requests:ids.length?(await r(['MGET',...ids.map(id=>'fm:broker:q:'+id)])).filter(Boolean).map(JSON.parse).map(brokerPublic).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,100):[]};}
