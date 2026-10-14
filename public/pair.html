@@ -1,0 +1,36 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow"><title>Alter - Pair this worker</title>
+<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/styles/tokens.css">
+<style>
+*{box-sizing:border-box}html,body{margin:0;background:var(--porcelain-phone,#FBFBF9);color:var(--ink,#121212);font:15px/1.45 Geist,system-ui,-apple-system,sans-serif}
+main{max-width:480px;margin:0 auto;padding:24px 16px}h1{font-size:22px;font-weight:600;margin:0 0 6px}p{color:var(--stone,#5C5C57);margin:0 0 12px}
+.card{background:var(--surface,#fff);border:1px solid var(--line,rgba(18,18,18,.08));border-radius:14px;padding:14px 16px}
+</style></head><body><main>
+<h1 id="t">Pairing this worker with Alter</h1><p id="s">Starting...</p>
+<div class="card"><p id="d" style="margin:0">This page holds the worker's key in this tab only. The key is never shown, and the page sends no owner cookies. Keep this tab open.</p></div>
+</main>
+<script>
+// Bot side of bot link for browser-only workers. Same protocol as the JSON steps at /api/pair/<id>.
+(()=>{const $=s=>document.querySelector(s),pid=(location.pathname.match(/\/pair\/(pr_[A-Za-z0-9_-]{20,40})$/)||[])[1];
+const say=(t,s)=>{$('#t').textContent=t;$('#s').textContent=s};if(!pid)return say('Link not valid','Ask the owner for a new message.');
+const rnd=n=>Array.from(crypto.getRandomValues(new Uint8Array(n)),b=>b.toString(16).padStart(2,'0')).join('');
+const store=(()=>{try{return sessionStorage}catch{return null}})(),K='alter-pair:'+pid;
+const load=()=>{try{return JSON.parse(store&&store.getItem(K)||'null')}catch{return null}},save=o=>{try{store&&store.setItem(K,JSON.stringify(o))}catch{}};
+const api=async(path,method,body,auth)=>{const r=await fetch('/api'+path,{method,credentials:'omit',cache:'no-store',headers:{'Content-Type':'application/json',...(auth?{Authorization:auth}:{})},body:body?JSON.stringify(body):undefined});return {code:r.status,j:await r.json().catch(()=>({}))}};
+let st=load()||{secret:rnd(24),key:null};save(st);
+// Link-key calls with retry-safe rotation: one requestId per call; on a lost response retry once with the same key and requestId.
+async function call(req){const requestId=rnd(16),body={...req,requestId};for(let i=0;i<2;i++){let r;try{r=await api('/link/call','POST',body,'Bearer '+st.key)}catch{continue}
+ if(r.j&&r.j.nextKey){st.key=r.j.nextKey;save(st)}if(r.code===401){st.key=null;save(st);say('Needs re-paste','Alter stopped this key. Ask the owner for a new message.')}return r}
+ throw Error('network')}
+window.alterLink={call:req=>{if(!st.key)throw Error('not paired');return call(req)}};
+(async()=>{
+ if(!st.key){const h=st.helloed?{code:202}:await api('/pair/'+pid,'POST',{nonce:rnd(16),callerSecret:st.secret});
+  if(h.code===202){st.helloed=true;save(st)}
+  if(h.code!==202){const why={410:'This link no longer works. Ask the owner for a new message.',409:'This link was already used.',404:'This link is not valid.'}[h.code]||'Could not pair.';return say('Cannot pair',why)}
+  say('Waiting for the owner','The owner must approve this worker in Alter.');
+  for(;;){await new Promise(r=>setTimeout(r,3000));const k=await api('/pair/'+pid,'GET',null,'Pairing '+st.secret);
+   if(k.code===202)continue;if(k.code!==200)return say('Cannot pair','The owner cancelled this link, it expired, or the bot was revoked.');
+   st.key=k.j.key;save(st);break}}
+ const e=await call({op:'echo',text:'hello from the pairing page'});
+ if(e.code===200)say('Connected','A real echo went through Alter. Keep this tab open while the worker runs.');
+})().catch(()=>say('Network problem','Reload this page to try again. The same link works until it expires.'));})();
+</script></body></html>
