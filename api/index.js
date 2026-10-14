@@ -1,5 +1,43 @@
 // Foreman core v9: real permission gateway + external-agent adapters + work bus. Agents hold only a Foreman key; every action goes through /api/gateway/act.
 const crypto = require('crypto');
+const AUTHZ = (()=>{
+// Deterministic policy only. Never a payment rail or a grant of authority.
+const VERSION='rules-v1';
+function evaluate(q,s){
+ const deny=(code,reason)=>({version:VERSION,decision:'DENY',code,reason,chargedCents:0});
+ if(!Number.isSafeInteger(q.amountCents)||q.amountCents<1||q.currency!=='USD')return deny('invalid_amount','Exact positive USD cents required');
+ if(!s.active)return deny('revoked','Bot is not active');
+ if(s.paused||s.killed)return deny('paused','Bot or workspace is paused');
+ if(s.expired)return deny('expired','Request expired');
+ const p=s.policy||{};
+ if(p.perActionCents!=null&&q.amountCents>p.perActionCents)return deny('limit_action','Per-request limit exceeded');
+ if(p.allowedCategories?.length&&!p.allowedCategories.includes(q.category||'uncategorized'))return deny('merchant_category','Merchant category is outside the owner policy');
+ if(p.maxPerHour!=null&&s.recentCount>=p.maxPerHour)return deny('velocity','Hourly admitted-request limit reached');
+ if(!Number.isSafeInteger(s.spentToday)||s.spentToday<0||!Number.isSafeInteger(s.dailyLimit)||s.dailyLimit<0)return deny('invalid_policy','Invalid stored limit; owner review required');
+ if(s.spentToday+q.amountCents>s.dailyLimit)return deny('limit_daily','Daily sandbox safety cap exceeded');
+ if(s.jobRequired||q.taskId){
+  if(!s.job||s.job.assignee!==q.botId||s.job.status!=='running')return deny('job_inactive','A running job assigned to this bot is required');
+  const g=s.job.sandboxGrant;
+  if(!g||g.status!=='active'||g.botId!==q.botId)return deny('job_grant_required','Owner must set a separate sandbox spend budget for this job');
+  if(!Number.isSafeInteger(g.budgetCents)||!Number.isSafeInteger(g.spentCents)||g.spentCents+q.amountCents>g.budgetCents)return deny('limit_job','Job sandbox spend budget would be exceeded');
+ }
+ return {version:VERSION,decision:s.ownerApproved?'ALLOW_SANDBOX':'ASK',code:s.ownerApproved?'owner_approved':'owner_review',reason:s.ownerApproved?'Owner approved exact details; current rules passed':'Owner review required. No spend executes automatically',chargedCents:0};
+}
+function trust(records){
+ const terminal=records.filter(q=>q.authorization&&['simulated','denied','blocked','limit_blocked','expired'].includes(q.status));
+ const breaches=terminal.filter(q=>['limit_job','limit_daily','limit_action','merchant_category','velocity','job_inactive','job_grant_required'].includes(q.authorization.code)).length;
+ const approved=terminal.filter(q=>q.status==='simulated').length,denied=terminal.filter(q=>q.status==='denied').length;
+ return {version:'evidence-v1',scope:'Sandbox decisions only',sampleCount:terminal.length,approvedCount:approved,ownerDeniedCount:denied,policyBlockedCount:breaches,score:terminal.length<5?null:Math.round(100*(terminal.length-breaches)/terminal.length),confidence:terminal.length<5?'insufficient_data':'early_evidence',formula:'100 * (terminal decisions - policy blocks) / terminal decisions; minimum 5',note:'Descriptive compliance signal, not fraud prediction. Owner denials are not policy violations. Never changes permission.'};
+}
+function demo(){
+ const job={assignee:'demo',status:'running',sandboxGrant:{botId:'demo',status:'active',budgetCents:5000,spentCents:0}};
+ const base={active:true,spentToday:0,dailyLimit:10000,recentCount:0,jobRequired:true,job,ownerApproved:true,policy:{perActionCents:5000,allowedCategories:['software'],maxPerHour:3}};
+ const q={botId:'demo',taskId:'fixture',amountCents:2000,currency:'USD',category:'software'};
+ return {mode:'sandbox_fixture',stored:false,chargedCents:0,scenarios:[['Within job budget',q,base],['Over remaining job budget',{...q,amountCents:4000},{...base,job:{...job,sandboxGrant:{...job.sandboxGrant,spentCents:2000}}}],['Outside merchant policy',{...q,category:'travel'},base],['Velocity limit',q,{...base,recentCount:3}],['Needs owner review',q,{...base,ownerApproved:false}],['Revoked bot',q,{...base,active:false}]].map(([name,request,state])=>({name,request,result:evaluate(request,state)})),note:'Made-up bot and requests. The same evaluator gates sandbox card decisions. No issuer, no live charges.'};
+}
+return {evaluate,trust,demo,VERSION};
+
+})();
 const { AsyncLocalStorage } = require('async_hooks');
 const als = new AsyncLocalStorage();
 // v11: every workspace gets its own key namespace. 'legacy' is the original v9/v10 data (no prefix). 'gl:' keys are global (users, sessions, key index).
@@ -627,6 +665,7 @@ async function authAgent(req) {
 
 async function gatewayAct(agent,body){const taskId=body.task_id||body.params?.task_id;return taskId?withJobLock(taskId,()=>gatewayActUnlocked(agent,body)):gatewayActUnlocked(agent,body);}
 async function gatewayActUnlocked(agent, body) {
+  agent=await getJ('fm:agent:'+agent.id)||{...agent,status:'revoked'};
   const action = body.action, params = body.params || {}, taskId=body.task_id||params.task_id;
   await touchAgent(agent);
   const task=taskId?await getJ('fm:task:'+taskId):null;
@@ -820,38 +859,53 @@ async function sandboxCard(){let c=await getJ('fm:cards:card');if(!c){await r(['
 async function cardData(){
  const ids=await r(['SMEMBERS','fm:cards:proposals']);
  const proposals=ids.length?(await r(['MGET',...ids.map(id=>'fm:cards:q:'+id)])).filter(Boolean).map(JSON.parse).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)):[];
- return {mode:'sandbox',liveMoneyEnabled:false,provider:'sandbox',card:await sandboxCard(),day:now().slice(0,10),killed:!!await r(['GET','fm:cards:kill']),proposals,ledger:proposals.filter(q=>q.receipt).map(q=>q.receipt),bots:await Promise.all((await listAgents()).map(async a=>({id:a.id,name:a.name,status:a.status,dailyLimitCents:Number((await r(['GET','fm:cards:cap:'+a.id]))??10000),simulatedTodayCents:Number(await r(['GET','fm:cards:spent:'+a.id+':'+now().slice(0,10)])||0)})))};
+ return {mode:'sandbox',liveMoneyEnabled:false,provider:'sandbox',card:await sandboxCard(),day:now().slice(0,10),killed:!!await r(['GET','fm:cards:kill']),proposals,ledger:proposals.filter(q=>q.receipt).map(q=>q.receipt),bots:await Promise.all((await listAgents()).map(async a=>({id:a.id,name:a.name,status:a.status,dailyLimitCents:Number((await r(['GET','fm:cards:cap:'+a.id]))??10000),trust:AUTHZ.trust(proposals.filter(q=>q.botId===a.id)),policy:await getJ('fm:cards:policy:'+a.id)||{},simulatedTodayCents:Number(await r(['GET','fm:cards:spent:'+a.id+':'+now().slice(0,10)])||0)})))};
 }
 async function cardPropose(a,b){
  if(!a||a.status!=='active'||await r(['GET','fm:kill'])||await r(['GET','fm:cards:kill']))return {status:403,body:{error:'Card proposals paused or worker revoked'}};
  if(!Number.isSafeInteger(b.amountCents)||b.amountCents<1||b.amountCents>100000000||b.currency!=='USD'||!['merchant','purpose','sourceId'].every(k=>typeof b[k]==='string'&&b[k].trim().length>0&&b[k].length<=500))return {status:400,body:{error:'Exact USD cents, merchant, purpose and sourceId required'}};
- const details={botId:a.id,merchant:b.merchant.trim(),amountCents:b.amountCents,currency:'USD',purpose:b.purpose.trim()},hash=sha(JSON.stringify(details)),id='card_'+sha(a.id+':'+b.sourceId).slice(0,24),key='fm:cards:q:'+id;
+ if(b.taskId!=null&&(typeof b.taskId!=='string'||!/^task_[a-f0-9]+$/.test(b.taskId)))return {status:400,body:{error:'Valid job id required'}};
+ if(b.category!=null&&(!['software','advertising','travel','supplies','uncategorized'].includes(b.category)))return {status:400,body:{error:'Unsupported merchant category'}};
+ const details={botId:a.id,merchant:b.merchant.trim(),amountCents:b.amountCents,currency:'USD',purpose:b.purpose.trim(),taskId:b.taskId||null,category:b.category||'uncategorized'},hash=sha(JSON.stringify(details)),id='card_'+sha(a.id+':'+b.sourceId).slice(0,24),key='fm:cards:q:'+id;
  const q={id,...details,detailsHash:hash,botName:a.name,status:'pending',mode:'sandbox',createdAt:now(),expiresAt:new Date(Date.now()+86400000).toISOString(),chargedCents:0};
+ q.authorization=await cardAuthorization(q,false);
  const won=await r(['SET',key,JSON.stringify(q),'NX']);const old=won?q:await getJ(key);if(old.detailsHash!==hash)return {status:409,body:{error:'sourceId has different details'}};
  await r(['SADD','fm:cards:proposals',id]);return {status:won?201:200,body:{proposal:old}};
 }
-async function cardDecision(id,decision,hash){
+async function cardDecision(id,decision,hash){const q=await getJ('fm:cards:q:'+id);return q?.taskId?withJobLock(q.taskId,()=>cardDecisionUnlocked(id,decision,hash)):cardDecisionUnlocked(id,decision,hash);}
+async function cardAuthorization(q,ownerApproved){
+ const a=await getJ('fm:agent:'+q.botId),day=now().slice(0,10),policy=await getJ('fm:cards:policy:'+q.botId)||{};
+ const ids=await r(['SMEMBERS','fm:cards:proposals']),records=ids.length?(await r(['MGET',...ids.map(id=>'fm:cards:q:'+id)])).filter(Boolean).map(JSON.parse):[];
+ return AUTHZ.evaluate(q,{active:a?.status==='active',paused:!!a?.paused,killed:!!await r(['GET','fm:kill'])||!!await r(['GET','fm:cards:kill']),expired:Date.parse(q.expiresAt)<=Date.now(),policy,ownerApproved,jobRequired:a?.permissionScope==='job',job:q.taskId?await getJ('fm:task:'+q.taskId):null,spentToday:Number(await r(['GET','fm:cards:spent:'+q.botId+':'+day])||0),dailyLimit:Number((await r(['GET','fm:cards:cap:'+q.botId]))??10000),recentCount:records.filter(x=>x.botId===q.botId&&['simulated','executing_sandbox'].includes(x.status)&&Date.parse(x.decidedAt||x.createdAt)>Date.now()-3600000).length});
+}
+async function cardDecisionUnlocked(id,decision,hash){
  const key='fm:cards:q:'+id;
  // Serialize all sandbox decisions in the workspace, including cap changes and kill.
- const lock='fm:cards:lock';if(!await r(['SET',lock,'1','NX','EX',30]))return {status:409,body:{error:'Another card change is saving. Try again.'}};
+ const lock='fm:cards:lock',lockToken=rid('lock');if(!await r(['SET',lock,lockToken,'NX','EX',60]))return {status:409,body:{error:'Another card change is saving. Try again.'}};
  try{
  const q=await getJ(key);if(!q)return {status:404,body:{error:'not found'}};
  if(q.detailsHash!==hash)return {status:409,body:{error:'Review exact details again'}};
  if(q.status!=='pending')return {status:200,body:{proposal:q}};
  const a=await getJ('fm:agent:'+q.botId),day=now().slice(0,10),spentKey='fm:cards:spent:'+q.botId+':'+day,spent=Number(await r(['GET',spentKey])||0),cap=Number((await r(['GET','fm:cards:cap:'+q.botId]))??10000);
- q.status=decision==='deny'?'denied':Date.parse(q.expiresAt)<=Date.now()?'expired':!a||a.status!=='active'||await r(['GET','fm:kill'])||await r(['GET','fm:cards:kill'])?'blocked':spent+q.amountCents>cap?'limit_blocked':'executing_sandbox';
+ q.authorization=decision==='deny'?{version:AUTHZ.VERSION,decision:'DENY',code:'owner_denied',reason:'Owner denied exact request',chargedCents:0}:await cardAuthorization(q,true);
+ q.status=decision==='deny'?'denied':q.authorization.code==='expired'?'expired':q.authorization.decision==='DENY'?(q.authorization.code.startsWith('limit_')?'limit_blocked':'blocked'):'executing_sandbox';
  // Persist admission before provider invocation. A crash stays visibly unresolved, never recharged.
- if(q.status==='executing_sandbox'){await setJ(key,q);const out=await CARD_PROVIDER.execute(q);q.providerResult=out;q.status='simulated';await r(['INCRBY',spentKey,q.amountCents]);}
- q.decidedAt=now();q.receipt={id:'ledger_'+q.id,requestId:q.id,at:q.decidedAt,botId:q.botId,botName:q.botName,merchant:q.merchant,purpose:q.purpose,amountCents:q.amountCents,currency:q.currency,outcome:q.status,provider:'sandbox',detailsHash:q.detailsHash,simulatedCents:q.status==='simulated'?q.amountCents:0,chargedCents:0,note:'Synthetic ledger. No card issued, no funds moved, no vendor receipt.'};
+ if(q.status==='executing_sandbox'){await setJ(key,q);const out=await CARD_PROVIDER.execute(q);q.providerResult=out;q.status='simulated';await r(['INCRBY',spentKey,q.amountCents]);if(q.taskId){const t=await getJ('fm:task:'+q.taskId);t.sandboxGrant.spentCents+=q.amountCents;await setJ('fm:task:'+q.taskId,t);}}
+ q.decidedAt=now();q.receipt={id:'ledger_'+q.id,requestId:q.id,at:q.decidedAt,botId:q.botId,botName:q.botName,merchant:q.merchant,purpose:q.purpose,amountCents:q.amountCents,currency:q.currency,outcome:q.status,provider:'sandbox',detailsHash:q.detailsHash,authorization:q.authorization,taskId:q.taskId||null,simulatedCents:q.status==='simulated'?q.amountCents:0,chargedCents:0,note:'Synthetic ledger. No card issued, no funds moved, no vendor receipt.'};
  await setJ(key,q);return {status:200,body:{proposal:q,receipt:q.receipt}};
- }finally{await r(['DEL',lock]);}
+ }finally{if(await r(['GET',lock])===lockToken)await r(['DEL',lock]);}
 }
-async function cardControl(body){
+async function cardControl(body){return body.taskId?withJobLock(body.taskId,()=>cardControlUnlocked(body)):cardControlUnlocked(body);}
+async function cardControlUnlocked(body){
+ if(body.policy){const p=body.policy;if(typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!['perActionCents','allowedCategories','maxPerHour'].includes(k))||p.perActionCents!=null&&(!Number.isSafeInteger(p.perActionCents)||p.perActionCents<0)||p.maxPerHour!=null&&(!Number.isSafeInteger(p.maxPerHour)||p.maxPerHour<1||p.maxPerHour>1000)||p.allowedCategories!=null&&(!Array.isArray(p.allowedCategories)||p.allowedCategories.some(c=>!['software','advertising','travel','supplies','uncategorized'].includes(c))))return {status:400,body:{error:'Invalid sandbox rules'}};}
+ if((body.policy||body.taskId)&&!body.botId)return {status:400,body:{error:'Bot required'}};
+ if(body.taskId){const t=await getJ('fm:task:'+body.taskId);if(!t||t.assignee!==body.botId||t.status!=='running'||body.confirmed!==true||!Number.isSafeInteger(body.budgetCents)||body.budgetCents<Number(t.sandboxGrant?.spentCents||0)||body.budgetCents>100000000)return {status:400,body:{error:'Review running job, bot and exact sandbox budget; cannot reduce below used cents'}};}
  if(body.dailyLimitCents!=null&&(!Number.isSafeInteger(body.dailyLimitCents)||body.dailyLimitCents<0||body.dailyLimitCents>100000000))return {status:400,body:{error:'Daily limit must be integer cents'}};
  if(body.botId&&!await getJ('fm:agent:'+body.botId))return {status:404,body:{error:'Unknown bot'}};
- const lock='fm:cards:lock';if(!await r(['SET',lock,'1','NX','EX',30]))return {status:409,body:{error:'Another card change is saving. Try again.'}};
- try{if(typeof body.killed==='boolean'){if(body.killed)await r(['SET','fm:cards:kill','1']);else await r(['DEL','fm:cards:kill']);}
- if(body.botId&&body.dailyLimitCents!=null)await r(['SET','fm:cards:cap:'+body.botId,body.dailyLimitCents]);return {status:200,body:await cardData()};}finally{await r(['DEL',lock]);}
+ const lock='fm:cards:lock',lockToken=rid('lock');if(!await r(['SET',lock,lockToken,'NX','EX',60]))return {status:409,body:{error:'Another card change is saving. Try again.'}};
+ try{if(body.policy)await setJ('fm:cards:policy:'+body.botId,body.policy);if(body.taskId){const t=await getJ('fm:task:'+body.taskId);t.sandboxGrant={botId:body.botId,status:'active',budgetCents:body.budgetCents,spentCents:Number(t.sandboxGrant?.spentCents||0),issuedAt:now(),note:'Sandbox spend only. Not gateway ledger or payment authorization.'};await setJ('fm:task:'+t.id,t);}
+ if(typeof body.killed==='boolean'){if(body.killed)await r(['SET','fm:cards:kill','1']);else await r(['DEL','fm:cards:kill']);}
+ if(body.botId&&body.dailyLimitCents!=null)await r(['SET','fm:cards:cap:'+body.botId,body.dailyLimitCents]);return {status:200,body:await cardData()};}finally{if(await r(['GET',lock])===lockToken)await r(['DEL',lock]);}
 }
 
 
@@ -1075,9 +1129,10 @@ async function routes(req, res, path, body, agentPre) {
       const o = await mcpHandle(agent, body); return o ? res.json(o) : res.status(202).end(); }
     // --- owner-facing ---
     if(path==='/cards'&&req.method==='GET')return res.json(await cardData());
-    if(path==='/cards/control'&&req.method==='POST')return send(await cardControl(body));
-    if(path==='/cards/proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+body.botId),body));
-    {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST')return send(await cardDecision(cm[1],cm[2],body.detailsHash));}
+    if(path==='/authorization/demo'&&req.method==='GET')return res.json(AUTHZ.demo());
+    if(path==='/cards/control'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cardControl(body));}
+    if(path==='/cards/proposals'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cardPropose(await getJ('fm:agent:'+body.botId),body));}
+    {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cardDecision(cm[1],cm[2],body.detailsHash));}}
 
     {const am=path.match(/^\/tasks\/(\w+)\/assign$/);if(am&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await assignTask(am[1],body));}}
     if(path.startsWith('/public-receipts'))res.setHeader('Cache-Control','no-store');
