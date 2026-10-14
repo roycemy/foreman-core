@@ -610,7 +610,7 @@ function normKind(x) { const k = String(x || '').toUpperCase().replace(/[\s-]+/g
   const m = [[/START|BEGIN|RUNNING|PICKED|CLAIM/, 'TASK_STARTED'],[/TOOL|CALL|INVOK/, 'TOOL_USED'],[/REQUEST|ATTEMPT|ACTION/, 'ACTION_REQUESTED'],[/WAIT|IDLE|PEND|BLOCKED_ON|QUEUE/, 'WAITING'],[/HAND|DELEGAT|TRANSFER/, 'HANDOFF'],[/DONE|COMPLET|FINISH|SUCCE/, 'COMPLETED'],[/FAIL|ERR/, 'FAILED'],[/APPROV/, 'NEEDS_APPROVAL'],[/BLOCK|DENIED|REFUS/, 'BLOCKED']];
   for (const [re, v] of m) if (re.test(k)) return v; return null; }
 async function event(agentId, type, text, extra) { bust(); const e = { id: rid('ev'), at: now(), agentId, type, kind: (extra && extra.kind) || KIND_OF[type] || null, text, ...extra };
-  if (agentId && e.kind) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
+  if (agentId && e.kind && !(extra && extra.presenceOnly)) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
 async function spentToday(agentId) { return parseInt((await r(['GET', `fm:spend:${agentId}:${now().slice(0, 10)}`])) || '0', 10); }
 async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust(); await track('first_receipt');
   const prev = (await r(['GET', 'fm:lasthash'])) || 'genesis';
@@ -717,7 +717,7 @@ const pub = q => { const { rawParams, ...rest } = q; return rest; };
 const TASK_CATEGORY_ROOMS={marketing:'marketing',creative:'marketing',research:'finance',finance:'finance',outreach:'sales',sales:'sales',execution:'ops',operations:'ops',ops:'ops',support:'support',lounge:'lounge'};
 function taskRoom(agent,tasks){const t=tasks.filter(t=>t.assignee===agent.id&&t.status==='running').sort((a,b)=>String(b.startedAt||b.createdAt).localeCompare(String(a.startedAt||a.createdAt)))[0];return t&&TASK_CATEGORY_ROOMS[t.category]||agent.room||null;}
 async function fullState() {
-  { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 1500) return c.v; }
+  { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 1500) return {...c.v,now:now()}; }
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
@@ -1110,7 +1110,7 @@ async function routes(req, res, path, body, agentPre) {
       if(path==='/gateway/teammates'&&req.method==='GET')return res.json({bots:await teammates()});
       if(path==='/gateway/notifications'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return send(await notifications(agent,new URL(req.url,'https://local.invalid').searchParams.get('after')));}
       if(path==='/gateway/me'&&req.method==='GET'){if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked',reason:'Worker revoked or workspace paused'});res.setHeader('Cache-Control','no-store');return res.json({agent:{id:agent.id,name:agent.name,status:agent.status}});}
-      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway'});}
+      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway',presenceOnly:true});}
       if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
       if(path==='/gateway/broker/requests'&&req.method==='POST')return send(await brokerRequest(agent,body));
       {const bm=path.match(/^\/gateway\/broker\/requests\/(broker_[a-f0-9]+)$/);if(bm&&req.method==='GET'){const q=await getJ('fm:broker:q:'+bm[1]);return q&&q.agentId===agent.id?res.json({request:brokerPublic(q)}):res.status(404).json({error:'not found'});}}
@@ -1118,7 +1118,7 @@ async function routes(req, res, path, body, agentPre) {
       {const sm=path.match(/^\/gateway\/spend-requests\/(spend_[a-f0-9]+)$/);if(sm&&req.method==='GET'){const q=await getJ('fm:spendRequest:'+sm[1]);return q&&q.agentId===agent.id?res.json({request:q}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/chat-task' && req.method === 'POST') return send(await chatTask(agent,body));
       if(path==='/gateway/owner-conversation'&&req.method==='POST')return send(await ownerConversation(agent,body,'gateway'));
-      if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'chat'});return res.json({status:'ok'});}
+      if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await touchAgent(agent);await event(agent.id,'interaction','Runner presence accepted (not conversation or work)',{kind:'INTERACTION',source:'chat',presenceOnly:true});return res.json({status:'ok'});}
       {const tm=path.match(/^\/gateway\/tasks\/(\w+)$/);if(tm&&tm[1]!=='next'&&req.method==='GET'){const t=await taskForAgent(agent,tm[1]);return t?res.json({task:t}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/act' && req.method === 'POST') return send(await gatewayAct(agent, body));
       if (path === '/gateway/events' && req.method === 'POST') return send(await reportEvent(agent, body));
