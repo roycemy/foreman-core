@@ -1,0 +1,23 @@
+[Unit]
+Description=Alter explicit multi-bot lifecycle bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=alter-bridge
+Group=alter-bridge
+WorkingDirectory=/opt/alter-bridge
+Environment=ALTER_BRIDGE_CONFIG=/etc/alter-bridge/config.json
+ExecStart=/usr/bin/node /opt/alter-bridge/bridge.cjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/alter-bridge
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
