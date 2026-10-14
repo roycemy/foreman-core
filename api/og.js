@@ -6,7 +6,7 @@ const { Resvg } = require('@resvg/resvg-js');
 const { publicReceiptRead } = require('./index.js');
 const FONT_DIR = path.join(__dirname, 'fonts');
 const FONTS = { 400: 'Geist-Regular.ttf', 500: 'Geist-Medium.ttf', 600: 'Geist-SemiBold.ttf' };
-const BRAND = process.env.BRAND_NAME || 'Alter';
+const BRAND = process.env.BRAND_NAME || 'alter';
 
 /* --- advance widths straight from the font (cmap format 4 + hmtx), for line breaking --- */
 const METRICS = {};
@@ -39,7 +39,7 @@ function wrap(text, size, w, track, maxW, maxLines) {
 function clip(text, size, w, maxW) { let t = String(text); if (measure(t, size, w) <= maxW) return t; while (t && measure(t + '…', size, w) > maxW) t = t.slice(0, -1); return t.trim() + '…'; }
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = usd => usd == null ? null : usd > 0 && usd < .01 ? '<$0.01' : '$' + Number(usd).toFixed(2);
-const mark = (x, y, s, ink) => `<g transform="translate(${x} ${y})"><rect x="${s * .055}" y="${s * .055}" width="${s * .89}" height="${s * .89}" rx="${s * .25}" fill="none" stroke="${ink}" stroke-width="${s * .11}"/><rect x="${s * .2}" y="${s * .2}" width="${s * .6}" height="${s * .15}" rx="${s * .05}" fill="#E2452B"/></g>`;
+const mark = (x, y, s, ink) => { const k = s / 48; return `<g transform="translate(${x} ${y}) scale(${k}) translate(-4 -17)"><path d="M8 33 V37 L32 49 L56 37 V33" fill="${ink}" stroke="${ink}" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="#F4F4F1" stroke="${ink}" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E8452C"/></g>`; };
 
 function card(snap) {
   const s = snap, W = 1200, H = 630, T = 'font-family="Geist"';
@@ -69,10 +69,10 @@ function card(snap) {
     <rect width="${W}" height="${H}" fill="#F4F4F1"/>${artSvg}
     ${mark(72, 70, 28, '#121212')}<text x="112" y="91" ${T} font-size="20" font-weight="500" fill="#5C5C57">${esc(bn)}</text>
     ${head}${factSvg}
-    ${mark(W - 72 - measure(BRAND, 20, 600) - 32, H - 56 - 21, 22, '#121212')}<text x="${W - 72}" y="${H - 58}" text-anchor="end" ${T} font-size="20" font-weight="600" letter-spacing="-.4" fill="#121212">${esc(BRAND)}</text></svg>`;
+    ${mark(W - 72 - measure(BRAND, 20, 600, -.045) - 34, H - 56 - 21, 22, '#121212')}<text x="${W - 72}" y="${H - 58}" text-anchor="end" ${T} font-size="20" font-weight="600" letter-spacing="-.9" fill="#121212">${esc(BRAND)}</text></svg>`;
 }
 function missing() {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630"><rect width="1200" height="630" fill="#F4F4F1"/>${mark(72, 72, 28, '#121212')}<text x="112" y="94" font-family="Geist" font-size="22" font-weight="600" fill="#121212">${esc(BRAND)}</text><text x="72" y="330" font-family="Geist" font-size="64" font-weight="600" letter-spacing="-2.8" fill="#121212">Receipt not available</text></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630"><rect width="1200" height="630" fill="#F4F4F1"/>${mark(72, 72, 28, '#121212')}<text x="116" y="94" font-family="Geist" font-size="22" font-weight="600" letter-spacing="-1" fill="#121212">${esc(BRAND)}</text><text x="72" y="330" font-family="Geist" font-size="64" font-weight="600" letter-spacing="-2.8" fill="#121212">Receipt not available</text></svg>`;
 }
 function render(svg) {
   const r = new Resvg(svg, { fitTo: { mode: 'width', value: 1200 }, font: { fontFiles: Object.values(FONTS).map(f => path.join(FONT_DIR, f)), loadSystemFonts: false, defaultFontFamily: 'Geist' } });

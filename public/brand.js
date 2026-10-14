@@ -5,13 +5,13 @@
 window.BRAND = (function (prev) {
   var B = Object.assign({
     name: 'Alter',            // <-- the one line to change
-    upper: null,                  // derived: wordmark/caps text
+    upper: 'alter',               // wordmark: lowercase bold Geist, never caps
     short: null,                  // derived: initials for compact marks
     siteUrl: null,                // public marketing site URL (null = no "Back to the site" link). Owner decides routing.
     appUrl: '/hq',                // where "Sign in" / "Open your HQ" go. Marketing is served at '/', the app at '/hq' (vercel.json).
     tagline: 'Every AI employee. One workplace.'
   }, prev || {});
-  B.upper = B.upper || B.name.toUpperCase();
+  B.upper = B.upper || B.name.toLowerCase();
   B.short = B.short || B.name.split(/\s+/).map(function (w) { return w.charAt(0); }).join('').toUpperCase();
   var parts = B.upper.split(/\s+/);
   B.wordmarkHTML = parts.length > 1 ? parts.slice(0, -1).join(' ') + ' <b>' + parts[parts.length - 1] + '</b>' : '<b>' + B.upper + '</b>';

@@ -163,6 +163,7 @@
   function paintTop() {
     const n = BB.onYou().length;
     [['#icount', n], ['#tcount', n]].forEach(([s, v]) => { const e = $(s); if (!e) return; e.hidden = !v; e.textContent = v; });
+    const tm = $('.top .mark'); if (tm) tm.classList.toggle('idle', !n);
     $('#ibtn').setAttribute('aria-label', 'Inbox' + (n ? ', ' + n + ' on you' : ''));
     $('#pausedbar').hidden = !(BB.S && BB.S.killed);
     /* round 3 liveness, kept: a connected bot with no accepted activity for 60s "went dark" */
