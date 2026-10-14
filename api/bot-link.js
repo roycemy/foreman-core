@@ -48,9 +48,9 @@ const err = (status, error, extra) => ({ status, body: { error, ...extra } });
 
 class BotLink {
   constructor({ store, now = Date.now, opts = {}, onRevoke = async () => {}, onAlert = async () => {}, onBotCreated = async () => null,
-    authorize = async () => true, executeAct = null, actions = () => [] }) {
+    authorize = async () => true, executeAct = null, actions = () => [], onRealCall = async () => {} }) {
     this.s = store; this.now = now; this.o = { ...DEFAULTS, ...opts };
-    this.onRevoke = onRevoke; this.onAlert = onAlert; this.onBotCreated = onBotCreated;
+    this.onRevoke = onRevoke; this.onAlert = onAlert; this.onBotCreated = onBotCreated; this.onRealCall = onRealCall;
     this.authorize = authorize;   // (bot) -> false if the linked Alter agent is no longer active
     this.executeAct = executeAct; // (bot, {action, params}) -> {status, body, governed}; null = no policy transport
     this.actions = actions;       // () -> list of action names the policy transport supports
@@ -261,6 +261,7 @@ class BotLink {
       return { next: { ...b, prev: { ...b.prev, done: true, result }, verifiedAt: b.verifiedAt || (op === 'echo' ? t : null), governedAt: governed ? t : b.governedAt }, out: null };
     });
     this.emit('real_call', idx.botId, { op, governed });
+    await this.onRealCall(live, { op, governed }); // the echo/act IS real accepted activity: HQ presence may use it
     return this.reply(idx.botId, next, result, false);
   }
   async reply(botId, nextKey, result, retried) {
