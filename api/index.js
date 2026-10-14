@@ -1064,6 +1064,7 @@ module.exports = async (req, res) => {
   const path = (req.url || '').split('?')[0].replace(/^\/api/, '').replace(/\/$/, '') || '/';
   let body = req.body; if (typeof body === 'string') { try { body = /application\/x-www-form-urlencoded/.test(req.headers['content-type']||'') ? Object.fromEntries(new URLSearchParams(body)) : JSON.parse(body); } catch { body = {}; } } body = body || {};
   try {
+    if(path==='/authorization/demo'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return res.json(AUTHZ.demo());}
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path.startsWith('/runner/'))return await runnerRoutes(req,res,path,body);
