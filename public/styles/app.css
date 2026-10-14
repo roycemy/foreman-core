@@ -158,6 +158,8 @@ body.app>main{position:fixed;inset:var(--h-top) 0 0 0}
 .roster .add svg{width:14px;height:14px;flex:none}
 .roster .add{display:flex;align-items:center;gap:10px;width:100%;padding:12px 18px;border-top:1px solid var(--line);color:var(--stone);font-weight:500;background:var(--surface-2)}
 .ask{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);width:min(520px,calc(100% - 700px));min-width:360px;height:48px;border-radius:14px;background:var(--surface);border:1px solid var(--line);box-shadow:var(--sh2);display:flex;align-items:center;padding:0 8px 0 18px;z-index:20}
+.uchip{position:absolute;left:50%;bottom:84px;transform:translateX(-50%);height:32px;padding:0 14px;border-radius:999px;background:var(--surface);border:1px solid var(--line);box-shadow:var(--sh2);font-size:13px;font-weight:500;color:var(--ink);z-index:20;display:flex;align-items:center;gap:6px;cursor:pointer}
+.uchip::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--amber,#b45309)}
 .ask input{flex:1;min-width:0;border:0;outline:0;background:none;height:100%;font-size:14px}
 .ask input::placeholder{color:var(--mute)}
 .ask button{width:32px;height:32px;border-radius:var(--r-control);background:var(--ink);color:#fff;display:grid;place-items:center;flex:none}
@@ -501,6 +503,7 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
   #v-floor .floor-back{position:absolute;left:16px;top:calc(env(safe-area-inset-top,0px) + 16px);z-index:30;height:36px;padding:0 14px;border-radius:12px;background:var(--surface);border:1px solid var(--line);box-shadow:var(--sh2);font-weight:500;display:flex;align-items:center;gap:6px}
   .crew{left:16px;bottom:calc(var(--h-tabs) + 16px)}
   .ask{display:none}
+  .uchip{display:none}
   .zoom{right:16px;top:calc(env(safe-area-inset-top,0px) + 16px);bottom:auto}
   .dark-bar{top:calc(env(safe-area-inset-top,0px) + 60px)}
   .roster{left:16px;right:16px;width:auto;bottom:calc(var(--h-tabs) + 72px)}
