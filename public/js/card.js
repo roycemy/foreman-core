@@ -40,7 +40,7 @@
     if(!bots.length)return BB.toast('Connect a bot first.');
     const CATS=[['software','Software'],['advertising','Advertising'],['travel','Travel'],['supplies','Supplies'],['uncategorized','Other']];
     const dollars=c=>c==null||c===''?'':(Number(c)/100).toFixed(2);
-    const box=BB.modal(`<h3>Sandbox rules</h3><p>These can only tighten limits, never loosen them. Every spend still needs your approval. No real money moves.</p>
+    const box=BB.modal(`<h3>Sandbox rules</h3><p>You can change or remove these limits. Every spend still needs your approval and must stay within the card and job budgets. No real money moves.</p>
       <div class="seg" role="tablist" aria-label="Bot">${bots.map(b=>`<button type="button" role="tab" data-bot="${esc(b.id)}">${esc(b.name)}</button>`).join('')}</div>
       <div class="rrow"><label for="rule-cap">Max per purchase</label><span class="inline-input">$<input id="rule-cap" type="text" inputmode="decimal" placeholder="No limit"></span></div>
       <div class="rrow"><label for="rule-rate">Purchases allowed per hour</label><span class="step"><button type="button" id="rate-dn" aria-label="Fewer per hour">−</button><input id="rule-rate" type="number" min="1" max="1000" step="1" placeholder="Any"><button type="button" id="rate-up" aria-label="More per hour">+</button></span></div>
