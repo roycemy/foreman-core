@@ -70,7 +70,7 @@
     apply.onclick=()=>on(apply.getAttribute('aria-checked')!=='true');
     jobSelect.onchange=()=>{apply.setAttribute('aria-checked',jobSelect.value?'true':'false');syncJob();};
     load();
-    const toCents=(v,name)=>{v=String(v).trim().replace(/^$/,'');if(v==='')return null;if(!/^d+(.d{1,2})?$/.test(v))throw Error(name+' must be a dollar amount like 25.00.');return Math.round(Number(v)*100);};
+    const toCents=(v,name)=>{v=String(v).trim();if(v==='')return null;if(!/^\d+(\.\d{1,2})?$/.test(v))throw Error(name+' must be a dollar amount like 25.00.');return Math.round(Number(v)*100);};
     $('#rule-save').onclick=async()=>{const err=$('#rule-error');err.textContent='';try{
       const policy={},cap=toCents($('#rule-cap').value,'Max per purchase'),rt=rate.value,cs=cats();
       if(cap!==null)policy.perActionCents=cap;if(rt!=='')policy.maxPerHour=Number(rt);if(cs.length)policy.allowedCategories=cs;
