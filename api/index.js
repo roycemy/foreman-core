@@ -225,7 +225,7 @@ async function taskForAgent(agent,id) {
   return null;
 }
 
-async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null };
+async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}) };
   bust(); await setJ('fm:task:' + t.id, t); await r(['LPUSH', 'fm:tasklist', t.id]); await r(['LTRIM', 'fm:tasklist', 0, 59]);
   if (t.assignee) { const ag = await getJ('fm:agent:' + t.assignee); if (ag && ag.hosted && ag.status === 'active' && !ag.paused) await runHosted(ag, t); }
   return t; }
@@ -242,6 +242,37 @@ async function capabilityProfiles(){
  }
  const profile={};for(const [k,c] of Object.entries(categories)){c.durations.sort((a,b)=>a-b);profile[k]={completed:c.completed,failed:c.failed,samples:c.completed+c.failed,successRate:c.completed/(c.completed+c.failed),medianSeconds:c.durations.length?Math.round(c.durations[Math.floor(c.durations.length/2)]/1000):null,trackedCostCents:c.costTrackedJobs?c.trackedCostCents:null,costTrackedJobs:c.costTrackedJobs};}
  return {id:a.id,name:a.name,provider:a.provider,capabilities:profile};});
+}
+// Type-box routing: free text -> one category via deterministic keywords. A tie matches nothing - a guess is never made.
+const CATEGORY_KEYWORDS = {
+  support: ['support', 'ticket', 'tickets', 'customer', 'complaint', 'refund'],
+  research: ['research', 'compare', 'investigate', 'look into', 'summarize', 'summarise', 'analyze', 'analyse', 'find out'],
+  finance: ['invoice', 'invoices', 'budget', 'expense', 'expenses', 'forecast', 'accounting', 'payroll'],
+  marketing: ['marketing', 'campaign', 'social', 'newsletter', 'brand', 'launch'],
+  creative: ['design', 'logo', 'mockup', 'illustration', 'creative', 'visual'],
+  sales: ['sales', 'outreach', 'prospect', 'prospects', 'leads', 'pitch'],
+  ops: ['deploy', 'fix', 'automate', 'spreadsheet', 'ops', 'operations', 'execution', 'build'],
+};
+function categorizeText(s) {
+  const text = ' ' + String(s || '').toLowerCase() + ' ';
+  let best = null, bestScore = 0, tied = false;
+  for (const [cat, words] of Object.entries(CATEGORY_KEYWORDS)) {
+    let score = 0; for (const w of words) if (text.includes(w)) score++;
+    if (score > bestScore) { best = cat; bestScore = score; tied = false; }
+    else if (score === bestScore && score > 0) tied = true;
+  }
+  return tied || !bestScore ? null : best;
+}
+// Multi-bot: every category with a keyword hit, strongest first. Equal scores are listed
+// alphabetically for determinism only; a tie is broken by scored history, never by order.
+function categorizeAll(s) {
+  const text = ' ' + String(s || '').toLowerCase() + ' ';
+  const out = [];
+  for (const [cat, words] of Object.entries(CATEGORY_KEYWORDS)) {
+    let score = 0; for (const w of words) if (text.includes(w)) score++;
+    if (score > 0) out.push({ category: cat, score });
+  }
+  return out.sort((a, b) => b.score - a.score || a.category.localeCompare(b.category));
 }
 async function routing(category){const bots=await capabilityProfiles(),rank=bots.map(b=>({b,p:b.capabilities[category]})).filter(x=>x.p).sort((a,b)=>b.p.successRate-a.p.successRate||b.p.samples-a.p.samples||(a.p.medianSeconds??Infinity)-(b.p.medianSeconds??Infinity));const best=rank[0];return {bots,suggested:best?{id:best.b.id,name:best.b.name,category,reason:best.p.completed+' completed / '+best.p.failed+' failed in '+category+'; '+best.p.samples+' reported outcomes'+(best.p.medianSeconds===null?'':'; median '+best.p.medianSeconds+'s')+'. Costs are not used unless tied to a job. This is a suggestion, not a quality guarantee.'}:null,basis:'Retained completed/failed job records only, up to latest 60 jobs. Outcomes are bot-reported, not independently graded. Empty categories and synthetic records excluded. No scored history means no suggestion; no automatic routing.'};}
 async function teammates(){return (await capabilityProfiles());}
@@ -295,6 +326,7 @@ function timelineOf(t,events,requests,receipts,kids,name){
  const out=[],bot=t.assignee?name(t.assignee):'A bot';
  out.push({at:t.createdAt,text:t.createdBy==='owner'?'Owner assigned the job':t.origin==='chat'?bot+' started it from a chat with the owner':name(t.createdBy)+' handed over the job',kind:'step',detail:t.brief?'“'+t.brief.slice(0,120)+'”':null});
  if(t.startedAt&&t.createdBy==='owner')out.push({at:t.startedAt,text:bot+' took the job',kind:'step'});
+ if(t.handoffPlan&&t.handoffPlan.length)out.push({at:t.createdAt,text:'Routing plan: '+bot+' leads; then '+t.handoffPlan.map(h=>name(h.botId)+' ('+h.category+')').join(', then ')+' - each hop only on a real handoff',kind:'step',detail:'Planned, not done yet'});
  for(const e of events){
   if(e.type==='reported'&&e.kind==='TOOL_USED'&&e.agentId===t.assignee)out.push({at:e.at,text:e.text,kind:'step',reported:true});
   if(e.type==='handoff'&&e.toAgentId)out.push({at:e.at,text:'Handed part of it to '+name(e.toAgentId),kind:'step'});}
@@ -312,6 +344,7 @@ function timelineOf(t,events,requests,receipts,kids,name){
   else if(q.status==='pending')out.push({at:q.createdAt,text:'Waiting for the owner: '+w,kind:'approval',detail:what});
   else if(q.status==='blocked')out.push({at:q.decidedAt||q.createdAt,text:'Blocked: '+w,kind:'denied',detail:q.reason||null});}
  for(const k of kids)if(['done','failed'].includes(k.status))out.push({at:k.finishedAt,text:name(k.assignee)+(k.status==='done'?' finished “'+k.title+'”':' could not finish “'+k.title+'”'),kind:'step'});
+ for(const k of kids)if(k.status==='running')out.push({at:k.startedAt||k.createdAt,text:name(k.assignee)+' is working on its part',kind:'step'});else if(k.status==='queued')out.push({at:k.createdAt,text:'A part waits for '+name(k.assignee),kind:'step'});
  if(t.status==='done')out.push({at:t.finishedAt,text:'Delivered',kind:'step',end:true});
  if(t.status==='failed')out.push({at:t.finishedAt,text:'Stopped without a result',kind:'denied',end:true,detail:t.result?String(t.result).slice(0,160):null});
  return out.filter(x=>x.at).sort((a,b)=>String(a.at).localeCompare(String(b.at))||(a.end?1:0)-(b.end?1:0));}
@@ -1238,7 +1271,51 @@ async function routes(req, res, path, body, agentPre) {
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
-    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started'); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
+    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started');
+      let routed = null, category = null, routingReason = null, unrouted = false, assignee = body.assignee || null, handoffPlan = null, brief = body.brief;
+      if (body.route === true && !assignee) {
+        // One message can span categories: a lead bot takes the strongest one, further matched
+        // categories become a planned handoff chain. A hop happens only when a bot actually hands
+        // off via work.handoff (each hop passes the gateway policy gate); the plan is never faked.
+        const matches = categorizeAll(String(body.title || '') + ' ' + String(body.brief || ''));
+        const top = matches.length ? matches.filter(m => m.score === matches[0].score) : [];
+        let leadCat = null, tieNote = '', tieUnresolved = false;
+        if (top.length === 1) leadCat = top[0].category;
+        else if (top.length > 1) {
+          const scored = [];
+          for (const m of top) { const a = await routing(m.category); if (a.suggested) { const p = a.suggested.id && (a.bots.find(b => b.id === a.suggested.id) || {}).capabilities || {}; scored.push({ cat: m.category, n: (p[m.category] || {}).completed || 0 }); } }
+          scored.sort((x, y) => y.n - x.n);
+          if (scored.length && (scored.length === 1 || scored[0].n > scored[1].n)) { leadCat = scored[0].cat; tieNote = 'Categories ' + top.map(m => m.category).join(' and ') + ' matched equally; ' + leadCat + ' leads on scored history. '; }
+          else tieUnresolved = true;
+        }
+        if (leadCat) {
+          const advice = await routing(leadCat);
+          if (advice.suggested) {
+            assignee = advice.suggested.id; category = leadCat; routingReason = tieNote + advice.suggested.reason;
+            const chain = [], unstaffed = [], used = new Set([assignee]);
+            for (const m of matches) {
+              if (m.category === leadCat) continue;
+              const a2 = await routing(m.category);
+              if (a2.suggested && !used.has(a2.suggested.id)) { used.add(a2.suggested.id); chain.push({ category: m.category, botId: a2.suggested.id, botName: a2.suggested.name, reason: a2.suggested.reason }); }
+              else if (!a2.suggested) unstaffed.push(m.category);
+            }
+            if (chain.length) {
+              handoffPlan = chain;
+              routingReason += ' Planned handoffs: ' + chain.map(h => h.botName + ' (' + h.category + ')').join(', then ') + '. Each hop happens only on a real handoff and passes policy.';
+              brief = String(brief || '') + '\n\nRouting plan: your part is ' + leadCat + '. When your part is done, hand the next part on with work.handoff: ' + chain.map(h => h.botName + ' takes ' + h.category).join(', then ') + '.';
+            }
+            if (unstaffed.length) routingReason += ' No scored bot for ' + unstaffed.join(', ') + ' yet; that part is not auto-planned.';
+            routed = { botId: advice.suggested.id, botName: advice.suggested.name, category: leadCat, reason: routingReason, chain, unstaffed };
+          }
+        }
+        if (!assignee) {
+          unrouted = true;
+          if (!matches.length) routingReason = 'No category matched this message. Left unassigned rather than guessed.';
+          else if (tieUnresolved) routingReason = 'Categories ' + top.map(m => m.category).join(' and ') + ' matched equally with no stronger scored history to pick a lead. Left unassigned rather than guessed.';
+          else routingReason = 'No bot has scored history in ' + (leadCat || top[0].category) + ' yet. Left unassigned rather than guessed.';
+        }
+      }
+      return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, handoffPlan }), routed, unrouted }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
