@@ -51,7 +51,7 @@ const mem = global.__mem || (global.__mem = { kv: new Map(), lists: new Map() })
 async function r(cmd0) {
   const cmd = cmd0.map((x, i) => i === 0 ? x : nsKey(x));
   if (!URL_) return memCmd(cmd);
-  const res = await fetch(URL_, { method: 'POST', headers: { Authorization: 'Bearer ' + TOK, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
+  const res = await fetch(URL_, { method: 'POST', headers: { Authorization: 'Bearer ' + TOK, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd), ...((als.getStore()||{}).issuerDeadline?{signal:AbortSignal.timeout(Math.max(1,(als.getStore()||{}).issuerDeadline-Date.now()))}:{}) });
   const j = await res.json();
   if (j.error) throw new Error('store: ' + j.error);
   return j.result;
@@ -1131,6 +1131,8 @@ async function routes(req, res, path, body, agentPre) {
     // --- owner-facing ---
     if(path==='/cards'&&req.method==='GET')return res.json(await cardData());
     if(path==='/authorization/demo'&&req.method==='GET')return res.json(AUTHZ.demo());
+    if(path==='/issuer/test/mandate'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuerMandate(body));}
+    if(path==='/issuer/test/status'&&req.method==='GET')return res.json({mode:'stripe_test_only',configured:!!process.env.STRIPE_ISSUING_TEST_WEBHOOK_SECRET,liveEnabled:false,issuerDeliveryVerified:false,responseBudgetMs:1000,note:'Deployment is not issuer delivery verification. Configure a Stripe sandbox endpoint with decline-on-timeout.'});
     if(path==='/cards/control'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cardControl(body));}
     if(path==='/cards/proposals'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cardPropose(await getJ('fm:agent:'+body.botId),body));}
     {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cardDecision(cm[1],cm[2],body.detailsHash));}}
@@ -1235,3 +1237,44 @@ async function routes(req, res, path, body, agentPre) {
 
 // For api/og.js: read a public share without a session.
 module.exports.publicReceiptRead = token => als.run({ ws: 'legacy' }, () => publicReceiptRead(token));
+
+// Issuer-test mandate: one owner card, one exact pending spend at a time.
+// Metadata from the merchant/webhook never chooses a workspace, bot or job.
+async function issuerMandate(body){
+ if(body.confirmed!==true||!/^ic_[A-Za-z0-9]+$/.test(body.cardId||'')||!/^acct_[A-Za-z0-9]+$/.test(body.accountId||'')||!Number.isSafeInteger(body.amountCents)||body.amountCents<1||body.amountCents>1000000||!Number.isSafeInteger(body.jobBudgetCents)||body.jobBudgetCents<body.amountCents||body.jobBudgetCents>1000000||typeof body.merchantNetworkId!=='string'||!body.merchantNetworkId.trim()||body.merchantNetworkId.length>100||typeof body.category!=='string'||!body.category||body.category.length>100)return {status:400,body:{error:'Review exact test account/card, bot/job, USD amount, network merchant id and issuer category'}};
+ const a=await getJ('fm:agent:'+body.botId),t=await getJ('fm:task:'+body.taskId);
+ if(!a||a.status!=='active'||a.paused||!t||t.assignee!==a.id||t.status!=='running')return {status:400,body:{error:'Active bot and assigned running job required'}};
+ const binding=body.accountId+':'+body.cardId,bindingKey='gl:issuer-owner-test:'+wsId();await r(['SET',bindingKey,binding,'NX']);if(await r(['GET',bindingKey])!==binding)return {status:409,body:{error:'One test card per owner; registered account/card differs'}};
+ const key='gl:issuer-test:'+binding,raw=await r(['GET',key]),old=raw&&JSON.parse(raw);
+ if(old&&old.ws!==wsId())return {status:409,body:{error:'Card is registered elsewhere'}};
+ if(old?.mandate&&!old.mandate.used&&old.mandate.expires>Date.now())return {status:409,body:{error:'An unexpired mandate already exists for this owner card'}};
+ const jobs=old?.jobs||{},spent=Number(jobs[body.taskId]?.reservedCents||0);if(body.jobBudgetCents<spent+body.amountCents)return {status:400,body:{error:'Job issuer-test budget has insufficient unreserved cents'}};jobs[body.taskId]={botId:a.id,budgetCents:body.jobBudgetCents,reservedCents:spent};
+ const next={ws:wsId(),jobs,accountId:body.accountId,cardId:body.cardId,decisions:old?.decisions||[],mandate:{id:rid('mandate'),botId:a.id,taskId:t.id,amountCents:body.amountCents,merchantNetworkId:body.merchantNetworkId.trim(),category:body.category,expires:Date.now()+600000,used:false,createdAt:now()}};
+ const won=raw?await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)]):await r(['SET',key,JSON.stringify(next),'NX']);if(!won)return {status:409,body:{error:'Concurrent mandate change; review again'}};
+ return {status:200,body:{mode:'stripe_test_only',mandate:next.mandate,note:'Single-use exact spend approval, expires in 10 minutes. No real card or money. Unknown or ambiguous charges decline.'}};
+}
+async function issuerProcess(event,deadline){
+ const deny=reason=>({approved:false,reason}),auth=event.data?.object,p=auth?.pending_request,card=typeof auth?.card==='string'?auth.card:auth?.card?.id;
+ if(event.livemode!==false||auth?.livemode!==false)return deny('live_mode_disabled');
+ if(!/^evt_[A-Za-z0-9]+$/.test(event.id||'')||!/^iauth_[A-Za-z0-9]+$/.test(auth?.id||'')||!/^acct_[A-Za-z0-9]+$/.test(event.account||'')||!/^ic_[A-Za-z0-9]+$/.test(card||'')||p?.currency!=='usd'||!Number.isSafeInteger(p?.amount)||p.amount<1)return deny('invalid_or_unsupported_request');
+ const key='gl:issuer-test:'+event.account+':'+card;
+ for(let attempt=0;attempt<3;attempt++){
+  if(Date.now()>=deadline)return deny('internal_deadline');
+  const raw=await r(['GET',key]);if(!raw)return deny('unmapped_card');const state=JSON.parse(raw),m=state.mandate;
+  // Any replay conservatively declines, including a fresh delivery of an approved authorization.
+  if(state.decisions.some(x=>x.eventId===event.id||x.authorizationId===auth.id))return deny('replay_declined');
+  if(!m||m.used||m.expires<=Date.now())return deny('no_active_owner_mandate');
+  if(p.amount!==m.amountCents||auth.merchant_data?.network_id!==m.merchantNetworkId||auth.merchant_data?.category!==m.category)return deny('mandate_mismatch');
+  const decision=await als.run({ws:state.ws,issuerDeadline:deadline},async()=>{
+   const a=await getJ('fm:agent:'+m.botId),t=await getJ('fm:task:'+m.taskId),killed=!!await r(['GET','fm:kill'])||!!await r(['GET','fm:cards:kill']);
+   // Same engine, issuer-authenticated amount/category, preapproved exact mandate.
+   return AUTHZ.evaluate({botId:m.botId,taskId:m.taskId,amountCents:p.amount,currency:'USD',category:auth.merchant_data.category},{active:a?.status==='active',paused:a?.paused,killed,expired:m.expires<=Date.now(),ownerApproved:true,spentToday:0,dailyLimit:state.jobs?.[m.taskId]?.budgetCents||0,recentCount:0,policy:{perActionCents:m.amountCents,allowedCategories:[m.category],maxPerHour:1},jobRequired:true,job:t?{...t,sandboxGrant:{botId:m.botId,status:'active',budgetCents:state.jobs?.[m.taskId]?.budgetCents||0,spentCents:state.jobs?.[m.taskId]?.reservedCents||0}}:null});
+  });
+  if(Date.now()>=deadline)return deny('internal_deadline');
+  const approved=decision.decision==='ALLOW_SANDBOX',jobs={...state.jobs};if(approved)jobs[m.taskId]={...jobs[m.taskId],reservedCents:jobs[m.taskId].reservedCents+p.amount};const next={...state,jobs,mandate:{...m,used:true},decisions:[...state.decisions,{eventId:event.id,authorizationId:auth.id,mandateId:m.id,botId:m.botId,taskId:m.taskId,amountCents:p.amount,approved,reason:decision.code,at:now(),mode:'stripe_test_only',chargedCents:0}]};
+  // Atomic consume+decision. Uncertain/time-out storage stays consumed, never auto-retries spend.
+  if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])===1)return Date.now()<deadline?{approved,reason:decision.code}:deny('internal_deadline');
+ }
+ return deny('concurrent_admission');
+}
+module.exports.issuerProcess=(event,deadline)=>!URL_?Promise.resolve({approved:false,reason:'durable_storage_required'}):als.run({issuerDeadline:deadline},()=>issuerProcess(event,deadline));
