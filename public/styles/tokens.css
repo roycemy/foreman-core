@@ -1,4 +1,4 @@
-/* Black Box vNext design system: the single token layer for every surface (app, receipt, oauth, runner, marketing).
+/* Alter design system: the single token layer for every surface (app, receipt, oauth, runner, marketing).
    Spec: vnext/DIRECTIONS.md "System". The product name lives in /brand.js, never here.
    Rules this file encodes:
    - Porcelain page, white surfaces, ink text and neutral actions. Vermilion is the ONE accent and means "needs you".
@@ -23,6 +23,10 @@
   --vermilion-press:#C8361D;/* hover / pressed */
   --vermilion-tint:rgba(226,69,43,.08);
   --on-ink:#FFFFFF;
+  /* Alter pack names, mapped onto the live values (the shots use these values; keep existing names above) */
+  --paper:var(--porcelain); --v:var(--vermilion); --v-ink:var(--vermilion-press); --v-wash:var(--vermilion-tint);
+  --card:#16161A; --card-ink:#ECE9E2; --mono:var(--font-code); --dur:180ms;
+  --r-sm:8px; --r:12px; --r-lg:16px; --r-xl:22px;
   --scrim:rgba(18,18,18,.28);
 
   /* ---- type: Geist only ---- */
@@ -48,6 +52,7 @@
 
   /* ---- motion ---- */
   --ease:cubic-bezier(.2,.8,.2,1);
+  --mark:url(/brand/alter-mark.svg); --mark-idle:url(/brand/alter-mark-idle.svg); --mark-card:url(/brand/alter-mark-card.svg);
   --m-tip:120ms;        /* tooltips fade + rise */
   --m-pop:180ms;        /* "Anything on me?" opens */
   --m-collapse:200ms;   /* approved row collapses */
@@ -101,9 +106,9 @@ code,pre,samp,kbd,.code,[data-code]{font-family:var(--font-code);font-size:12px;
 [hidden]{display:none!important}
 
 /* ---------- mark ---------- */
-.mark{display:inline-flex;align-items:center;gap:10px;font-weight:600;font-size:15px;letter-spacing:-.02em;text-decoration:none;color:var(--ink)}
-.mark i{width:18px;height:18px;border:2px solid currentColor;border-radius:5px;position:relative;flex:none}
-.mark i::after{content:"";position:absolute;left:2px;right:2px;top:2px;height:3px;background:var(--vermilion);border-radius:1px}
+.mark,.wm{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:16px;letter-spacing:-.045em;text-transform:none;text-decoration:none;color:var(--ink)}
+.mark i,span.mark:empty,.wm>.mark:empty{display:inline-block;flex:none;width:28px;height:18px;background:var(--mark) center/contain no-repeat}
+.mark.idle i,.mark.idle:empty{background-image:var(--mark-idle)}
 
 /* ---------- buttons: controls are 9-10 radius, sh1 at rest ---------- */
 .b{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);height:36px;padding:0 14px;border-radius:var(--r-control);font-weight:500;font-size:13.5px;white-space:nowrap;text-decoration:none;cursor:pointer;transition:background var(--m-tip) var(--ease),border-color var(--m-tip) var(--ease),opacity var(--m-tip)}
@@ -173,9 +178,6 @@ input[readonly].t,input[readonly].in{background:var(--surface-2);font-family:var
 .disp em{font-style:normal;color:var(--stone)}
 .mono{font-family:var(--font)}
 .chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:1px solid var(--line);border-radius:var(--r-pill);font-size:12.5px;font-weight:500;background:var(--surface)}
-.wm{display:inline-flex;align-items:center;gap:10px;font-weight:600;font-size:15px;letter-spacing:-.02em;text-decoration:none;color:var(--ink)}
-span.mark:empty,.wm>.mark:empty{width:18px;height:18px;border:2px solid currentColor;border-radius:5px;position:relative;flex:none;display:inline-block}
-span.mark:empty::after,.wm>.mark:empty::after{content:"";position:absolute;left:2px;right:2px;top:2px;height:3px;background:var(--vermilion);border-radius:1px}
 .av.grok{--av:#121212}.av.instinct{--av:#1F6F5C}.av.muse{--av:#2F55A4}.av.scout{--av:#5B4470}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
 .dot.live{background:var(--ink)}.dot.need{background:var(--vermilion)}.dot.prep{border:1.5px dashed var(--mute)}.dot.idle{background:var(--mute)}
