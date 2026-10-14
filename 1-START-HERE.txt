@@ -1,0 +1,32 @@
+# Claude Code handoff - Alter bot-link repair (in-repo layout)
+
+This branch is foreman-core main d67990f + draft PR44 c702c51 (durable pairing) +
+PR46 237fb78 (feed) + PR47 6f4f54f (bridge), combined locally. NOT merged, NOT deployed.
+
+## Layout
+- . (repo root) - the combined source. Server: api/index.js. UI: public/. Bridge: worker/live-bridge/.
+- grok-patch/ - an untrusted AI-generated patch (api/bot-link.js, api/index.js wiring, public/connect.html, worker/live-bridge/bridge.cjs, vercel.json, 6 botlink tests + helpers). Verdict: reject as submitted. Reference material only.
+- review/ - botlink-hostile-review.cjs (5 failing negative tests) + FAILURE-NOTES.md (repair order and blockers).
+
+## Your task
+Repair the bot-link concept on a new branch from this one. First apply grok-patch/ over this repo root (copy its files in), or rebuild the concept cleanly - your choice; grok-patch/ is reference, not trusted code.
+
+## Hard rules
+- Draft PR only. No merge, no deploy, no spend, no .env, no node_modules, no secrets in code, chat or pasted setup messages.
+- The server uses Upstash/Vercel KV Redis REST (memory fallback in tests). No network in regression suites.
+- Existing suites must pass. From this repo root: `for f in *-regression.cjs; do node "$f" || exit 1; done` (19 before the patch, 25 with the patch tests applied).
+- After applying the patch (or your rebuild) to the root, run `node review/botlink-hostile-review.cjs`. It FAILS all 5 checks against the submitted patch; your repair must pass all 5. Add more hostile tests for anything you change.
+- Keys and caller secrets never travel in pasted chat messages and are stored only as hashes. The one-paste message stays secret-free; one secure owner approval in Alter remains required.
+- Status and tiers report only proven events. Connected/Quiet/Needs re-paste from real calls; Governed only when a request actually routed through policy; Live only from real lifecycle events. Never fake presence or typing.
+- Revoke must win every race: no concurrent call, expired pickup, or pre-approved pairing may restore access after owner revoke, and revoke isolates one bot.
+- Reuse existing agent IDs and transports; do not create a parallel bot registry that /api/mcp and the runner cannot authenticate.
+
+## Repair order
+1. Fix atomicity: epoch-bound, single-write or Lua-guarded issuance/renewal/revoke; TTLs on all claim/rotate markers.
+2. Enforce expiry on pickup; invalidate pending approvals on revoke; cancel pairing server-side on owner cancel.
+3. Retry-safe rotation (request IDs), reject unsupported ops, tiers from real transport evidence only.
+4. Wire transports for real or narrow the claim: document exactly which transport accepts the key; do not mark Governed/Live otherwise.
+5. Keep identical onboarding across Instinct/Grok/Muse; fix the UX blockers in review/FAILURE-NOTES.md.
+
+## Unproven regardless of code
+No real Muse, Grok or Instinct client has been tested. Production Redis concurrency is untested. HQ is a 4s poll, not push. Report these caveats in the PR body.
