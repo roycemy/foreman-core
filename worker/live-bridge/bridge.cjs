@@ -26,6 +26,8 @@ class Bridge{
  if(r.status>=500||r.status===429)return;
  if(!r.ok){d.halted=true;d.reason='upstream_rejected';d.httpStatus=r.status;this.save();return;}
  d.queue.shift();this.save();}}finally{this.running.delete(id);}}
+ // Owner revoke: stop this bot's queue only. Held events are never replayed as live.
+ halt(id,reason='revoked'){const d=this.data.bots[id];if(!d)return false;d.halted=true;d.reason=reason;d.queue=[];this.save();return true;}
  status(){return [...this.bots.keys()].map(id=>({id,queued:this.data.bots[id].queue.length,halted:this.data.bots[id].halted,reason:this.data.bots[id].reason||null}));}
 }
 function server(bridge){return http.createServer(async(req,res)=>{res.setHeader('Content-Type','application/json');res.setHeader('Cache-Control','no-store');const respond=(code,obj)=>{res.statusCode=code;res.end(JSON.stringify(obj));};const m=(req.url||'').match(/^\/bots\/(agent_[a-f0-9]+)\/events$/);if(req.method!=='POST'||!m)return respond(404,{error:'Not found'});let chunks=[],n=0;for await(const c of req){n+=c.length;if(n>2048){respond(413,{error:'Metadata too large'});return;}chunks.push(c);}let body;try{body=JSON.parse(Buffer.concat(chunks).toString())}catch{return respond(400,{error:'Invalid JSON'})}const token=String(req.headers.authorization||'').replace(/^Bearer /,'');const result=bridge.intake(m[1],token,body);respond(result.status,{accepted:result.status===202,duplicate:!!result.duplicate,...(result.error?{error:result.error}:{})});if(result.status===202)void bridge.drain(m[1]);});}

@@ -1,0 +1,78 @@
+// Extra hostile tests for the bot-link repair (beyond review/botlink-hostile-review.cjs). No network, no spend.
+// Covers: retry-safe rotation, races (pickup, hello, revoke vs reattach), owner cancel, TTLs on markers,
+// unsupported ops not burning keys, Governed only from policy and reset on re-paste, external agent revoke.
+const assert=require('assert'),{makeLink,connect,fresh,act}=require('./botlink-helpers.cjs');const MIN=60e3,DAY=864e5;
+const T={};
+T.lostResponseRetry=async()=>{const {bl,acts}=makeLink(),c=await connect(bl,'muse'),rid=fresh(8);
+ const r1=await act(bl,c.key,{requestId:rid});assert.equal(r1.status,200);const lost=r1.body.nextKey; // response never reached the bot
+ const r2=await act(bl,c.key,{requestId:rid});assert.equal(r2.status,200,'same key + same requestId retries');assert.equal(r2.body.retried,true);
+ assert.deepEqual(r2.body.result,r1.body.result,'cached result, not a second action');assert.equal(acts.length,1,'action ran exactly once');
+ assert.equal((await act(bl,r2.body.nextKey,{requestId:fresh(8)})).status,200,'the retried successor works');
+ const late=await act(bl,lost);assert.equal(late.status,401,'the lost successor is dead');assert.equal(late.body.reason,'key_reuse_detected','presenting it later is a collision');};
+T.retryNeedsSameRequest=async()=>{const {bl}=makeLink(),c=await connect(bl,'grok');const r1=await act(bl,c.key,{requestId:fresh(8)});
+ const r2=await act(bl,c.key,{requestId:fresh(8)});assert.equal(r2.status,401);assert.equal(r2.body.reason,'key_reuse_detected','old key with a different requestId is reuse');
+ assert.equal((await act(bl,r1.body.nextKey)).status,401,'both holders drop');};
+T.retryAfterSuccessorUsed=async()=>{const {bl}=makeLink(),c=await connect(bl,'grok'),rid=fresh(8);const r1=await act(bl,c.key,{requestId:rid});
+ assert.equal((await act(bl,r1.body.nextKey,{requestId:fresh(8)})).status,200);
+ assert.equal((await act(bl,c.key,{requestId:rid})).body.reason,'key_reuse_detected','no retry once the successor was used');};
+T.retryAfterGrace=async()=>{const {bl,clock}=makeLink(),c=await connect(bl,'grok'),rid=fresh(8);await act(bl,c.key,{requestId:rid});clock.t+=3*MIN;
+ assert.equal((await act(bl,c.key,{requestId:rid})).body.reason,'key_reuse_detected','retry window is bounded');};
+T.retryWhileRunning=async()=>{let release;const gate=new Promise(r=>release=r);const {bl}=makeLink({executeAct:async()=>{await gate;return {status:200,body:{status:'completed',receipt_id:'rcpt_x'},governed:true}}});
+ const c=await connect(bl,'grok'),rid=fresh(8);const first=act(bl,c.key,{requestId:rid});await new Promise(r=>setTimeout(r,5));
+ const second=await act(bl,c.key,{requestId:rid});assert.equal(second.status,409,'retry during the first call waits instead of killing the key');release();
+ const r1=await first;assert.equal(r1.status,200);assert.equal((await act(bl,r1.body.nextKey)).status,200);};
+T.unsupportedOpKeepsKey=async()=>{const {bl}=makeLink(),c=await connect(bl,'grok');
+ for(const bad of [{op:'unsupported-operation'},{op:'act',action:'money.move'},{op:'act'},{op:'echo',requestId:'short'},{}])assert.equal((await bl.call(c.key,bad)).status,400,JSON.stringify(bad));
+ assert.equal((await bl.call(c.key,{op:'echo'})).status,200,'rejected requests do not rotate or burn the key');};
+T.noPolicyTransport=async()=>{const {bl}=makeLink({executeAct:null}),c=await connect(bl,'grok');const r=await act(bl,c.key);assert.equal(r.status,501);
+ assert.equal((await bl.list('ws_test'))[0].tiers.find(t=>t.tier==='Governed').state,'not_yet');assert.equal((await bl.call(c.key,{op:'echo'})).status,200,'501 does not burn the key');};
+T.governedOnlyFromPolicy=async()=>{const {bl}=makeLink({executeAct:async()=>({status:403,body:{status:'blocked',reason:'Worker revoked'},governed:false})}),c=await connect(bl,'grok');
+ await act(bl,c.key);assert.equal((await bl.list('ws_test'))[0].tiers.find(t=>t.tier==='Governed').state,'not_yet','an act policy never evaluated earns nothing');};
+T.governedResetsOnRepaste=async()=>{const {bl}=makeLink(),c=await connect(bl,'grok');await act(bl,c.key);
+ const g=()=>bl.list('ws_test').then(l=>l[0].tiers.find(t=>t.tier==='Governed').state);assert.equal(await g(),'earned');
+ await connect(bl,'grok',{reattachBotId:c.botId});assert.equal(await g(),'not_yet','a new key must earn Governed itself');};
+T.governedLostOnNeedsRepaste=async()=>{const {bl,clock}=makeLink(),c=await connect(bl,'grok');await act(bl,c.key);clock.t+=31*DAY;
+ const s=(await bl.list('ws_test'))[0];assert.equal(s.state,'needs_repaste');assert(s.tiers.every(t=>t.state!=='earned'),'no tier shows earned on a dead key');};
+T.concurrentPickup=async()=>{const {bl}=makeLink(),p=(await bl.createPairing({ws:'w',type:'muse'})).body,s=fresh();await bl.hello(p.pairingId,{nonce:fresh(),callerSecret:s});await bl.approve('w',p.pairingId);
+ const rs=await Promise.all([1,2,3].map(()=>bl.pickup(p.pairingId,{callerSecret:s})));assert.equal(rs.filter(r=>r.status===200).length,1,'one key, exactly once');
+ assert.equal((await bl.list('w')).length,1,'one bot record');};
+T.concurrentHello=async()=>{const alerts=[];const {bl}=makeLink({onAlert:async a=>alerts.push(a)}),p=(await bl.createPairing({ws:'w',type:'grok'})).body;
+ const rs=await Promise.all([fresh(),fresh()].map(s=>bl.hello(p.pairingId,{nonce:fresh(),callerSecret:s})));
+ assert.equal((await bl.approvalView('w',p.pairingId)).body.status,'killed','racing callers burn the link; nobody wins');assert(rs.some(r=>r.status===410));assert.equal(alerts.length,1);};
+T.revokeRacesReattachPickup=async()=>{for(let i=0;i<20;i++){const {bl}=makeLink(),c=await connect(bl,'instinct');const p=(await bl.repasteMessage('ws_test',c.botId,'x')).body,s=fresh();
+ await bl.hello(p.pairingId,{nonce:fresh(),callerSecret:s});await bl.approve('ws_test',p.pairingId,{confirmBotId:c.botId});
+ const [k]=await Promise.all([bl.pickup(p.pairingId,{callerSecret:s}),bl.revoke('ws_test',c.botId)]);
+ const b=JSON.parse(await bl.s.get('bl:bot:'+c.botId));assert.equal(b.revoked,true);assert.equal(b.keyHash,null);
+ if(k.status===200)assert.equal((await bl.call(k.body.key,{op:'echo'})).status,401,'a key issued in the race dies with the revoke');}};
+T.revokeRacesCalls=async()=>{const {bl}=makeLink(),c=await connect(bl,'grok');let key=c.key;const calls=[];for(let i=0;i<5;i++)calls.push(act(bl,key,{requestId:fresh(8)}));
+ await Promise.all([...calls,bl.revoke('ws_test',c.botId)]);const b=JSON.parse(await bl.s.get('bl:bot:'+c.botId));assert.equal(b.revoked,true);
+ for(const r of await Promise.all(calls))if(r.body.nextKey)assert.equal((await bl.call(r.body.nextKey,{op:'echo'})).status,401);};
+T.revokeBetweenRotationAndAct=async()=>{const ran=[];let bl,botId,armed=false;const made=makeLink({executeAct:async b=>{ran.push(b.id);return {status:200,body:{status:'completed',receipt_id:'r'},governed:true}}});bl=made.bl;
+ const c=await connect(bl,'grok');botId=c.botId;const put=bl.s.put;
+ // The successor index write happens after the rotation commits and before the action runs: revoke lands exactly there.
+ bl.s.put=async(k,v,ms)=>{const o=await put(k,v,ms);if(armed&&k.startsWith('bl:key:')){armed=false;await bl.revoke('ws_test',botId);}return o;};
+ armed=true;const r=await act(bl,c.key);assert.equal(r.status,401,'call loses to the revoke');assert.deepEqual(ran,[],'the action never runs after revoke');
+ assert.equal(JSON.parse(await bl.s.get('bl:bot:'+botId)).governedAt,null,'nothing recorded after revoke');};
+T.revokeIsTerminal=async()=>{const {bl}=makeLink(),c=await connect(bl,'grok');const p=(await bl.repasteMessage('ws_test',c.botId,'x')).body;await bl.revoke('ws_test',c.botId);
+ assert.equal((await bl.repasteMessage('ws_test',c.botId,'x')).status,409,'no re-paste after revoke');
+ const s=fresh();await bl.hello(p.pairingId,{nonce:fresh(),callerSecret:s});assert.equal((await bl.approvalView('ws_test',p.pairingId)).body.status,'invalidated');
+ assert.equal((await bl.approve('ws_test',p.pairingId,{confirmBotId:c.botId})).status,409,'a pre-revoke pairing cannot be approved');};
+T.revokeIsolation=async()=>{const {bl}=makeLink(),a=await connect(bl,'grok'),b=await connect(bl,'grok');await bl.revoke('ws_test',a.botId);
+ assert.equal((await bl.call(b.key,{op:'echo'})).status,200,'revoking one bot leaves the other');};
+T.ownerCancel=async()=>{const {bl}=makeLink(),p=(await bl.createPairing({ws:'w',type:'muse'})).body,s=fresh();await bl.hello(p.pairingId,{nonce:fresh(),callerSecret:s});
+ assert.equal((await bl.cancel('other',p.pairingId)).status,404,'only the owner workspace can cancel');assert.equal((await bl.cancel('w',p.pairingId)).status,200);
+ assert.equal((await bl.approve('w',p.pairingId)).status,409);assert.equal((await bl.pickup(p.pairingId,{callerSecret:s})).status,410);
+ assert.equal((await bl.hello(p.pairingId,{nonce:fresh(),callerSecret:s})).status,410);};
+T.approveAfterExpiry=async()=>{const {bl,clock}=makeLink(),p=(await bl.createPairing({ws:'w',type:'muse'})).body,s=fresh();await bl.hello(p.pairingId,{nonce:fresh(),callerSecret:s});
+ clock.t+=11*MIN;assert.equal((await bl.approve('w',p.pairingId)).status,410);assert.equal((await bl.steps(p.pairingId,'https://x')).status,410);};
+T.agentRevokedOutsideBotLink=async()=>{let active=true;const {bl}=makeLink({authorize:async()=>active}),c=await connect(bl,'grok');
+ const store=bl.s;const bot=JSON.parse(await store.get('bl:bot:'+c.botId));bot.agentId='agent_fixture';await store.put('bl:bot:'+c.botId,JSON.stringify(bot));
+ active=false;assert.equal((await bl.call(c.key,{op:'echo'})).status,401,'owner revoked the agent in HQ');active=true;
+ assert.equal((await bl.call(c.key,{op:'echo'})).status,200,'refusal did not rotate or burn the key');};
+T.markersExpire=async()=>{const {bl,store}=makeLink(),c=await connect(bl,'grok');await act(bl,c.key);
+ const registry=/^bl:(bot|bots|count|agentBot):/;for(const k of store.kv.keys())if(!registry.test(k))assert(store.ttl.has(k),'every marker/index key has a TTL: '+k.slice(0,12));
+ const ttlOf=k=>store.ttl.get(k)-bl.now();assert(ttlOf('bl:pair:'+c.pairing.pairingId)<=bl.o.pairingTtlMs+DAY,'pairing records expire');};
+T.secretsNotStored=async()=>{const {bl,store}=makeLink(),c=await connect(bl,'muse');const r=await act(bl,c.key,{requestId:fresh(8)});
+ const dump=JSON.stringify([...store.kv.entries()]);for(const s of [c.secret,c.firstKey,c.key,r.body.nextKey])assert(!dump.includes(s),'plaintext secret at rest');};
+(async()=>{let failures=0;for(const [name,test] of Object.entries(T)){try{await test()}catch(e){failures++;console.error('FAIL',name+':',e.message)}}
+ if(failures){process.exitCode=1;return}console.log('PASS bot-link hostile extras ('+Object.keys(T).length+'): retry-safe rotation, pickup/hello/revoke races, terminal revoke, owner cancel, expiry everywhere, Governed only from policy, external agent revoke, TTL markers, no plaintext secrets.');})();
