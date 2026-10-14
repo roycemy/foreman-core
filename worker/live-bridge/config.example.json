@@ -1,0 +1,13 @@
+{
+  "port": 8788,
+  "stateFile": "/var/lib/alter-bridge/state.json",
+  "bots": [
+    {
+      "id": "agent_REPLACE_WITH_EXACT_ID",
+      "providerLabel": "Instinct",
+      "url": "https://foreman-core.vercel.app",
+      "gatewayKeyFile": "/etc/alter-bridge/credentials/instinct.gateway",
+      "intakeTokenFile": "/etc/alter-bridge/credentials/instinct.intake"
+    }
+  ]
+}
