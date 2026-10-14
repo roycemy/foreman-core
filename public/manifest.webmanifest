@@ -1,0 +1,17 @@
+{
+  "name": "Alter",
+  "short_name": "Alter",
+  "description": "Your bot team: floor, inbox, approvals and receipts.",
+  "id": "/app",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F4F3EF",
+  "theme_color": "#F4F4F1",
+  "icons": [
+    { "src": "/brand/alter-icon-light-180.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
+    { "src": "/brand/alter-icon-light-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/brand/alter-icon-dark-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
