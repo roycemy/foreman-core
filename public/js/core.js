@@ -187,7 +187,7 @@
     return BB.withOwner(a, at) || BB.runningTask(a) ? 'working' : 'available';
   };
   /* round 3 liveness: connected over OAuth or the gateway, but no accepted activity for 60s. Authorization may still be saved. */
-  BB.wentDark = (a, at) => !!a && a.status === 'active' && !!a.connection && a.connection.status === 'active' && !!a.lastSeen && (at || BB.now()) - Date.parse(a.lastSeen) >= 60000;
+  BB.wentDark = (a, at) => !!a && a.status === 'active' && !!a.connection && a.connection.status === 'active' && a.connection.transport !== 'botlink' && !!a.lastSeen && (at || BB.now()) - Date.parse(a.lastSeen) >= 60000; // botlink has no heartbeat expectation: Quiet shows as No recent activity, never Went dark
   BB.SIGNAL_COPY = { working: 'Working', available: 'Available', inactive: 'No recent activity' };
   BB.statusLine = a => { const s = BB.botState(a); return s.kind === 'run' ? BB.sentenceCase(s.text) : s.text; };
   BB.sentenceCase = s => { s = String(s || ''); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; };
