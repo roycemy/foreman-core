@@ -292,6 +292,10 @@
     const j = await BB.api('/api/tasks/' + taskId + '/assign', 'POST', { assignee: botId });
     BB.toast(j.error ? j.error : 'Assigned to ' + ((BB.agent(botId) || {}).name || 'the bot') + '.'); await BB.sync(true); return j;
   };
+  BB.dismiss = async function (taskId) {
+    const j = await BB.api('/api/tasks/' + taskId + '/dismiss', 'POST', {});
+    BB.toast(j.error ? j.error : 'Dismissed. It stays in the job history.'); await BB.sync(true); return j;
+  };
   BB.assignable = () => BB.agents().filter(a => a.status === 'active' && !a.paused && !BB.isGhost(a) && BB.presence(a) !== 'reconnect');
 
   /* ---------- toast ---------- */
