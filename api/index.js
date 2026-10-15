@@ -331,6 +331,12 @@ async function assignTask(id,body){return withJobLock(id,async()=>{
  bust();await event(a.id,'assigned','Owner assigned "'+t.title+'"',{kind:'WAITING',taskId:id});
  if(a.hosted)await runHosted(a,next);
  return {status:200,body:{task:await getJ(key)}};});}
+async function dismissTask(id){return withJobLock(id,async()=>{
+ const key='fm:task:'+id,raw=await r(['GET',key]),t=raw&&JSON.parse(raw);if(!t)return {status:404,body:{error:'Job not found'}};
+ if(t.status!=='queued'||t.assignee)return {status:409,body:{error:'Only a queued job with no bot can be dismissed. Refresh.'}};
+ const next={...t,status:'dismissed',result:'Dismissed by owner',finishedAt:now()};
+ if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return {status:409,body:{error:'Job changed. Refresh.'}};
+ bust();return {status:200,body:{task:await getJ(key)}};});}
 // One job: the task, its events, approvals, gateway receipts, delegated parts, and a plain-language timeline.
 async function jobDetail(id){
  const t=await getJ('fm:task:'+id);if(!t)return null;
@@ -349,7 +355,7 @@ function timelineOf(t,events,requests,receipts,kids,name){
  const out=[],bot=t.assignee?name(t.assignee):'A bot';
  out.push({at:t.createdAt,text:t.createdBy==='owner'?'Owner assigned the job':t.origin==='chat'?bot+' started it from a chat with the owner':name(t.createdBy)+' handed over the job',kind:'step',detail:t.brief?'“'+t.brief.slice(0,120)+'”':null});
  if(t.startedAt&&t.createdBy==='owner')out.push({at:t.startedAt,text:bot+' took the job',kind:'step'});
- if(t.handoffPlan&&t.handoffPlan.length)out.push({at:t.createdAt,text:'Routing plan: '+bot+' leads; then '+t.handoffPlan.map(h=>name(h.botId)+' ('+h.category+')').join(', then ')+' - each hop only on a real handoff',kind:'step',detail:'Planned, not done yet'});
+ if(t.handoffPlan&&t.handoffPlan.length)out.push({at:t.createdAt,text:'Routing plan: '+bot+' leads; then '+t.handoffPlan.map(h=>name(h.botId)+(h.category?' ('+h.category+')':'')).join(', then ')+' - each hop only on a real handoff',kind:'step',detail:'Planned, not done yet'});
  for(const e of events){
   if(e.type==='reported'&&e.kind==='TOOL_USED'&&e.agentId===t.assignee)out.push({at:e.at,text:e.text,kind:'step',reported:true});
   if(e.type==='handoff'&&e.toAgentId)out.push({at:e.at,text:'Handed part of it to '+name(e.toAgentId),kind:'step'});}
@@ -1285,6 +1291,7 @@ async function routes(req, res, path, body, agentPre) {
     {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cardDecision(cm[1],cm[2],body.detailsHash));}}
 
     {const am=path.match(/^\/tasks\/(\w+)\/assign$/);if(am&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await assignTask(am[1],body));}}
+    {const dm=path.match(/^\/tasks\/(\w+)\/dismiss$/);if(dm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await dismissTask(dm[1]));}}
     if(path.startsWith('/public-receipts'))res.setHeader('Cache-Control','no-store');
     if(path==='/public-receipts'&&req.method==='GET')return res.json(await publicReceiptList(new URL(req.url,'https://local.invalid').searchParams.get('taskId')));
     if(path==='/public-receipts/draft'&&req.method==='GET')return send(await publicReceiptDraft(new URL(req.url,'https://local.invalid').searchParams.get('taskId')));
