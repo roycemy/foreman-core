@@ -21,7 +21,7 @@
     if (['approval', 'spend', 'card'].includes(i.type)) return big ? `<div class="kbtns"><button class="b pri" type="button" data-d="approve">Approve</button><button class="b out" type="button" data-d="deny">Deny</button></div>` : `<div class="btns"><button class="b pri${sz}" type="button" data-d="approve" aria-keyshortcuts="A">Approve</button><button class="b out${sz}" type="button" data-d="deny" aria-keyshortcuts="D">Deny</button></div>`;
     if (i.type === 'reconnect') return big ? '' : `<div class="btns"><button class="b ink${sz}" type="button" data-rec="${i.a.id}">Reconnect</button></div>`;
     if (i.type === 'dark') return `<div class="btns"><button class="b out${sz}" type="button" data-bot="${i.a.id}">Check on it</button></div>`;
-    return `<div class="btns"><span class="assign"><button class="b out${sz}" type="button" data-assign="${i.t.id}" aria-haspopup="menu">Assign ▾</button></span></div>`;
+    return `<div class="btns"><span class="assign"><button class="b out${sz}" type="button" data-assign="${i.t.id}" aria-haspopup="menu">Assign ▾</button></span><button class="b ghost${sz}" type="button" data-dismiss="${i.t.id}">Dismiss</button></div>`;
   }
   const avOf = (i, phone) => i.a ? (phone ? `<span class="kav" style="--av:${BB.avColor(i.a)}">${esc(BB.initials(i.a.name))}${BB.glyph(i.a)}</span>` : BB.av(i.a)) : (phone ? '<span class="kav merch">?</span>' : '<span class="av ghost" aria-hidden="true">?</span>');
   const things = n => n + (n === 1 ? ' thing' : ' things');
