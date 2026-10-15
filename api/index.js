@@ -274,6 +274,29 @@ function categorizeAll(s) {
   }
   return out.sort((a, b) => b.score - a.score || a.category.localeCompare(b.category));
 }
+// Named bots in the owner's own words are explicit routing, never a guess: "have Muse draft
+// this, then Grok review it" names the lead and the chain in mention order. A bot whose first
+// word is a category keyword (e.g. "Support Bot") is matched by full name only, so ordinary
+// category words never pick a bot the owner did not name.
+function matchNamedBots(s, agents) {
+  const t = ' ' + String(s || '').toLowerCase() + ' ';
+  const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const hits = [];
+  for (const a of agents) {
+    if (a.status !== 'active' || a.harness || a.hosted) continue;
+    const name = String(a.name || '').toLowerCase().trim(); if (!name) continue;
+    let idx = t.search(new RegExp('\\b' + esc(name) + '\\b'));
+    if (idx < 0) {
+      const first = name.split(/\s+/)[0];
+      if (first.length >= 3 && first !== name && !CATEGORY_KEYWORDS[first]) idx = t.search(new RegExp('\\b' + esc(first) + '\\b'));
+    }
+    if (idx >= 0) hits.push({ a, idx });
+  }
+  hits.sort((x, y) => x.idx - y.idx);
+  const seen = new Set(), out = [];
+  for (const h of hits) { if (!seen.has(h.a.id)) { seen.add(h.a.id); out.push(h.a); } }
+  return out;
+}
 async function routing(category){const bots=await capabilityProfiles(),rank=bots.map(b=>({b,p:b.capabilities[category]})).filter(x=>x.p).sort((a,b)=>b.p.successRate-a.p.successRate||b.p.samples-a.p.samples||(a.p.medianSeconds??Infinity)-(b.p.medianSeconds??Infinity));const best=rank[0];return {bots,suggested:best?{id:best.b.id,name:best.b.name,category,reason:best.p.completed+' completed / '+best.p.failed+' failed in '+category+'; '+best.p.samples+' reported outcomes'+(best.p.medianSeconds===null?'':'; median '+best.p.medianSeconds+'s')+'. Costs are not used unless tied to a job. This is a suggestion, not a quality guarantee.'}:null,basis:'Retained completed/failed job records only, up to latest 60 jobs. Outcomes are bot-reported, not independently graded. Empty categories and synthetic records excluded. No scored history means no suggestion; no automatic routing.'};}
 async function teammates(){return (await capabilityProfiles());}
 
@@ -1277,6 +1300,7 @@ async function routes(req, res, path, body, agentPre) {
         // One message can span categories: a lead bot takes the strongest one, further matched
         // categories become a planned handoff chain. A hop happens only when a bot actually hands
         // off via work.handoff (each hop passes the gateway policy gate); the plan is never faked.
+        const named = matchNamedBots(String(body.title || '') + ' ' + String(body.brief || ''), await listAgents());
         const matches = categorizeAll(String(body.title || '') + ' ' + String(body.brief || ''));
         const top = matches.length ? matches.filter(m => m.score === matches[0].score) : [];
         let leadCat = null, tieNote = '', tieUnresolved = false;
@@ -1288,7 +1312,20 @@ async function routes(req, res, path, body, agentPre) {
           if (scored.length && (scored.length === 1 || scored[0].n > scored[1].n)) { leadCat = scored[0].cat; tieNote = 'Categories ' + top.map(m => m.category).join(' and ') + ' matched equally; ' + leadCat + ' leads on scored history. '; }
           else tieUnresolved = true;
         }
-        if (leadCat) {
+        if (named.length) {
+          // Owner named the bots: lead is the first name, the rest are the planned chain.
+          const lead = named[0]; assignee = lead.id;
+          category = top.length === 1 ? top[0].category : null;
+          routingReason = 'You named ' + named.map(a => a.name).join(', then ') + '.' + (category ? ' Category: ' + category + '.' : '');
+          if (named.length > 1) {
+            const chain = named.slice(1).map(a => ({ category: null, botId: a.id, botName: a.name, named: true, reason: 'Named by the owner' }));
+            handoffPlan = chain;
+            routingReason += ' Planned handoffs: ' + chain.map(h => h.botName).join(', then ') + '. Each hop happens only on a real handoff and passes policy.';
+            brief = String(brief || '') + '\n\nRouting plan: you were named first. When your part is done, hand the next part on with work.handoff: ' + chain.map(h => h.botName).join(', then ') + '.';
+          }
+          routed = { botId: lead.id, botName: lead.name, category: category || 'named', reason: routingReason, chain: handoffPlan || [], unstaffed: [], named: true };
+        }
+        if (!assignee && leadCat) {
           const advice = await routing(leadCat);
           if (advice.suggested) {
             assignee = advice.suggested.id; category = leadCat; routingReason = tieNote + advice.suggested.reason;
