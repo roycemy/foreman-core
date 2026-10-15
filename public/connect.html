@@ -31,9 +31,10 @@ button.primary{background:var(--ink,#121212);color:#fff;border-color:transparent
 <section id="v-approve" hidden><h1 id="ap-title"></h1><p class="sub">Only approve if you just pasted this message yourself.</p>
  <div class="card" id="ap-rows"></div><button class="primary" id="approve">Approve</button><p></p><button id="cancel">Not me, cancel</button></section>
 <section id="v-wait" hidden><h1>Approved</h1><p class="sub">Waiting for <span data-bot></span> to collect its key and run a test echo through Alter. Connected appears only after that echo works.</p><div class="wait"><div class="spin"></div><span>Waiting for the first real call...</span></div></section>
-<section id="v-done" hidden><h1><span class="dot connected"></span><span data-bot></span> is connected</h1><p class="sub">A real echo went through Alter just now.</p><div class="card" id="done-rows"></div><button class="primary" data-open-drawer>See what this bot can do</button><p></p><button data-home>Done</button></section>
+<section id="v-done" hidden><h1><span class="dot connected"></span><span data-bot></span> is connected</h1><p class="sub">A real echo went through Alter just now. Opening its card...</p><button class="primary" id="go-card">Open bot card</button><p></p><button data-stay>Stay on this page</button></section>
 <section id="v-drawer" hidden><h1 id="dr-title"></h1><p class="sub" id="dr-status"></p>
  <div class="card" id="dr-rows"></div><h2 style="font-size:15px;font-weight:600;margin:18px 0 8px">What Alter can honestly do</h2><div class="card" id="dr-tiers"></div>
+ <a class="btn" id="dr-perms" href="/app" style="display:block;text-decoration:none" hidden>Edit permissions</a><p></p>
  <div class="card" id="dr-repaste" hidden><b>Needs re-paste</b><p class="note" id="dr-why"></p><div class="msg" id="dr-msg" hidden></div><button class="need" id="dr-copy">Copy message to reconnect</button></div>
  <button id="dr-revoke">Revoke this bot</button><p class="note">Revoke: Alter blocks new requests from this bot that go through Alter. It cannot stop calls the bot makes outside Alter.</p><p></p><button data-home>Back</button></section>
 </main>
@@ -52,7 +53,11 @@ async function start(type,name){botName=name;const agentId=$('#link-agent').valu
 function showMsg(p){pid=p.pairingId;$('#msg').textContent=p.message;$('#exp').textContent='This link stops working at '+new Date(p.expiresAt).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})+' and works for one bot only.';show('msg',0);poll();}
 function poll(){clearInterval(timer);timer=setInterval(async()=>{const v=(await api('/botlink/pairings/'+pid)).j;if(v.status==='claimed'&&shownFor!==pid){shownFor=pid;approval(v)}const end={killed:'A second caller used this link, so Alter cancelled it. Start again.',cancelled:'This link was cancelled.',expired:'This link expired. Start again.',invalidated:'This bot was revoked, so the link no longer works.'}[v.status];if(end){clearInterval(timer);alert(end);home()}if(v.status==='collected'&&v.botId){const b=((await api('/botlink/bots')).j.bots||[]).find(x=>x.botId===v.botId);if(b&&b.state==='connected'){clearInterval(timer);done(b)}}},2000)}
 function approval(v){botName=v.reattach?v.reattach.name:v.botType;$('#ap-title').textContent=v.title;const fp=v.fingerprint||{};$('#ap-rows').innerHTML=rows({'Bot':v.botType,'Account':v.account||'-','Connects by':fp.transport,'Caller':fp.userAgent||'unknown','Region':fp.ipRegion||'unknown',...(v.reattach?{'Replaces key of':v.reattach.name,'Last spoke':v.reattach.lastRealCallAt?new Date(v.reattach.lastRealCallAt).toLocaleString():'never'}:{})});$('#approve').onclick=async()=>{const r=await api('/botlink/pairings/'+pid+'/approve','POST',{confirmBotId:v.reattach?v.reattach.botId:null});if(r.code===200){show('wait',2)}else alert(r.j.error)};$('#cancel').onclick=async()=>{clearInterval(timer);await api('/botlink/pairings/'+pid+'/cancel','POST');home()};show('approve',1)}
-function done(b){$('#done-rows').innerHTML=rows({'Status':b.label,'Last spoke':b.lastSpoke,'Key renews on use until':date(b.capAt)});$('[data-open-drawer]').onclick=()=>drawer(b.botId);show('done',3)}
+let goTimer=null;
+function done(b){clearInterval(timer);botName=b.name;if(!b.agentId)return drawer(b.botId);
+ const go=()=>{location.href='/app#bot/'+encodeURIComponent(b.agentId)};
+ $('#go-card').onclick=go;$('[data-stay]').onclick=()=>{clearTimeout(goTimer);drawer(b.botId)};
+ clearTimeout(goTimer);goTimer=setTimeout(go,1200);show('done',3)}
 async function drawer(id){clearInterval(timer);const b=((await api('/botlink/bots')).j.bots||[]).find(x=>x.botId===id);if(!b)return home();botName=b.name;
  $('#dr-title').innerHTML=`<span class="dot ${esc(b.state)}"></span>${esc(b.name)}`;$('#dr-status').textContent=b.label+' - last spoke '+b.lastSpoke+(b.note?'. '+b.note:'');
  $('#dr-rows').innerHTML=rows({'Connects by':b.transport,'Key':'Renews on every real call','Re-paste needed by':date(b.capAt)})+(b.capWarning?`<p class="note warn">${esc(b.capWarning)}</p>`:'');
@@ -60,6 +65,7 @@ async function drawer(id){clearInterval(timer);const b=((await api('/botlink/bot
  const revoked=b.reason==='revoked',need=b.state==='needs_repaste'&&!revoked;$('#dr-repaste').hidden=!need;$('#dr-revoke').hidden=b.reason==='revoked';
  const why={idle_expired:'No real calls for 30 days, so the key expired.',absolute_cap_reached:'The key reached its fixed end date. Re-paste to get a new one.',key_reuse_detected:'Two callers used the same key, so Alter stopped both. Re-paste to reconnect safely.',revoked:'You revoked this bot. Add it again as a new bot if you want it back.'};
  $('#dr-why').textContent=why[b.reason]||'This bot needs to be connected again.';$('#dr-msg').hidden=true;
+ $('#dr-perms').hidden=!b.agentId;if(b.agentId)$('#dr-perms').href='/app#bot/'+encodeURIComponent(b.agentId)+'/permissions';
  $('#dr-copy').onclick=async e=>{const r=await api('/botlink/bots/'+id+'/repaste','POST');if(r.code!==200)return alert(r.j.error);$('#dr-msg').textContent=r.j.message;$('#dr-msg').hidden=false;await copy(r.j.message,e.target);pid=r.j.pairingId;shownFor=null;poll()};
  $('#dr-revoke').onclick=async()=>{if(!confirm('Revoke '+b.name+'? Other bots are not affected.'))return;await api('/botlink/bots/'+id+'/revoke','POST');drawer(id)};show('drawer',null)}
 document.addEventListener('click',e=>{const t=e.target.closest('[data-type]');if(t)start(t.dataset.type,t.dataset.name);const d=e.target.closest('[data-drawer]');if(d)drawer(d.dataset.drawer);if(e.target.closest('[data-home]'))home()});

@@ -10,7 +10,7 @@
   const toast = m => BB.toast(m);
   const stop = () => { clearInterval(timer); timer = null; BB.linkWaiting = null; };
   function shell(html) {
-    const st = W.step || 0, steps = W.reconnect ? ['Reconnect'] : ['Choose bot', 'Name it', 'Authorize'];
+    const st = W.step || 0, steps = W.reconnect ? ['Reconnect'] : W.auto ? ['Choose bot', 'Authorize'] : ['Choose bot', 'Name it', 'Authorize'];
     const box = BB.modal(`<div class="cw"><ol class="cw-steps" aria-label="Progress">${steps.map((s, i) => `<li class="${!W.reconnect && i < st ? 'done' : ''}"${(W.reconnect || i === st) ? ' aria-current="step"' : ''}><span>${W.reconnect ? '↻' : i < st ? '✓' : i + 1}</span>${s}</li>`).join('')}</ol>${html}</div>`, { label: W.reconnect ? 'Reconnect a bot' : 'Connect a bot', onClose: () => { stop(); BB.emit(); } });
     return box;
   }
@@ -21,9 +21,9 @@
     catch (e) { const f = $(fallbackSel); if (f) { f.hidden = false; f.value = text; f.focus(); f.select(); toast('Select and copy the message below.'); } }
   }
 
-  BB.openConnect = function () { if(location.origin !== PRODUCTION_ORIGIN){BB.toast('Connect bots on the live Alter site, not a preview.');location.href=PRODUCTION_ORIGIN+'/hq';return;} stop(); W = { step: 0 }; draw(); };
+  BB.openConnect = function () { if(location.origin !== PRODUCTION_ORIGIN && !/\.vercel\.app$/.test(location.hostname)){BB.toast('Connect bots on the live Alter site, not a preview.');location.href=PRODUCTION_ORIGIN+'/hq';return;} stop(); W = { step: 0 }; draw(); };
   BB.reconnect = function (id) {
-    if(location.origin !== PRODUCTION_ORIGIN){location.href=PRODUCTION_ORIGIN+'/hq';return;}
+    if(location.origin !== PRODUCTION_ORIGIN && !/\.vercel\.app$/.test(location.hostname)){location.href=PRODUCTION_ORIGIN+'/hq';return;}
     const d = BB.agent(id); if (!d) return; stop(); BB.closeInspector && BB.closeInspector(true);
     const pid = (d.providerId || d.provider || '').toLowerCase(), hit = P.find(p => p[0] === pid);
     W = { step: 2, p: hit ? hit[0] : pid, label: hit ? hit[1] : (d.provider || 'assistant'), agent: { id: d.id, name: d.name }, reconnect: BB.presence(d) === 'reconnect', reason: d.connection && d.connection.reason };
@@ -37,7 +37,17 @@
       const box = shell(`<h3>Connect your existing bot</h3><p>Keep the bot you already use, its account and its credits. ${esc(BRAND.name)} sees only work reported through this connection.</p>
         ${P.map(p => `<button class="opt" type="button" data-link="${p[0]}"><span class="av" style="--av:${{ grok: '#121212', instinct: '#1F6F5C', muse: '#2F55A4' }[p[0]]}" aria-hidden="true">${BB.initials(p[1])}</span><span><b>${p[1]}</b><small>Open its browser console, then verify the connection</small></span></button>`).join('')}
         <button class="opt" type="button" data-link="custom"><span class="av ghost" aria-hidden="true">+</span><span><b>Another bot</b><small>A bot with a browser, Remote MCP, or HTTPS tools</small></span></button>`);
-      box.querySelectorAll('[data-link]').forEach(b => b.onclick = () => { W.p = b.dataset.link; W.label = (P.find(p => p[0] === W.p) || [0, 'your bot'])[1]; W.step = 1; draw(); });
+      box.querySelectorAll('[data-link]').forEach(b => b.onclick = async () => {
+        W.p = b.dataset.link; W.label = (P.find(p => p[0] === W.p) || [0, 'your bot'])[1];
+        const AUTO = { instinct: 'Ops and execution', grok: 'Research', muse: 'Writing and creative' };
+        if (!AUTO[W.p]) { W.step = 1; draw(); return; }
+        /* one connection per bot type: name and role are preset, no naming screen */
+        b.disabled = true; W.auto = true;
+        const j = await BB.api('/api/connect', 'POST', { provider: W.p, name: W.label, role: AUTO[W.p], preset: 'balanced', connectionMode: 'existing' });
+        if (j.error) { b.disabled = false; W.auto = false; toast(j.error); return; }
+        /* one tap lands on the new bot card - no naming or task step; authorize later from the card */
+        stop(); BB.closeModal(); await BB.sync(true); BB.openInspector(j.agent.id); return;
+      });
       return;
     }
     if (W.step === 1) {
@@ -77,7 +87,7 @@
     box.querySelector('#copylink').onclick = () => navigator.clipboard.writeText(PRODUCTION_ORIGIN + '/api/mcp').then(() => toast('Connector address copied')).catch(() => toast('Copy the address from the field above.'));
     poll(a => {
       const pr = BB.presence(a);
-      if (a.lastSeen && pr === 'connected' && (!W.reconnect || (a.connection && a.connection.status === 'active'))) { status('connected', '<b>Connected: ' + esc(a.name) + '</b><br>Your bot reported to ' + esc(BRAND.name) + ' at ' + esc(new Date(a.lastSeen).toLocaleTimeString()) + '.'); BB.linkWaiting = null; clearInterval(timer); }
+      if (a.lastSeen && pr === 'connected' && (!W.reconnect || (a.connection && a.connection.status === 'active'))) { status('connected', '<b>Connected: ' + esc(a.name) + '</b><br>Your bot reported to ' + esc(BRAND.name) + ' at ' + esc(new Date(a.lastSeen).toLocaleTimeString()) + '.'); BB.linkWaiting = null; clearInterval(timer); BB.closeModal(); BB.openInspector(a.id); }
       else if (pr === 'reconnect' && !W.reconnect) status('reconnect', '<b>Reconnect needed.</b> The authorization for ' + esc(a.name) + ' dropped. Run the connection again.');
     });
   }
@@ -98,7 +108,7 @@
     box.querySelector('#finishsetup').onclick=()=>accessFinale();
     box.querySelector('#makepair').onclick = async () => { const b = $('#makepair'); b.disabled = true; try { const j = await BB.api('/api/agents/' + W.agent.id + '/pairing', 'POST', {}); if (j.error) throw Error(j.error); $('#paircode').textContent = j.code; $('#pairexpiry').textContent = 'One use. Expires at ' + new Date(j.expiresAt).toLocaleTimeString() + '. Keep this code out of chat.'; } catch (e) { $('#pairerr').textContent = e.message; } finally { b.disabled = false; } };
     box.querySelector('#copypairmsg').onclick = () => copy(runnerMessage(), 'Setup copied. No credential included.', '#pairfallback');
-    poll(a => { if (a.connection && a.connection.transport === 'gateway' && BB.presence(a) === 'connected' && a.lastSeen) { status('connected', '<b>Connected: ' + esc(a.name) + '</b><br>Gateway call accepted at ' + esc(new Date(a.lastSeen).toLocaleTimeString()) + '.'); BB.linkWaiting = null; clearInterval(timer); $('#connectionfinish').hidden=false; } });
+    poll(a => { if (BB.presence(a) === 'connected' && a.lastSeen) { status('connected', '<b>Connected: ' + esc(a.name) + '</b><br>Accepted at ' + esc(new Date(a.lastSeen).toLocaleTimeString()) + '.'); BB.linkWaiting = null; clearInterval(timer); $('#connectionfinish').hidden=false; BB.closeModal(); BB.openInspector(a.id); } });
   }
   /* HTTP gateway: key shown once, setup message never contains it */
   function drawGateway() {

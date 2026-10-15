@@ -116,6 +116,12 @@ function blockedHost(u) {
     return false;
   } catch { return true; }
 }
+// Request-content validation, evaluated as policy BEFORE any owner approval round-trip: an invalid request
+// is denied outright (clean 4xx + Denied receipt + request ID), never a 502 after execution has started.
+function invalidParams(action, params) {
+  if (action === 'web.fetch' && blockedHost(params && params.url)) return { code: 'url_not_allowed', reason: 'url must be a public https address' };
+  return null;
+}
 async function execute(agent, action, params) {
   if (action === 'web.fetch') {
     if (blockedHost(params.url)) throw new Error('url not allowed');
@@ -679,6 +685,14 @@ async function gatewayActUnlocked(agent, body) {
     await event(agent.id, 'blocked', `Blocked ${action}: ${blocked.reason}`, { receiptId: rec.id, code: blocked.code });
     return { status: 403, body: { status: 'blocked', code: blocked.code, reason: blocked.reason, receipt_id: rec.id } };
   }
+  const invalid = invalidParams(action, params);
+  if (invalid) {
+    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: 0, status: 'denied', createdAt: now(), decidedAt: now(), reason: invalid.reason, taskId: taskId || null };
+    await finishReq(q);
+    const rec = await receipt(agent, action, params, 'denied', 0, 'Denied: ' + invalid.reason, q.id, { code: invalid.code, approvedBy: 'policy:validation' });
+    await event(agent.id, 'denied', `Denied ${action}: ${invalid.reason}`, { requestId: q.id, receiptId: rec.id, code: invalid.code });
+    return { status: 400, body: { status: 'denied', code: invalid.code, reason: invalid.reason, request_id: q.id, receipt_id: rec.id } };
+  }
   if (mode === 'ASK') {
     const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: now(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
     bust(); await setJ('fm:req:' + q.id, q); await r(['SADD', 'fm:reqs', q.id]); if (q.taskId) await r(['SADD', 'fm:taskreqs:' + q.taskId, q.id]);
@@ -932,8 +946,9 @@ async function connectionState(a){
  if(a.hosted)return {status:'not_applicable',persistent:false};
  if(a.status!=='active')return {status:'revoked',persistent:false};
  {const bid=await r(['GET','bl:agentBot:'+wsId()+':'+a.id]),b=bid&&await botLink.getJ('bl:bot:'+bid);if(b){const s=botLink.statusOf(b);
-  // Connected only from a real call in the window; Quiet is not proven now, so HQ shows Waiting; Needs re-paste maps to Reconnect needed.
-  return {status:s.state==='connected'?'active':s.state==='needs_repaste'?'needs_reauth':s.state==='quiet'?'verification_pending':'awaiting_bot',transport:'botlink',persistent:false,reason:s.reason||s.state,lastRealCallAt:s.lastSpokeAt,botId:b.id};}}
+  // Connected = a real call proved the key inside the window; Quiet = verified key, no recent calls. Both are live links with a real
+  // last-call time, so HQ shows Connected (never "Waiting to connect" for a bot that already verified); Needs re-paste maps to Reconnect needed.
+  return {status:s.state==='connected'||s.state==='quiet'?'active':s.state==='needs_repaste'?'needs_reauth':'awaiting_bot',transport:'botlink',persistent:false,reason:s.reason||s.state,lastRealCallAt:s.lastSpokeAt,botId:b.id};}}
  const gateway=await getJ('fm:gatewaySeen:'+a.id);
  const ids=await r(['SMEMBERS','fm:oauth:grants:'+a.id]);
  const grants=(await Promise.all(ids.map(id=>getJ('gl:oauth:grant:'+id)))).filter(g=>g&&g.ws===wsId()&&g.agentId===a.id&&g.epoch===(a.oauthEpoch||0));
@@ -1096,6 +1111,8 @@ const botLink=new BL.BotLink({store:blStore,
  // Governed is earned only when policy actually evaluated the action (a receipt or an approval request exists).
  executeAct:(b,{action,params})=>als.run({ws:b.ws},async()=>{const a=await getJ('fm:agent:'+b.agentId);if(!a||a.status!=='active')return {status:403,body:{status:'blocked',reason:'Worker revoked'},governed:false};
   const o=await gatewayAct(a,{action,params});await touchAgent(a);return {status:o.status,body:o.body,governed:!!(o.body&&(o.body.receipt_id||o.body.request_id))};}),
+ // An accepted link call (echo included) is real accepted activity: stamp the agent's last-seen so HQ shows the connection honestly.
+ onRealCall:(b,{op})=>b.agentId?als.run({ws:b.ws},async()=>{const a=await getJ('fm:agent:'+b.agentId);if(a)await touchAgent(a);}):null,
  // Runs BEFORE the bot record is revoked: the agent is blocked first, so an in-flight act fails policy.
  onRevoke:b=>b.agentId?als.run({ws:b.ws},async()=>{await updateAgent(b.agentId,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await rejectPendingBrokerFor(b.agentId);}):null,
  onAlert:a=>als.run({ws:a.ws},()=>event(null,'alert',a.kind==='pairing_second_caller'?'A second caller used a pairing link. Pairing cancelled.':'A bot key was used twice. That bot needs a re-paste.',{kind:'ALERT',code:a.kind}))});
@@ -1118,7 +1135,8 @@ async function botLinkOwnerRoutes(req,res,path,body,sess){res.setHeader('Cache-C
  {const m=path.match(/^\/botlink\/pairings\/(pr_[A-Za-z0-9_-]{20,40})$/);if(m&&req.method==='GET')return send(await botLink.approvalView(sess.ws,m[1]));}
  if(req.method!=='POST')return res.status(404).json({error:'not found'});
  const t=await r(['GET',ck]),o=String(req.headers.origin||''),devOrigin=/^localhost(:\d+)?$/.test(String(req.headers.host))&&o==='http://'+req.headers.host;
- if(!t||typeof req.headers['x-alter-csrf']!=='string'||!crypto.timingSafeEqual(Buffer.from(sha(req.headers['x-alter-csrf'])),Buffer.from(sha(t)))||(o!==OAUTH_ORIGIN&&!devOrigin))return res.status(403).json({error:'csrf'});
+ const ownOrigin=o==='https://'+req.headers.host; // any deployment (prod, preview) accepts its own host: same-origin is the CSRF barrier
+ if(!t||typeof req.headers['x-alter-csrf']!=='string'||!crypto.timingSafeEqual(Buffer.from(sha(req.headers['x-alter-csrf'])),Buffer.from(sha(t)))||(o!==OAUTH_ORIGIN&&!ownOrigin&&!devOrigin))return res.status(403).json({error:'csrf'});
  if(path==='/botlink/pairings'){let agentId=null;if(body.agentId!=null){if(!(await linkableAgents(sess.ws)).some(a=>a.id===body.agentId))return res.status(409).json({error:'agent_not_linkable'});agentId=body.agentId;}
   return send(await botLink.createPairing({ws:sess.ws,account:sess.email,type:body.type,agentId,origin:OAUTH_ORIGIN}));}
  {const m=path.match(/^\/botlink\/pairings\/(pr_[A-Za-z0-9_-]{20,40})\/(approve|cancel)$/);if(m)return send(m[2]==='approve'?await botLink.approve(sess.ws,m[1],{confirmBotId:body.confirmBotId||null}):await botLink.cancel(sess.ws,m[1]));}
@@ -1136,7 +1154,7 @@ module.exports = async (req, res) => {
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path.startsWith('/runner/'))return await runnerRoutes(req,res,path,body);
     if(path.startsWith('/pair/')||path==='/link/call')return await botLinkBotRoutes(req,res,path,body);
-    if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);if(o.status===200&&body.persistent===true){const ws=await r(['GET','gl:key:'+sha(o.body.key)]);const out=await startRunnerSession(res,ws,o.body.agent.id,o.body.key);return res.status(200).json(out);}return res.status(o.status).json(o.body);}
+    if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN&&req.headers.origin!=='https://'+req.headers.host)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);if(o.status===200&&body.persistent===true){const ws=await r(['GET','gl:key:'+sha(o.body.key)]);const out=await startRunnerSession(res,ws,o.body.agent.id,o.body.key);return res.status(200).json(out);}return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
     { const rm = (req.url || '').split('?')[0].match(/^\/receipt\/([^/?#]+)$/) || path.match(/^\/receipt\/([^/?#]+)$/); if (rm && req.method === 'GET') { const x = await publicReceiptRead(rm[1]); const host = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); res.setHeader('Referrer-Policy', 'no-referrer'); return res.status(x ? 200 : 404).send(receiptPage(x, host, BRAND_NAME)); } }
     { const pm = path.match(/^\/public-receipts\/([a-f0-9]{48})$/); if (pm && req.method === 'GET') { res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); const x = await publicReceiptRead(pm[1]); return x ? res.json(x) : res.status(404).json({ error: 'Receipt unavailable or expired' }); } }
