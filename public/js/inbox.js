@@ -15,7 +15,7 @@
   /* ---------- job rows (shared by the rail, the phone inbox and the pop-down) ---------- */
   const jobAt = t => [t.finishedAt, t.startedAt, t.assignedAt, t.createdAt].filter(Boolean).sort().pop();
   BB.jobStatus = t => {
-    if (t.status === 'queued' && !t.assignee) return { cls: 'q', word: 'Unassigned' };
+    if (t.status === 'queued' && !t.assignee) return { cls: 'q', word: t.unrouted ? 'Unrouted' : 'Unassigned' };
     if (t.status === 'queued') return { cls: 'q', word: 'Queued' };
     if (t.status === 'running') return BB.pendingReqs().some(q => q.taskId === t.id) ? { cls: 'need', word: 'Waiting for you' } : { cls: 'run', word: 'Running' };
     if (t.status === 'done') return { cls: 'done', word: 'Done' };
@@ -49,7 +49,7 @@
     if (i.type === 'card') { line = esc(i.q.purpose) + ' · example card'; acts = `<button class="b pri grow" type="button" data-d="approve">Approve</button><button class="b out grow" type="button" data-d="deny">Deny</button>`; }
     if (i.type === 'reconnect') { title = 'Reconnect needed'; line = esc(i.a.name) + ' lost access. Reconnect to resume its jobs.'; acts = `<button class="b ink" type="button" data-rec="${i.a.id}">Reconnect</button><button class="b ghost" type="button" data-later="${esc(i.id)}">Later</button>`; }
     if (i.type === 'dark') { title = i.a.name + ' went dark'; line = 'No accepted activity for ' + esc(BB.dur(Date.now() - Date.parse(i.at))) + '. Authorization may still be saved.'; acts = `<button class="b out" type="button" data-bot="${i.a.id}">Check on it</button>`; }
-    if (i.type === 'unassigned') { line = 'Waiting for someone to take it'; acts = `<span class="assign"><button class="b out" type="button" data-assign="${i.t.id}" aria-haspopup="menu">Assign ▾</button></span>`; }
+    if (i.type === 'unassigned') { line = i.t.unrouted ? 'Alter could not route this - no bot matched with scored history. Pick one.' : 'Waiting for someone to take it'; acts = `<span class="assign"><button class="b out" type="button" data-assign="${i.t.id}" aria-haspopup="menu">Assign ▾</button></span>`; }
     return `<div class="appr" data-item="${esc(i.id)}"><div class="who">${who}</div><h4>${title}</h4><p>${line}</p><div class="btns">${acts}</div></div>`;
   };
   /* one handler for every Approve / Deny / Reconnect / Later / Assign button, wherever it is rendered */
@@ -75,9 +75,9 @@
 
   /* ---------- the rail ---------- */
   function row(t) {
-    const s = BB.jobStatus(t), un = s.word === 'Unassigned';
+    const s = BB.jobStatus(t), un = t.status === 'queued' && !t.assignee;
     const right = un ? `<span class="assign act"><button class="b out sm" type="button" data-assign="${t.id}" aria-haspopup="menu">Assign ▾</button></span>` : `<span class="st ${s.cls}"><i></i>${s.word}</span>`;
-    return `<div class="row" role="button" tabindex="0" data-job="${t.id}">${BB.jobAv(t)}<span class="t"><b>${esc(t.title)}</b><small>${esc(BB.jobMeta(t))}</small></span>${right}</div>`;
+    return `<div class="row" role="button" tabindex="0" data-job="${t.id}">${BB.jobAv(t)}<span class="t"><b>${esc(t.title)}</b><small>${esc(BB.jobMeta(t))}${t.unrouted ? ' · unrouted' : ''}${t.handoffPlan && t.handoffPlan.length ? ' · then ' + t.handoffPlan.map(h => esc(h.botName)).join(' \u2192 ') + ' (planned)' : ''}${t.parentId ? ' · a handed-off part' : ''}</small></span>${right}</div>`;
   }
   function paintRail() {
     if (!rail.classList.contains('on')) return;
