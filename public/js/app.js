@@ -200,7 +200,7 @@
     if (who.error) return needAuth();
     au.classList.remove('on');
     $('#acctmail').textContent = who.email; acct.textContent = BB.initials(who.email.split('@')[0].replace(/[._-]+/g, ' ')); acct.setAttribute('aria-label', 'Account (' + who.email + ')');
-    BB.who = who; applyRoute(); await BB.sync(true); BB.startPolling();
+    BB.who = who; applyRoute(); if (location.hash.replace(/^#/,'').split('/')[0] === 'connect') { history.replaceState(null, '', '#floor'); BB.openConnect && BB.openConnect(); } await BB.sync(true); BB.startPolling();
   }
   BB.boot = boot;
   if (window.BRAND) BB.t = BRAND.t;
