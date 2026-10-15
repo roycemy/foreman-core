@@ -182,15 +182,17 @@ async function redeemPairing(body,ip) {
  const bucket=Math.floor(Date.now()/60000),rate='gl:pairRate:'+sha(ip||'unknown')+':'+bucket;
  const n=await r(['INCRBY',rate,1]);await r(['EXPIRE',rate,120]);if(n>10)return {status:429,body:{error:'Too many attempts. Wait one minute.'}};
  const code=String(body.code||'').replace(/[- ]/g,'').toUpperCase();if(!/^[A-F0-9]{10}$/.test(code))return {status:400,body:{error:'Invalid or expired pairing code'}};
- const hash=sha(code),q=await getJ('gl:pair:'+hash);if(!q||q.expires<=Date.now()||q.agentId!==body.expected_agent_id)return {status:400,body:{error:'Invalid or expired pairing code'}};
+ const hash=sha(code),q=await getJ('gl:pair:'+hash);
+ if(!q||q.expires<=Date.now()||q.agentId!==body.expected_agent_id){const rp=await getJ('gl:pairReplay:'+hash);if(rp&&rp.ip===(ip||'unknown')&&rp.until>Date.now()&&rp.agentId===body.expected_agent_id)return {status:200,body:rp.body};return {status:400,body:{error:'Invalid or expired pairing code'}};}
  return als.run({ws:q.ws},async()=>{
  const a=await getJ('fm:agent:'+q.agentId);if(!a||a.status!=='active'||a.hosted||(a.oauthEpoch||0)!==q.epoch||await r(['GET','fm:kill'])||await r(['GET','fm:pairLatest:'+a.id])!==hash)return {status:403,body:{error:'Pairing no longer available'}};
  const lock='fm:gatewayKeyLock:'+a.id,token=crypto.randomBytes(12).toString('hex');if(!await r(['SET',lock,token,'NX','PX',30000]))return {status:409,body:{error:'Connection change in progress; retry'}};
  try {
- if(!await r(['SET','gl:pairUsed:'+hash,'1','NX','PX',300000]))return {status:409,body:{error:'Pairing code already used'}};
+ if(!await r(['SET','gl:pairUsed:'+hash,'1','NX','PX',300000])){const rp=await getJ('gl:pairReplay:'+hash);if(rp&&rp.ip===(ip||'unknown')&&rp.until>Date.now())return {status:200,body:rp.body};return {status:409,body:{error:'Pairing code already used'}};}
  const old=await r(['GET','fm:gatewayKeyHash:'+a.id]),key='fmk_'+crypto.randomBytes(20).toString('hex'),kh=sha(key);
  const updated=await updateAgent(a.id,x=>{if(x.status!=='active'||(x.oauthEpoch||0)!==q.epoch)throw Error('Bot authorization changed');x.connectionMode='gateway';x.keyHint=key.slice(0,8)+'...'+key.slice(-4)});
  if(old)await r(['DEL','fm:key:'+old,'gl:key:'+old]);await r(['SET','fm:gatewayKeyHash:'+a.id,kh]);await r(['SET','fm:key:'+kh,a.id]);await r(['SET','gl:key:'+kh,q.ws]);await r(['DEL','gl:pair:'+hash,'fm:gatewaySeen:'+a.id,'fm:seen:'+a.id]);bust();
+ await setJ('gl:pairReplay:'+hash,{ip:ip||'unknown',until:Math.min(q.expires,Date.now()+300000),agentId:q.agentId,body:{key,agent:{id:updated.id,name:updated.name}}});
  return {status:200,body:{key,agent:{id:updated.id,name:updated.name}}};
  }finally{if(await r(['GET',lock])===token)await r(['DEL',lock]);}
  });
