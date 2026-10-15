@@ -27,6 +27,10 @@ $('act').onclick=()=>run(async()=>{let j;try{j=await call('act',{action:$('actio
 $('check').onclick=()=>run(async()=>{const id=$('request').value.trim();if(!id)throw Error('Request ID required');const j=await call('requests/'+encodeURIComponent(id));$('output').textContent=JSON.stringify(j,null,2);log('Checked request '+id)});
 $('sendreport').onclick=()=>run(async()=>{const text=$('report').value.trim();if(!text)throw Error('Real report text required');await call('events',{kind:$('kind').value,text,...(task?{task_id:task.id}:{})});log('Accepted report: '+$('kind').value)});
 async function finish(failed){if(!task)throw Error('No current task');const result=$('result').value.trim();if(!result)throw Error('Result required');paintTask((await call('tasks/'+encodeURIComponent(task.id)+'/complete',{result,...(failed?{status:'failed'}:{})})).task);log('Task '+task.status)}
-$('complete').onclick=()=>run(()=>finish(false));$('fail').onclick=()=>run(()=>finish(true));document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(key||persistent))presence()});window.addEventListener('online',()=>{if(key||persistent)presence()});window.addEventListener('pagehide',()=>{clearInterval(timer);timer=null});restoreSession();
+$('complete').onclick=()=>run(()=>finish(false));$('fail').onclick=()=>run(()=>finish(true));document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(key||persistent))presence()});window.addEventListener('online',()=>{if(key||persistent)presence()});window.addEventListener('pagehide',()=>{clearInterval(timer);timer=null});
+/* one-paste pairing: the one-time code arrives in the URL fragment, which never reaches server logs. Scrub it from history, then pair automatically. */
+const hp=new URLSearchParams(location.hash.replace(/^#/,''));const pc=hp.get('pair');
+if(pc){history.replaceState(null,'',location.pathname+location.search);$('pair').value=pc;}
+restoreSession().finally(()=>{if(pc&&expected&&!persistent)$('pairconnect').click()});
 })();
 </script></body></html>
