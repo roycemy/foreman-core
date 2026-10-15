@@ -127,7 +127,7 @@
     const j = await BB.api('/api/tasks', 'POST', assignee ? { title, assignee } : { title, route: true });
     if (j.error) { BB.toast(j.error); ask.querySelector('button').disabled = false; return; }
     askin.value = '';
-    if (j.routed) { const ch = j.routed.chain && j.routed.chain.length ? ' Then ' + j.routed.chain.map(h => h.botName + ' (' + h.category + ')').join(', then ') + ' - planned, each hop fires on a real handoff.' : ''; BB.toast('Sent to ' + j.routed.botName + (j.routed.named ? '' : ' (' + j.routed.category + ')') + '.' + ch); BB.sync(true); BB.openInspector && BB.openInspector(j.routed.botId); }
+    if (j.routed) { const ch = j.routed.chain && j.routed.chain.length ? ' Then ' + j.routed.chain.map(h => h.botName + (h.category ? ' (' + h.category + ')' : '')).join(', then ') + ' - planned, each hop fires on a real handoff.' : ''; BB.toast('Sent to ' + j.routed.botName + (j.routed.named ? '' : ' (' + j.routed.category + ')') + '.' + ch); BB.sync(true); BB.openInspector && BB.openInspector(j.routed.botId); }
     else if (j.unrouted) { BB.toast('Couldn\'t route this. It\'s in your inbox, marked unrouted.'); BB.sync(true); }
     else { BB.toast(assignee ? 'Sent to ' + BB.agent(assignee).name + '.' : 'Added to your inbox. Pick a bot for it.'); BB.sync(true); }
   };
