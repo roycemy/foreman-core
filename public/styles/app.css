@@ -583,3 +583,35 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
   .modal>.box.rules{width:100%;max-height:none;min-height:100dvh;border-radius:0;overflow:auto;padding-top:24px}
   .trust{padding:0 24px 48px}
 }
+
+/* ---------- Round M: first action, words on the Inbox, live lines, tour, done moment, H1 tray ---------- */
+.ibtn .nw{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--ink);padding-left:8px;border-left:1px solid var(--line-2)}
+.ibtn .nw i{width:7px;height:7px;border-radius:50%;background:var(--vermilion)}
+.ibtn .nw.q{color:var(--stone);font-weight:500}
+.ibtn[aria-expanded=true] .nw{color:var(--on-ink);border-color:rgba(255,255,255,.2)}
+.hero{position:absolute;left:50%;bottom:96px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:12px;z-index:20;pointer-events:none;max-width:calc(100% - 32px)}
+.hero h2{font-size:22px;font-weight:600;letter-spacing:-.02em;color:var(--ink)}
+.hero .chips{display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;pointer-events:auto}
+.hero .chip{height:34px;padding:0 14px;border-radius:17px;background:var(--surface);border:1px solid var(--line-2);font-size:13px;font-weight:500;color:var(--ink);white-space:nowrap;box-shadow:var(--sh1);transition:border-color .15s,transform .15s}
+.hero .chip:hover{border-color:var(--ink);transform:translateY(-1px)}
+.stage .ask{height:58px;border-radius:18px}
+.pop .pr.run{width:100%;text-align:left;align-items:center;background:none;border:0;cursor:pointer}
+.pop .pr.run span{margin-left:auto;color:var(--mute)}
+#tray .dot-halo{opacity:.22;transform-box:fill-box;transform-origin:center}
+#tray.waiting .dot-halo{animation:alter-glow 2.4s ease-in-out infinite}
+#tray.glowing>polygon:last-of-type{filter:drop-shadow(0 0 10px rgba(232,69,44,.45))}
+@keyframes alter-glow{0%,100%{opacity:.14;transform:scale(.85)}50%{opacity:.3;transform:scale(1.1)}}
+.donechip{position:absolute;transform:translate(-50%,-100%);background:var(--surface);border:1px solid var(--line);box-shadow:var(--sh2);border-radius:12px;padding:8px 12px 8px 9px;font-size:13px;font-weight:500;display:flex;align-items:center;gap:8px;white-space:nowrap;animation:alter-chip 3s ease forwards}
+.donechip svg{width:18px;height:18px;padding:2px;border-radius:50%;background:var(--ink)}
+.donechip small{color:var(--mute);font-weight:400;font-size:13px}
+@keyframes alter-chip{0%{opacity:0;translate:0 8px}15%,75%{opacity:1;translate:0 0}100%{opacity:0;translate:0 -6px}}
+.spot{position:fixed;z-index:30;border-radius:14px;box-shadow:0 0 0 9999px rgba(18,18,18,.32);pointer-events:none;transition:all .25s var(--ease)}
+.tour{position:fixed;z-index:31;width:300px;background:var(--ink);color:#fff;border-radius:16px;padding:18px 18px 14px;box-shadow:var(--sh3)}
+.tour h3{font-size:16px;font-weight:600;letter-spacing:-.015em}
+.tour p{color:rgba(255,255,255,.7);margin:5px 0 14px;font-size:13.5px}
+.tour .row2{display:flex;align-items:center;gap:10px}
+.tour .row2 small{color:rgba(255,255,255,.5);margin-right:auto;font-size:12.5px}
+.tour .skip{color:rgba(255,255,255,.65);font-size:13px;padding:0 6px;background:none;border:0}
+.tour .nx{background:#fff;color:var(--ink);height:34px;padding:0 16px;border-radius:10px;font-weight:600;font-size:13px;border:0}
+@media (prefers-reduced-motion:reduce){#tray.waiting .dot-halo{animation:none;opacity:.22}.spot{transition:none}}
+@media (max-width:940px){.hero{display:none}}

@@ -119,22 +119,26 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
  if(sit)s+='<rect x="-11" y="-17" width="22" height="7" rx="3.5"'+F(PANTS)+'/><rect x="-9.5" y="-12" width="5" height="11" rx="2.5"'+F(PANTS)+'/><rect x="4.5" y="-12" width="5" height="11" rx="2.5"'+F(PANTS)+'/><ellipse cx="-7" cy="-1.4" rx="3.6" ry="2"'+F(SHOE)+'/><ellipse cx="7" cy="-1.4" rx="3.6" ry="2"'+F(SHOE)+'/>'+(ghost?'':'<path d="M-12 -31 L12 -31 L10 -17 L-10 -17 Z" fill="#B7BDC2"/><path d="M-12 -31 L12 -31 L11.6 -29.4 L-11.6 -29.4 Z" fill="#D7DBDF"/><circle cx="0" cy="-24" r="1.6" fill="#F4F4F1"/><circle class="arm-t l" cx="-12" cy="-18.5" r="2.6" fill="'+SKIN+'"/><circle class="arm-t r" cx="12" cy="-18.5" r="2.6" fill="'+SKIN+'"/>');
  return '<svg class="figure pose-'+pose+'" viewBox="-30 -96 60 104" aria-hidden="true" focusable="false">'+s+'</svg>'}
 
-  /* ---------- island (b): flat porcelain plinth, 1px ink outline, inset glass tray, paper, vermilion dot only while something waits ---------- */
+  /* ---------- island: the H1 logo tray (round M, B2). Porcelain top, ink band, a cast shadow to the lower right
+     (light from the top left) in a shallow inset bay. ONE vermilion dot, shown and glowing only while a request waits. ---------- */
   const IP = (x, y, z) => [PJ.OX + (x - y) * PJ.K, PJ.OY + (x + y) * PJ.K * .5 - (z || 0) * PJ.K];
   const IPS = a => a.map(q => q.map(v => v.toFixed(1)).join(',')).join(' ');
   function islandB() {
-    const x = 87, y = 93, w = 22, d = 13, h = .9, st = ' stroke="#121212" stroke-width="1.1" stroke-linejoin="round"';
-    const T = [IP(x, y, h), IP(x + w, y, h), IP(x + w, y + d, h), IP(x, y + d, h)], L = [IP(x, y + d, 0), IP(x + w, y + d, 0), IP(x + w, y + d, h), IP(x, y + d, h)], R = [IP(x + w, y, 0), IP(x + w, y + d, 0), IP(x + w, y + d, h), IP(x + w, y, h)];
-    const sc = IP(98, 100, 0);
-    let s = `<ellipse cx="${sc[0].toFixed(1)}" cy="${(sc[1] + 6).toFixed(1)}" rx="110" ry="30" fill="#121212" opacity=".05"/>`;
-    s += `<polygon points="${IPS(L)}" fill="#E6E6E1"${st}/><polygon points="${IPS(R)}" fill="#DADAD4"${st}/><polygon points="${IPS(T)}" fill="#F4F4F1"${st}/>`;
-    s += `<polygon points="${IPS([IP(90, 95.5, h), IP(106, 95.5, h), IP(106, 103.5, h), IP(90, 103.5, h)])}" fill="rgba(255,255,255,.75)" stroke="#121212" stroke-opacity=".55" stroke-width=".8"/>`;
-    s += `<polygon points="${IPS([IP(90.8, 96.2, h), IP(105.2, 96.2, h), IP(105.2, 97.4, h), IP(90.8, 97.4, h)])}" fill="rgba(18,18,18,.05)"/>`;
-    s += `<polygon class="paper" points="${IPS([IP(93, 98, h + .2), IP(99, 98, h + .2), IP(99, 101.5, h + .2), IP(93, 101.5, h + .2)])}" fill="#fff" stroke="rgba(18,18,18,.25)" stroke-width=".5"/>`;
-    const dt = IP(104, 101.5, h);
-    s += `<circle class="dot-halo" cx="${dt[0].toFixed(1)}" cy="${dt[1].toFixed(1)}" r="10" fill="#E2452B" opacity=".14"/><circle class="dot" cx="${dt[0].toFixed(1)}" cy="${dt[1].toFixed(1)}" r="5" fill="#E2452B"/>`;
+    const quad = (x, y, w, d, z) => [IP(x, y, z), IP(x + w, y, z), IP(x + w, y + d, z), IP(x, y + d, z)];
+    const x = 87, y = 93, w = 22, d = 13, h = 1.5;
+    let s = `<defs><filter id="trb" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="3"/></filter><filter id="trb2" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="9"/></filter>
+      <linearGradient id="trpad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#121212" stop-opacity=".10"/><stop offset=".5" stop-color="#121212" stop-opacity=".03"/><stop offset="1" stop-color="#fff" stop-opacity=".5"/></linearGradient></defs>`;
+    s += `<polygon points="${IPS(quad(84, 90, 28, 19, 0))}" fill="url(#trpad)" filter="url(#trb2)" opacity=".9"/>`;
+    s += `<polygon points="${IPS(quad(85.5, 91.5, 25, 16, 0))}" fill="#121212" fill-opacity=".05" stroke="#121212" stroke-opacity=".10" stroke-width="1" stroke-linejoin="round"/>`;
+    s += `<polygon points="${IPS(quad(x, y, w, d, 0).map(p => [p[0] + 11, p[1] + 9]))}" fill="#121212" opacity=".22" filter="url(#trb)"/>`;
+    const T = quad(x, y, w, d, h), L = [IP(x, y + d, 0), IP(x + w, y + d, 0), IP(x + w, y + d, h), IP(x, y + d, h)], R = [IP(x + w, y, 0), IP(x + w, y + d, 0), IP(x + w, y + d, h), IP(x + w, y, h)];
+    s += `<polygon points="${IPS(L)}" fill="#33332F" stroke="#33332F" stroke-width="1.2" stroke-linejoin="round"/><polygon points="${IPS(R)}" fill="#121211" stroke="#121211" stroke-width="1.2" stroke-linejoin="round"/><polygon points="${IPS(T)}" fill="#F1EFE9" stroke="#161615" stroke-width="1.1" stroke-linejoin="round"/>`;
+    s += `<polyline points="${IPS([T[3], T[0], T[1]])}" fill="none" stroke="#fff" stroke-opacity=".9" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>`;
+    const dt = IP(98, 99.5, h);
+    s += `<circle class="dot-halo" cx="${dt[0].toFixed(1)}" cy="${dt[1].toFixed(1)}" r="13" fill="#E8452C"/><circle class="dot" cx="${dt[0].toFixed(1)}" cy="${dt[1].toFixed(1)}" r="5.5" fill="#E8452C"/>`;
     return s;
   }
+  BB.TRAY_AT = W2P(98, 99.5);
 
   /* ---------- floor controller ---------- */
   const F = {};             // figure records by bot id
@@ -167,11 +171,12 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const st = stageEl(), f = floorEl(); if (!st || !f) return;
     const W = st.clientWidth, H = st.clientHeight; if (!W) return;
     const phone = BB.phone();
-    const base = phone ? W - 16 : Math.min(W * .875, (H - 40) * .9 * ASPECT);
+    const hero = document.getElementById('hero'), hh = !phone && hero && hero.offsetParent ? 120 : 0;   // round M: leave room for the first-action line
+    const base = phone ? W - 16 : Math.min(W * .875, (H - 40 - hh) * .9 * ASPECT);
     fw = Math.max(320, base * zoom);
     const shift = !phone && BB.panelOpen && BB.panelOpen() && W > 1100 ? -200 : 0;
     f.style.setProperty('--fw', fw + 'px'); f.style.setProperty('--figw', (fw * .0475) + 'px');
-    f.style.setProperty('--px', (pan[0] + shift) + 'px'); f.style.setProperty('--py', pan[1] + 'px');
+    f.style.setProperty('--px', (pan[0] + shift) + 'px'); f.style.setProperty('--py', (pan[1] - hh / 2) + 'px');
     BB.$$('.ch', f).forEach(e => e.style.setProperty('--fig', (fw * .0475) + 'px'));
   }
   BB.floorZoom = d => { zoom = Math.max(.8, Math.min(1.8, zoom + d)); fit(); };
@@ -242,6 +247,8 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const el = document.createElement('div'); el.className = 'ch'; el.tabIndex = 0; el.setAttribute('role', 'button'); el.dataset.id = a.id;
     el.innerHTML = '<div class="body"><div class="avs"></div></div>'; el.style.setProperty('--bd', (-(BB.hash(a.id) % 32) / 10) + 's'); el.style.setProperty('--fig', (fw * .0475) + 'px');
     el.addEventListener('click', () => BB.openInspector && BB.openInspector(a.id));
+    el.addEventListener('mouseenter', () => liveTip(a.id, true)); el.addEventListener('mouseleave', () => liveTip(a.id, false));
+    el.addEventListener('focus', () => liveTip(a.id, true)); el.addEventListener('blur', () => liveTip(a.id, false));
     el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); } });
     $('#chl').appendChild(el); r = F[a.id] = { id: a.id, el, x: null, y: null }; return r;
   }
@@ -312,6 +319,35 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const tr = W2P(109, 93), tt = W2P(87, 93);
     card.style.left = (tr[0] + .7) + '%'; card.style.top = (tt[1] - 7.9) + '%'; card.classList.add('on');
   }
+  /* round M: live line on hover / focus. Built only from the real running job title and its start time. */
+  BB.liveLine = a => {
+    const t = BB.runningTask(a); if (!t) return null;
+    const st = Date.parse(t.startedAt || t.createdAt), min = Number.isFinite(st) ? Math.max(0, Math.round((Date.now() - st) / 60000)) : null;
+    return BB.sentenceCase(BB.shortTitle(t.title)) + (min == null ? '' : min < 1 ? ', just started' : ', ' + min + ' min in');
+  };
+  function liveTip(id, on) {
+    const tip = $('#tip'), r = F[id], a = BB.agent(id); if (!tip || !r || !a) return;
+    if (!on) { if (tip.dataset.bot === id) { tip.classList.remove('on'); tip.dataset.bot = ''; } return; }
+    if (r.x == null) return;
+    hoverRoom = null; BB.$$('#rooms polygon').forEach(x => x.classList.remove('hot'));
+    tip.dataset.bot = id; tip.innerHTML = `${esc(BB.liveLine(a) || BB.statusLine(a))}<small>${esc(a.name)}</small>`;
+    tip.style.left = r.x + '%'; tip.style.top = (r.y - 12) + '%'; tip.classList.add('on');
+  }
+  /* round M: done moment. When a real job flips to done, the tray glows and a soft "Done · title" chip fades in and out
+     (reduced motion: the chip alone, about 3s). The bot's own walk to the tray is the existing walk layer. */
+  let doneSeen = null;
+  function doneMoment() {
+    const done = BB.tasks().filter(t => t.status === 'done');
+    if (doneSeen === null) { doneSeen = new Set(done.map(t => t.id)); return; }
+    const fresh = done.filter(t => !doneSeen.has(t.id)); done.forEach(t => doneSeen.add(t.id));
+    const t = fresh[fresh.length - 1], ov = $('#ov'); if (!t || !ov || document.hidden) return;
+    const tray = $('#tray'); if (tray && !BB.reduced()) { tray.classList.remove('glowing'); void tray.getBBox(); tray.classList.add('glowing'); setTimeout(() => tray.classList.remove('glowing'), 2400); }
+    const c = document.createElement('div'); c.className = 'donechip'; c.setAttribute('role', 'status');
+    c.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4"/></svg><span>Done <small>${esc(BB.shortTitle(t.title))}</small></span>`;
+    c.style.left = BB.TRAY_AT[0] + '%'; c.style.top = (BB.TRAY_AT[1] - 3) + '%'; ov.appendChild(c);
+    setTimeout(() => c.remove(), 3200);
+  }
+  BB.on(doneMoment);
   BB.floorPlace = place;
   BB.itemTitle = i => i.type === 'approval' ? BB.reqTitle(i.q) : i.type === 'spend' ? 'Spend ' + BB.usd(i.q.amountCents) + ' on ' + i.q.merchant : i.type === 'card' ? 'Charge ' + BB.usd(i.q.amountCents) + ' at ' + i.q.merchant : i.type === 'reconnect' ? 'Reconnect ' + i.a.name : i.type === 'dark' ? i.a.name + ' went dark' : i.t ? i.t.title : '';
   BB.figureSVG = figureSVG;

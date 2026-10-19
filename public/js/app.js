@@ -148,7 +148,8 @@
   function paintCrew() {
     const as = BB.agents().filter(a => a.status !== 'revoked'); if (!as.length) { crew.hidden = true; roster.classList.remove('on'); return; } crew.hidden = false;
     const sum = BB.teamSummary();
-    crew.innerHTML = `<span class="stack">${as.slice(0, 5).map((a, i) => BB.av(a, '', BB.glyph(a, -(i * .37)))).join('')}</span><p><b>${esc(sum.count)}</b> · ${esc(sum.parts.join(' · '))}</p>`;
+    const fin = BB.finishedToday();
+    crew.innerHTML = `<span class="stack">${as.slice(0, 5).map((a, i) => BB.av(a, '', BB.glyph(a, -(i * .37)))).join('')}</span>` + (fin ? `<p><b>Your team finished ${fin} ${fin === 1 ? 'job' : 'jobs'} today.</b></p>` : `<p><b>${esc(sum.count)}</b> · ${esc(sum.parts.join(' · '))}</p>`);
     crew.setAttribute('aria-label', sum.text + '. Open crew');
     if (roster.classList.contains('on')) paintRoster();
   }
@@ -160,12 +161,50 @@
   function setRoster(on) { roster.classList.toggle('on', on); crew.setAttribute('aria-expanded', on); if (on) paintRoster(); }
   crew.onclick = e => { e.stopPropagation(); setRoster(!roster.classList.contains('on')); };
   document.addEventListener('click', e => { if (!e.target.closest('#roster,#crew')) setRoster(false); });
+  /* round M: jobs finished today, counted from real finished jobs only (never invented) */
+  BB.finishedToday = () => { const d0 = new Date(); d0.setHours(0, 0, 0, 0); return BB.tasks().filter(t => t.status === 'done' && !t.synthetic && Date.parse(t.finishedAt) >= d0.getTime()).length; };
+  /* round M: three example chips that fill the type box. Prefer the owner's own recent job titles. */
+  const EXAMPLES = ['Write this week\u2019s memo', 'Find three competitors', 'Draft a launch email'];
+  function paintChips() {
+    const el = $('#chips'); if (!el) return;
+    const seen = new Set(), mine = [];
+    BB.tasks().slice().sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt))).forEach(t => { const k = String(t.title || '').trim(); if (k && k.length <= 48 && !t.parent && !seen.has(k.toLowerCase())) { seen.add(k.toLowerCase()); mine.push(k); } });
+    const list = mine.concat(EXAMPLES.filter(e => !seen.has(e.toLowerCase()))).slice(0, 3), key = list.join('|');
+    if (el.dataset.k === key) return; el.dataset.k = key;
+    el.innerHTML = list.map(t => `<button class="chip" type="button">${esc(t)}</button>`).join('');
+    el.querySelectorAll('.chip').forEach(c => c.onclick = () => { askin.value = c.textContent; askin.dispatchEvent(new Event('input')); askin.focus(); });
+  }
+  /* round M: three-tip welcome tour, shown once per owner (localStorage alter.tour). Skip ends it too. */
+  const TIPS = [['#crew', 'This is your team', 'Every bot you connect works here. Hover one to see what it is doing.'], ['#ibtn', 'Things wait for you here', 'Anything that needs your OK shows up in the Inbox, and on the tray.'], ['#ask', 'Ask here', 'Type what you want done. The right bot picks it up.']];
+  function tour(n) {
+    BB.$$('.tour,.spot').forEach(e => e.remove());
+    if (n >= TIPS.length) { try { localStorage.setItem('alter.tour', '1'); } catch (e) {} return; }
+    const [sel, h, d] = TIPS[n], t = $(sel); if (!t || !t.offsetParent) return tour(n + 1);
+    const r = t.getBoundingClientRect(), sp = document.createElement('div'); sp.className = 'spot';
+    Object.assign(sp.style, { left: (r.left - 6) + 'px', top: (r.top - 6) + 'px', width: (r.width + 12) + 'px', height: (r.height + 12) + 'px' });
+    const c = document.createElement('div'); c.className = 'tour'; c.setAttribute('role', 'dialog'); c.setAttribute('aria-label', h);
+    c.innerHTML = `<h3>${esc(h)}</h3><p>${esc(d)}</p><div class="row2"><small>${n + 1} of 3</small><button class="skip" type="button">Skip</button><button class="nx" type="button">${n === 2 ? 'Got it' : 'Next'}</button></div>`;
+    document.body.append(sp, c);
+    const cw = 300, below = r.top < innerHeight / 2;
+    c.style.left = Math.max(12, Math.min(innerWidth - cw - 12, r.left + r.width / 2 - cw / 2)) + 'px';
+    if (below) c.style.top = (r.bottom + 14) + 'px'; else c.style.bottom = (innerHeight - r.top + 14) + 'px';
+    c.querySelector('.nx').onclick = () => tour(n + 1); c.querySelector('.skip').onclick = () => tour(9); c.querySelector('.nx').focus();
+  }
+  let toured = false;
+  function maybeTour() {
+    if (toured || !BB.S || !BB.agents().length || location.hash.replace(/^#/, '').split('/')[0] !== 'floor' && location.hash) return;
+    let seen = null; try { seen = localStorage.getItem('alter.tour'); } catch (e) { seen = '1'; }
+    toured = true; if (!seen) setTimeout(() => tour(0), 900);
+  }
   $('#zin').onclick = () => BB.floorZoom(.15); $('#zout').onclick = () => BB.floorZoom(-.15);
 
   /* ---------- top bar state ---------- */
   function paintTop() {
     const n = BB.onYou().length;
     [['#icount', n], ['#tcount', n]].forEach(([s, v]) => { const e = $(s); if (!e) return; e.hidden = !v; e.textContent = v; });
+    /* round M: say it in words. "N need you" + vermilion dot only when something waits; otherwise a quiet "M running" */
+    const nw = $('#nw'), run = BB.teamSummary().running;
+    if (nw) { nw.className = 'nw' + (n ? '' : ' q'); nw.hidden = !n && !run; nw.innerHTML = n ? '<i aria-hidden="true"></i>' + n + ' need you' : run + ' running'; }
     const tm = $('.top .mark'); if (tm) tm.classList.toggle('idle', !n);
     $('#ibtn').setAttribute('aria-label', 'Inbox' + (n ? ', ' + n + ' on you' : ''));
     $('#pausedbar').hidden = !(BB.S && BB.S.killed);
@@ -181,7 +220,7 @@
     if (un.length) uc.textContent = un.length + ' unrouted - pick a bot';
   }
   const uchip = $('#uchip'); if (uchip) uchip.onclick = () => BB.openRail ? BB.openRail() : BB.go('#inbox');
-  BB.on(() => { paintTop(); paintCrew(); paintUnrouted(); });
+  BB.on(() => { paintTop(); paintCrew(); paintUnrouted(); paintChips(); maybeTour(); });
 
   /* ---------- keyboard ---------- */
   document.addEventListener('keydown', e => {
