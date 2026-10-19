@@ -27,11 +27,18 @@
   const things = n => n + (n === 1 ? ' thing' : ' things');
   const runningN = () => BB.teamSummary().running;
 
+  /* round M: running jobs collapse into one quiet row */
+  function runRow() {
+    const n = runningN(); if (!n) return '';
+    const names = [...new Set(BB.tasks().filter(t => t.status === 'running' && t.assignee && BB.agent(t.assignee)).map(t => BB.agent(t.assignee).name))];
+    const who = names.length > 2 ? names.slice(0, 2).join(', ') + ' and ' + (names.length - 2) + ' more' : names.join(' and ');
+    return `<button class="pr run" type="button" data-open><div class="t"><b>${n} running</b>${who ? `<small>${esc(who)}</small>` : ''}</div><span aria-hidden="true">›</span></button>`;
+  }
   function paintPop() {
     if (!pop.classList.contains('on')) return;
     const items = BB.onYou(), was = pop.dataset.empty;
     const html = items.length
-      ? `<div class="pin"><h3 id="pop-h">Anything on me? <span>${things(items.length)}</span></h3>${items.map(i => `<div class="pr" data-item="${esc(i.id)}">${avOf(i)}<div class="t"><b>${esc(title(i))}</b><small>${esc(line(i))}</small>${acts(i)}</div></div>`).join('')}</div>
+      ? `<div class="pin"><h3 id="pop-h">Anything on me? <span>${things(items.length)}</span></h3>${items.map(i => `<div class="pr" data-item="${esc(i.id)}">${avOf(i)}<div class="t"><b>${esc(title(i))}</b><small>${esc(line(i))}</small>${acts(i)}</div></div>`).join('')}${runRow()}</div>
          <div class="popf"><span>${items.some(i => ['approval', 'spend', 'card'].includes(i.type)) ? 'Approve with A · Deny with D' : 'Esc to close'}</span><button type="button" data-open>Open inbox →</button></div>`
       : `<div class="pin"><h3 id="pop-h" class="sr">Anything on me?</h3><div class="empty"><div class="ok">${BB.GLYPH.tick}</div><b>Nothing on you.</b><small>Your team's handling it.</small></div></div>
          <div class="popf"><span>${runningN() ? runningN() + (runningN() === 1 ? ' job' : ' jobs') + ' running' : 'No jobs running'}</span><button type="button" data-open>Open inbox →</button></div>`;
@@ -39,7 +46,7 @@
     if (!items.length && was === '0' && !BB.reduced()) { pop.style.transition = 'none'; pop.style.opacity = .4; requestAnimationFrame(() => { pop.style.transition = ''; pop.style.opacity = ''; }); }
     pop.dataset.empty = items.length ? '0' : '1';
     pop.innerHTML = html; BB.bindItems(pop, items);
-    pop.querySelector('[data-open]').onclick = () => { closePop(true); BB.openRail(); };
+    pop.querySelectorAll('[data-open]').forEach(o => o.onclick = () => { closePop(true); BB.openRail(); });
     place();
   }
   function place() {

@@ -21,7 +21,7 @@
   <nav class="nav" id="nav" aria-label="Main"><a href="#floor" data-v="floor">Floor</a><a href="#receipts" data-v="receipts">Receipts</a><a href="#card" data-v="card">Card</a></nav>
   <div class="sp"></div>
   <button class="kbar" id="kbar" type="button" aria-keyshortcuts="Meta+K Control+K"><span>Search or jump to a bot</span><span aria-hidden="true">⌘K</span></button>
-  <button class="ibtn" id="ibtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="I">Inbox <b class="count" id="icount" hidden></b></button>
+  <button class="ibtn" id="ibtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="I">Inbox <span class="nw" id="nw" hidden></span><b class="count sr" id="icount" hidden></b></button>
   <div class="acct"><button class="av" id="acctbtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Account">·</button>
     <div class="menu" id="acctmenu" role="menu" aria-label="Account">
       <div class="who"><b id="acctmail">Your account</b><small>Signed in</small></div>
@@ -46,6 +46,7 @@
       <button class="crew" id="crew" type="button" aria-haspopup="dialog" aria-expanded="false"></button>
       <div class="roster" id="roster" role="dialog" aria-label="Crew"></div>
       <button class="uchip" id="uchip" type="button" hidden></button>
+      <div class="hero" id="hero"><h2>Tell your team what to do</h2><div class="chips" id="chips"></div></div>
       <form class="ask" id="ask" autocomplete="off"><label class="sr" for="askin">Type a message for the team</label><input id="askin" placeholder="Type a message for the team…" maxlength="120"><button type="submit" aria-label="Send to the team" disabled>${up}</button></form>
       <div class="zoom" role="group" aria-label="Zoom"><button type="button" id="zout" aria-label="Zoom out">−</button><button type="button" id="zin" aria-label="Zoom in">+</button></div>
     </div>
