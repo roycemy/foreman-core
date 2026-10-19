@@ -224,19 +224,33 @@ async function touchAgent(agent) {
 /* presence model: a bot may self-declare its poll cadence (60-3600s) on any authenticated gateway call. It drives honest status (Checks in every N min / Late), never a Live claim. */
 function pollSecFrom(req,body){let v=Number(body&&body.pollSec);if(!Number.isFinite(v)){try{v=Number(new URL(req.url||'',OAUTH_ORIGIN).searchParams.get('pollSec'));}catch{v=NaN;}}return Number.isFinite(v)&&v>=60&&v<=3600?Math.round(v):0;}
 async function notePollCadence(agent,ps){const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active'||live.pollSec===ps)return;live.pollSec=ps;await setJ('fm:agent:'+agent.id,live);bust();}
-/* wake ladder, rung 1 (free, trigger-only): when a job is queued to a bot whose push channel is an inbox, email a content-free nudge so its poller wakes now instead of at the next tick. Rung 2 is the bot's own scheduled poll (pollSec); rung 3 is "acts when messaged" + the Copy nudge. The channel is chosen per bot at setup; more rung-1 channels (Slack, native connector, GitHub when the user has it) plug into the switch. The email carries no task details and no instructions - the bot authenticates itself. Deduped to one email per 30s per bot. */
+/* wake ladder, rung 1 (free, trigger-only): when a job is queued to a bot, ping it on the free push channel wired at setup so it wakes now instead of at the next poll or routine tick. Instinct: a content-free email to its inbox (RESEND_API_KEY + WAKE_EMAIL_FROM). Grok: a content-free Slack message (WAKE_GROK_SLACK_WEBHOOK incoming webhook) or, when the user has GitHub, a content-free trigger issue Alter closes right after creation - the creation notification is the wake signal (WAKE_GITHUB_TOKEN + WAKE_GITHUB_REPO as owner/repo). Rung 2 is the bot's own scheduled poll or routine; rung 3 is "acts when messaged" + the Copy nudge. Every trigger carries no task details and no instructions - the bot authenticates itself. Deduped to one ping per 30s per bot; silent no-op when no channel is wired, and the bot's own schedule still covers it. */
 async function maybeWakeBot(a) {
   if (!a || a.status !== 'active' || a.paused || a.hosted) return;
-  const channel = a.providerId === 'instinct' ? 'email' : null;
-  if (channel !== 'email') return;
-  if (!process.env.RESEND_API_KEY || !process.env.WAKE_EMAIL_FROM) return; // no sender configured: silent no-op; the scheduled poll still covers it
+  const channel = a.providerId === 'instinct' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
+    : a.providerId === 'grok' && process.env.WAKE_GROK_SLACK_WEBHOOK ? 'slack'
+    : a.providerId === 'grok' && process.env.WAKE_GITHUB_TOKEN && process.env.WAKE_GITHUB_REPO ? 'github'
+    : null;
+  if (!channel) return; // no free push channel wired for this bot: silent no-op; its own schedule still covers it
   const got = await r(['SET', 'gl:wake:' + a.id, String(now()), 'NX', 'PX', 30000]);
   if (!got) return;
   try {
-    const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [process.env.WAKE_INSTINCT_EMAIL || 'xt1udv@mail.instinct.com'], subject: 'Alter: job waiting for Instinct', text: 'A job is waiting for Instinct in Alter.' }) });
-    await event(a.id, resp.ok ? 'wake_sent' : 'wake_failed', resp.ok ? 'Instant wake email sent to the bot inbox' : 'Instant wake email failed: HTTP ' + resp.status, { kind: 'WAKE', presenceOnly: true });
+    let ok = false, status = 0;
+    if (channel === 'email') {
+      const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [process.env.WAKE_INSTINCT_EMAIL || 'xt1udv@mail.instinct.com'], subject: 'Alter: job waiting for Instinct', text: 'A job is waiting for Instinct in Alter.' }) });
+      ok = resp.ok; status = resp.status;
+    } else if (channel === 'slack') {
+      const resp = await fetch(process.env.WAKE_GROK_SLACK_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Alter: job waiting for Grok' }) });
+      ok = resp.ok; status = resp.status;
+    } else {
+      const hdr = { authorization: 'Bearer ' + process.env.WAKE_GITHUB_TOKEN, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'user-agent': 'alter-wake-trigger' };
+      const resp = await fetch('https://api.github.com/repos/' + process.env.WAKE_GITHUB_REPO + '/issues', { method: 'POST', headers: hdr, body: JSON.stringify({ title: 'Alter: job waiting for Grok', body: 'Trigger only. No task details, no instructions. Alter closes this issue right after creating it; the notification is the wake signal.' }) });
+      ok = resp.ok; status = resp.status;
+      if (ok) { const issue = await resp.json(); await fetch('https://api.github.com/repos/' + process.env.WAKE_GITHUB_REPO + '/issues/' + issue.number, { method: 'PATCH', headers: hdr, body: JSON.stringify({ state: 'closed', state_reason: 'completed' }) }); }
+    }
+    await event(a.id, ok ? 'wake_sent' : 'wake_failed', ok ? 'Instant wake sent (' + channel + ')' : 'Instant wake failed (' + channel + '): HTTP ' + status, { kind: 'WAKE', presenceOnly: true });
   } catch (e) {
-    await event(a.id, 'wake_failed', 'Instant wake email failed: ' + String((e && e.message) || e).slice(0, 120), { kind: 'WAKE', presenceOnly: true });
+    await event(a.id, 'wake_failed', 'Instant wake failed: ' + String((e && e.message) || e).slice(0, 120), { kind: 'WAKE', presenceOnly: true });
   }
 }
 async function taskForAgent(agent,id) {
