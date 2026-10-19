@@ -211,7 +211,7 @@ async function chatTask(agent, body) {
   const id = 'task_' + sha(agent.id + ':' + sourceId).slice(0,24);
   const old = await getJ('fm:task:' + id);
   if (old) return {status:200,body:{task:old,duplicate:true}};
-  const t = {id,title,brief:String(body.brief || '').slice(0,1500),assignee:agent.id,status:'running',parentId:null,createdBy:agent.id,createdAt:now(),startedAt:now(),result:null,origin:'chat',sourceId,category};
+  const t = {id,title,brief:String(body.brief || '').slice(0,1500),assignee:agent.id,status:'running',parentId:null,createdBy:agent.id,createdAt:now(),startedAt:now(),progressAt:now(),result:null,origin:'chat',sourceId,category};
   const won=await r(['SET','fm:task:' + id,JSON.stringify(t),'NX']);if(!won)return {status:200,body:{task:await getJ('fm:task:' + id),duplicate:true}};await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);
   await touchAgent(agent);
   await event(agent.id,'task_started','Started: '+title,{kind:'TASK_STARTED',taskId:id,source:'chat'});
@@ -373,6 +373,16 @@ async function dismissTask(id){return withJobLock(id,async()=>{
  const next={...t,status:'dismissed',result:'Dismissed by owner',finishedAt:now()};
  if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return {status:409,body:{error:'Job changed. Refresh.'}};
  bust();return {status:200,body:{task:await getJ(key)}};});}
+const STALL_MS=30*60*1000;
+// A running job with no real task event for 30 minutes is stuck (heartbeats and presence pings do not count).
+// Fail it so one hung job never blocks its bot: the bot's next claim moves to the next queued job.
+async function expireStalledTasks(){const stale=(await listTasks()).filter(t=>t.status==='running'&&Date.parse(now())-Date.parse(t.progressAt||t.startedAt||t.createdAt||0)>STALL_MS);let changed=false;
+ for(const t0 of stale){await withJobLock(t0.id,async()=>{const key='fm:task:'+t0.id,raw=await r(['GET',key]),t=raw&&JSON.parse(raw);if(!t||t.status!=='running')return;if(Date.parse(now())-Date.parse(t.progressAt||t.startedAt||t.createdAt||0)<=STALL_MS)return;
+  const next={...t,status:'failed',result:'Auto-stopped: no progress for 30 minutes',finishedAt:now(),autoStopped:true};
+  await closeJobGrant(next,'Job auto-stopped after 30 minutes without progress; action grant expired');
+  if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return;changed=true;
+  if(next.assignee)await event(next.assignee,'blocked','Job auto-stopped after 30 minutes without progress: '+next.title,{kind:'BLOCKED',taskId:next.id});});}
+ if(changed)bust();}
 async function stopTask(id){return withJobLock(id,async()=>{
  const key='fm:task:'+id,raw=await r(['GET',key]),t=raw&&JSON.parse(raw);if(!t)return {status:404,body:{error:'Job not found'}};
  if(!['running','queued'].includes(t.status)||(t.status==='queued'&&!t.assignee))return {status:409,body:{error:'Only a queued or running job with a bot can be stopped. Refresh.'}};
@@ -517,8 +527,8 @@ async function grantJob(id,body){return withJobLock(id,async()=>{const t=await g
 async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return {code:'unknown_action',reason:'Action is not in the catalog'};if(agent.permissionScope!=='job')return null;if(!taskId)return {code:'job_required',reason:'Register or claim the real job first; gated actions require an owner job grant'};const t=await getJ('fm:task:'+taskId),g=t?.jobGrant;if(!t||t.assignee!==agent.id||t.status!=='running')return {code:'job_inactive',reason:'Job is not running under this worker'};if(!g||g.status!=='active'||g.agentId!==agent.id||grantId&&g.id!==grantId)return {code:'job_grant_required',reason:'Owner must grant actions and a ledger budget for this job'};if(!g.actions[action])return {code:'job_action',reason:'Action is outside the job grant'};if(Number(g.spentCents||0)+ACTIONS[action].costCents>g.budgetCents)return {code:'limit_job',reason:'Job ledger budget would be exceeded'};return null;}
 async function closeJobGrant(t,reason){if(t.jobGrant){t.jobGrant={...t.jobGrant,status:'closed',closedAt:now(),closeReason:reason};}await cancelJobRequests(t.id,reason);}
 
-async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
-  const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now();if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
+async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;await expireStalledTasks();const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
+  const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); t.progressAt = t.startedAt;if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
 async function completeTask(agent,id,body){return withJobLock(id,()=>completeTaskUnlocked(agent,id,body));}
 async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
   if(t.status==='queued'&&(t.reassignedAt||(t.origin==='chat'&&t.createdBy!==agent.id)))return {status:409,body:{error:'Claim the assigned job before completing it'}};
@@ -724,6 +734,7 @@ function normKind(x) { const k = String(x || '').toUpperCase().replace(/[\s-]+/g
   const m = [[/START|BEGIN|RUNNING|PICKED|CLAIM/, 'TASK_STARTED'],[/TOOL|CALL|INVOK/, 'TOOL_USED'],[/REQUEST|ATTEMPT|ACTION/, 'ACTION_REQUESTED'],[/WAIT|IDLE|PEND|BLOCKED_ON|QUEUE/, 'WAITING'],[/HAND|DELEGAT|TRANSFER/, 'HANDOFF'],[/DONE|COMPLET|FINISH|SUCCE/, 'COMPLETED'],[/FAIL|ERR/, 'FAILED'],[/APPROV/, 'NEEDS_APPROVAL'],[/BLOCK|DENIED|REFUS/, 'BLOCKED']];
   for (const [re, v] of m) if (re.test(k)) return v; return null; }
 async function event(agentId, type, text, extra) { bust(); const e = { id: rid('ev'), at: now(), agentId, type, kind: (extra && extra.kind) || KIND_OF[type] || null, text, ...extra };
+  if (e.taskId && !(extra && extra.presenceOnly)) { const tk = 'fm:task:' + e.taskId, traw = await r(['GET', tk]), tt = traw && JSON.parse(traw); if (tt && tt.status === 'running') { tt.progressAt = e.at; await r(['SET', tk, JSON.stringify(tt)]); } }
   if (agentId && e.kind && !(extra && extra.presenceOnly)) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
 async function spentToday(agentId) { return parseInt((await r(['GET', `fm:spend:${agentId}:${now().slice(0, 10)}`])) || '0', 10); }
 async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust(); await track('first_receipt');
@@ -840,6 +851,7 @@ const TASK_CATEGORY_ROOMS={marketing:'marketing',creative:'marketing',research:'
 function taskRoom(agent,tasks){const t=tasks.filter(t=>t.assignee===agent.id&&t.status==='running').sort((a,b)=>String(b.startedAt||b.createdAt).localeCompare(String(a.startedAt||a.createdAt)))[0];return t&&TASK_CATEGORY_ROOMS[t.category]||agent.room||null;}
 async function fullState() {
   { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 1500) return {...c.v,now:now()}; }
+  await expireStalledTasks();
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
