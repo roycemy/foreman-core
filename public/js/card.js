@@ -5,8 +5,13 @@
   const BB = window.BB, $ = BB.$, esc = BB.esc;
   const V = $('#v-card');
   const note = '<div class="note" role="note"><i aria-hidden="true"></i>Sandbox. No real money moves.</div>';
+  /* a bot that never connected has a default $100/day cap on paper, but it cannot spend: count it only once it is connected,
+     and say so next to the total instead of silently inflating it */
+  const connected = b => { const a = BB.agent(b.id); return a ? !BB.isGhost(a) : true; };
+  const unconnected = D => (D.bots || []).filter(b => b.status === 'active' && !connected(b));
+  const unconnNote = D => { const u = unconnected(D); return u.length ? `<div class="meta" style="margin-top:6px">${esc(u.map(b => b.name).join(', '))} not connected yet - ${BB.usdShort(u.reduce((s, b) => s + (b.dailyLimitCents || 0), 0))}/day stays out of the total until then.</div>` : ''; };
   function totals(D) {
-    const live = (D.bots || []).filter(b => b.status === 'active');
+    const live = (D.bots || []).filter(b => b.status === 'active' && connected(b));
     const spent = (D.bots || []).reduce((s, b) => s + (b.simulatedTodayCents || 0), 0), limit = live.reduce((s, b) => s + (b.dailyLimitCents || 0), 0);
     return { spent, limit, left: Math.max(0, limit - spent), pct: limit ? Math.min(100, spent / limit * 100) : 0 };
   }
@@ -19,13 +24,13 @@
     if (phone) {
       V.innerHTML = `<div class="kh"><h1>Card</h1><div class="end">${BB.acctAv ? BB.acctAv() : ''}</div></div><div style="padding:4px 24px 24px">${note}</div>
         <div class="card-phone">${cardFace(D, true)}</div>
-        <div style="padding:32px 24px 8px"><div class="stone" style="font-size:14px">Spent today</div><div style="display:flex;align-items:baseline;gap:8px;margin-top:6px"><span class="big num">${BB.usd(t.spent)}</span><span class="meta" style="font-size:14px">of ${BB.usdShort(t.limit)}</span></div><div class="bar" style="height:6px" role="progressbar" aria-valuemin="0" aria-valuemax="${t.limit}" aria-valuenow="${t.spent}" aria-label="Spent today"><i style="width:${t.pct}%"></i></div></div>
+        <div style="padding:32px 24px 8px"><div class="stone" style="font-size:14px">Spent today</div><div style="display:flex;align-items:baseline;gap:8px;margin-top:6px"><span class="big num">${BB.usd(t.spent)}</span><span class="meta" style="font-size:14px">of ${BB.usdShort(t.limit)}</span></div><div class="bar" style="height:6px" role="progressbar" aria-valuemin="0" aria-valuemax="${t.limit}" aria-valuenow="${t.spent}" aria-label="Spent today"><i style="width:${t.pct}%"></i></div></div>${unconnNote(D)}
         <div class="kl" style="padding-top:20px">Recent</div>${cs.length ? cs.slice(0, 20).map(c => `<div class="kr"><span class="kav merch">${esc(c.merchant[0] || '?')}</span><div class="t"><b>${esc(c.merchant)}</b><small>${esc(who(c.botId))} · ${esc(BB.when(c.at).replace(/^Today /, ''))}</small></div><span class="r ink">${BB.usd(c.amountCents)}</span></div>`).join('') : `<div class="ks">No charges yet. When a bot asks to spend, it lands in your inbox first.</div>`}
         <div style="padding:20px 24px;display:flex;gap:8px"><button class="b out" type="button" data-limit>Daily limit</button><button class="b ghost" type="button" data-freeze>${D.killed ? 'Unfreeze card' : 'Freeze card'}</button></div>`;
     } else {
       V.innerHTML = `<div class="page-in"><div class="page-h"><div><h1>Card</h1><div style="margin-top:6px">${note}</div></div></div>
         <div class="card-grid"><div>${cardFace(D)}<div class="btns" style="margin-top:20px"><button class="b out" type="button" data-limit>Daily limit</button><button class="b ghost" type="button" data-freeze>${D.killed ? 'Unfreeze card' : 'Freeze card'}</button></div></div>
-        <div class="spend"><div class="lbl">Spent today</div><div style="display:flex;align-items:baseline;gap:8px;margin-top:6px"><span class="big num">${BB.usd(t.spent)}</span><span class="meta" style="font-size:14px">of ${BB.usd(t.limit)}</span></div><div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="${t.limit}" aria-valuenow="${t.spent}" aria-label="Spent today"><i style="width:${t.pct}%"></i></div><div class="row2"><span>${BB.usd(t.left)} left today</span><span>Resets at midnight UTC</span></div>${D.killed ? '<p class="meta" style="margin-top:12px">Frozen. Every card request is blocked until you unfreeze it.</p>' : ''}</div></div>
+        <div class="spend"><div class="lbl">Spent today</div><div style="display:flex;align-items:baseline;gap:8px;margin-top:6px"><span class="big num">${BB.usd(t.spent)}</span><span class="meta" style="font-size:14px">of ${BB.usd(t.limit)}</span></div><div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="${t.limit}" aria-valuenow="${t.spent}" aria-label="Spent today"><i style="width:${t.pct}%"></i></div><div class="row2"><span>${BB.usd(t.left)} left today</span><span>Resets at midnight UTC</span></div>${unconnNote(D)}${D.killed ? '<p class="meta" style="margin-top:12px">Frozen. Every card request is blocked until you unfreeze it.</p>' : ''}</div></div>
         <h3 class="h">Recent charges</h3><div class="charges">${cs.length ? cs.slice(0, 30).map(c => `<div class="row"><span class="merch" aria-hidden="true">${esc(c.merchant[0] || '?')}</span><span class="t"><b>${esc(c.merchant)}</b><small>${esc(who(c.botId))} · ${esc(c.purpose)} · ${esc(BB.when(c.at).replace(/^Today (\d)/, 'Today, $1'))}</small></span><span class="amt">${BB.usd(c.amountCents)}</span></div>`).join('') : `<div class="list-empty"><b>No charges yet</b>When a bot asks to spend, it lands in your inbox first. Nothing is charged until you approve.</div>`}</div></div>`;
     }
     const trustRow = b => { const x = b.trust || {}, n = x.sampleCount || 0; return `<div class="trow">${BB.av(b, 's30')}<b>${esc(b.name)}</b><span class="num">${n < 5 ? 'Not enough data yet' : n + ' decisions · ' + (x.policyBlockedCount || 0) + ' blocked'}</span></div>`; };

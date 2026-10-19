@@ -127,9 +127,11 @@
     const j = await BB.api('/api/tasks', 'POST', assignee ? { title, assignee } : { title, route: true });
     if (j.error) { BB.toast(j.error); ask.querySelector('button').disabled = false; return; }
     askin.value = '';
-    if (j.routed) { const ch = j.routed.chain && j.routed.chain.length ? ' Then ' + j.routed.chain.map(h => h.botName + (h.category ? ' (' + h.category + ')' : '')).join(', then ') + ' - planned, each hop fires on a real handoff.' : ''; BB.toast('Sent to ' + j.routed.botName + (j.routed.named ? '' : ' (' + j.routed.category + ')') + '.' + ch); BB.sync(true); BB.openInspector && BB.openInspector(j.routed.botId); }
-    else if (j.unrouted) { BB.toast('Couldn\'t route this. It\'s in your inbox, marked unrouted.'); BB.sync(true); }
-    else { BB.toast(assignee ? 'Sent to ' + BB.agent(assignee).name + '.' : 'Added to your inbox. Pick a bot for it.'); BB.sync(true); }
+    /* never say "Sent" without the catch: a bot that is not connected, needs reconnecting or is dark picks the job up later, not now */
+    const sendNote = b => { if (!b) return ''; const pr = BB.presence(b); if (pr === 'prepared' || pr === 'waiting') return ' It isn\'t connected yet - it picks the job up once connected.'; if (pr === 'reconnect') return ' It needs reconnecting first - the job waits until then.'; if (BB.wentDark(b)) return ' It went dark; the job starts when it\'s back.'; return ''; };
+    if (j.routed) { const ch = j.routed.chain && j.routed.chain.length ? ' Then ' + j.routed.chain.map(h => h.botName + (h.category ? ' (' + h.category + ')' : '')).join(', then ') + ' - planned, each hop fires on a real handoff.' : ''; BB.toast('Sent to ' + j.routed.botName + (j.routed.named ? '' : ' (' + j.routed.category + ')') + '.' + sendNote(BB.agent(j.routed.botId)) + ch); BB.sync(true); BB.openInspector && BB.openInspector(j.routed.botId); }
+    else if (j.unrouted) { BB.toast('Couldn\'t route this. It\'s in your inbox, marked unrouted.' + (BB.assignable().length ? '' : ' Connect a bot and assign it there.')); BB.sync(true); }
+    else { BB.toast(assignee ? 'Sent to ' + BB.agent(assignee).name + '.' + sendNote(BB.agent(assignee)) : 'Added to your inbox. Pick a bot for it.' + (BB.assignable().length ? '' : ' Connect a bot first.')); BB.sync(true); }
   };
   BB.newJob = function () {
     const box = BB.modal(`<h3>New job</h3><p>Describe what you want done. Pick a bot now, or leave it in your inbox.</p>

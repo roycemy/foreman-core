@@ -17,7 +17,7 @@
   BB.jobStatus = t => {
     if (t.status === 'queued' && !t.assignee) return { cls: 'q', word: t.unrouted ? 'Unrouted' : 'Unassigned' };
     if (t.status === 'queued') return { cls: 'q', word: 'Queued' };
-    if (t.status === 'running') return BB.pendingReqs().some(q => q.taskId === t.id) ? { cls: 'need', word: 'Waiting for you' } : { cls: 'run', word: 'Running' };
+    if (t.status === 'running') { if (BB.budgetBlock(t)) return { cls: 'need', word: 'Blocked: budget' }; return BB.pendingReqs().some(q => q.taskId === t.id) ? { cls: 'need', word: 'Waiting for you' } : { cls: 'run', word: 'Running' }; }
     if (t.status === 'dismissed') return { cls: 'q', word: 'Dismissed' };
     if (t.status === 'done') return { cls: 'done', word: 'Done' };
     if (t.status === 'failed') return { cls: 'fail', word: 'Failed' };
@@ -50,6 +50,7 @@
     if (i.type === 'card') { line = esc(i.q.purpose) + ' · example card'; acts = `<button class="b pri grow" type="button" data-d="approve">Approve</button><button class="b out grow" type="button" data-d="deny">Deny</button>`; }
     if (i.type === 'reconnect') { if (!i.a) { title = 'Reconnect unavailable'; line = 'This bot was removed. Its jobs stay paused.'; acts = `<button class="b ghost" type="button" data-later="${esc(i.id)}">Later</button>`; } else { title = 'Reconnect needed'; line = esc(i.a.name) + ' lost access. Reconnect to resume its jobs.'; acts = `<button class="b ink" type="button" data-rec="${i.a.id}">Reconnect</button><button class="b ghost" type="button" data-later="${esc(i.id)}">Later</button>`; } }
     if (i.type === 'dark') { title = (i.a ? i.a.name : 'A removed bot') + ' went dark'; line = 'No accepted activity for ' + esc(BB.dur(Date.now() - Date.parse(i.at))) + '. Authorization may still be saved.'; acts = `<button class="b out" type="button" data-bot="${i.a.id}">Check on it</button>`; }
+    if (i.type === 'budget') { title = 'Blocked: action budget'; line = esc((i.a ? i.a.name : 'A bot') + ' hit a budget limit on \u201c' + i.t.title + '\u201d. ' + String(i.r.summary || '').replace(/^BLOCKED:\s*/, '') + ' Raise the budget in the bot\u2019s profile, or stop the job.'); acts = (i.a ? `<button class="b ink" type="button" data-budgetbot="${esc(i.a.id)}">Review budget</button>` : '') + `<button class="b ghost" type="button" data-stop="${esc(i.t.id)}">Stop job</button>`; }
     if (i.type === 'unassigned') { line = i.t.unrouted ? 'Alter could not route this - no bot matched with scored history. Pick one.' : 'Waiting for someone to take it'; acts = `<span class="assign"><button class="b out" type="button" data-assign="${i.t.id}" aria-haspopup="menu">Assign ▾</button></span><button class="b ghost" type="button" data-dismiss="${i.t.id}">Dismiss</button>`; }
     return `<div class="appr" data-item="${esc(i.id)}"><div class="who">${who}</div><h4>${title}</h4><p>${line}</p><div class="btns">${acts}</div></div>`;
   };
@@ -65,6 +66,12 @@
     root.querySelectorAll('[data-rec]').forEach(b => b.onclick = e => { e.stopPropagation(); BB.closeTop && BB.closeTop(); BB.reconnect && BB.reconnect(b.dataset.rec); });
     root.querySelectorAll('[data-later]').forEach(b => b.onclick = e => { e.stopPropagation(); const card = b.closest('[data-item]'); BB.collapse(card); setTimeout(() => BB.snooze(b.dataset.later), 440); });
     root.querySelectorAll('[data-assign]').forEach(b => b.onclick = e => { e.stopPropagation(); BB.assignMenu(b, b.dataset.assign); });
+    root.querySelectorAll('[data-stop]').forEach(b => b.onclick = async e => {
+      e.stopPropagation(); b.disabled = true;
+      const j = await BB.stop(b.dataset.stop);
+      if (j && !j.error) { const card = b.closest('[data-item]'); if (card) BB.collapse(card); } else b.disabled = false;
+    });
+    root.querySelectorAll('[data-budgetbot]').forEach(b => b.onclick = e => { e.stopPropagation(); BB.closeTop && BB.closeTop(); BB.closePop && BB.closePop(true); BB.openInspector && BB.openInspector(b.dataset.budgetbot, { tab: 'profile' }); });
     root.querySelectorAll('[data-dismiss]').forEach(b => b.onclick = async e => {
       e.stopPropagation(); b.disabled = true;
       const j = await BB.dismiss(b.dataset.dismiss);
