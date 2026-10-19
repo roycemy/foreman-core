@@ -23,6 +23,7 @@ assert(!i.msg.includes('Live'),'no live promise');
 const g=forP('grok');
 assert(g.mcp.includes('add a Routine')&&/every 5 minutes/i.test(g.mcp)&&g.mcp.includes('foreman_next_task'),'grok message creates its own 5-min routine');
 assert(g.mcp.includes('on your 5-minute routine'),'grok standing rule covers the routine');
+assert(g.mcp.includes('start this routine from that event')&&g.mcp.includes('Slack message')&&g.mcp.includes('GitHub notification'),'grok message offers the optional instant-push event trigger');
 assert(!g.url.includes('poll='),'grok link declares no console cadence');
 
 // Muse: rung 3 only - no cadence, no routine; still one paste with the code in the fragment
@@ -35,6 +36,11 @@ assert(m.msg.includes('every time I message you'),'muse keeps the on-message sta
 const c=forP('studio');
 assert(!c.mcp.includes('add a Routine'),'generic MCP message has no grok routine step');
 assert(!c.url.includes('poll='),'generic link declares no cadence');
+assert(!c.mcp.includes('start this routine from that event'),'instant-push offer is grok-only');
+// Owner hint: the grok authorize sheet documents the free env wiring for instant push
+assert(raw.includes('WAKE_GROK_SLACK_WEBHOOK')&&raw.includes('WAKE_GITHUB_TOKEN')&&raw.includes('WAKE_GITHUB_REPO'),'authorize sheet names the optional free env channels');
+assert(raw.includes('Optional, free: instant push on queued jobs'),'owner hint copy present');
+assert(raw.includes("${W.p==='grok'?'<p"),'owner hint is grok-only');
 
 // Console: reads &poll= (60-3600 clamped, same clamp as the server) and stamps pollSec on its own calls
 const rh=fs.readFileSync('public/runner.html','utf8');
