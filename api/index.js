@@ -224,6 +224,21 @@ async function touchAgent(agent) {
 /* presence model: a bot may self-declare its poll cadence (60-3600s) on any authenticated gateway call. It drives honest status (Checks in every N min / Late), never a Live claim. */
 function pollSecFrom(req,body){let v=Number(body&&body.pollSec);if(!Number.isFinite(v)){try{v=Number(new URL(req.url||'',OAUTH_ORIGIN).searchParams.get('pollSec'));}catch{v=NaN;}}return Number.isFinite(v)&&v>=60&&v<=3600?Math.round(v):0;}
 async function notePollCadence(agent,ps){const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active'||live.pollSec===ps)return;live.pollSec=ps;await setJ('fm:agent:'+agent.id,live);bust();}
+/* wake ladder, rung 1 (free, trigger-only): when a job is queued to a bot whose push channel is an inbox, email a content-free nudge so its poller wakes now instead of at the next tick. Rung 2 is the bot's own scheduled poll (pollSec); rung 3 is "acts when messaged" + the Copy nudge. The channel is chosen per bot at setup; more rung-1 channels (Slack, native connector, GitHub when the user has it) plug into the switch. The email carries no task details and no instructions - the bot authenticates itself. Deduped to one email per 30s per bot. */
+async function maybeWakeBot(a) {
+  if (!a || a.status !== 'active' || a.paused || a.hosted) return;
+  const channel = a.providerId === 'instinct' ? 'email' : null;
+  if (channel !== 'email') return;
+  if (!process.env.RESEND_API_KEY || !process.env.WAKE_EMAIL_FROM) return; // no sender configured: silent no-op; the scheduled poll still covers it
+  const got = await r(['SET', 'gl:wake:' + a.id, String(now()), 'NX', 'PX', 30000]);
+  if (!got) return;
+  try {
+    const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [process.env.WAKE_INSTINCT_EMAIL || 'xt1udv@mail.instinct.com'], subject: 'Alter: job waiting for Instinct', text: 'A job is waiting for Instinct in Alter.' }) });
+    await event(a.id, resp.ok ? 'wake_sent' : 'wake_failed', resp.ok ? 'Instant wake email sent to the bot inbox' : 'Instant wake email failed: HTTP ' + resp.status, { kind: 'WAKE', presenceOnly: true });
+  } catch (e) {
+    await event(a.id, 'wake_failed', 'Instant wake email failed: ' + String((e && e.message) || e).slice(0, 120), { kind: 'WAKE', presenceOnly: true });
+  }
+}
 async function taskForAgent(agent,id) {
   const t=await getJ('fm:task:' + id);if(!t)return null;
   // Original worker can read its delegated child result; recipient can read its own assignment.
@@ -233,7 +248,7 @@ async function taskForAgent(agent,id) {
 
 async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}) };
   bust(); await setJ('fm:task:' + t.id, t); await r(['LPUSH', 'fm:tasklist', t.id]); await r(['LTRIM', 'fm:tasklist', 0, 59]);
-  if (t.assignee) { const ag = await getJ('fm:agent:' + t.assignee); if (ag && ag.hosted && ag.status === 'active' && !ag.paused) await runHosted(ag, t); }
+  if (t.assignee) { const ag = await getJ('fm:agent:' + t.assignee); if (ag && ag.hosted && ag.status === 'active' && !ag.paused) await runHosted(ag, t); else if (ag) await maybeWakeBot(ag); }
   return t; }
 async function listTasks() { const ids = await r(['LRANGE', 'fm:tasklist', 0, 29]); if (!ids.length) return []; return (await r(['MGET', ...ids.map(i => 'fm:task:' + i)])).filter(Boolean).map(x => JSON.parse(x)); }
 async function inbox(agent){return (await listTasks()).filter(t=>t.assignee===agent.id||t.createdBy===agent.id);}
@@ -323,6 +338,7 @@ async function reassignTaskUnlocked(id,body){
  bust();
  if(from)await event(from,'handoff','Owner moved "'+t.title+'" to '+target.name+'. Stop reporting this job under the old identity.',{kind:'HANDOFF',taskId:id,toAgentId:target.id});
  await event(target.id,'handoff','Owner assigned "'+t.title+'" to you. Read and claim this existing job before reporting or completing it.',{kind:'HANDOFF',taskId:id,fromAgentId:from});
+ await maybeWakeBot(target);
  return {status:200,body:{task:next}};
 }
 
@@ -335,7 +351,7 @@ async function assignTask(id,body){return withJobLock(id,async()=>{
  const next={...t,assignee:a.id,assignedAt:now(),assignedBy:'owner'};
  if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return {status:409,body:{error:'Job changed. Refresh.'}};
  bust();await event(a.id,'assigned','Owner assigned "'+t.title+'"',{kind:'WAITING',taskId:id});
- if(a.hosted)await runHosted(a,next);
+ if(a.hosted)await runHosted(a,next);else await maybeWakeBot(a);
  return {status:200,body:{task:await getJ(key)}};});}
 async function dismissTask(id){return withJobLock(id,async()=>{
  const key='fm:task:'+id,raw=await r(['GET',key]),t=raw&&JSON.parse(raw);if(!t)return {status:404,body:{error:'Job not found'}};
