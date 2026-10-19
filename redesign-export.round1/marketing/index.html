@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-brand-title="{brand} · Your AI employees, on one floor">Your AI employees, on one floor</title>
+<meta name="description" content="Every AI employee. One workplace. Connect the bots you already run, set what they may do, and approve anything risky.">
+<meta name="theme-color" content="#F4F4F1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23121212'/%3E%3Crect x='8' y='8' width='16' height='16' fill='none' stroke='%23F4F4F1' stroke-width='2.5'/%3E%3Crect x='11' y='11' width='10' height='3' fill='%23E2452B'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<!-- Shared design system and brand token (served from the app's public/ folder). -->
+<link rel="stylesheet" href="/styles/tokens.css">
+<script src="/brand.js"></script>
+<style>
+/* Marketing surface only: public, signed-out. The app shell never loads this. */
+.nav{display:flex;align-items:center;gap:var(--s-8);height:72px;padding:0 var(--s-8);border-bottom:1px solid var(--c-border)}
+.nav nav{display:flex;gap:var(--s-6);font-size:var(--fs-14);color:var(--c-text-2)}
+.nav nav a{text-decoration:none}
+.sp{flex:1}
+.hero{display:grid;grid-template-columns:540px 1fr;gap:var(--s-6);align-items:center;padding:var(--s-16) var(--s-8) var(--s-12);max-width:1440px;margin:0 auto}
+.hero h1{font-size:96px;margin:var(--s-4) 0 var(--s-6)}
+.hero .sub{font-size:var(--fs-18);color:var(--c-text-2);max-width:440px;margin-bottom:var(--s-8)}
+.ctas{display:flex;align-items:center;gap:var(--s-6)}
+.tlink{font-weight:600;text-decoration:none;border-bottom:1.5px solid var(--c-text);padding-bottom:2px}
+.trust{margin-top:var(--s-10);font-size:var(--fs-12);color:var(--c-text-2);display:flex;gap:var(--s-2);align-items:center}
+.trust i{width:6px;height:6px;border-radius:50%;background:var(--c-live)}
+.stage{position:relative;margin-right:-32px}
+.stage svg{display:block;width:100%}
+.minicard{position:absolute;right:2%;bottom:8%;width:250px;background:var(--c-surface);border:1px solid var(--c-border);box-shadow:var(--sh-3);padding:var(--s-3) var(--s-3) var(--s-3);font-size:var(--fs-13)}
+.minicard .row{display:flex;gap:6px;align-items:center;margin-top:var(--s-2);flex-wrap:wrap}
+.minicard .cost{margin-right:auto;font-size:var(--fs-12);color:var(--c-text-2)}
+.pill{display:inline-flex;gap:5px;align-items:center;font-size:var(--fs-12);font-weight:600;padding:3px 8px 3px 4px;border-radius:var(--r-pill);border:1px solid var(--c-text)}
+.pill.acc{background:var(--c-accent-fill);color:var(--c-on-accent);border-color:var(--c-accent-fill)}
+.figcap{font-size:var(--fs-12);color:var(--c-text-2);padding:var(--s-2) 0 0 var(--s-6)}
+
+.band{padding:var(--s-24) var(--s-8)}
+.band h2{font-size:var(--fs-60);max-width:16ch;margin:var(--s-3) 0 var(--s-4)}
+.how{display:grid;grid-template-columns:160px 1fr;border-top:1px solid var(--c-border)}
+.step{display:contents}
+.step .n{padding:var(--s-8) 0;border-bottom:1px solid var(--c-border);font-family:var(--f-display);font-size:var(--fs-44)}
+.step .body{padding:var(--s-8) 0 var(--s-8) var(--s-10);border-bottom:1px solid var(--c-border);display:grid;grid-template-columns:1.1fr .9fr;gap:var(--s-8);align-items:center}
+.step h3{font-family:var(--f-display);font-size:var(--fs-32);font-weight:400;margin-bottom:var(--s-3)}
+.step p{color:var(--c-text-2);max-width:46ch}
+.addrline{margin-top:var(--s-4);padding:var(--s-3) var(--s-4);background:var(--c-sunken);font-size:var(--fs-13);display:flex;justify-content:space-between;gap:var(--s-3);align-items:center}
+.traydemo{background:var(--c-surface);border:1px solid var(--c-border);box-shadow:var(--sh-2)}
+.traydemo .hd{display:flex;justify-content:space-between;padding:var(--s-2) var(--s-4);background:var(--c-inverse);color:var(--c-on-inverse);font:500 var(--fs-11) var(--f-mono);letter-spacing:var(--tr-caps);text-transform:uppercase}
+.traydemo .hd i{width:7px;height:7px;border-radius:50%;background:var(--c-accent);display:inline-block;margin-right:6px}
+.traydemo .bd{padding:var(--s-4)}
+.traydemo .who{display:flex;gap:var(--s-3);align-items:center}
+.traydemo .who small{display:block;color:var(--c-text-2);font-size:var(--fs-12)}
+.traydemo .ask{font-size:var(--fs-16);margin:var(--s-3) 0}
+.traydemo .acts{display:grid;grid-template-columns:1.3fr 1fr;gap:var(--s-2)}
+
+.sec{background:var(--c-inverse);color:var(--c-on-inverse);padding:var(--s-24) var(--s-8)}
+.sec .eyebrow{color:#B8B8B1}
+.secgrid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-16);align-items:start;max-width:1200px}
+.sec h2{font-size:var(--fs-60);margin:var(--s-3) 0 var(--s-6)}
+.never{display:grid;gap:0;border-top:1px solid #3A3A38}
+.never>div{display:grid;grid-template-columns:28px 1fr;gap:var(--s-4);padding:var(--s-5) 0;border-bottom:1px solid #3A3A38;font-size:var(--fs-18)}
+.never b{font-family:var(--f-display);font-size:var(--fs-24);font-weight:400}
+.never span{color:#B8B8B1;font-size:var(--fs-14);display:block;margin-top:4px}
+.x{color:var(--c-accent);font-family:var(--f-mono)}
+
+.bots{max-width:1200px;margin:0 auto}
+.botrow{display:grid;grid-template-columns:220px 1fr auto;gap:var(--s-6);align-items:center;padding:var(--s-6) 0;border-bottom:1px solid var(--c-border)}
+.botrow h3{font-size:var(--fs-24);font-family:var(--f-display);font-weight:400}
+.botrow p{color:var(--c-text-2);font-size:var(--fs-15)}
+
+.sand{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1.4fr .8fr;gap:var(--s-10);align-items:center;border:1.5px solid var(--c-text);padding:var(--s-8)}
+.sand .tag{font:600 var(--fs-11) var(--f-mono);letter-spacing:var(--tr-caps);text-transform:uppercase;background:var(--c-inverse);color:var(--c-on-inverse);padding:4px 8px}
+.cta{background:var(--c-inverse);color:var(--c-on-inverse);padding:var(--s-20) var(--s-8);display:flex;justify-content:space-between;align-items:end;gap:var(--s-8)}
+.cta h2{font-size:var(--fs-60);color:var(--c-on-inverse)}
+.cta p{color:#B8B8B1;max-width:36ch}
+.foot{display:flex;justify-content:space-between;gap:var(--s-6);padding:var(--s-6) var(--s-8);border-top:1px solid var(--c-border);font-size:var(--fs-13);color:var(--c-text-2)}
+.foot a{text-decoration:none}
+.wrap{max-width:1200px;margin:0 auto}
+@media (max-width:760px){
+  .nav{padding:0 var(--s-4);gap:var(--s-4);height:auto;flex-wrap:wrap;padding-top:var(--s-4);padding-bottom:var(--s-3)}
+  .nav nav{order:3;width:100%;overflow:auto;gap:var(--s-4);padding-bottom:var(--s-2)}
+  .hero{grid-template-columns:1fr;padding:var(--s-8) var(--s-4)}
+  .hero h1{font-size:56px}
+  .stage{margin:0}
+  .minicard{position:static;width:auto;margin-top:var(--s-3)}
+  .how,.step .body,.secgrid,.botrow,.sand,.cta{grid-template-columns:1fr}
+  .band,.sec{padding:var(--s-12) var(--s-4)}
+  .band h2,.sec h2,.cta h2{font-size:40px}
+  .step .n{padding-bottom:0;border:0}
+  .step .body{padding-left:0}
+  .botrow{grid-template-columns:1fr}
+  .cta{flex-direction:column;align-items:start}
+  .foot{flex-direction:column;padding:var(--s-6) var(--s-4)}
+}
+
+svg text.sg{font-family:var(--f-mono);font-weight:500;letter-spacing:.06em;text-transform:uppercase}
+svg text.sgc,svg text.ini{font-family:var(--f-mono);font-weight:600}
+svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var(--f-ui)}
+.emp.walking .fig{animation:bob .6s ease-in-out infinite alternate}
+@keyframes bob{to{transform:translateY(-2px)}}
+.walkpath{animation:march 1.6s linear infinite} @keyframes march{to{stroke-dashoffset:-16}}
+@media (prefers-reduced-motion:reduce){.emp.walking .fig,.walkpath{animation:none}}
+.states{display:grid;border-top:1px solid var(--c-border)}
+.states>div{display:grid;grid-template-columns:28px 1fr auto;gap:var(--s-3);align-items:center;padding:var(--s-3) 0;border-bottom:1px solid var(--c-border)}
+.states b{display:block;font-size:var(--fs-15)} .states small{color:var(--c-text-2);font-size:var(--fs-13)}
+.ind{width:14px;height:14px;border-radius:50%;display:inline-block}
+.ind.prep{border:2px solid var(--c-text-2)} .ind.wait{border:2px dashed var(--c-text-2)} .ind.live{background:var(--c-live);box-shadow:0 0 0 4px var(--bb-live-wash)}
+@media (max-width:760px){.ctas{flex-direction:column;align-items:flex-start;gap:var(--s-4)} .hero h1{font-size:56px} .pricegrid{grid-template-columns:1fr!important}}
+
+</style></head>
+<body>
+<div class="bb" id="app">
+
+<header class="nav">
+  <a class="wm" id="mk-home" href="#top"><span class="mark" aria-hidden="true"></span><span data-brand="upper">HQ</span></a>
+  <nav aria-label="Marketing">
+    <a id="mk-product" href="#product">Product</a>
+    <a id="mk-hq" href="#hq">HQ</a>
+    <a id="mk-security" href="#security">Security</a>
+    <a id="mk-pricing" href="#pricing">Pricing</a>
+  </nav>
+  <div class="sp"></div>
+  <a id="mk-signin" href="/" data-brand-href="appUrl" data-goto="signin" style="text-decoration:none;font-weight:500">Sign in</a>
+  <a id="mk-open" class="btn pri" href="/" data-brand-href="appUrl" data-goto="signin">Open your HQ</a>
+</header>
+
+<section class="hero" id="top">
+  <div>
+    <div class="eyebrow">Control plane for AI employees</div>
+    <h1 class="disp">Your AI staff,<br><em>in plain sight.</em></h1>
+    <p class="sub">Connect the bots you already use. Watch them work on one floor. Every request lands on your desk.</p>
+    <div class="ctas">
+      <a id="mk-open-2" class="btn pri lg" href="/" data-brand-href="appUrl" data-goto="signin">Open your HQ</a>
+      <a id="mk-connect" class="tlink" href="#connect">Connect an existing bot →</a>
+    </div>
+    <div class="trust mono"><i></i>OAuth 2.1 + PKCE · per-bot permissions · kill switch</div>
+  </div>
+  <div class="stage" aria-hidden="false">
+    <div id="hero-floor"><svg viewBox="0 0 900 580" width="100%" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HQ office floor diorama"><defs><filter id="blur3m" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.6"/></filter>
+<filter id="blur18m" x="-30%" y="-100%" width="160%" height="300%"><feGaussianBlur stdDeviation="16"/></filter>
+<filter id="glowm" x="-50%" y="-100%" width="200%" height="300%"><feGaussianBlur stdDeviation="6"/></filter>
+<radialGradient id="poolm"><stop offset="0" stop-color="#FFB46B" stop-opacity="0.85"/><stop offset="0.4" stop-color="#F28C38" stop-opacity="0.38"/><stop offset="1" stop-color="#F28C38" stop-opacity="0"/></radialGradient><pattern id="terrazzom" width="60" height="60" patternUnits="userSpaceOnUse"><circle cx="19.4" cy="9.1" r="0.6" fill="#B9B7B0" opacity="0.55"/><circle cx="49.3" cy="5.6" r="0.6" fill="#B9B7B0" opacity="0.55"/><circle cx="12.9" cy="5.2" r="1.3" fill="#B9B7B0" opacity="0.55"/><circle cx="14.4" cy="33.1" r="0.6" fill="#B9B7B0" opacity="0.55"/><circle cx="7.4" cy="13.4" r="0.6" fill="#B9B7B0" opacity="0.55"/><circle cx="35.1" cy="3.0" r="0.8" fill="#B9B7B0" opacity="0.55"/><circle cx="33.4" cy="8.0" r="1.3" fill="#8E8C86" opacity="0.55"/><circle cx="32.4" cy="34.3" r="0.8" fill="#B9B7B0" opacity="0.55"/><circle cx="34.9" cy="38.3" r="1.0" fill="#B9B7B0" opacity="0.55"/><circle cx="32.9" cy="3.8" r="0.6" fill="#B9B7B0" opacity="0.55"/><circle cx="12.4" cy="40.8" r="1.3" fill="#CFCDC6" opacity="0.55"/><circle cx="27.9" cy="55.4" r="1.0" fill="#CFCDC6" opacity="0.55"/><circle cx="14.9" cy="10.8" r="0.8" fill="#B9B7B0" opacity="0.55"/><circle cx="34.5" cy="31.5" r="1.0" fill="#E2452B" opacity="0.55"/></pattern></defs><ellipse cx="450.0" cy="539.0" rx="399.0" ry="27.099999999999998" fill="rgba(18,18,18,0.18)" filter="url(#blur18m)"/><polygon points="30.0,288.0 450.0,498.0 450.0,533.0 30.0,323.0" fill="#CFCDC6" /><polygon points="870.0,288.0 450.0,498.0 450.0,533.0 870.0,323.0" fill="#BCBAB3" /><polygon points="450.0,78.0 870.0,288.0 450.0,498.0 30.0,288.0" fill="#E6E4DE" /><polygon points="450.0,78.0 870.0,288.0 450.0,498.0 30.0,288.0" fill="url(#terrazzom)" /><polyline points="30.0,288.0 450.0,498.0 870.0,288.0" fill="none" stroke="#FFFFFF" stroke-width="1.5"/><polygon points="450.0,98.0 610.0,178.0 450.0,258.0 290.0,178.0" fill="#ECEAE5" /><polygon points="450.0,98.0 610.0,178.0 599.0,183.5 450.0,109.0 301.0,183.5 290.0,178.0" fill="#C9C7C0" opacity="0.5"/><polygon points="650.0,198.0 830.0,288.0 690.0,358.0 510.0,268.0" fill="#E3DCCD" /><polygon points="650.0,198.0 830.0,288.0 819.0,293.5 650.0,209.0 521.0,273.5 510.0,268.0" fill="#C9C7C0" opacity="0.5"/><polygon points="250.0,198.0 390.0,268.0 210.0,358.0 70.0,288.0" fill="#E0E1DC" /><polygon points="250.0,198.0 390.0,268.0 379.0,273.5 250.0,209.0 81.0,293.5 70.0,288.0" fill="#C9C7C0" opacity="0.5"/><polyline points="590.0,317.8 495.0,365.2" fill="none" stroke="#FFFFFF" stroke-width="6.6499999999999995" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/><polyline class="walkpath" points="590.0,317.8 495.0,365.2" fill="none" stroke="#C8361D" stroke-width="2.28" stroke-dasharray="0.95 6.6499999999999995" stroke-linecap="round" stroke-linejoin="round"/><polygon points="495.0,365.2 499.88392910212605,358.18218434800355 503.54408640346094,365.51794265236674" fill="#C8361D" /><g filter="url(#blur3m)"><polygon points="420.0,133.0 440.0,123.0 480.0,143.0 485.6,148.5 465.6,158.5 425.6,138.5" fill="#1A1A18" opacity="0.16"/><polygon points="490.0,168.0 510.0,158.0 550.0,178.0 555.5,183.5 535.5,193.5 495.6,173.5" fill="#1A1A18" opacity="0.16"/><polygon points="355.0,165.5 375.0,155.5 415.0,175.5 420.6,181.0 400.6,191.0 360.6,171.0" fill="#1A1A18" opacity="0.16"/><polygon points="450.1,228.0 460.0,223.0 469.9,228.0 474.9,232.9 465.0,237.8 455.1,232.9" fill="#1A1A18" opacity="0.16"/><polygon points="625.0,230.5 645.0,220.5 685.0,240.5 690.5,246.0 670.5,256.0 630.5,236.0" fill="#1A1A18" opacity="0.16"/><polygon points="705.0,270.5 725.0,260.5 765.0,280.5 770.6,286.0 750.5,296.0 710.5,276.0" fill="#1A1A18" opacity="0.16"/><polygon points="700.1,323.0 710.0,318.0 719.9,323.0 724.9,327.9 715.0,332.8 705.1,327.9" fill="#1A1A18" opacity="0.16"/><polygon points="220.0,233.0 240.0,223.0 280.0,243.0 285.6,248.5 265.6,258.5 225.6,238.5" fill="#1A1A18" opacity="0.16"/><polygon points="220.0,293.0 240.0,283.0 280.0,303.0 285.6,308.5 265.5,318.5 225.5,298.5" fill="#1A1A18" opacity="0.16"/><polygon points="200.1,333.0 210.0,328.0 219.9,333.0 224.9,337.9 215.0,342.8 205.1,337.9" fill="#1A1A18" opacity="0.16"/><polygon points="600.1,392.9 610.0,388.0 619.9,392.9 624.9,397.9 615.0,402.8 605.1,397.9" fill="#1A1A18" opacity="0.16"/><polygon points="280.1,392.9 290.0,388.0 299.9,392.9 304.9,397.9 295.0,402.8 285.1,397.9" fill="#1A1A18" opacity="0.16"/><polygon points="441.2,472.4 450.0,468.0 458.8,472.4 463.2,476.8 454.4,481.2 445.6,476.8" fill="#1A1A18" opacity="0.16"/><polygon points="380.0,393.0 450.0,358.0 520.0,393.0 529.6,402.5 459.6,437.5 389.6,402.5" fill="#1A1A18" opacity="0.16"/></g><g ><polygon points="445.0,95.5 610.0,178.0 610.0,145.5 445.0,63.0" fill="#ECEBE7" /><polygon points="615.0,175.5 610.0,178.0 610.0,145.5 615.0,143.0" fill="#DAD9D4" /><polygon points="450.0,60.5 615.0,143.0 610.0,145.5 445.0,63.0" fill="#FFFFFF" /></g><g ><polygon points="285.0,175.5 290.0,178.0 290.0,145.5 285.0,143.0" fill="#ECEBE7" /><polygon points="450.0,98.0 290.0,178.0 290.0,145.5 450.0,65.5" fill="#DAD9D4" /><polygon points="445.0,63.0 450.0,65.5 290.0,145.5 285.0,143.0" fill="#FFFFFF" /></g><g ><polygon points="645.0,195.5 830.0,288.0 830.0,255.5 645.0,163.0" fill="#ECEBE7" /><polygon points="835.0,285.5 830.0,288.0 830.0,255.5 835.0,253.0" fill="#DAD9D4" /><polygon points="650.0,160.5 835.0,253.0 830.0,255.5 645.0,163.0" fill="#FFFFFF" /></g><g ><polygon points="505.0,265.5 510.0,268.0 510.0,235.5 505.0,233.0" fill="#ECEBE7" /><polygon points="650.0,198.0 510.0,268.0 510.0,235.5 650.0,165.5" fill="#DAD9D4" /><polygon points="645.0,163.0 650.0,165.5 510.0,235.5 505.0,233.0" fill="#FFFFFF" /></g><g ><polygon points="245.0,195.5 390.0,268.0 390.0,235.5 245.0,163.0" fill="#ECEBE7" /><polygon points="395.0,265.5 390.0,268.0 390.0,235.5 395.0,233.0" fill="#DAD9D4" /><polygon points="250.0,160.5 395.0,233.0 390.0,235.5 245.0,163.0" fill="#FFFFFF" /></g><g ><polygon points="65.0,285.5 70.0,288.0 70.0,255.5 65.0,253.0" fill="#ECEBE7" /><polygon points="250.0,198.0 70.0,288.0 70.0,255.5 250.0,165.5" fill="#DAD9D4" /><polygon points="245.0,163.0 250.0,165.5 70.0,255.5 65.0,253.0" fill="#FFFFFF" /></g><g ><polygon points="420.0,133.0 460.0,153.0 460.0,138.0 420.0,118.0" fill="#D8CDB9" /><polygon points="480.0,143.0 460.0,153.0 460.0,138.0 480.0,128.0" fill="#C4B8A2" /><polygon points="440.0,108.0 480.0,128.0 460.0,138.0 420.0,118.0" fill="#EDE5D6" /></g><g ><polygon points="445.5,116.2 463.5,125.2 463.5,113.2 445.5,104.2" fill="#1E1E1C" /><polygon points="466.0,124.0 463.5,125.2 463.5,113.2 466.0,112.0" fill="#121212" /><polygon points="448.0,103.0 466.0,112.0 463.5,113.2 445.5,104.2" fill="#2A2A28" /></g><polygon points="446.5,115.2 462.5,123.2 462.5,113.8 446.5,105.8" fill="#3E4A47" /><polygon points="433.0,116.2 443.0,121.2 437.0,124.2 427.0,119.2" fill="#FFFFFF" /><g ><polygon points="468.0,128.0 470.0,129.0 470.0,113.0 468.0,112.0" fill="#121212" /><polygon points="472.0,128.0 470.0,129.0 470.0,113.0 472.0,112.0" fill="#121212" /><polygon points="470.0,111.0 472.0,112.0 470.0,113.0 468.0,112.0" fill="#121212" /></g><g ><polygon points="463.0,111.5 470.0,115.0 470.0,111.5 463.0,108.0" fill="#121212" /><polygon points="475.0,112.5 470.0,115.0 470.0,111.5 475.0,109.0" fill="#121212" /><polygon points="468.0,105.5 475.0,109.0 470.0,111.5 463.0,108.0" fill="#121212" /></g><g ><polygon points="420.0,148.0 430.0,153.0 430.0,145.0 420.0,140.0" fill="#4A4A46" /><polygon points="440.0,148.0 430.0,153.0 430.0,145.0 440.0,140.0" fill="#3A3A37" /><polygon points="430.0,135.0 440.0,140.0 430.0,145.0 420.0,140.0" fill="#5C5C57" /></g><g ><polygon points="420.0,140.0 430.0,145.0 430.0,135.0 420.0,130.0" fill="#4A4A46" /><polygon points="432.0,144.0 430.0,145.0 430.0,135.0 432.0,134.0" fill="#3A3A37" /><polygon points="422.0,129.0 432.0,134.0 430.0,135.0 420.0,130.0" fill="#5C5C57" /></g><g ><polygon points="355.0,165.5 395.0,185.5 395.0,170.5 355.0,150.5" fill="#D8CDB9" /><polygon points="415.0,175.5 395.0,185.5 395.0,170.5 415.0,160.5" fill="#C4B8A2" /><polygon points="375.0,140.5 415.0,160.5 395.0,170.5 355.0,150.5" fill="#EDE5D6" /></g><g ><polygon points="380.5,148.8 398.5,157.8 398.5,145.8 380.5,136.8" fill="#1E1E1C" /><polygon points="401.0,156.5 398.5,157.8 398.5,145.8 401.0,144.5" fill="#121212" /><polygon points="383.0,135.5 401.0,144.5 398.5,145.8 380.5,136.8" fill="#2A2A28" /></g><polygon points="381.5,147.8 397.5,155.8 397.5,146.2 381.5,138.2" fill="#3E4A47" /><polygon points="368.0,148.8 378.0,153.8 372.0,156.8 362.0,151.8" fill="#FFFFFF" /><g ><polygon points="403.0,160.5 405.0,161.5 405.0,145.5 403.0,144.5" fill="#121212" /><polygon points="407.0,160.5 405.0,161.5 405.0,145.5 407.0,144.5" fill="#121212" /><polygon points="405.0,143.5 407.0,144.5 405.0,145.5 403.0,144.5" fill="#121212" /></g><g ><polygon points="398.0,144.0 405.0,147.5 405.0,144.0 398.0,140.5" fill="#121212" /><polygon points="410.0,145.0 405.0,147.5 405.0,144.0 410.0,141.5" fill="#121212" /><polygon points="403.0,138.0 410.0,141.5 405.0,144.0 398.0,140.5" fill="#121212" /></g><g ><polygon points="355.0,180.5 365.0,185.5 365.0,177.5 355.0,172.5" fill="#4A4A46" /><polygon points="375.0,180.5 365.0,185.5 365.0,177.5 375.0,172.5" fill="#3A3A37" /><polygon points="365.0,167.5 375.0,172.5 365.0,177.5 355.0,172.5" fill="#5C5C57" /></g><g ><polygon points="355.0,172.5 365.0,177.5 365.0,167.5 355.0,162.5" fill="#4A4A46" /><polygon points="367.0,176.5 365.0,177.5 365.0,167.5 367.0,166.5" fill="#3A3A37" /><polygon points="357.0,161.5 367.0,166.5 365.0,167.5 355.0,162.5" fill="#5C5C57" /></g><g ><polygon points="490.0,168.0 530.0,188.0 530.0,173.0 490.0,153.0" fill="#D8CDB9" /><polygon points="550.0,178.0 530.0,188.0 530.0,173.0 550.0,163.0" fill="#C4B8A2" /><polygon points="510.0,143.0 550.0,163.0 530.0,173.0 490.0,153.0" fill="#EDE5D6" /></g><g ><polygon points="515.5,151.2 533.5,160.2 533.5,148.2 515.5,139.2" fill="#1E1E1C" /><polygon points="536.0,159.0 533.5,160.2 533.5,148.2 536.0,147.0" fill="#121212" /><polygon points="518.0,138.0 536.0,147.0 533.5,148.2 515.5,139.2" fill="#2A2A28" /></g><polygon points="516.5,150.2 532.5,158.2 532.5,148.8 516.5,140.8" fill="#3E4A47" /><polygon points="503.0,151.2 513.0,156.2 507.0,159.2 497.0,154.2" fill="#FFFFFF" /><g ><polygon points="490.0,183.0 500.0,188.0 500.0,180.0 490.0,175.0" fill="#4A4A46" /><polygon points="510.0,183.0 500.0,188.0 500.0,180.0 510.0,175.0" fill="#3A3A37" /><polygon points="500.0,170.0 510.0,175.0 500.0,180.0 490.0,175.0" fill="#5C5C57" /></g><g ><polygon points="490.0,175.0 500.0,180.0 500.0,170.0 490.0,165.0" fill="#4A4A46" /><polygon points="502.0,179.0 500.0,180.0 500.0,170.0 502.0,169.0" fill="#3A3A37" /><polygon points="492.0,164.0 502.0,169.0 500.0,170.0 490.0,165.0" fill="#5C5C57" /></g><g ><polygon points="450.1,228.0 460.0,232.9 460.0,223.0 450.1,218.1" fill="#E8E7E2" /><polygon points="469.9,228.0 460.0,232.9 460.0,223.0 469.9,218.1" fill="#D5D4CE" /><polygon points="460.0,213.1 469.9,218.1 460.0,223.0 450.1,218.1" fill="#FAFAF8" /></g><circle cx="454.33" cy="202.835" r="9.450000000000001" fill="#3F6B4E"/><circle cx="466.615" cy="201.89" r="8.505" fill="#3F6B4E"/><circle cx="460.0" cy="195.275" r="9.450000000000001" fill="#56865F"/><circle cx="457.165" cy="198.11" r="5.670000000000001" fill="#7AA37C"/><circle cx="464.725" cy="193.385" r="4.7250000000000005" fill="#7AA37C"/><circle cx="460.0" cy="187.715" r="6.615" fill="#56865F"/><circle cx="458.11" cy="185.825" r="3.3075" fill="#7AA37C"/><g ><polygon points="625.0,230.5 665.0,250.5 665.0,235.5 625.0,215.5" fill="#D8CDB9" /><polygon points="685.0,240.5 665.0,250.5 665.0,235.5 685.0,225.5" fill="#C4B8A2" /><polygon points="645.0,205.5 685.0,225.5 665.0,235.5 625.0,215.5" fill="#EDE5D6" /></g><g ><polygon points="650.5,213.8 668.5,222.8 668.5,210.8 650.5,201.8" fill="#1E1E1C" /><polygon points="671.0,221.5 668.5,222.8 668.5,210.8 671.0,209.5" fill="#121212" /><polygon points="653.0,200.5 671.0,209.5 668.5,210.8 650.5,201.8" fill="#2A2A28" /></g><polygon points="651.5,212.8 667.5,220.8 667.5,211.2 651.5,203.3" fill="#3E4A47" /><polygon points="638.0,213.8 648.0,218.8 642.0,221.8 632.0,216.8" fill="#FFFFFF" /><g ><polygon points="673.0,225.5 675.0,226.5 675.0,210.5 673.0,209.5" fill="#121212" /><polygon points="677.0,225.5 675.0,226.5 675.0,210.5 677.0,209.5" fill="#121212" /><polygon points="675.0,208.5 677.0,209.5 675.0,210.5 673.0,209.5" fill="#121212" /></g><g ><polygon points="668.0,209.0 675.0,212.5 675.0,209.0 668.0,205.5" fill="#121212" /><polygon points="680.0,210.0 675.0,212.5 675.0,209.0 680.0,206.5" fill="#121212" /><polygon points="673.0,203.0 680.0,206.5 675.0,209.0 668.0,205.5" fill="#121212" /></g><g ><polygon points="625.0,245.5 635.0,250.5 635.0,242.5 625.0,237.5" fill="#4A4A46" /><polygon points="645.0,245.5 635.0,250.5 635.0,242.5 645.0,237.5" fill="#3A3A37" /><polygon points="635.0,232.5 645.0,237.5 635.0,242.5 625.0,237.5" fill="#5C5C57" /></g><g ><polygon points="625.0,237.5 635.0,242.5 635.0,232.5 625.0,227.5" fill="#4A4A46" /><polygon points="637.0,241.5 635.0,242.5 635.0,232.5 637.0,231.5" fill="#3A3A37" /><polygon points="627.0,226.5 637.0,231.5 635.0,232.5 625.0,227.5" fill="#5C5C57" /></g><g ><polygon points="220.0,233.0 260.0,253.0 260.0,238.0 220.0,218.0" fill="#D8CDB9" /><polygon points="280.0,243.0 260.0,253.0 260.0,238.0 280.0,228.0" fill="#C4B8A2" /><polygon points="240.0,208.0 280.0,228.0 260.0,238.0 220.0,218.0" fill="#EDE5D6" /></g><g ><polygon points="245.5,216.2 263.5,225.2 263.5,213.2 245.5,204.2" fill="#1E1E1C" /><polygon points="266.0,224.0 263.5,225.2 263.5,213.2 266.0,212.0" fill="#121212" /><polygon points="248.0,203.0 266.0,212.0 263.5,213.2 245.5,204.2" fill="#2A2A28" /></g><polygon points="246.5,215.2 262.5,223.2 262.5,213.8 246.5,205.8" fill="#3E4A47" /><polygon points="233.0,216.2 243.0,221.2 237.0,224.2 227.0,219.2" fill="#FFFFFF" /><g ><polygon points="268.0,228.0 270.0,229.0 270.0,213.0 268.0,212.0" fill="#121212" /><polygon points="272.0,228.0 270.0,229.0 270.0,213.0 272.0,212.0" fill="#121212" /><polygon points="270.0,211.0 272.0,212.0 270.0,213.0 268.0,212.0" fill="#121212" /></g><g ><polygon points="263.0,211.5 270.0,215.0 270.0,211.5 263.0,208.0" fill="#121212" /><polygon points="275.0,212.5 270.0,215.0 270.0,211.5 275.0,209.0" fill="#121212" /><polygon points="268.0,205.5 275.0,209.0 270.0,211.5 263.0,208.0" fill="#121212" /></g><g ><polygon points="220.0,248.0 230.0,253.0 230.0,245.0 220.0,240.0" fill="#4A4A46" /><polygon points="240.0,248.0 230.0,253.0 230.0,245.0 240.0,240.0" fill="#3A3A37" /><polygon points="230.0,235.0 240.0,240.0 230.0,245.0 220.0,240.0" fill="#5C5C57" /></g><g ><polygon points="220.0,240.0 230.0,245.0 230.0,235.0 220.0,230.0" fill="#4A4A46" /><polygon points="232.0,244.0 230.0,245.0 230.0,235.0 232.0,234.0" fill="#3A3A37" /><polygon points="222.0,229.0 232.0,234.0 230.0,235.0 220.0,230.0" fill="#5C5C57" /></g><g ><polygon points="705.0,270.5 745.0,290.5 745.0,275.5 705.0,255.5" fill="#D8CDB9" /><polygon points="765.0,280.5 745.0,290.5 745.0,275.5 765.0,265.5" fill="#C4B8A2" /><polygon points="725.0,245.5 765.0,265.5 745.0,275.5 705.0,255.5" fill="#EDE5D6" /></g><g ><polygon points="730.5,253.8 748.5,262.8 748.5,250.8 730.5,241.8" fill="#1E1E1C" /><polygon points="751.0,261.5 748.5,262.8 748.5,250.8 751.0,249.5" fill="#121212" /><polygon points="733.0,240.5 751.0,249.5 748.5,250.8 730.5,241.8" fill="#2A2A28" /></g><polygon points="731.5,252.8 747.5,260.8 747.5,251.2 731.5,243.2" fill="#3E4A47" /><polygon points="718.0,253.8 728.0,258.8 722.0,261.8 712.0,256.8" fill="#FFFFFF" /><g ><polygon points="753.0,265.5 755.0,266.5 755.0,250.5 753.0,249.5" fill="#121212" /><polygon points="757.0,265.5 755.0,266.5 755.0,250.5 757.0,249.5" fill="#121212" /><polygon points="755.0,248.5 757.0,249.5 755.0,250.5 753.0,249.5" fill="#121212" /></g><g ><polygon points="748.0,249.0 755.0,252.5 755.0,249.0 748.0,245.5" fill="#121212" /><polygon points="760.0,250.0 755.0,252.5 755.0,249.0 760.0,246.5" fill="#121212" /><polygon points="753.0,243.0 760.0,246.5 755.0,249.0 748.0,245.5" fill="#121212" /></g><g ><polygon points="705.0,285.5 715.0,290.5 715.0,282.5 705.0,277.5" fill="#4A4A46" /><polygon points="725.0,285.5 715.0,290.5 715.0,282.5 725.0,277.5" fill="#3A3A37" /><polygon points="715.0,272.5 725.0,277.5 715.0,282.5 705.0,277.5" fill="#5C5C57" /></g><g ><polygon points="705.0,277.5 715.0,282.5 715.0,272.5 705.0,267.5" fill="#4A4A46" /><polygon points="717.0,281.5 715.0,282.5 715.0,272.5 717.0,271.5" fill="#3A3A37" /><polygon points="707.0,266.5 717.0,271.5 715.0,272.5 705.0,267.5" fill="#5C5C57" /></g><g ><polygon points="220.0,293.0 260.0,313.0 260.0,298.0 220.0,278.0" fill="#D8CDB9" /><polygon points="280.0,303.0 260.0,313.0 260.0,298.0 280.0,288.0" fill="#C4B8A2" /><polygon points="240.0,268.0 280.0,288.0 260.0,298.0 220.0,278.0" fill="#EDE5D6" /></g><g ><polygon points="245.5,276.2 263.5,285.2 263.5,273.2 245.5,264.2" fill="#1E1E1C" /><polygon points="266.0,284.0 263.5,285.2 263.5,273.2 266.0,272.0" fill="#121212" /><polygon points="248.0,263.0 266.0,272.0 263.5,273.2 245.5,264.2" fill="#2A2A28" /></g><polygon points="246.5,275.2 262.5,283.2 262.5,273.8 246.5,265.8" fill="#3E4A47" /><polygon points="233.0,276.2 243.0,281.2 237.0,284.2 227.0,279.2" fill="#FFFFFF" /><g ><polygon points="220.0,308.0 230.0,313.0 230.0,305.0 220.0,300.0" fill="#4A4A46" /><polygon points="240.0,308.0 230.0,313.0 230.0,305.0 240.0,300.0" fill="#3A3A37" /><polygon points="230.0,295.0 240.0,300.0 230.0,305.0 220.0,300.0" fill="#5C5C57" /></g><g ><polygon points="220.0,300.0 230.0,305.0 230.0,295.0 220.0,290.0" fill="#4A4A46" /><polygon points="232.0,304.0 230.0,305.0 230.0,295.0 232.0,294.0" fill="#3A3A37" /><polygon points="222.0,289.0 232.0,294.0 230.0,295.0 220.0,290.0" fill="#5C5C57" /></g><g ><polygon points="700.1,323.0 710.0,327.9 710.0,318.0 700.1,313.1" fill="#E8E7E2" /><polygon points="719.9,323.0 710.0,327.9 710.0,318.0 719.9,313.1" fill="#D5D4CE" /><polygon points="710.0,308.1 719.9,313.1 710.0,318.0 700.1,313.1" fill="#FAFAF8" /></g><circle cx="704.33" cy="297.935" r="9.450000000000001" fill="#3F6B4E"/><circle cx="716.615" cy="296.99" r="8.505" fill="#3F6B4E"/><circle cx="710.0" cy="290.375" r="9.450000000000001" fill="#56865F"/><circle cx="707.165" cy="293.21000000000004" r="5.670000000000001" fill="#7AA37C"/><circle cx="714.725" cy="288.485" r="4.7250000000000005" fill="#7AA37C"/><circle cx="710.0" cy="282.815" r="6.615" fill="#56865F"/><circle cx="708.11" cy="280.925" r="3.3075" fill="#7AA37C"/><g ><polygon points="200.1,333.0 210.0,337.9 210.0,328.0 200.1,323.1" fill="#E8E7E2" /><polygon points="219.9,333.0 210.0,337.9 210.0,328.0 219.9,323.1" fill="#D5D4CE" /><polygon points="210.0,318.1 219.9,323.1 210.0,328.0 200.1,323.1" fill="#FAFAF8" /></g><circle cx="205.41" cy="315.39500000000004" r="7.65" fill="#3F6B4E"/><circle cx="215.355" cy="314.63" r="6.885000000000001" fill="#3F6B4E"/><circle cx="210.0" cy="309.27500000000003" r="7.65" fill="#56865F"/><circle cx="207.705" cy="311.57000000000005" r="4.59" fill="#7AA37C"/><circle cx="213.825" cy="307.745" r="3.825" fill="#7AA37C"/><g ><polygon points="600.1,392.9 610.0,397.9 610.0,388.0 600.1,383.1" fill="#E8E7E2" /><polygon points="619.9,392.9 610.0,397.9 610.0,388.0 619.9,383.1" fill="#D5D4CE" /><polygon points="610.0,378.1 619.9,383.1 610.0,388.0 600.1,383.1" fill="#FAFAF8" /></g><circle cx="604.33" cy="367.935" r="9.450000000000001" fill="#3F6B4E"/><circle cx="616.615" cy="366.99" r="8.505" fill="#3F6B4E"/><circle cx="610.0" cy="360.375" r="9.450000000000001" fill="#56865F"/><circle cx="607.165" cy="363.21000000000004" r="5.670000000000001" fill="#7AA37C"/><circle cx="614.725" cy="358.485" r="4.7250000000000005" fill="#7AA37C"/><circle cx="610.0" cy="352.815" r="6.615" fill="#56865F"/><circle cx="608.11" cy="350.925" r="3.3075" fill="#7AA37C"/><g ><polygon points="280.1,392.9 290.0,397.9 290.0,388.0 280.1,383.1" fill="#E8E7E2" /><polygon points="299.9,392.9 290.0,397.9 290.0,388.0 299.9,383.1" fill="#D5D4CE" /><polygon points="290.0,378.1 299.9,383.1 290.0,388.0 280.1,383.1" fill="#FAFAF8" /></g><circle cx="284.33" cy="367.935" r="9.450000000000001" fill="#3F6B4E"/><circle cx="296.615" cy="366.99" r="8.505" fill="#3F6B4E"/><circle cx="290.0" cy="360.375" r="9.450000000000001" fill="#56865F"/><circle cx="287.165" cy="363.21000000000004" r="5.670000000000001" fill="#7AA37C"/><circle cx="294.725" cy="358.485" r="4.7250000000000005" fill="#7AA37C"/><circle cx="290.0" cy="352.815" r="6.615" fill="#56865F"/><circle cx="288.11" cy="350.925" r="3.3075" fill="#7AA37C"/><g ><polygon points="380.0,393.0 450.0,428.0 450.0,412.0 380.0,377.0" fill="#ECEBE7" /><polygon points="520.0,393.0 450.0,428.0 450.0,412.0 520.0,377.0" fill="#D9D8D3" /><polygon points="450.0,342.0 520.0,377.0 450.0,412.0 380.0,377.0" fill="#FFFFFF" /></g><g ><polygon points="394.0,377.0 450.0,405.0 450.0,397.0 394.0,369.0" fill="#C8361D" /><polygon points="506.0,377.0 450.0,405.0 450.0,397.0 506.0,369.0" fill="#A82D17" /><polygon points="450.0,341.0 506.0,369.0 450.0,397.0 394.0,369.0" fill="#E2452B" /></g><polygon points="450.0,345.5 497.0,369.0 450.0,392.5 403.0,369.0" fill="#E9E9E4" /><polygon points="450.0,345.5 497.0,369.0 497.0,374.0 450.0,350.5" fill="#D4D4CE" opacity="0.9"/><polygon points="450.0,345.5 403.0,369.0 403.0,374.0 450.0,350.5" fill="#D4D4CE" opacity="0.7"/><polygon points="449.8,362.6 473.2,379.5 450.2,387.4 426.8,370.5" fill="#1A1A18" opacity="0.35"/><polygon points="449.8,360.8 473.2,377.7 450.2,385.7 426.8,368.8" fill="#FFFFFF" stroke="#D4D4CE" stroke-width="0.8"/><line x1="446.1" y1="365.0" x2="462.1" y2="376.5" stroke="#E2452B" stroke-width="1.52" stroke-linecap="round"/><line x1="441.1" y1="366.8" x2="457.0" y2="378.3" stroke="#B9B9B3" stroke-width="1.52" stroke-linecap="round"/><line x1="436.0" y1="368.5" x2="443.8" y2="374.1" stroke="#B9B9B3" stroke-width="1.52" stroke-linecap="round"/><g ><polygon points="441.2,472.4 450.0,476.8 450.0,468.0 441.2,463.6" fill="#E8E7E2" /><polygon points="458.8,472.4 450.0,476.8 450.0,468.0 458.8,463.6" fill="#D5D4CE" /><polygon points="450.0,459.2 458.8,463.6 450.0,468.0 441.2,463.6" fill="#FAFAF8" /></g><circle cx="445.92" cy="456.84000000000003" r="6.800000000000001" fill="#3F6B4E"/><circle cx="454.76" cy="456.16" r="6.120000000000001" fill="#3F6B4E"/><circle cx="450.0" cy="451.40000000000003" r="6.800000000000001" fill="#56865F"/><circle cx="447.96" cy="453.44" r="4.08" fill="#7AA37C"/><circle cx="453.4" cy="450.04" r="3.4000000000000004" fill="#7AA37C"/><polygon points="290.0,178.0 352.5,209.2 352.5,183.2 290.0,152.0" fill="rgba(255,255,255,0.38)" /><line x1="290.0" y1="152.0" x2="352.5" y2="183.2" stroke="#FFFFFF" stroke-width="1.6"/><line x1="290.0" y1="178.0" x2="290.0" y2="152.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="352.5" y1="209.2" x2="352.5" y2="183.2" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><polygon points="387.5,226.8 450.0,258.0 450.0,232.0 387.5,200.8" fill="rgba(255,255,255,0.38)" /><line x1="387.5" y1="200.8" x2="450.0" y2="232.0" stroke="#FFFFFF" stroke-width="1.6"/><line x1="387.5" y1="226.8" x2="387.5" y2="200.8" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="450.0" y1="258.0" x2="450.0" y2="232.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><polygon points="610.0,178.0 450.0,258.0 450.0,232.0 610.0,152.0" fill="rgba(255,255,255,0.38)" /><line x1="610.0" y1="152.0" x2="450.0" y2="232.0" stroke="#FFFFFF" stroke-width="1.6"/><line x1="610.0" y1="178.0" x2="610.0" y2="152.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="556.7" y1="204.7" x2="556.7" y2="178.7" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="503.3" y1="231.3" x2="503.3" y2="205.3" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="450.0" y1="258.0" x2="450.0" y2="232.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><polygon points="510.0,268.0 582.5,304.2 582.5,278.2 510.0,242.0" fill="rgba(255,255,255,0.38)" /><line x1="510.0" y1="242.0" x2="582.5" y2="278.2" stroke="#FFFFFF" stroke-width="1.6"/><line x1="510.0" y1="268.0" x2="510.0" y2="242.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="582.5" y1="304.2" x2="582.5" y2="278.2" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><polygon points="617.5,321.8 690.0,358.0 690.0,332.0 617.5,295.8" fill="rgba(255,255,255,0.38)" /><line x1="617.5" y1="295.8" x2="690.0" y2="332.0" stroke="#FFFFFF" stroke-width="1.6"/><line x1="617.5" y1="321.8" x2="617.5" y2="295.8" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="690.0" y1="358.0" x2="690.0" y2="332.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><polygon points="830.0,288.0 690.0,358.0 690.0,332.0 830.0,262.0" fill="rgba(255,255,255,0.38)" /><line x1="830.0" y1="262.0" x2="690.0" y2="332.0" stroke="#FFFFFF" stroke-width="1.6"/><line x1="830.0" y1="288.0" x2="830.0" y2="262.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="783.3" y1="311.3" x2="783.3" y2="285.3" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="736.7" y1="334.7" x2="736.7" y2="308.7" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="690.0" y1="358.0" x2="690.0" y2="332.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><polygon points="70.0,288.0 210.0,358.0 210.0,332.0 70.0,262.0" fill="rgba(255,255,255,0.38)" /><line x1="70.0" y1="262.0" x2="210.0" y2="332.0" stroke="#FFFFFF" stroke-width="1.6"/><line x1="70.0" y1="288.0" x2="70.0" y2="262.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="116.7" y1="311.3" x2="116.7" y2="285.3" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="163.3" y1="334.7" x2="163.3" y2="308.7" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="210.0" y1="358.0" x2="210.0" y2="332.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><polygon points="390.0,268.0 317.5,304.2 317.5,278.2 390.0,242.0" fill="rgba(255,255,255,0.38)" /><line x1="390.0" y1="242.0" x2="317.5" y2="278.2" stroke="#FFFFFF" stroke-width="1.6"/><line x1="390.0" y1="268.0" x2="390.0" y2="242.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="317.5" y1="304.2" x2="317.5" y2="278.2" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><polygon points="282.5,321.8 210.0,358.0 210.0,332.0 282.5,295.8" fill="rgba(255,255,255,0.38)" /><line x1="282.5" y1="295.8" x2="210.0" y2="332.0" stroke="#FFFFFF" stroke-width="1.6"/><line x1="282.5" y1="321.8" x2="282.5" y2="295.8" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><line x1="210.0" y1="358.0" x2="210.0" y2="332.0" stroke="#FFFFFF" stroke-width="0.8" opacity="0.9"/><g class="emp" tabindex="0" role="button" aria-label="Grok Bot: Research"><ellipse cx="370.0" cy="183.0" rx="9.5" ry="3.9899999999999998" fill="#1A1A18" opacity="0.45"/><g class="fig"><rect x="364.775" y="175.4" width="3.8" height="7.6" rx="1.9" fill="#121212"/><rect x="371.425" y="175.4" width="3.8" height="7.6" rx="1.9" fill="#121212"/><rect x="361.925" y="158.3" width="16.15" height="19.0" rx="3.8" fill="#121212" stroke="none" stroke-width="1.14"/><rect x="364.3" y="161.15" width="2.8499999999999996" height="11.4" rx="1.4249999999999998" fill="#FFFFFF" opacity="0.22"/><text x="370.0" y="170.84" text-anchor="middle" class="ini" font-size="8.075" fill="#FFFFFF">GB</text><rect x="362.875" y="143.57500000000002" width="14.25" height="14.25" rx="2.8499999999999996" fill="#121212" stroke="none" stroke-width="1.14"/><rect x="364.65625" y="148.8" width="10.6875" height="3.8" rx="1.9" fill="#E2452B"/><line x1="370.0" y1="143.57500000000002" x2="370.0" y2="137.87500000000003" stroke="#121212" stroke-width="1.52"/><circle cx="370.0" cy="136.925" r="2.1849999999999996" fill="#121212" stroke="none"/></g><g class="chip"><rect x="331.734" y="99.875" width="76.532" height="30.4" rx="7.6" fill="#FFFFFF" stroke="#D4D4CE" stroke-width="1"/><path d="M366.2 130.275 L370.0 134.07500000000002 L373.8 130.275 Z" fill="#FFFFFF"/><circle cx="342.18399999999997" cy="110.325" r="3.42" fill="#1C7A4A"/><text x="350.734" y="113.175" class="cn" font-size="10.45" fill="#121212">Grok Bot</text><text x="350.734" y="124.575" class="cs" font-size="9.025" fill="#5C5C57">Research</text></g></g><g class="emp" tabindex="0" role="button" aria-label="Instinct: Ops"><ellipse cx="230.0" cy="253.0" rx="9.5" ry="3.9899999999999998" fill="#1A1A18" opacity="0.45"/><g class="fig"><rect x="224.775" y="245.4" width="3.8" height="7.6" rx="1.9" fill="#121212"/><rect x="231.425" y="245.4" width="3.8" height="7.6" rx="1.9" fill="#121212"/><rect x="221.925" y="228.3" width="16.15" height="19.0" rx="8.075" fill="#C8361D" stroke="none" stroke-width="1.14"/><rect x="224.3" y="231.15" width="2.8499999999999996" height="11.4" rx="1.4249999999999998" fill="#FFFFFF" opacity="0.22"/><text x="230.0" y="240.84" text-anchor="middle" class="ini" font-size="8.075" fill="#FFFFFF">IN</text><circle cx="230.0" cy="220.70000000000002" r="7.125" fill="#C8361D" stroke="none" stroke-width="1.14"/><circle cx="227.53" cy="220.70000000000002" r="1.4249999999999998" fill="#FFFFFF"/><circle cx="232.47" cy="220.70000000000002" r="1.4249999999999998" fill="#FFFFFF"/><rect x="221.925" y="212.62500000000003" width="16.15" height="2.8499999999999996" rx="1.4249999999999998" fill="#121212"/></g><g class="chip"><rect x="191.734" y="175.57500000000002" width="76.532" height="30.4" rx="7.6" fill="#FFFFFF" stroke="#D4D4CE" stroke-width="1"/><path d="M226.2 205.97500000000002 L230.0 209.77500000000003 L233.8 205.97500000000002 Z" fill="#FFFFFF"/><circle cx="202.184" cy="186.025" r="3.42" fill="#1C7A4A"/><text x="210.734" y="188.87500000000003" class="cn" font-size="10.45" fill="#121212">Instinct</text><text x="210.734" y="200.275" class="cs" font-size="9.025" fill="#5C5C57">Ops</text></g></g><g class="emp walking" tabindex="0" role="button" aria-label="Muse: → Needs Approval"><ellipse cx="540.0" cy="343.0" rx="9.5" ry="3.9899999999999998" fill="#1A1A18" opacity="0.45"/><g class="fig"><rect x="534.3" y="335.4" width="3.8" height="7.6" rx="1.9" fill="#121212" transform="rotate(18 536.2 335.4)"/><rect x="541.9" y="335.4" width="3.8" height="7.6" rx="1.9" fill="#121212" transform="rotate(-16 543.8 335.4)"/><path d="M531.925 337.3 Q531.925 318.3 540.0 318.3 Q548.075 318.3 548.075 337.3 Z" fill="#2F5DA8" stroke="none" stroke-width="1.14"/><rect x="534.3" y="321.15000000000003" width="2.8499999999999996" height="11.4" rx="1.4249999999999998" fill="#FFFFFF" opacity="0.22"/><text x="540.0" y="330.84000000000003" text-anchor="middle" class="ini" font-size="8.075" fill="#FFFFFF">MU</text><circle cx="540.0" cy="310.7" r="7.125" fill="#2F5DA8" stroke="none" stroke-width="1.14"/><circle cx="537.53" cy="310.7" r="1.4249999999999998" fill="#FFFFFF"/><circle cx="542.47" cy="310.7" r="1.4249999999999998" fill="#FFFFFF"/><ellipse cx="540.0" cy="300.72499999999997" rx="6.4125000000000005" ry="2.28" fill="none" stroke="#121212" stroke-width="1.71"/><g><rect x="545.225" y="322.1" width="11.399999999999999" height="8.549999999999999" rx="1.4249999999999998" fill="#FFFFFF" stroke="#D4D4CE" stroke-width="0.855" transform="rotate(-10 550.9250000000001 325.90000000000003)"/><line x1="547.125" y1="325.90000000000003" x2="553.7750000000001" y2="324.95" stroke="#E2452B" stroke-width="1.3299999999999998"/></g></g><g class="chip"><rect x="487.218" y="259.875" width="105.56400000000001" height="30.4" rx="7.6" fill="#FFFFFF" stroke="#D4D4CE" stroke-width="1"/><path d="M536.2 290.275 L540.0 294.075 L543.8 290.275 Z" fill="#FFFFFF"/><circle cx="497.668" cy="270.325" r="3.42" fill="#1C7A4A"/><text x="506.218" y="273.175" class="cn" font-size="10.45" fill="#121212">Muse</text><text x="506.218" y="284.575" class="cs" font-size="9.025" fill="#5C5C57">→ Needs Approval</text></g></g><g class="sign"><rect x="469.7225" y="89.6" width="120.55499999999999" height="22.799999999999997" rx="2.8499999999999996" fill="#121212" stroke="#121212" stroke-width="1"/><text x="479.2225" y="104.762" class="sg" font-size="10.45" fill="#F4F4F1">Research Center</text></g><g class="sign"><rect x="702.48" y="214.6" width="155.04" height="22.799999999999997" rx="2.8499999999999996" fill="#121212" stroke="#121212" stroke-width="1"/><text x="711.98" y="229.762" class="sg" font-size="10.45" fill="#F4F4F1">Creative / Marketing</text></g><g class="sign"><rect x="51.274" y="222.1" width="127.452" height="22.799999999999997" rx="2.8499999999999996" fill="#121212" stroke="#121212" stroke-width="1"/><text x="60.774" y="237.262" class="sg" font-size="10.45" fill="#F4F4F1">Execution Center</text></g></svg></div>
+    <div class="minicard" role="group" aria-label="Approval tray, preview">
+      <div class="who" style="display:flex;gap:8px;align-items:center"><span class="av muse">MU</span><div><b>Muse</b> wants to <b>Publish a post</b><div class="muted" style="font-size:12px">from Creative / Marketing · waiting 1m</div></div></div>
+      <div class="row"><span class="mono cost">costs 4¢</span><span class="pill acc"><kbd>A</kbd> Approve</span><span class="pill"><kbd>D</kbd> Deny</span></div>
+    </div>
+    <div class="figcap mono">Live floor · Muse is walking a request to the tray</div>
+  </div>
+</section>
+
+<section class="band" id="product">
+  <div class="wrap">
+    <div class="eyebrow">How it works</div>
+    <h2 class="disp">Three moves. No dashboard to learn.</h2>
+    <div class="how">
+      <div class="step">
+        <div class="n">01</div>
+        <div class="body">
+          <div>
+            <h3>Connect a bot you already run.</h3>
+            <p>Pick Muse, Grok Bot or Instinct. <span data-brand>The app</span> gives you one address and a setup message. Paste it into the bot. Nothing is connected until that bot reports back.</p>
+            <div class="addrline"><span class="mono">https://foreman-core.vercel.app/api/mcp</span><span class="chip">Copy setup message</span></div>
+          </div>
+          <div class="states" aria-label="Connection states">
+            <div><span class="av muse">MU</span><div><b>Muse</b><small>Prepared · not connected yet</small></div><span class="ind prep" aria-hidden="true"></span></div>
+            <div><span class="av grok">GB</span><div><b>Grok Bot</b><small>Waiting for your bot. No live connection yet.</small></div><span class="ind wait" aria-hidden="true"></span></div>
+            <div><span class="av instinct">IN</span><div><b>Instinct</b><small style="color:var(--c-live);font-weight:600">Connected: Instinct · 14:02</small></div><span class="ind live" aria-hidden="true"></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="n">02</div>
+        <div class="body">
+          <div>
+            <h3>Watch it take a desk.</h3>
+            <p>Each bot is a person on the HQ floor: its own color, its own room, a name you can read. It walks between Research, Creative, Outreach and Execution. A bot that has never reported is a ghost, not a worker.</p>
+          </div>
+          <p class="muted">Rooms stay labeled. Movement follows the corridors. Reduced motion skips the walk and jumps the bot to its desk.</p>
+        </div>
+      </div>
+      <div class="step" id="hq">
+        <div class="n">03</div>
+        <div class="body">
+          <div>
+            <h3>Decide from the tray.</h3>
+            <p>When a bot needs you, it walks to the approval island and the request lands as a card. One click, or the A and D keys. Approve once is the only vermilion button on the floor.</p>
+          </div>
+          <div class="traydemo">
+            <div class="hd"><span><i></i>In the tray · 1 waiting</span><span>Needs Approval</span></div>
+            <div class="bd">
+              <div class="who"><span class="av grok">GB</span><div><b>Grok Bot</b><small>Research · from Research Center · 3m</small></div></div>
+              <div class="ask"><b>Grok Bot</b> wants to <b>Save a note</b> · Q4 campaign brief</div>
+              <div class="muted mono" style="font-size:12px;margin-bottom:12px">costs 2¢ · notes.write · once</div>
+              <div class="acts"><span class="btn pri sm">Approve once <kbd>A</kbd></span><span class="btn red sm">Deny <kbd>D</kbd></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="security">
+  <div class="secgrid">
+    <div>
+      <div class="eyebrow">Security</div>
+      <h2 class="disp">A connection is a narrow door, not a key to the building.</h2>
+      <p style="color:#B8B8B1;max-width:46ch">OAuth 2.1 with PKCE. Each bot has its own permissions: Auto, Ask or Never, per action. The kill switch stops every bot at once. Access to a connector lasts one hour.</p>
+    </div>
+    <div>
+      <div class="eyebrow" style="margin-bottom:8px">A bot can never</div>
+      <div class="never">
+        <div><span class="x">×</span><div><b>Import your provider account.</b><span>Your bot stays signed into its own provider. <span data-brand>It</span> never takes that login.</span></div></div>
+        <div><span class="x">×</span><div><b>Read your other bots.</b><span>A connection sees only the one bot you selected.</span></div></div>
+        <div><span class="x">×</span><div><b>Move money.</b><span>It cannot charge a card. The card sandbox is synthetic, and every real charge stays $0.</span></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="connect">
+  <div class="bots">
+    <div class="eyebrow">Bots you can connect</div>
+    <h2 class="disp" style="font-size:var(--fs-44);margin:12px 0 8px">Bring the ones you already pay for.</h2>
+    <div class="botrow"><span class="av instinct" style="width:40px;height:40px">IN</span><div><h3>Instinct</h3><p>Ops and execution. Connects as a remote MCP client and reports presence back to the floor.</p></div><a class="tlink" id="mk-instinct" href="#signin">Connect Instinct →</a></div>
+    <div class="botrow"><span class="av grok" style="width:40px;height:40px">GB</span><div><h3>Grok Bot</h3><p>Research. In Grok, add a custom MCP server, choose Remote HTTPS, and paste the connector address.</p></div><a class="tlink" id="mk-grok" href="#signin">Connect Grok Bot →</a></div>
+    <div class="botrow"><span class="av muse" style="width:40px;height:40px">MU</span><div><h3>Muse</h3><p>Writing and creative. Add <span data-brand>the app</span> as a custom connector; OAuth brings you back to approve the one bot.</p></div><a class="tlink" id="mk-muse" href="#signin">Connect Muse →</a></div>
+  </div>
+</section>
+
+<section class="band" id="sandbox" style="padding-top:0">
+  <div class="sand hatch">
+    <div>
+      <span class="tag">Card sandbox</span>
+      <h2 class="disp" style="font-size:var(--fs-32);margin:12px 0">SYNTHETIC ONLY. No money moves.</h2>
+      <p class="muted">Practice a spend proposal, a per-bot cap and an approval. The provider is fake. Mercury and JPMorgan are not connected. Every real charge remains $0.</p>
+    </div>
+    <div class="mono muted" style="font-size:13px">pending · sandbox · $0 charged<br>approved · sandbox · $0 charged</div>
+  </div>
+</section>
+
+<section class="band" id="pricing" style="padding-top:0">
+  <div class="wrap pricegrid" style="display:grid;grid-template-columns:200px 1fr;gap:32px;border-top:1px solid var(--c-border);padding-top:48px">
+    <div class="eyebrow">Pricing</div>
+    <div>
+      <h2 class="disp" style="font-size:var(--fs-44)">You already pay your bots.<br>Watching them is the job.</h2>
+      <p class="muted" style="margin-top:16px;max-width:62ch"><span data-brand>The app</span> does not issue cards and does not sit in the payment path. Limits you set here are proposals and permissions, not charges. The sandbox ledger is synthetic on purpose.</p>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div>
+    <div class="eyebrow">Open the floor</div>
+    <h2 class="disp">Put your staff where you can see them.</h2>
+  </div>
+  <div>
+    <p style="margin-bottom:16px">Sign in, connect one bot, and wait until it reports. Only then does it look live.</p>
+    <a id="mk-open-3" class="btn pri lg" href="/" data-brand-href="appUrl" data-goto="signin">Open your HQ</a>
+  </div>
+</section>
+<footer class="foot">
+  <span class="wm"><span class="mark"></span><span data-brand="upper">HQ</span></span>
+  <span data-brand-attr="aria-label:{brand}">&nbsp;</span>
+  <span><a id="mk-foot-sec" href="#security">Security</a> · <a id="mk-foot-price" href="#pricing">Pricing</a> · <a id="mk-foot-in" href="/" data-brand-href="appUrl" data-goto="signin">Sign in</a></span>
+</footer>
+
+</div>
+</body></html>

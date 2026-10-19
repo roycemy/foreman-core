@@ -1,0 +1,62 @@
+{
+ "nav1440": [
+  "HQ→#office",
+  "Work→#work",
+  "Team→#stubs",
+  "Permissions→#policies",
+  "Money→#money",
+  "Card sandbox→#cards"
+ ],
+ "signs1440": [
+  "zone-sign: Library · 1 vis=true",
+  "zone-sign: Studio · 1 vis=true",
+  "zone-sign: Mailroom · 1 vis=true",
+  "zone-sign: Workshop · 2 vis=true",
+  "zone-sign: Lounge · 0 vis=true",
+  "zone-sign: Call center vis=true",
+  "zone-sign appr: Needs you 1 vis=true",
+  "zone-sign arrivals: Arrivals vis=true"
+ ],
+ "roster1440": "On the floor\n5\nGB\nGrok Bot\nNeeds you\nI\nInstinct\nDrafting weekly operations memo\nM\nMuse\nResearching launch references\nS\nScout\nReconnect needed\nC\nCEO\nNot connected yet",
+ "bubble1440": [
+  "ch needs walk bub-on block",
+  "bub none",
+  "bub none",
+  "bub none",
+  "bub none",
+  "bub none"
+ ],
+ "view-work": "Work & activity\nJob permission scope\nAssign jobs. Review results.\nUnassigned (waits for an agent to claim)\nGrok Bot\nInstinct\nMuse\nScout\nCEO\nAdd task\nRunning\nWeekly operations memo\nInstinct · 01:46:28 PM\nJob activity (1)\nChoose worker\nGrok Bot\nMuse\nScout\nCEO\nReview transfer\nDone\nSummarize Q4 forecast\nInstinct · 01:36:28 PM\nResult: Forecast summary saved as a note.\nJob activity (1)\nRunning\nCollect launch references\nMuse · 01:48:08 PM\nJob activity (2)\nChoose worker\nGrok Bot\nInstinct\nScout\nCEO\nReview transfer\nQueued\nDraft launch email\nunassigned · 01:49:48 PM\nJob activity (0)\nChoose worker\nGrok Bot\nInstinct\nMuse\nScout\nCEO\nReview transfer\nOther activity & receipts",
+ "view-stubs": "Team\n2\nworking\n1\nneed you\n1\nactions blocked\n2\nactions completed\n$0.79\nspent today\nGB\nGrok Bot\nConnected\nNeeds you\n$0.12 today · no daily limit\nDetails\nRemove\nI\nInstinct\nConnected\nDrafting weekly operations memo\n$0.64 today · limit $3.00 · 1 done\nDetails\nRemove\nM\nMuse\nConnected\nResearching launch references\n$0.03 today · no daily limit · 1 done\nDetails\nRemove\nS\nScout\nReconnect needed\nReconnect needed\n$0.00 today · limit $5.00 · 1 blocked\nReconnect\nDetails\nRemove\nC\nCEO\nPrepared\nNot connected yet\n$0.00 today · no daily limit\nDetails\nRemove\nRemoving a worker disconnects it and deletes its stored key. History stays. Gateway cents are not a cap on provider billing.",
+ "view-receipts": "",
+ "view-policies": "What permissions cover\nPermissions\nChecked on every call. Auto runs · Ask waits for you · Never is blocked.\n⚡ Grok Bot\n✨ Instinct\n🎨 Muse\n⚡ Scout\n✨ CEO\n⚡ Grok Bot\nCampaign builder\nFetch a live web page\nweb.fetch · 1¢ per call\nAUTO\nASK\nNEVER\nWrite a note to the workspace\nnotes.write · 2¢ per call\nAUTO\nASK\nNEVER\nDelete workspace notes\nnotes.delete · 1¢ per call\nAUTO\nASK\nNEVER\nHand a task to another agent\nwork.handoff · 0¢ per call\nAUTO\nASK\nNEVER\nGateway limits\nCents per action and per day. Blank means no limit. Provider billing is not capped.\nSave",
+ "drawerClick": "GB\nGrok Bot\nNeeds you",
+ "drawer": null,
+ "nav390": [
+  "HQ→#office",
+  "Work→#work",
+  "Team→#stubs",
+  "Rules→#policies",
+  "Money→#money",
+  "Cards→#cards"
+ ],
+ "signs390": [
+  "zone-sign: Library vis=true",
+  "zone-sign: Studio vis=true",
+  "zone-sign: Mailroom vis=true",
+  "zone-sign: Workshop vis=true",
+  "zone-sign: Lounge vis=true",
+  "zone-sign: Call center vis=true",
+  "zone-sign appr: Needs you vis=true",
+  "zone-sign arrivals: Arrivals vis=true"
+ ],
+ "roster390": "On the floor\n5\nGB\nGrok Bot\nNeeds you\nI\nInstinct\nDrafting weekly operations memo\nM\nMuse\nResearching launch references\nS\nScout\nReconnect needed\nC\nCEO\nNot connected yet",
+ "bubble390": [
+  "ch needs walk bub-on block",
+  "bub none",
+  "bub none",
+  "bub none",
+  "bub none",
+  "bub none"
+ ]
+}

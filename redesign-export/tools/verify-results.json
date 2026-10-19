@@ -1,0 +1,402 @@
+{
+ "at": "Thu Oct 08 2026 19:48:34 GMT-0400 (Eastern Daylight Time)",
+ "results": [
+  {
+   "name": "route switching (8 route keys incl. receipts->work)",
+   "pass": true,
+   "detail": "all views toggle exactly one .view.on"
+  },
+  {
+   "name": "no Ledger on floor or roster",
+   "pass": true,
+   "detail": "Grok Bot, Instinct, Muse, Scout, CEO"
+  },
+  {
+   "name": "presence: Scout = Reconnect needed (solid figure, not ghost, not connected)",
+   "pass": true,
+   "detail": "{\"n\":\"Scout\",\"p\":\"reconnect\",\"ghost\":false,\"chip\":\"Reconnect needed\",\"kind\":\"reconnect\",\"x\":29.28,\"y\":34.02}"
+  },
+  {
+   "name": "presence: CEO = Prepared ghost in arrivals",
+   "pass": true,
+   "detail": "{\"n\":\"CEO\",\"p\":\"prepared\",\"ghost\":true,\"chip\":\"Not connected yet\",\"kind\":\"prepared\",\"x\":27.55,\"y\":59.81}"
+  },
+  {
+   "name": "presence: Grok Bot / Instinct / Muse = Connected",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "quiet by default: no bubble/token/tag/name-card text on the floor, no label until hover",
+   "pass": true,
+   "detail": "{\"stray\":[],\"label\":\"none\",\"txt\":[],\"scout\":\"reconnect|true|true\",\"grok\":\"needs|true|\\\"!\\\"\",\"dots\":true}"
+  },
+  {
+   "name": "every figure has a status dot; Scout shows the reconnect badge; Grok Bot at the island shows \"!\"",
+   "pass": true,
+   "detail": "reconnect|true|true / needs|true|\"!\""
+  },
+  {
+   "name": "human copy mapping (prefixes stripped, <= 4 words)",
+   "pass": true,
+   "detail": "{\"a\":\"Name research\",\"b\":\"On a break\",\"c\":\"Reading the web\",\"d\":\"Needs you\",\"e\":\"Compare competitor pricing pages…\",\"g\":\"Available\",\"h\":\"No recent update\",\"i\":\"Writing Q4 brief\"}"
+  },
+  {
+   "name": "keyboard focus shows ONE label (name + short status), not covering signs or the island card",
+   "pass": true,
+   "detail": "{\"d\":\"block\",\"t\":\"Instinct | Drafting weekly operations memo\",\"hit\":0,\"n\":1}"
+  },
+  {
+   "name": "label hides again on blur",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "room signs come from the room-type catalog (backend keys unchanged)",
+   "pass": true,
+   "detail": "finance=Library, marketing=Studio, sales=Mailroom, ops=Workshop, lounge=Lounge"
+  },
+  {
+   "name": "approval island card renders with [data-r][data-d] buttons",
+   "pass": true,
+   "detail": "{\"r\":\"1\",\"ad\":\"approve\",\"dd\":\"deny\",\"txt\":\"Needs you\\nGB\\nGrok Bot\\nStudio · Writing a note\\n\\nGrok Bot wants to Save a note · Q\"}"
+  },
+  {
+   "name": "Approve once -> POST /api/requests/r1/approve",
+   "pass": true,
+   "detail": "[{\"m\":\"POST\",\"p\":\"/api/requests/r1/approve\",\"body\":null}]"
+  },
+  {
+   "name": "drawer opens with Connection section + Reconnect action",
+   "pass": true,
+   "detail": "{\"on\":true,\"pres\":\"Reconnect needed\",\"btn\":true,\"sel\":true}"
+  },
+  {
+   "name": "moveRoom -> POST /api/agents/a1/room {room:finance}",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "Escape closes drawer",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "Team rows show presence chips; only Reconnect-needed row has Reconnect",
+   "pass": true,
+   "detail": "[{\"p\":\"connected\",\"chip\":\"Connected\",\"rec\":false},{\"p\":\"connected\",\"chip\":\"Connected\",\"rec\":false},{\"p\":\"connected\",\"chip\":\"Connected\",\"rec\":false},{\"p\":\"reconnect\",\"chip\":\"Reconnect needed\",\"rec\":true},{\"p\":\"prepared\",\"chip\":\"Prepared\",\"rec\":false}]"
+  },
+  {
+   "name": "card sandbox: tightened gap above Decisions / Synthetic ledger",
+   "pass": true,
+   "detail": "gaps px 20,20"
+  },
+  {
+   "name": "card sandbox actions -> proposals / p1 approve / cap / kill",
+   "pass": true,
+   "detail": "/api/cards/proposals /api/cards/p1/approve /api/cards/control /api/cards/control"
+  },
+  {
+   "name": "reduced motion: no walking, animations ~0",
+   "pass": true,
+   "detail": "{\"walking\":0,\"dur\":\"1e-06s\",\"mq\":true}"
+  },
+  {
+   "name": "D key at island -> POST /api/requests/r1/deny",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "strip Deny -> POST /api/requests/r1/deny (delegate on [data-r])",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "first Tab = skip link (visible on focus)",
+   "pass": true,
+   "detail": "skip-link|8px"
+  },
+  {
+   "name": "keyboard reaches nav, Connect, Emergency, account with visible outline",
+   "pass": true,
+   "detail": "wm|solid A|solid A|solid A|solid A|solid A|solid A|solid A|solid addb|solid emer|solid acctbtn|solid BUTTON|solid BUTTON|solid tt|solid"
+  },
+  {
+   "name": "Emergency icon opens #emodal, focus moves inside",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "Escape closes #emodal and restores focus to #emer",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "account menu holds Sign out (#fmso) + email",
+   "pass": true,
+   "detail": "{\"open\":true,\"so\":true,\"txt\":\"Sign out\",\"al\":\"Sign out (owner@example.com)\",\"mail\":\"owner@example.com\"}"
+  },
+  {
+   "name": "connect step 0: three [data-link] bots, focus in dialog",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "focus trapped inside connect dialog",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "step 1 validation message",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "step 1 -> POST /api/connect {provider:grok,connectionMode:existing}",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "step 2: Copy setup message (primary, first) + Install in Cursor, equal size",
+   "pass": true,
+   "detail": "{\"cw\":272,\"iw\":272,\"ch\":52,\"ih\":52}"
+  },
+  {
+   "name": "deeplink format preserved from PR #3",
+   "pass": true,
+   "detail": "cursor://anysphere.cursor-deeplink/mcp/install?name=Black%20Box&config=eyJ1cmwiOiJodHRwOi8vMTI3LjAuMC4xOjg3NzEvYXBpL21jcCJ9"
+  },
+  {
+   "name": "#linkstatus = Waiting for bot (role=status)",
+   "pass": true,
+   "detail": "Waiting for your bot. No live connection confirmed yet."
+  },
+  {
+   "name": "roster shows the new bot as Waiting to connect while step 2 is open",
+   "pass": true,
+   "detail": "waiting|Waiting to connect"
+  },
+  {
+   "name": "Copy setup message copies the shipped 6-paragraph message",
+   "pass": true,
+   "detail": "Connect my existing Grok Bot assistant, Atlas, to my Black Box workspace. Keep your own pr"
+  },
+  {
+   "name": "poll flips #linkstatus to Connected only after a real report",
+   "pass": true,
+   "detail": "{\"p\":\"connected\",\"t\":\"Connected: Atlas\\n\\nYour bot reported to Black Box at 7:47:16 PM.\",\"r\":\"fw p-connected\"}"
+  },
+  {
+   "name": "Escape closes connect dialog (via #linkclose, poll cleared) and restores focus",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "Reconnect reopens connect step 2 for the existing bot (no POST /api/connect)",
+   "pass": true,
+   "detail": "{\"h\":\"Reconnect Scout\",\"st\":\"reconnect\",\"note\":true,\"both\":true}"
+  },
+  {
+   "name": "reconnect clears only when grant is active again",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "401 -> sign-in overlay (#fmauth) with all hooks, focus on email",
+   "pass": true,
+   "detail": "{\"on\":true,\"f\":\"aue\",\"ids\":true}"
+  },
+  {
+   "name": "Create account toggle keeps shipped copy",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "sign in -> overlay closes and lands on the HQ floor",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "OAuth consent copy verbatim",
+   "pass": true,
+   "detail": "Grok Bot (MCP client) wants to connect one bot to your workspace. /  / This connection can report activity and call Black Box tools under this bot's permissions"
+  },
+  {
+   "name": "Authorize -> POST /oauth/consent {csrf,agentId}",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "OAuth sign-in state copy verbatim",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "OAuth sign in -> consent",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "OAuth error state shows server text",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "OAuth load failure copy verbatim",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "rebrand: app title, wordmark, connect copy, deeplink name, aria-label all follow BRAND.name",
+   "pass": true,
+   "detail": "{\"t\":\"Acme Ops - Every AI employee. One workplace.\",\"wm\":\"ACME OPS\",\"leak\":\"\"}"
+  },
+  {
+   "name": "rebrand: OAuth page follows BRAND.name",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "R3 top bar: one row, single \"Needs you\" chip, spend kept for screen readers + account menu, short Connect, labelled emergency",
+   "pass": true,
+   "detail": "{\"h\":56,\"chip\":\"Needs you 1\",\"sr\":\"2 working · 1 need you · $0.79 of $8.00 spent today · 2 completed today · 2 idle\",\"today\":\"Today$0.79 of $8.00 spent · 2 done\",\"strip\":\"none\",\"connect\":\"+\\nConnect\",\"emer\":\"Emergency controls\"}"
+  },
+  {
+   "name": "R3 HQ shows one request surface (island card, strip hidden)",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "R3 Needs-you chip on HQ focuses Approve on the island card (stays on HQ)",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "R3 non-HQ view keeps a request surface (strip with [data-r])",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "R3.2 depth: props share the figures' layer; a figure behind a bookcase sorts under it, in front sorts over it",
+   "pass": true,
+   "detail": "{\"same\":true,\"behind\":true,\"front\":true,\"props\":15}"
+  },
+  {
+   "name": "R3.2 walk: legs alternate, arms alternate opposite, eased (no step frames)",
+   "pass": true,
+   "detail": "{\"ll\":\"pv-step@0s/ease-in-out\",\"lr\":\"pv-step@-0.28s/ease-in-out\",\"al\":\"pv-swing@0s/ease-in-out\",\"ar\":\"pv-swing@-0.28s/ease-in-out\",\"ease\":\"linear\"}"
+  },
+  {
+   "name": "R3.2 390: floor starts right under the nav (no empty band), roster follows directly, zoomed ~1.3x and pannable, island + all agents in view",
+   "pass": true,
+   "detail": "{\"top\":1,\"under\":1,\"zoom\":1.38,\"scroll\":true,\"inView\":true}"
+  },
+  {
+   "name": "R3 390: compact header in one row (mark, Connect, Emergency, account), >=40px targets",
+   "pass": true,
+   "detail": "{\"row\":true,\"tap\":true,\"cut\":[],\"scroll\":false,\"fixed\":\"fixed\",\"bodyH\":0,\"peek\":\"GB\\nGrok Bot wants to Save a note\\nReview\",\"strip\":\"none\",\"roster\":true}"
+  },
+  {
+   "name": "R3 390: nav fits with no cut-off label",
+   "pass": true,
+   "detail": "[]"
+  },
+  {
+   "name": "R3 390: request is a collapsed bottom sheet (\"… · Review\"), no strip, roster open under the floor",
+   "pass": true,
+   "detail": "{\"row\":true,\"tap\":true,\"cut\":[],\"scroll\":false,\"fixed\":\"fixed\",\"bodyH\":0,\"peek\":\"GB\\nGrok Bot wants to Save a note\\nReview\",\"strip\":\"none\",\"roster\":true}"
+  },
+  {
+   "name": "R3 390: sheet expands to Approve once / Deny (44px), focus moves to Approve",
+   "pass": true,
+   "detail": "{\"open\":true,\"exp\":\"true\",\"vis\":true,\"focus\":true}"
+  },
+  {
+   "name": "R3 390: Escape collapses the sheet",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "R3 390: Approve once from the sheet -> POST /api/requests/r1/approve",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "R3 390: roster header is a keyboard toggle (Enter collapses, Enter expands)",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "R3.2 320: floor starts right under the nav (no empty band), roster follows directly, zoomed ~1.3x and pannable, island + all agents in view",
+   "pass": true,
+   "detail": "{\"top\":1,\"under\":1,\"zoom\":1.36,\"scroll\":true,\"inView\":true}"
+  },
+  {
+   "name": "R3 320: compact header in one row (mark, Connect, Emergency, account), >=40px targets",
+   "pass": true,
+   "detail": "{\"row\":true,\"tap\":true,\"cut\":[],\"scroll\":false,\"fixed\":\"fixed\",\"bodyH\":0,\"peek\":\"GB\\nGrok Bot wants to Save a note\\nReview\",\"strip\":\"none\",\"roster\":true}"
+  },
+  {
+   "name": "R3 320: nav scrolls (no wrap)",
+   "pass": true,
+   "detail": "[]"
+  },
+  {
+   "name": "R3 320: request is a collapsed bottom sheet (\"… · Review\"), no strip, roster open under the floor",
+   "pass": true,
+   "detail": "{\"row\":true,\"tap\":true,\"cut\":[],\"scroll\":false,\"fixed\":\"fixed\",\"bodyH\":0,\"peek\":\"GB\\nGrok Bot wants to Save a note\\nReview\",\"strip\":\"none\",\"roster\":true}"
+  },
+  {
+   "name": "width 1440: Emergency visible, no horizontal page scroll, floor <= viewport",
+   "pass": true,
+   "detail": "{\"vis\":true,\"fw\":1140,\"vw\":1440,\"topH\":56,\"hs\":false}"
+  },
+  {
+   "name": "width 1024: Emergency visible, no horizontal page scroll, floor <= viewport",
+   "pass": true,
+   "detail": "{\"vis\":true,\"fw\":1024,\"vw\":1024,\"topH\":82,\"hs\":false}"
+  },
+  {
+   "name": "width 768: Emergency visible, no horizontal page scroll, floor <= viewport",
+   "pass": true,
+   "detail": "{\"vis\":true,\"fw\":768,\"vw\":768,\"topH\":82,\"hs\":false}"
+  },
+  {
+   "name": "width 390: Emergency visible, no horizontal page scroll, floor <= viewport",
+   "pass": true,
+   "detail": "{\"vis\":true,\"fw\":390,\"vw\":390,\"topH\":95,\"hs\":false}"
+  },
+  {
+   "name": "width 320: Emergency visible, no horizontal page scroll, floor <= viewport",
+   "pass": true,
+   "detail": "{\"vis\":true,\"fw\":320,\"vw\":320,\"topH\":93,\"hs\":false}"
+  },
+  {
+   "name": "marketing: Sign in / Open your HQ route via BRAND.appUrl, title tokenized",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "name": "no console errors / page errors",
+   "pass": true,
+   "detail": ""
+  }
+ ],
+ "errors": [
+  "http 401 http://127.0.0.1:8771/api/state",
+  "console Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+  "http 401 http://127.0.0.1:8771/api/me",
+  "console Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+  "reqfailed https://grok.com/cb?code=x net::ERR_FAILED",
+  "http 401 http://127.0.0.1:8771/api/oauth/context?client_id=demo&redirect_uri=https%3A%2F%2Fgrok.com%2Fcb",
+  "console Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+  "reqfailed http://127.0.0.1:8771/api/oauth/context?client_id=demo&redirect_uri=https%3A%2F%2Fgrok.com%2Fcb net::ERR_FAILED",
+  "console Failed to load resource: net::ERR_FAILED",
+  "http 401 http://127.0.0.1:8771/api/state",
+  "console Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+  "http 401 http://127.0.0.1:8771/api/me",
+  "console Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+  "http 401 http://127.0.0.1:8771/api/oauth/context?x=1",
+  "console Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+ ]
+}
