@@ -85,18 +85,19 @@
       <div class="kv"><span class="k">Connection</span><span class="v"><span class="st ${p === 'connected' ? 'run' : p === 'reconnect' ? 'need' : 'q'}"><i></i>${esc(conn)}</span><br><small class="meta">${esc(seen)}</small>${BB.wentDark(a) ? `<br><span class="badge-dark">Went dark · last activity ${esc(new Date(a.lastSeen).toLocaleTimeString())}</span>` : ''}</span></div>
       ${a.keyHint ? `<div class="kv"><span class="k">Key</span><span class="v"><code>${esc(a.keyHint)}</code></span></div>` : ''}
       <div class="kv"><span class="k">Bot ID</span><span class="v"><code>${esc(a.id)}</code></span></div>
-      <div style="padding:16px 24px;display:flex;gap:8px;flex-wrap:wrap">
-        ${p === 'reconnect' ? `<button class="b ink" type="button" data-rec>Reconnect</button>` : ['prepared', 'waiting'].includes(p) && !a.hosted ? `<button class="b ink" type="button" data-rec>Finish connecting</button>` : ''}
-        ${a.status === 'revoked' ? `<button class="b out" type="button" data-restore>Restore access</button>` : !a.hosted ? `<button class="b out" type="button" data-revoke>Revoke access</button>` : ''}
-      </div>
-      <div style="padding:8px 24px 24px;border-top:1px solid var(--line)"><button class="b ghost" type="button" data-remove style="color:var(--vermilion-press);padding-left:0">Remove ${esc(a.name)}</button><p class="meta">Disconnects it and deletes its stored key. Its receipts stay.</p></div>`;
+      <div style="padding:8px 24px 24px;border-top:1px solid var(--line)">${a.status !== 'revoked' && !a.hosted ? `<button class="b ghost" type="button" data-revoke style="color:var(--vermilion-press);padding-left:0">Revoke access</button>` : ''}<button class="b ghost" type="button" data-remove style="color:var(--vermilion-press);padding-left:0">Remove ${esc(a.name)}</button><p class="meta">Disconnects it and deletes its stored key. Its receipts stay.</p></div>`;
   }
 
   function paint(fresh) {
     if (!P.classList.contains('on')) return; const a = BB.agent(cur); if (!a) return BB.closeInspector();
     const sc = P.querySelector('.scroll'), top = sc && !fresh ? sc.scrollTop : 0, focused = document.activeElement && P.contains(document.activeElement) ? document.activeElement.dataset : null;
+    const ps = BB.presence(a);
+    const prim = a.status === 'revoked' ? `<button class="b ink sm" type="button" data-restore style="flex:none">Restore access</button>`
+      : !a.hosted && ps === 'reconnect' ? `<button class="b ink sm" type="button" data-rec style="flex:none">Reconnect</button>`
+      : !a.hosted && ['prepared', 'waiting'].includes(ps) ? `<button class="b ink sm" type="button" data-rec style="flex:none">Finish connecting</button>`
+      : `<button class="b ghost sm" type="button" data-perms style="flex:none">Edit permissions</button>`;
     const body = tab === 'permissions' ? permissions(a) : tab === 'profile' ? profile(a) : activity(a);
-    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2><p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p></div><button class="b ghost sm" type="button" data-perms style="flex:none">Edit permissions</button><button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
+    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2><p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p></div>${prim}<button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
       <div class="seg" role="tablist" aria-label="${esc(a.name)}">${['activity', 'permissions', 'profile'].map(k => `<button type="button" role="tab" aria-selected="${tab === k}" data-tab="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
       <div class="scroll" role="tabpanel">${body}</div>`;
     const s2 = P.querySelector('.scroll'); s2.scrollTop = top;
