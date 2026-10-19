@@ -194,16 +194,17 @@
   BB.signal = function (a, at) {
     at = at || BB.now(); const seen = Date.parse((a && a.lastSeen) || '');
     const ps = BB.pollSec(a);
-    if (!a || BB.presence(a) !== 'connected' || !Number.isFinite(seen) || at - seen >= (ps ? 2 * ps * 1000 : 60000) || a.status === 'revoked' || (BB.S && BB.S.killed) || a.paused || recentBlocked(a)) return 'inactive';
+    if (!a || BB.presence(a) !== 'connected' || !Number.isFinite(seen) || at - seen >= (ps ? 2 * ps * 1000 : BB.DARK_MS) || a.status === 'revoked' || (BB.S && BB.S.killed) || a.paused || recentBlocked(a)) return 'inactive';
     return BB.withOwner(a, at) || BB.runningTask(a) ? 'working' : 'available';
   };
   /* self-declared poll cadence in seconds, reported by the bot on its authenticated gateway calls; 0 means no declared cadence */
   BB.pollSec = a => { const s = Number(a && a.pollSec); return Number.isFinite(s) && s >= 60 && s <= 3600 ? s : 0; };
-  /* round 3 liveness: connected over OAuth or the gateway, but no accepted activity for 60s. Authorization may still be saved. Pollers go dark after two missed beats, not the flat 60s. botlink has no heartbeat expectation: Quiet shows as No recent activity, never Went dark */
+  /* console heartbeat is 60s, so the flat dark rule is 150s = 2.5 missed beats; a bot between beats never reads dark. Pollers go dark after two missed beats of their own declared cadence. Authorization may still be saved. botlink has no heartbeat expectation: Quiet shows as No recent activity, never Went dark */
+  BB.DARK_MS = 150000;
   BB.wentDark = (a, at) => {
     if (!a || a.status !== 'active' || !a.connection || a.connection.status !== 'active' || a.connection.transport === 'botlink' || !a.lastSeen) return false;
     const ps = BB.pollSec(a);
-    return ((at || BB.now()) - Date.parse(a.lastSeen)) >= (ps ? 2 * ps * 1000 : 60000);
+    return ((at || BB.now()) - Date.parse(a.lastSeen)) >= (ps ? 2 * ps * 1000 : BB.DARK_MS);
   };
   /* the owner alarm only covers live channels: pollers show Late in their own status and Muse is Dark by default */
   BB.goneDark = (a, at) => BB.wentDark(a, at) && !BB.pollSec(a) && a.providerId !== 'muse';
