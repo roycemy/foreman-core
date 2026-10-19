@@ -167,6 +167,7 @@
     /* PR #28: authorization is not activity. No accepted activity in 60s means quiet, whatever the job list says. */
     if (BB.wentDark(a)) return { kind: 'dark', text: (t ? BB.sentenceCase(t.title) + ' · ' : '') + 'Went dark ' + BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago'), task: t };
     if (BB.signal(a) === 'inactive') return { kind: 'quiet', text: t ? BB.sentenceCase(t.title) + ' · no recent activity' : a.hosted ? 'Runs when you assign a job' : 'No recent activity', task: t };
+    if (t && BB.budgetBlock(t)) return { kind: 'blocked', text: 'Blocked: over action budget', task: t };
     if (t) return { kind: 'run', text: t.title, task: t };
     const st = a.state, age = st ? (BB.now() - Date.parse(st.at)) / 1000 : 1e9;
     if (st && age < 120 && st.kind === 'COMPLETED') return { kind: 'idle', text: 'Just finished' };
@@ -237,6 +238,16 @@
   };
   BB.sharedJobFor = t => BB.sharedJobs().find(g => g.tasks.some(x => x.id === t.id) || g.id === t.id) || null;
 
+  /* a running job whose bot hit an action-budget limit stays "running" until the owner acts. Surface it from the blocked
+     receipts; a later successful action on the same job clears it, and stopping/finishing the job ends it. */
+  BB.budgetBlock = function (t) {
+    if (!t || t.status !== 'running') return null;
+    const rs = ((BB.S && BB.S.receipts) || []).filter(r => r.taskId === t.id);
+    const block = rs.filter(r => r.outcome === 'blocked' && /^limit_/.test(r.code || '')).sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
+    if (!block) return null;
+    return rs.some(r => String(r.at) > String(block.at) && ['completed', 'simulated'].includes(r.outcome)) ? null : block;
+  };
+
   /* ---------- "on you": approvals + reconnects + bots that went dark + unassigned jobs ---------- */
   BB.onYou = function () {
     const items = [];
@@ -246,8 +257,9 @@
     BB.agents().filter(a => BB.presence(a) === 'reconnect').forEach(a => items.push({ type: 'reconnect', id: 'rec:' + a.id, at: (a.connection && a.connection.failedAt) || a.lastSeen, a }));
     /* the same 60-second rule as the went-dark banner: a dark bot is something the owner should know about */
     BB.agents().filter(a => BB.wentDark(a)).forEach(a => items.push({ type: 'dark', id: 'dark:' + a.id, at: a.lastSeen, a }));
+    BB.tasks().forEach(t => { const b = BB.budgetBlock(t); if (b) items.push({ type: 'budget', id: 'budget:' + t.id + ':' + b.id, at: b.at, a: BB.agent(t.assignee), t, r: b }); });
     BB.tasks().filter(t => t.status === 'queued' && !t.assignee).forEach(t => items.push({ type: 'unassigned', id: 'task:' + t.id, at: t.createdAt, t }));
-    const rank = { approval: 0, spend: 0, card: 0, reconnect: 1, dark: 1, unassigned: 2 };
+    const rank = { approval: 0, spend: 0, card: 0, budget: 0, reconnect: 1, dark: 1, unassigned: 2 };
     return items.sort((x, y) => rank[x.type] - rank[y.type] || String(y.at || '').localeCompare(String(x.at || '')));
   };
   /* One summary for the crew pill, the pop-down, the rail and the phone Inbox, all on the 60-second activity rule.
@@ -295,6 +307,10 @@
   BB.dismiss = async function (taskId) {
     const j = await BB.api('/api/tasks/' + taskId + '/dismiss', 'POST', {});
     BB.toast(j.error ? j.error : 'Dismissed. It stays in the job history.'); await BB.sync(true); return j;
+  };
+  BB.stop = async function (taskId) {
+    const j = await BB.api('/api/tasks/' + taskId + '/stop', 'POST', {});
+    BB.toast(j.error ? j.error : 'Stopped. It stays in the job history.'); await BB.sync(true); return j;
   };
   BB.assignable = () => BB.agents().filter(a => a.status === 'active' && !a.paused && !BB.isGhost(a) && BB.presence(a) !== 'reconnect');
 
