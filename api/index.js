@@ -221,15 +221,25 @@ async function touchAgent(agent) {
   const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active')return;
   await r(['SET','fm:seen:'+agent.id,now()]);bust();
 }
+/* heartbeat economy (100-user scale): every accepted beat still stamps fm:seen - lastSeen drives all honest status - but the event feed only hears about a return after 10+ minutes away. A resume is feed-worthy; a steady pulse is not. This keeps fm:events useful and cuts each beat to a single SET. */
+async function runnerPresenceAccepted(agent){const prev=await r(['GET','fm:seen:'+agent.id]);await touchAgent(agent);if(!prev||Date.now()-Date.parse(prev)>=600000)await event(agent.id,'interaction','Runner presence resumed (not conversation or work)',{kind:'INTERACTION',source:'chat',presenceOnly:true});}
+/* small fixed-window IP bucket for the public unauthenticated write endpoints (connect, pairing redeem). Same pattern as the waitlist limiter. */
+async function ipRateLimited(name,ip,limit,windowSec){const k='gl:rl:'+name+':'+sha(ip)+':'+Math.floor(Date.now()/(windowSec*1000));const n=await r(['INCRBY',k,1]);await r(['EXPIRE',k,windowSec]);return n>limit;}
 /* presence model: a bot may self-declare its poll cadence (60-3600s) on any authenticated gateway call. It drives honest status (Checks in every N min / Late), never a Live claim. */
 function pollSecFrom(req,body){let v=Number(body&&body.pollSec);if(!Number.isFinite(v)){try{v=Number(new URL(req.url||'',OAUTH_ORIGIN).searchParams.get('pollSec'));}catch{v=NaN;}}return Number.isFinite(v)&&v>=60&&v<=3600?Math.round(v):0;}
 async function notePollCadence(agent,ps){const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active'||live.pollSec===ps)return;live.pollSec=ps;await setJ('fm:agent:'+agent.id,live);bust();}
+/* wake ladder, rung 1 target: a bot may self-declare its instant-wake target on any authenticated call - same trust model as pollSec, it can only redirect its own pings. email targets must live on the wake email domain (WAKE_EMAIL_DOMAIN, default mail.instinct.com) so the content-free nudge can never become an arbitrary-email cannon; slack targets must be incoming-webhook URLs, which are already capability secrets. */
+function wakeTargetFrom(body){const ch=String(body&&body.wakeChannel||'').toLowerCase(),tg=String(body&&body.wakeTarget||'').trim();if(ch==='email'&&/^[^\s@]{1,64}@[^\s@]{1,190}$/.test(tg)&&tg.toLowerCase().endsWith('@'+String(process.env.WAKE_EMAIL_DOMAIN||'mail.instinct.com').toLowerCase()))return {channel:'email',target:tg};if(ch==='slack'&&/^https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/_-]{10,200}$/.test(tg))return {channel:'slack',target:tg};return null;}
+async function noteWakeTarget(agent,w){const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active')return;if(live.wake&&live.wake.channel===w.channel&&live.wake.target===w.target)return;live.wake={channel:w.channel,target:w.target,declaredAt:now()};await setJ('fm:agent:'+agent.id,live);bust();}
 /* wake ladder, rung 1 (free, trigger-only): when a job is queued to a bot, ping it on the free push channel wired at setup so it wakes now instead of at the next poll or routine tick. Instinct: a content-free email to its inbox (RESEND_API_KEY + WAKE_EMAIL_FROM). Grok: a content-free Slack message (WAKE_GROK_SLACK_WEBHOOK incoming webhook) or, when the user has GitHub, a content-free trigger issue Alter closes right after creation - the creation notification is the wake signal (WAKE_GITHUB_TOKEN + WAKE_GITHUB_REPO as owner/repo). Rung 2 is the bot's own scheduled poll or routine; rung 3 is "acts when messaged" + the Copy nudge. Every trigger carries no task details and no instructions - the bot authenticates itself. Deduped to one ping per 30s per bot; silent no-op when no channel is wired, and the bot's own schedule still covers it. */
 async function maybeWakeBot(a) {
   if (!a || a.status !== 'active' || a.paused || a.hosted) return;
-  const channel = a.providerId === 'instinct' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
-    : a.providerId === 'grok' && process.env.WAKE_GROK_SLACK_WEBHOOK ? 'slack'
-    : a.providerId === 'grok' && process.env.WAKE_GITHUB_TOKEN && process.env.WAKE_GITHUB_REPO ? 'github'
+  const w = a.wake && a.wake.channel ? a.wake : null; // a bot's own declared target wins; deployment env is the fallback
+  const channel = w && w.channel === 'email' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
+    : w && w.channel === 'slack' ? 'slack'
+    : !w && a.providerId === 'instinct' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
+    : !w && a.providerId === 'grok' && process.env.WAKE_GROK_SLACK_WEBHOOK ? 'slack'
+    : !w && a.providerId === 'grok' && process.env.WAKE_GITHUB_TOKEN && process.env.WAKE_GITHUB_REPO ? 'github'
     : null;
   if (!channel) return; // no free push channel wired for this bot: silent no-op; its own schedule still covers it
   const got = await r(['SET', 'gl:wake:' + a.id, String(now()), 'NX', 'PX', 30000]);
@@ -237,10 +247,11 @@ async function maybeWakeBot(a) {
   try {
     let ok = false, status = 0;
     if (channel === 'email') {
-      const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [process.env.WAKE_INSTINCT_EMAIL || 'xt1udv@mail.instinct.com'], subject: 'Alter: job waiting for Instinct', text: 'A job is waiting for Instinct in Alter.' }) });
+      const who = w && w.channel === 'email' ? String(a.name || 'your bot').slice(0, 40) : 'Instinct';
+      const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [w && w.channel === 'email' ? w.target : (process.env.WAKE_INSTINCT_EMAIL || 'xt1udv@mail.instinct.com')], subject: 'Alter: job waiting for ' + who, text: 'A job is waiting for ' + who + ' in Alter.' }) });
       ok = resp.ok; status = resp.status;
     } else if (channel === 'slack') {
-      const resp = await fetch(process.env.WAKE_GROK_SLACK_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Alter: job waiting for Grok' }) });
+      const resp = await fetch(w && w.channel === 'slack' ? w.target : process.env.WAKE_GROK_SLACK_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: w && w.channel === 'slack' ? 'Alter: job waiting for ' + String(a.name || 'your bot').slice(0, 40) : 'Alter: job waiting for Grok' }) });
       ok = resp.ok; status = resp.status;
     } else {
       const hdr = { authorization: 'Bearer ' + process.env.WAKE_GITHUB_TOKEN, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'user-agent': 'alter-wake-trigger' };
@@ -912,7 +923,7 @@ const MCP_TOOLS = [
   {name:'alter_broker_check',description:'Read your broker request result. Approval executes once; never resubmit it.',inputSchema:{type:'object',properties:{requestId:{type:'string'}},required:['requestId']}},
   {name:'blackbox_card_proposal',description:'Request an owner decision for a synthetic card purchase. No real money moves.',inputSchema:{type:'object',properties:{sourceId:{type:'string'},merchant:{type:'string'},amountCents:{type:'integer'},currency:{type:'string',enum:['USD']},purpose:{type:'string'}},required:['sourceId','merchant','amountCents','currency','purpose']}},
   {name:'foreman_owner_conversation',description:'Report an actual owner conversation start, update or end. Never call on a schedule, notification read, connection or idle heartbeat. No chat content. Start sequence 1; increment per real event; retry the same event_id. With-you expires after 60s without a real update.',inputSchema:{type:'object',properties:{session_id:{type:'string'},event_id:{type:'string'},sequence:{type:'integer',minimum:1},phase:{type:'string',enum:['start','update','end']}},required:['session_id','event_id','sequence','phase']}},
-  {name:'foreman_presence',description:'Report actual recent interaction with your owner. Does not claim work is running.',inputSchema:{type:'object',properties:{}}},
+  {name:'foreman_presence',description:'Report actual recent interaction with your owner. Does not claim work is running.',inputSchema:{type:'object',properties:{pollSec:{type:'number',description:'Your declared check-in cadence in seconds (60-3600), when you check in on your own schedule.'},wakeChannel:{type:'string',enum:['email','slack'],description:'Optional instant-wake channel you own.'},wakeTarget:{type:'string',description:'Inbox address on the wake email domain, or a Slack incoming webhook URL, for content-free instant wake pings.'}}}},
   { name: 'foreman_next_task', description: 'Claim the next task from the Foreman work bus.', inputSchema: { type: 'object', properties: {} } },
   { name: 'foreman_complete_task', description: 'Finish a task and store its result. Optionally report what your own model usage for this task cost, in USD.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, result: { type: 'string' }, model_cost_usd: { type: 'number', description: 'Your model/API cost for this task in USD, if you know it. Leave it out if unknown; never estimate.' } }, required: ['task_id', 'result'] } },
   {name:'foreman_notifications',description:'Read your own approval/completion/block/failure events. Read-only, no task claim or presence. Persist nextCursor and pass after on later calls; cursor_expired requires an explicit reset. Notification delivery is the client automation responsibility.',inputSchema:{type:'object',properties:{after:{type:'string'}}}},
@@ -933,7 +944,7 @@ async function mcpCall(agent, name, args) {
   else if(name==='alter_broker_check'){const q=await getJ('fm:broker:q:'+(args||{}).requestId);out=q&&q.agentId===agent.id?{request:brokerPublic(q)}:{error:'not found'};}
   else if(name==='blackbox_card_proposal')out=(await cardPropose(await getJ('fm:agent:'+agent.id),args||{})).body;
   else if(name==='foreman_owner_conversation')out=(await ownerConversation(agent,args||{},'mcp')).body;
-  else if(name==='foreman_presence'){if(agent.status!=='active'||await r(['GET','fm:kill']))out={status:'blocked'};else{await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'mcp'});out={status:'ok'};}}
+  else if(name==='foreman_presence'){if(agent.status!=='active'||await r(['GET','fm:kill']))out={status:'blocked'};else{await touchAgent(agent);const _mp=Number(args&&args.pollSec);if(Number.isFinite(_mp)&&_mp>=60&&_mp<=3600)await notePollCadence(agent,Math.round(_mp));const _mw=wakeTargetFrom(args||{});if(_mw)await noteWakeTarget(agent,_mw);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'mcp'});out={status:'ok'};}}
   else if (name === 'foreman_next_task') { if (agent.status !== 'active') out = { status: 'blocked', reason: 'Access revoked by owner' }; else out = { task: await claimTask(agent) }; }
   else if (name === 'foreman_complete_task') out = (await completeTask(agent, (args || {}).task_id, args || {})).body;
   else if(name==='foreman_notifications')out=(await notifications(agent,(args||{}).after)).body;
@@ -1193,7 +1204,7 @@ async function runnerRoutes(req,res,path,body){
   const raw=String(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(runnerCookieName(id)+'=')).split('=')[1];
   res.setHeader('Set-Cookie',runnerCookie(id,raw));
   const seen=Date.parse(sess.agent.lastSeen||'');
-  return res.json({agent:{id:sess.agent.id,name:sess.agent.name},csrf:sess.csrf,persistent:true,authorization:'saved',idleLifetimeSeconds:RUNNER_TTL,expiresAt:new Date(expires).toISOString(),executor:{state:Number.isFinite(seen)&&Date.now()-seen<60000?'recent_presence':'stale',lastSeen:sess.agent.lastSeen||null,staleAfterSeconds:60},note:'Authorization is saved. Executor presence and actual work require the executor to be running; restore does not send presence.'});
+  return res.json({agent:{id:sess.agent.id,name:sess.agent.name},csrf:sess.csrf,persistent:true,authorization:'saved',idleLifetimeSeconds:RUNNER_TTL,expiresAt:new Date(expires).toISOString(),executor:{state:Number.isFinite(seen)&&Date.now()-seen<150000?'recent_presence':'stale',lastSeen:sess.agent.lastSeen||null,staleAfterSeconds:150},note:'Authorization is saved. Executor presence and actual work require the executor to be running; restore does not send presence.'});
  }
  if(action==='disconnect'&&req.method==='POST'){await r(['DEL','gl:runner:'+sess.tokenHash]);res.setHeader('Set-Cookie',runnerCookieName(id)+'=; HttpOnly; Secure; SameSite=Strict; Path=/api/runner/'+id+'; Max-Age=0');return res.json({ok:true});}
  if(!action.startsWith('gateway/'))return res.status(404).json({error:'Runner action unavailable'});
@@ -1299,7 +1310,7 @@ async function routes(req, res, path, body, agentPre) {
       if(path==='/gateway/teammates'&&req.method==='GET')return res.json({bots:await teammates()});
       if(path==='/gateway/notifications'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return send(await notifications(agent,new URL(req.url,'https://local.invalid').searchParams.get('after')));}
       if(path==='/gateway/me'&&req.method==='GET'){if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked',reason:'Worker revoked or workspace paused'});res.setHeader('Cache-Control','no-store');return res.json({agent:{id:agent.id,name:agent.name,status:agent.status}});}
-      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);const _ah=(req.headers['authorization']||'').replace(/^Bearer\s+/i,'').trim(),_rh=_ah?await r(['GET','gl:pairReplayKey:'+sha(_ah)]):await r(['GET','gl:pairReplayAgent:'+agent.id]);if(_rh){const _rp=await getJ('gl:pairReplay:'+_rh);await r(['DEL','gl:pairReplayKey:'+((_rp&&_rp.keyHash)||'')]);await r(['DEL','gl:pairReplayAgent:'+agent.id]);await r(['DEL','gl:pairReplay:'+_rh]);}if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway',presenceOnly:true});}const _ps=pollSecFrom(req,body);if(_ps)await notePollCadence(agent,_ps);
+      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);const _ah=(req.headers['authorization']||'').replace(/^Bearer\s+/i,'').trim(),_rh=_ah?await r(['GET','gl:pairReplayKey:'+sha(_ah)]):await r(['GET','gl:pairReplayAgent:'+agent.id]);if(_rh){const _rp=await getJ('gl:pairReplay:'+_rh);await r(['DEL','gl:pairReplayKey:'+((_rp&&_rp.keyHash)||'')]);await r(['DEL','gl:pairReplayAgent:'+agent.id]);await r(['DEL','gl:pairReplay:'+_rh]);}if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway',presenceOnly:true});}const _ps=pollSecFrom(req,body);if(_ps)await notePollCadence(agent,_ps);const _wt=wakeTargetFrom(body);if(_wt)await noteWakeTarget(agent,_wt);
       if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
       if(path==='/gateway/broker/requests'&&req.method==='POST')return send(await brokerRequest(agent,body));
       {const bm=path.match(/^\/gateway\/broker\/requests\/(broker_[a-f0-9]+)$/);if(bm&&req.method==='GET'){const q=await getJ('fm:broker:q:'+bm[1]);return q&&q.agentId===agent.id?res.json({request:brokerPublic(q)}):res.status(404).json({error:'not found'});}}
@@ -1307,7 +1318,7 @@ async function routes(req, res, path, body, agentPre) {
       {const sm=path.match(/^\/gateway\/spend-requests\/(spend_[a-f0-9]+)$/);if(sm&&req.method==='GET'){const q=await getJ('fm:spendRequest:'+sm[1]);return q&&q.agentId===agent.id?res.json({request:q}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/chat-task' && req.method === 'POST') return send(await chatTask(agent,body));
       if(path==='/gateway/owner-conversation'&&req.method==='POST')return send(await ownerConversation(agent,body,'gateway'));
-      if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await touchAgent(agent);await event(agent.id,'interaction','Runner presence accepted (not conversation or work)',{kind:'INTERACTION',source:'chat',presenceOnly:true});return res.json({status:'ok'});}
+      if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await runnerPresenceAccepted(agent);return res.json({status:'ok'});}
       {const tm=path.match(/^\/gateway\/tasks\/(\w+)$/);if(tm&&tm[1]!=='next'&&req.method==='GET'){const t=await taskForAgent(agent,tm[1]);return t?res.json({task:t}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/act' && req.method === 'POST') return send(await gatewayAct(agent, body));
       if (path === '/gateway/events' && req.method === 'POST') return send(await reportEvent(agent, body));
@@ -1455,6 +1466,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/kill' && req.method === 'POST') { bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
     // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
     if (path === '/connect' && req.method === 'POST') {
+      const _ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();if(await ipRateLimited('connect',_ip,30,3600))return res.status(429).json({error:'Too many connection attempts. Try again later.'});
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
       const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = OAUTH_ORIGIN;
       if (prov === 'muse' && body.connectionMode !== 'existing') {
