@@ -5,7 +5,7 @@ const j = async (p, m, b, key) => { const r = await fetch(B + p, { method: m || 
 (async () => {
   const A = await j('/api/agents', 'POST', { name: 'E2E-A', role: 'test', provider: 'custom' }), B2 = await j('/api/agents', 'POST', { name: 'E2E-B', role: 'test', provider: 'custom' });
   const ka = A.key, kb = B2.key, ia = A.agent.id, ib = B2.agent.id; ok(ka && ia, 'agent created with key');
-  let st = (await j('/api/state')).o; ok(st.agents.find(a => a.id === ia), 'agent appears in state'); ok(st.kinds.length === 9, 'event model has 9 kinds');
+  let st = (await j('/api/state')).o; ok(st.agents.find(a => a.id === ia), 'agent appears in state'); ok(st.kinds.length === 10, 'event model has 10 kinds');
   ok((await j('/api/gateway/events', 'POST', { kind: 'started', text: 'booting' }, ka)).kind === 'TASK_STARTED', 'adapter normalizes provider vocab');
   st = (await j('/api/state')).o; ok(st.agents.find(a => a.id === ia).state.kind === 'TASK_STARTED', 'live state reflects event');
   const auto = await j('/api/gateway/act', 'POST', { action: 'web.fetch', params: { url: 'https://api.github.com/repos/roycemy/foreman-core' } }, ka); ok(auto.http === 200 && auto.status === 'completed', 'AUTO executes');
