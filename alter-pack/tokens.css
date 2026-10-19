@@ -1,0 +1,12 @@
+/* Alter design tokens. One source of truth for every screen. */
+:root{
+  --ink:#111111; --ink-2:#2A2A27; --stone:#5C5C57; --mute:#8C8B85;
+  --paper:#F4F3EF; --surface:#FFFFFF; --line:#E4E2DC; --line-2:#D6D3CB;
+  --v:#E8452C; --v-ink:#C4381F; --v-wash:#FBE9E5;
+  --card:#16161A; --card-ink:#ECE9E2;
+  --r-sm:8px; --r:12px; --r-lg:16px; --r-xl:22px;
+  --sh1:0 1px 2px rgba(17,17,17,.06); --sh2:0 4px 16px rgba(17,17,17,.08); --sh3:0 18px 48px rgba(17,17,17,.16);
+  --font:"Geist",system-ui,-apple-system,sans-serif; --mono:"Geist Mono",ui-monospace,monospace; /* mono: real code only */
+  --ease:cubic-bezier(.2,.7,.2,1); --dur:180ms;
+  --mark:url(../brand/alter-mark.svg);
+}
