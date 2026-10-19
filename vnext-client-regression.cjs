@@ -1,5 +1,5 @@
 // vNext client boundaries, run against the real browser scripts in a sandbox (no DOM library, no network):
-// - the floor count and every "all on track" / "handling it" summary follow the same 60-second rule as the went-dark banner
+// - the floor count and every "all on track" / "handling it" summary follow the same 150-second rule (2.5 missed 60s beats) as the went-dark banner
 // - "With you" comes only from owner-conversation events, never presence heartbeats
 // - the public "Run this job" only copies the template and budget: no request, no account, nothing runs
 const fs = require('fs'), vm = require('vm'), path = require('path'), assert = require('assert');
@@ -22,7 +22,7 @@ let s = BB.teamSummary();
 assert.equal(s.count, '2 of 2 active'); assert.equal(s.calm, true); assert.equal(s.text, '2 of 2 active · all on track');
 assert.equal(BB.onYou().length, 0);
 
-// 2. one bot went dark (connected, no accepted activity for 60s): the count, the summary and "on you" all say so
+// 2. one bot went dark (connected, no accepted activity for 150s): the count, the summary and "on you" all say so
 state([bot('a1', 'Muse', { lastSeen: ago(180) }), bot('a2', 'Grok Bot')]);
 s = BB.teamSummary();
 assert.equal(s.count, '1 of 2 active'); assert.equal(s.calm, false);
@@ -31,9 +31,10 @@ assert.deepEqual(BB.onYou().map(i => i.type), ['dark']);
 // the banner rule and the count agree for every bot: dark implies inactive, and only active bots are counted
 for (const a of BB.S.agents) { if (BB.wentDark(a)) assert.equal(BB.signal(a), 'inactive'); }
 assert.equal(s.active, BB.S.agents.filter(a => BB.signal(a) !== 'inactive').length);
-// exactly at the 60-second edge the bot is dark (same >= 60000 rule as the banner)
-state([bot('a1', 'Muse', { lastSeen: ago(60) })]); assert.equal(BB.wentDark(BB.S.agents[0]), true); assert.equal(BB.teamSummary().calm, false);
-state([bot('a1', 'Muse', { lastSeen: ago(59) })]); assert.equal(BB.wentDark(BB.S.agents[0]), false); assert.equal(BB.teamSummary().calm, true);
+// exactly at the 150-second edge the bot is dark (same >= DARK_MS rule as the banner); between 60s beats it never is
+state([bot('a1', 'Muse', { lastSeen: ago(150) })]); assert.equal(BB.wentDark(BB.S.agents[0]), true); assert.equal(BB.teamSummary().calm, false);
+state([bot('a1', 'Muse', { lastSeen: ago(149) })]); assert.equal(BB.wentDark(BB.S.agents[0]), false); assert.equal(BB.teamSummary().calm, true);
+state([bot('a1', 'Muse', { lastSeen: ago(60) })]); assert.equal(BB.wentDark(BB.S.agents[0]), false, 'between 60s beats: never dark');
 
 // 3. something needs the owner: never "all on track"
 state([bot('a1', 'Muse')], { requests: [{ id: 'q1', agentId: 'a1', status: 'pending', action: 'notes.write', params: {}, costCents: 2, createdAt: ago(5) }] });
@@ -42,7 +43,7 @@ state([bot('a1', 'Muse', { lastSeen: ago(300) }), bot('a2', 'Grok Bot')], { task
 s = BB.teamSummary(); assert.ok(s.text.includes('1 needs you') && s.text.includes('Muse went dark'), s.text);
 
 // 4. a running job whose bot is dark is not counted as running or busy
-state([bot('a1', 'Muse', { lastSeen: ago(120) })], { tasks: [{ id: 't1', title: 'Memo', status: 'running', assignee: 'a1', startedAt: ago(600), createdAt: ago(600) }] });
+state([bot('a1', 'Muse', { lastSeen: ago(200) })], { tasks: [{ id: 't1', title: 'Memo', status: 'running', assignee: 'a1', startedAt: ago(600), createdAt: ago(600) }] });
 s = BB.teamSummary(); assert.equal(s.running, 0); assert.equal(s.working, 0); assert.equal(BB.botState(BB.S.agents[0]).kind, 'dark');
 state([bot('a1', 'Muse')], { tasks: [{ id: 't1', title: 'Memo', status: 'running', assignee: 'a1', startedAt: ago(600), createdAt: ago(600) }] });
 s = BB.teamSummary(); assert.equal(s.running, 1); assert.equal(s.text, '1 of 1 active · 1 busy');
@@ -56,7 +57,7 @@ state([bot('a1', 'Muse', { ownerConversation: { phase: 'start', at: ago(61) } })
 state([bot('a1', 'Muse', { ownerConversation: { phase: 'end', at: ago(5) } })]); assert.equal(BB.withOwner(BB.S.agents[0]), false);
 state([bot('a1', 'Muse', { ownerConversation: { phase: 'start', at: ago(20) }, state: { kind: 'TOOL_USED', at: ago(10) } })]); assert.equal(BB.withOwner(BB.S.agents[0]), false);
 assert.equal(net.length, 0);
-console.log('PASS floor count and summaries follow the 60-second rule (dark and needs-you always shown, "all on track" only when calm); With you only from owner conversations');
+console.log('PASS floor count and summaries follow the 150-second rule (dark and needs-you always shown, "all on track" only when calm); With you only from owner conversations');
 
 /* ---------- public receipt page: "Run this job" copies only ---------- */
 const els = {}, el = id => els[id] || (els[id] = { id, hidden: true, value: '', textContent: '', innerHTML: '', classList: { add() { } }, focus() { }, select() { } });
