@@ -1,0 +1,66 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer"><title>Alter - Connect a bot</title>
+<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/styles/tokens.css">
+<style>
+*{box-sizing:border-box}html{background:var(--porcelain-phone,#FBFBF9)}body{margin:0;background:var(--porcelain-phone,#FBFBF9);color:var(--ink,#121212);font:15px/1.45 Geist,system-ui,-apple-system,sans-serif;-webkit-text-size-adjust:100%}
+main{max-width:480px;margin:0 auto;padding:20px 16px calc(28px + env(safe-area-inset-bottom))}
+header{display:flex;align-items:center;gap:10px;margin-bottom:18px}header img{width:28px;height:28px}header b{font-weight:600;font-size:17px}
+.steps{display:flex;gap:6px;margin:0 0 16px}.steps i{flex:1;height:3px;border-radius:2px;background:var(--line-2,rgba(18,18,18,.14))}.steps i.on{background:var(--ink,#121212)}
+h1{font-size:22px;font-weight:600;margin:0 0 6px;letter-spacing:-.01em}p.sub{color:var(--stone,#5C5C57);margin:0 0 18px}
+.card{background:var(--surface,#fff);border:1px solid var(--line,rgba(18,18,18,.08));border-radius:14px;padding:14px 16px;margin-bottom:10px}
+button,.btn{font:inherit;font-weight:500;border-radius:10px;border:1px solid var(--line-2,rgba(18,18,18,.14));background:var(--surface,#fff);color:var(--ink,#121212);padding:13px 16px;width:100%;min-height:48px;cursor:pointer;text-align:center}
+button.primary{background:var(--ink,#121212);color:#fff;border-color:transparent}button.need{background:var(--vermilion,#E2452B);color:#fff;border-color:transparent}
+.pick{display:flex;align-items:center;gap:12px;text-align:left;margin-bottom:10px}.pick small{display:block;color:var(--mute,#8C8C86);font-weight:400}
+.msg{font:13px/1.5 "Geist Mono",ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;background:var(--surface-2,#FAFAF8);border-radius:10px;padding:12px;margin:0 0 12px}
+.row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line,rgba(18,18,18,.08))}.row:last-child{border:0}.row span:first-child{color:var(--stone,#5C5C57)}.row span:last-child{text-align:right;word-break:break-word}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;vertical-align:middle}.dot.connected{background:var(--ink,#121212)}.dot.quiet{border:2px solid var(--ink,#121212)}.dot.needs_repaste{background:var(--vermilion,#E2452B)}.dot.pending_echo{border:2px dashed var(--ink,#121212)}
+.wait{display:flex;gap:10px;align-items:center;color:var(--stone,#5C5C57)}.spin{width:16px;height:16px;border:2px solid var(--line-2);border-top-color:var(--ink);border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(1turn)}}
+.tier{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}.tier:last-child{border:0}.tier b{font-weight:600}.tier small{display:block;color:var(--stone,#5C5C57)}.tier.off{opacity:.55}
+.badge{flex:0 0 auto;align-self:flex-start;white-space:nowrap;font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid var(--line-2);color:var(--stone)}
+.note{font-size:13px;color:var(--stone,#5C5C57);margin:8px 0 0}.warn{color:var(--vermilion-press,#C8361D)}
+.bots .card{display:flex;justify-content:space-between;align-items:center;gap:8px}.bots .card button{width:auto;min-height:40px;padding:8px 12px}
+[hidden]{display:none!important}
+</style></head><body><main>
+<header><img src="/brand/alter-mark.svg" alt=""><b>Alter</b></header>
+<div class="steps" id="steps"><i></i><i></i><i></i><i></i></div>
+<section id="v-pick"><h1>Add a bot</h1><p class="sub">Pick the bot. The steps are the same for every bot.</p><div id="types"></div>
+ <h2 style="font-size:15px;font-weight:600;margin:22px 0 8px">Your bots</h2><div class="bots" id="bots"></div></section>
+<section id="v-msg" hidden><h1>Paste this into <span data-bot></span></h1><p class="sub">One message. The link holds no secret. You will approve the bot on the next screen.</p>
+ <div class="card"><div class="msg" id="msg"></div><button class="primary" id="copy">Copy message</button></div>
+ <div class="wait"><div class="spin"></div><span>Waiting for <span data-bot></span> to open the link...</span></div><p class="note" id="exp"></p></section>
+<section id="v-approve" hidden><h1 id="ap-title"></h1><p class="sub">Only approve if you just pasted this message yourself.</p>
+ <div class="card" id="ap-rows"></div><button class="primary" id="approve">Approve</button><p></p><button id="cancel">Not me, cancel</button></section>
+<section id="v-wait" hidden><h1>Approved</h1><p class="sub">Waiting for <span data-bot></span> to collect its key and run a test echo through Alter. Connected appears only after that echo works.</p><div class="wait"><div class="spin"></div><span>Waiting for the first real call...</span></div></section>
+<section id="v-done" hidden><h1><span class="dot connected"></span><span data-bot></span> is connected</h1><p class="sub">A real echo went through Alter just now.</p><div class="card" id="done-rows"></div><button class="primary" data-open-drawer>See what this bot can do</button><p></p><button data-home>Done</button></section>
+<section id="v-drawer" hidden><h1 id="dr-title"></h1><p class="sub" id="dr-status"></p>
+ <div class="card" id="dr-rows"></div><h2 style="font-size:15px;font-weight:600;margin:18px 0 8px">What Alter can honestly do</h2><div class="card" id="dr-tiers"></div>
+ <div class="card" id="dr-repaste" hidden><b>Needs re-paste</b><p class="note" id="dr-why"></p><div class="msg" id="dr-msg" hidden></div><button class="need" id="dr-copy">Copy message to reconnect</button></div>
+ <button id="dr-revoke">Revoke this bot</button><p class="note">Revoke: Alter blocks new requests from this bot that go through Alter. It cannot stop calls the bot makes outside Alter.</p><p></p><button data-home>Back</button></section>
+</main>
+<script>
+(()=>{const $=s=>document.querySelector(s),api=async(p,m='GET',b)=>{const h={'Content-Type':'application/json'};if(m!=='GET')h['x-alter-csrf']=csrf;const r=await fetch('/api'+p,{method:m,headers:h,credentials:'same-origin',body:m==='GET'?undefined:JSON.stringify(b||{})});return {code:r.status,j:await r.json().catch(()=>({}))}};
+let csrf='',pid=null,botName='',timer=null;const esc=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const show=(v,step)=>{document.querySelectorAll('section').forEach(s=>s.hidden=s.id!=='v-'+v);document.querySelectorAll('#steps i').forEach((x,i)=>x.classList.toggle('on',step!=null&&i<=step));$('#steps').hidden=step==null;document.querySelectorAll('[data-bot]').forEach(x=>x.textContent=botName);window.scrollTo(0,0)};
+const copy=async(text,btn)=>{try{await navigator.clipboard.writeText(text)}catch{const t=document.createElement('textarea');t.value=text;t.setAttribute('readonly','');document.body.appendChild(t);t.select();document.execCommand('copy');t.remove()}const o=btn.textContent;btn.textContent='Copied';setTimeout(()=>btn.textContent=o,1500)};
+const rows=o=>Object.entries(o).map(([k,v])=>`<div class="row"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join('');
+const date=t=>t?new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):'-';
+async function home(){clearInterval(timer);show('pick',null);const t=(await api('/botlink/types')).j.types||[];
+ $('#types').innerHTML=t.map(x=>`<button class="pick" data-type="${esc(x.id)}" data-name="${esc(x.name)}"><span><b>${esc(x.name)}</b><small>Connects by ${esc(x.transport)}</small></span></button>`).join('');
+ const b=(await api('/botlink/bots')).j.bots||[];$('#bots').innerHTML=b.length?b.map(x=>`<div class="card"><span><span class="dot ${esc(x.state)}"></span><b>${esc(x.name)}</b><br><small style="color:var(--mute)">${esc(x.label)} - last spoke ${esc(x.lastSpoke)}</small></span><button data-drawer="${esc(x.botId)}">${x.state==='needs_repaste'?'Fix':'Open'}</button></div>`).join(''):'<p class="note">No bots yet.</p>';}
+async function start(type,name){botName=name;const r=await api('/botlink/pairings','POST',{type});if(r.code!==200)return alert('Could not start: '+(r.j.error||r.code));showMsg(r.j);}
+function showMsg(p){pid=p.pairingId;$('#msg').textContent=p.message;$('#exp').textContent='This link stops working at '+new Date(p.expiresAt).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})+' and works for one bot only.';show('msg',0);poll();}
+function poll(){clearInterval(timer);timer=setInterval(async()=>{const v=(await api('/botlink/pairings/'+pid)).j;if(v.status==='claimed'&&$('#v-approve').hidden&&!$('#v-msg').hidden)approval(v);if(v.status==='killed'){clearInterval(timer);alert('A second caller used this link, so Alter cancelled it. Start again.');home()}if(v.status==='collected'&&v.botId){const b=((await api('/botlink/bots')).j.bots||[]).find(x=>x.botId===v.botId);if(b&&b.state==='connected'){clearInterval(timer);done(b)}}},2000)}
+function approval(v){botName=v.reattach?v.reattach.name:v.botType;$('#ap-title').textContent=v.title;const fp=v.fingerprint||{};$('#ap-rows').innerHTML=rows({'Bot':v.botType,'Account':v.account||'-','Connects by':fp.transport,'Caller':fp.userAgent||'unknown','Region':fp.ipRegion||'unknown',...(v.reattach?{'Replaces key of':v.reattach.name,'Last spoke':v.reattach.lastRealCallAt?new Date(v.reattach.lastRealCallAt).toLocaleString():'never'}:{})});$('#approve').onclick=async()=>{const r=await api('/botlink/pairings/'+pid+'/approve','POST',{confirmBotId:v.reattach?v.reattach.botId:null});if(r.code===200){show('wait',2)}else alert(r.j.error)};show('approve',1)}
+function done(b){$('#done-rows').innerHTML=rows({'Status':b.label,'Last spoke':b.lastSpoke,'Key renews on use until':date(b.capAt)});$('[data-open-drawer]').onclick=()=>drawer(b.botId);show('done',3)}
+async function drawer(id){clearInterval(timer);const b=((await api('/botlink/bots')).j.bots||[]).find(x=>x.botId===id);if(!b)return home();botName=b.name;
+ $('#dr-title').innerHTML=`<span class="dot ${esc(b.state)}"></span>${esc(b.name)}`;$('#dr-status').textContent=b.label+' - last spoke '+b.lastSpoke+(b.note?'. '+b.note:'');
+ $('#dr-rows').innerHTML=rows({'Connects by':b.transport,'Key':'Renews on every real call','Re-paste needed by':date(b.capAt)})+(b.capWarning?`<p class="note warn">${esc(b.capWarning)}</p>`:'');
+ $('#dr-tiers').innerHTML=b.tiers.map(t=>`<div class="tier ${t.state==='earned'?'':'off'}"><span class="badge">${t.state==='earned'?'Yes':t.state==='unavailable'?'Not possible':'Not yet'}</span><span><b>${esc(t.tier)}</b><small>${esc(t.why)}</small></span></div>`).join('');
+ const need=b.state==='needs_repaste';$('#dr-repaste').hidden=!need;$('#dr-revoke').hidden=b.reason==='revoked';
+ const why={idle_expired:'No real calls for 30 days, so the key expired.',absolute_cap_reached:'The key reached its fixed end date. Re-paste to get a new one.',key_reuse_detected:'Two callers used the same key, so Alter stopped both. Re-paste to reconnect safely.',revoked:'You revoked this bot.'};
+ $('#dr-why').textContent=why[b.reason]||'This bot needs to be connected again.';$('#dr-msg').hidden=true;
+ $('#dr-copy').onclick=async e=>{const r=await api('/botlink/bots/'+id+'/repaste','POST');if(r.code!==200)return alert(r.j.error);$('#dr-msg').textContent=r.j.message;$('#dr-msg').hidden=false;await copy(r.j.message,e.target);pid=r.j.pairingId;poll()};
+ $('#dr-revoke').onclick=async()=>{if(!confirm('Revoke '+b.name+'? Other bots are not affected.'))return;await api('/botlink/bots/'+id+'/revoke','POST');drawer(id)};show('drawer',null)}
+document.addEventListener('click',e=>{const t=e.target.closest('[data-type]');if(t)start(t.dataset.type,t.dataset.name);const d=e.target.closest('[data-drawer]');if(d)drawer(d.dataset.drawer);if(e.target.closest('[data-home]'))home()});
+$('#copy').onclick=e=>copy($('#msg').textContent,e.target);$('#cancel').onclick=()=>{clearInterval(timer);home()};
+(async()=>{const c=await api('/botlink/csrf');if(c.code===401){location.href='/';return}csrf=c.j.csrf;const q=new URLSearchParams(location.search);if(q.get('approve')){pid=q.get('approve');const v=(await api('/botlink/pairings/'+pid)).j;if(v.status==='claimed'){poll();return approval(v)}}if(q.get('bot'))return drawer(q.get('bot'));home()})();})();
+</script></body></html>

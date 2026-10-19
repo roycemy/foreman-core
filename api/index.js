@@ -59,7 +59,7 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'EVAL': { const [script,n,key,expected,replacement]=[k,...a]; if(script!==AGENT_CAS || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
+    case 'EVAL': { const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'SET': if(a.includes('NX')&&mem.kv.has(k))return null;mem.kv.set(k, a[0]); return 'OK';
@@ -81,6 +81,8 @@ const getJ = async k => { const v = await r(['GET', k]); return v ? JSON.parse(v
 const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
 // Policy JSON is authoritative; heartbeats never rewrite it.
 const AGENT_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2]); return 1";
+// Same compare-and-set, but keeps the key's TTL so expiring bot-link pairing records stay expiring.
+const BOTLINK_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2],'KEEPTTL'); return 1";
 async function updateAgent(id, patch) {
   const key='fm:agent:'+id;
   for(let attempt=0;attempt<8;attempt++){
@@ -113,6 +115,12 @@ function blockedHost(u) {
     const h = x.hostname; if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h) || h.endsWith('.internal') || h.includes(':')) return true;
     return false;
   } catch { return true; }
+}
+// Request-content validation, evaluated as policy BEFORE any owner approval round-trip: an invalid request
+// is denied outright (clean 4xx + Denied receipt + request ID), never a 502 after execution has started.
+function invalidParams(action, params) {
+  if (action === 'web.fetch' && blockedHost(params && params.url)) return { code: 'url_not_allowed', reason: 'url must be a public https address' };
+  return null;
 }
 async function execute(agent, action, params) {
   if (action === 'web.fetch') {
@@ -174,15 +182,17 @@ async function redeemPairing(body,ip) {
  const bucket=Math.floor(Date.now()/60000),rate='gl:pairRate:'+sha(ip||'unknown')+':'+bucket;
  const n=await r(['INCRBY',rate,1]);await r(['EXPIRE',rate,120]);if(n>10)return {status:429,body:{error:'Too many attempts. Wait one minute.'}};
  const code=String(body.code||'').replace(/[- ]/g,'').toUpperCase();if(!/^[A-F0-9]{10}$/.test(code))return {status:400,body:{error:'Invalid or expired pairing code'}};
- const hash=sha(code),q=await getJ('gl:pair:'+hash);if(!q||q.expires<=Date.now()||q.agentId!==body.expected_agent_id)return {status:400,body:{error:'Invalid or expired pairing code'}};
+ const hash=sha(code),q=await getJ('gl:pair:'+hash);
+ if(!q||q.expires<=Date.now()||q.agentId!==body.expected_agent_id){const rp=await getJ('gl:pairReplay:'+hash);if(rp&&rp.ip===(ip||'unknown')&&rp.until>Date.now()&&rp.agentId===body.expected_agent_id)return {status:200,body:rp.body};return {status:400,body:{error:'Invalid or expired pairing code'}};}
  return als.run({ws:q.ws},async()=>{
  const a=await getJ('fm:agent:'+q.agentId);if(!a||a.status!=='active'||a.hosted||(a.oauthEpoch||0)!==q.epoch||await r(['GET','fm:kill'])||await r(['GET','fm:pairLatest:'+a.id])!==hash)return {status:403,body:{error:'Pairing no longer available'}};
  const lock='fm:gatewayKeyLock:'+a.id,token=crypto.randomBytes(12).toString('hex');if(!await r(['SET',lock,token,'NX','PX',30000]))return {status:409,body:{error:'Connection change in progress; retry'}};
  try {
- if(!await r(['SET','gl:pairUsed:'+hash,'1','NX','PX',300000]))return {status:409,body:{error:'Pairing code already used'}};
+ if(!await r(['SET','gl:pairUsed:'+hash,'1','NX','PX',300000])){const rp=await getJ('gl:pairReplay:'+hash);if(rp&&rp.ip===(ip||'unknown')&&rp.until>Date.now())return {status:200,body:rp.body};return {status:409,body:{error:'Pairing code already used'}};}
  const old=await r(['GET','fm:gatewayKeyHash:'+a.id]),key='fmk_'+crypto.randomBytes(20).toString('hex'),kh=sha(key);
  const updated=await updateAgent(a.id,x=>{if(x.status!=='active'||(x.oauthEpoch||0)!==q.epoch)throw Error('Bot authorization changed');x.connectionMode='gateway';x.keyHint=key.slice(0,8)+'...'+key.slice(-4)});
  if(old)await r(['DEL','fm:key:'+old,'gl:key:'+old]);await r(['SET','fm:gatewayKeyHash:'+a.id,kh]);await r(['SET','fm:key:'+kh,a.id]);await r(['SET','gl:key:'+kh,q.ws]);await r(['DEL','gl:pair:'+hash,'fm:gatewaySeen:'+a.id,'fm:seen:'+a.id]);bust();
+ await setJ('gl:pairReplay:'+hash,{ip:ip||'unknown',until:Math.min(q.expires,Date.now()+300000),agentId:q.agentId,body:{key,agent:{id:updated.id,name:updated.name}}});
  return {status:200,body:{key,agent:{id:updated.id,name:updated.name}}};
  }finally{if(await r(['GET',lock])===token)await r(['DEL',lock]);}
  });
@@ -217,7 +227,7 @@ async function taskForAgent(agent,id) {
   return null;
 }
 
-async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null };
+async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}) };
   bust(); await setJ('fm:task:' + t.id, t); await r(['LPUSH', 'fm:tasklist', t.id]); await r(['LTRIM', 'fm:tasklist', 0, 59]);
   if (t.assignee) { const ag = await getJ('fm:agent:' + t.assignee); if (ag && ag.hosted && ag.status === 'active' && !ag.paused) await runHosted(ag, t); }
   return t; }
@@ -234,6 +244,60 @@ async function capabilityProfiles(){
  }
  const profile={};for(const [k,c] of Object.entries(categories)){c.durations.sort((a,b)=>a-b);profile[k]={completed:c.completed,failed:c.failed,samples:c.completed+c.failed,successRate:c.completed/(c.completed+c.failed),medianSeconds:c.durations.length?Math.round(c.durations[Math.floor(c.durations.length/2)]/1000):null,trackedCostCents:c.costTrackedJobs?c.trackedCostCents:null,costTrackedJobs:c.costTrackedJobs};}
  return {id:a.id,name:a.name,provider:a.provider,capabilities:profile};});
+}
+// Type-box routing: free text -> one category via deterministic keywords. A tie matches nothing - a guess is never made.
+const CATEGORY_KEYWORDS = {
+  support: ['support', 'ticket', 'tickets', 'customer', 'complaint', 'refund'],
+  research: ['research', 'compare', 'investigate', 'look into', 'summarize', 'summarise', 'analyze', 'analyse', 'find out'],
+  finance: ['invoice', 'invoices', 'budget', 'expense', 'expenses', 'forecast', 'accounting', 'payroll'],
+  marketing: ['marketing', 'campaign', 'social', 'newsletter', 'brand', 'launch'],
+  creative: ['design', 'logo', 'mockup', 'illustration', 'creative', 'visual'],
+  sales: ['sales', 'outreach', 'prospect', 'prospects', 'leads', 'pitch'],
+  ops: ['deploy', 'fix', 'automate', 'spreadsheet', 'ops', 'operations', 'execution', 'build'],
+};
+function categorizeText(s) {
+  const text = ' ' + String(s || '').toLowerCase() + ' ';
+  let best = null, bestScore = 0, tied = false;
+  for (const [cat, words] of Object.entries(CATEGORY_KEYWORDS)) {
+    let score = 0; for (const w of words) if (text.includes(w)) score++;
+    if (score > bestScore) { best = cat; bestScore = score; tied = false; }
+    else if (score === bestScore && score > 0) tied = true;
+  }
+  return tied || !bestScore ? null : best;
+}
+// Multi-bot: every category with a keyword hit, strongest first. Equal scores are listed
+// alphabetically for determinism only; a tie is broken by scored history, never by order.
+function categorizeAll(s) {
+  const text = ' ' + String(s || '').toLowerCase() + ' ';
+  const out = [];
+  for (const [cat, words] of Object.entries(CATEGORY_KEYWORDS)) {
+    let score = 0; for (const w of words) if (text.includes(w)) score++;
+    if (score > 0) out.push({ category: cat, score });
+  }
+  return out.sort((a, b) => b.score - a.score || a.category.localeCompare(b.category));
+}
+// Named bots in the owner's own words are explicit routing, never a guess: "have Muse draft
+// this, then Grok review it" names the lead and the chain in mention order. A bot whose first
+// word is a category keyword (e.g. "Support Bot") is matched by full name only, so ordinary
+// category words never pick a bot the owner did not name.
+function matchNamedBots(s, agents) {
+  const t = ' ' + String(s || '').toLowerCase() + ' ';
+  const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const hits = [];
+  for (const a of agents) {
+    if (a.status !== 'active' || a.harness || a.hosted) continue;
+    const name = String(a.name || '').toLowerCase().trim(); if (!name) continue;
+    let idx = t.search(new RegExp('\\b' + esc(name) + '\\b'));
+    if (idx < 0) {
+      const first = name.split(/\s+/)[0];
+      if (first.length >= 3 && first !== name && !CATEGORY_KEYWORDS[first]) idx = t.search(new RegExp('\\b' + esc(first) + '\\b'));
+    }
+    if (idx >= 0) hits.push({ a, idx });
+  }
+  hits.sort((x, y) => x.idx - y.idx);
+  const seen = new Set(), out = [];
+  for (const h of hits) { if (!seen.has(h.a.id)) { seen.add(h.a.id); out.push(h.a); } }
+  return out;
 }
 async function routing(category){const bots=await capabilityProfiles(),rank=bots.map(b=>({b,p:b.capabilities[category]})).filter(x=>x.p).sort((a,b)=>b.p.successRate-a.p.successRate||b.p.samples-a.p.samples||(a.p.medianSeconds??Infinity)-(b.p.medianSeconds??Infinity));const best=rank[0];return {bots,suggested:best?{id:best.b.id,name:best.b.name,category,reason:best.p.completed+' completed / '+best.p.failed+' failed in '+category+'; '+best.p.samples+' reported outcomes'+(best.p.medianSeconds===null?'':'; median '+best.p.medianSeconds+'s')+'. Costs are not used unless tied to a job. This is a suggestion, not a quality guarantee.'}:null,basis:'Retained completed/failed job records only, up to latest 60 jobs. Outcomes are bot-reported, not independently graded. Empty categories and synthetic records excluded. No scored history means no suggestion; no automatic routing.'};}
 async function teammates(){return (await capabilityProfiles());}
@@ -269,6 +333,12 @@ async function assignTask(id,body){return withJobLock(id,async()=>{
  bust();await event(a.id,'assigned','Owner assigned "'+t.title+'"',{kind:'WAITING',taskId:id});
  if(a.hosted)await runHosted(a,next);
  return {status:200,body:{task:await getJ(key)}};});}
+async function dismissTask(id){return withJobLock(id,async()=>{
+ const key='fm:task:'+id,raw=await r(['GET',key]),t=raw&&JSON.parse(raw);if(!t)return {status:404,body:{error:'Job not found'}};
+ if(t.status!=='queued'||t.assignee)return {status:409,body:{error:'Only a queued job with no bot can be dismissed. Refresh.'}};
+ const next={...t,status:'dismissed',result:'Dismissed by owner',finishedAt:now()};
+ if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return {status:409,body:{error:'Job changed. Refresh.'}};
+ bust();return {status:200,body:{task:await getJ(key)}};});}
 // One job: the task, its events, approvals, gateway receipts, delegated parts, and a plain-language timeline.
 async function jobDetail(id){
  const t=await getJ('fm:task:'+id);if(!t)return null;
@@ -287,6 +357,7 @@ function timelineOf(t,events,requests,receipts,kids,name){
  const out=[],bot=t.assignee?name(t.assignee):'A bot';
  out.push({at:t.createdAt,text:t.createdBy==='owner'?'Owner assigned the job':t.origin==='chat'?bot+' started it from a chat with the owner':name(t.createdBy)+' handed over the job',kind:'step',detail:t.brief?'“'+t.brief.slice(0,120)+'”':null});
  if(t.startedAt&&t.createdBy==='owner')out.push({at:t.startedAt,text:bot+' took the job',kind:'step'});
+ if(t.handoffPlan&&t.handoffPlan.length)out.push({at:t.createdAt,text:'Routing plan: '+bot+' leads; then '+t.handoffPlan.map(h=>name(h.botId)+(h.category?' ('+h.category+')':'')).join(', then ')+' - each hop only on a real handoff',kind:'step',detail:'Planned, not done yet'});
  for(const e of events){
   if(e.type==='reported'&&e.kind==='TOOL_USED'&&e.agentId===t.assignee)out.push({at:e.at,text:e.text,kind:'step',reported:true});
   if(e.type==='handoff'&&e.toAgentId)out.push({at:e.at,text:'Handed part of it to '+name(e.toAgentId),kind:'step'});}
@@ -304,6 +375,7 @@ function timelineOf(t,events,requests,receipts,kids,name){
   else if(q.status==='pending')out.push({at:q.createdAt,text:'Waiting for the owner: '+w,kind:'approval',detail:what});
   else if(q.status==='blocked')out.push({at:q.decidedAt||q.createdAt,text:'Blocked: '+w,kind:'denied',detail:q.reason||null});}
  for(const k of kids)if(['done','failed'].includes(k.status))out.push({at:k.finishedAt,text:name(k.assignee)+(k.status==='done'?' finished “'+k.title+'”':' could not finish “'+k.title+'”'),kind:'step'});
+ for(const k of kids)if(k.status==='running')out.push({at:k.startedAt||k.createdAt,text:name(k.assignee)+' is working on its part',kind:'step'});else if(k.status==='queued')out.push({at:k.createdAt,text:'A part waits for '+name(k.assignee),kind:'step'});
  if(t.status==='done')out.push({at:t.finishedAt,text:'Delivered',kind:'step',end:true});
  if(t.status==='failed')out.push({at:t.finishedAt,text:'Stopped without a result',kind:'denied',end:true,detail:t.result?String(t.result).slice(0,160):null});
  return out.filter(x=>x.at).sort((a,b)=>String(a.at).localeCompare(String(b.at))||(a.end?1:0)-(b.end?1:0));}
@@ -610,7 +682,7 @@ function normKind(x) { const k = String(x || '').toUpperCase().replace(/[\s-]+/g
   const m = [[/START|BEGIN|RUNNING|PICKED|CLAIM/, 'TASK_STARTED'],[/TOOL|CALL|INVOK/, 'TOOL_USED'],[/REQUEST|ATTEMPT|ACTION/, 'ACTION_REQUESTED'],[/WAIT|IDLE|PEND|BLOCKED_ON|QUEUE/, 'WAITING'],[/HAND|DELEGAT|TRANSFER/, 'HANDOFF'],[/DONE|COMPLET|FINISH|SUCCE/, 'COMPLETED'],[/FAIL|ERR/, 'FAILED'],[/APPROV/, 'NEEDS_APPROVAL'],[/BLOCK|DENIED|REFUS/, 'BLOCKED']];
   for (const [re, v] of m) if (re.test(k)) return v; return null; }
 async function event(agentId, type, text, extra) { bust(); const e = { id: rid('ev'), at: now(), agentId, type, kind: (extra && extra.kind) || KIND_OF[type] || null, text, ...extra };
-  if (agentId && e.kind) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
+  if (agentId && e.kind && !(extra && extra.presenceOnly)) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
 async function spentToday(agentId) { return parseInt((await r(['GET', `fm:spend:${agentId}:${now().slice(0, 10)}`])) || '0', 10); }
 async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust(); await track('first_receipt');
   const prev = (await r(['GET', 'fm:lasthash'])) || 'genesis';
@@ -677,6 +749,14 @@ async function gatewayActUnlocked(agent, body) {
     await event(agent.id, 'blocked', `Blocked ${action}: ${blocked.reason}`, { receiptId: rec.id, code: blocked.code });
     return { status: 403, body: { status: 'blocked', code: blocked.code, reason: blocked.reason, receipt_id: rec.id } };
   }
+  const invalid = invalidParams(action, params);
+  if (invalid) {
+    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: 0, status: 'denied', createdAt: now(), decidedAt: now(), reason: invalid.reason, taskId: taskId || null };
+    await finishReq(q);
+    const rec = await receipt(agent, action, params, 'denied', 0, 'Denied: ' + invalid.reason, q.id, { code: invalid.code, approvedBy: 'policy:validation' });
+    await event(agent.id, 'denied', `Denied ${action}: ${invalid.reason}`, { requestId: q.id, receiptId: rec.id, code: invalid.code });
+    return { status: 400, body: { status: 'denied', code: invalid.code, reason: invalid.reason, request_id: q.id, receipt_id: rec.id } };
+  }
   if (mode === 'ASK') {
     const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: now(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
     bust(); await setJ('fm:req:' + q.id, q); await r(['SADD', 'fm:reqs', q.id]); if (q.taskId) await r(['SADD', 'fm:taskreqs:' + q.taskId, q.id]);
@@ -717,7 +797,7 @@ const pub = q => { const { rawParams, ...rest } = q; return rest; };
 const TASK_CATEGORY_ROOMS={marketing:'marketing',creative:'marketing',research:'finance',finance:'finance',outreach:'sales',sales:'sales',execution:'ops',operations:'ops',ops:'ops',support:'support',lounge:'lounge'};
 function taskRoom(agent,tasks){const t=tasks.filter(t=>t.assignee===agent.id&&t.status==='running').sort((a,b)=>String(b.startedAt||b.createdAt).localeCompare(String(a.startedAt||a.createdAt)))[0];return t&&TASK_CATEGORY_ROOMS[t.category]||agent.room||null;}
 async function fullState() {
-  { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 1500) return c.v; }
+  { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 1500) return {...c.v,now:now()}; }
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
@@ -736,7 +816,8 @@ async function finishReq(q) { bust(); await setJ('fm:req:' + q.id, q); await r([
 async function createAgent(name, role, provider, harness, opts) { opts = opts || {};
   const id = rid('agent'); const key = 'fmk_' + crypto.randomBytes(20).toString('hex');
   const agent = { id, name: String(name || 'Agent').slice(0, 40), role: String(role || '').slice(0, 60), provider: (PROVIDERS.find(p => p.id === provider) || { name: 'Custom agent' }).name, providerId: provider || 'custom', harness: !!harness, status: 'active', permissions: { ...(PRESETS[opts.preset] || DEFAULT_PERMS) }, hosted: !!opts.hosted, model: opts.model || null, limits: { perActionCents: 10, dailyCents: 50 }, createdAt: now(), lastSeen: null, keyHint: key.slice(0, 8) + '...' + key.slice(-4) };
-  bust(); await setJ('fm:agent:' + id, agent); await r(['SET','fm:gatewayKeyHash:'+id,sha(key)]); await r(['SET', 'fm:key:' + sha(key), id]); await r(['SET', 'gl:key:' + sha(key), wsId()]); await r(['SADD', 'fm:agents', id]);
+  if (opts.noGatewayKey) { agent.keyHint = null; agent.connectionMode = 'botlink'; }
+  bust(); await setJ('fm:agent:' + id, agent); if (!opts.noGatewayKey) { await r(['SET','fm:gatewayKeyHash:'+id,sha(key)]); await r(['SET', 'fm:key:' + sha(key), id]); await r(['SET', 'gl:key:' + sha(key), wsId()]); } await r(['SADD', 'fm:agents', id]);
   await event(id, 'prepared', `${agent.name} connection prepared; waiting for the bot`);
   return { agent, key };
 }
@@ -928,6 +1009,10 @@ async function revokeOAuthGrant(id){
 async function connectionState(a){
  if(a.hosted)return {status:'not_applicable',persistent:false};
  if(a.status!=='active')return {status:'revoked',persistent:false};
+ {const bid=await r(['GET','bl:agentBot:'+wsId()+':'+a.id]),b=bid&&await botLink.getJ('bl:bot:'+bid);if(b){const s=botLink.statusOf(b);
+  // Connected = a real call proved the key inside the window; Quiet = verified key, no recent calls. Both are live links with a real
+  // last-call time, so HQ shows Connected (never "Waiting to connect" for a bot that already verified); Needs re-paste maps to Reconnect needed.
+  return {status:s.state==='connected'||s.state==='quiet'?'active':s.state==='needs_repaste'?'needs_reauth':'awaiting_bot',transport:'botlink',persistent:false,reason:s.reason||s.state,lastRealCallAt:s.lastSpokeAt,botId:b.id};}}
  const gateway=await getJ('fm:gatewaySeen:'+a.id);
  const ids=await r(['SMEMBERS','fm:oauth:grants:'+a.id]);
  const grants=(await Promise.all(ids.map(id=>getJ('gl:oauth:grant:'+id)))).filter(g=>g&&g.ws===wsId()&&g.agentId===a.id&&g.epoch===(a.oauthEpoch||0));
@@ -1030,13 +1115,16 @@ async function joinWaitlist(req,res,body){
 }
 
 // Runner sessions: scoped HttpOnly cookie; bearer stored encrypted server-side only.
+// Rolling 30-day idle lifetime. Only an authenticated session restore renews it.
+// Saved authorization never manufactures executor presence or work.
 const RUNNER_TTL=2592000;
+const runnerCookie=(id,token,age=RUNNER_TTL)=>runnerCookieName(id)+'='+token+'; HttpOnly; Secure; SameSite=Strict; Path=/api/runner/'+id+'; Max-Age='+age;
 const runnerCookieName=id=>'ar_'+sha(id).slice(0,16);
 async function startRunnerSession(res,ws,agentId,key){
  const a=await als.run({ws},()=>getJ('fm:agent:'+agentId));if(!a||a.status!=='active')throw Error('Bot unavailable');
  const token=crypto.randomBytes(32).toString('hex'),csrf=crypto.randomBytes(24).toString('hex');
  await setJ('gl:runner:'+sha(token),{ws,agentId,epoch:a.oauthEpoch||0,key:enc(key),csrf,expires:Date.now()+RUNNER_TTL*1000});await r(['EXPIRE','gl:runner:'+sha(token),RUNNER_TTL]);
- res.setHeader('Set-Cookie',runnerCookieName(agentId)+'='+token+'; HttpOnly; Secure; SameSite=Strict; Path=/api/runner/'+agentId+'; Max-Age='+RUNNER_TTL);
+ res.setHeader('Set-Cookie',runnerCookie(agentId,token));
  return {agent:{id:a.id,name:a.name},csrf,persistent:true};
 }
 async function runnerSession(req,id){
@@ -1054,7 +1142,17 @@ async function runnerRoutes(req,res,path,body){
  if(req.headers.origin&&req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});
  if(req.headers['sec-fetch-site']==='cross-site')return res.status(403).json({error:'cross-site'});
  if(req.method!=='GET'&&(req.headers.origin!==OAUTH_ORIGIN||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
- if(action==='session'&&req.method==='GET')return res.json({agent:{id:sess.agent.id,name:sess.agent.name},csrf:sess.csrf,persistent:true,expiresAt:new Date(sess.expires).toISOString()});
+ if(action==='session'&&req.method==='GET'){
+  // Validation above checks exact bot, epoch, gateway key, expiry and request origin.
+  // Preserve the token and CSRF value so simultaneous tabs do not invalidate each other.
+  const expires=Date.now()+RUNNER_TTL*1000;
+  await setJ('gl:runner:'+sess.tokenHash,{ws:sess.ws,agentId:id,epoch:sess.epoch,key:sess.key,csrf:sess.csrf,expires});
+  await r(['EXPIRE','gl:runner:'+sess.tokenHash,RUNNER_TTL]);
+  const raw=String(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(runnerCookieName(id)+'=')).split('=')[1];
+  res.setHeader('Set-Cookie',runnerCookie(id,raw));
+  const seen=Date.parse(sess.agent.lastSeen||'');
+  return res.json({agent:{id:sess.agent.id,name:sess.agent.name},csrf:sess.csrf,persistent:true,authorization:'saved',idleLifetimeSeconds:RUNNER_TTL,expiresAt:new Date(expires).toISOString(),executor:{state:Number.isFinite(seen)&&Date.now()-seen<60000?'recent_presence':'stale',lastSeen:sess.agent.lastSeen||null,staleAfterSeconds:60},note:'Authorization is saved. Executor presence and actual work require the executor to be running; restore does not send presence.'});
+ }
  if(action==='disconnect'&&req.method==='POST'){await r(['DEL','gl:runner:'+sess.tokenHash]);res.setHeader('Set-Cookie',runnerCookieName(id)+'=; HttpOnly; Secure; SameSite=Strict; Path=/api/runner/'+id+'; Max-Age=0');return res.json({ok:true});}
  if(!action.startsWith('gateway/'))return res.status(404).json({error:'Runner action unavailable'});
  if(req.headers['x-alter-csrf']!==sess.csrf)return res.status(403).json({error:'csrf'});
@@ -1062,6 +1160,53 @@ async function runnerRoutes(req,res,path,body){
 }
 
 // ---------- http ----------
+// ---------- bot link: one onboarding + stay-connected flow for Instinct, Grok and Muse ----------
+// The link key works on POST /api/link/call only (echo, and act routed through gatewayAct policy). Not on /api/mcp or the runner.
+const BL=(()=>{try{return require('./bot-link.js')}catch{return require('./api/bot-link.js')}})(); // vm-loaded tests resolve from repo root
+const blStore={get:k=>r(['GET',k]),cas:(k,expected,next)=>r(['EVAL',BOTLINK_CAS,1,k,expected,next]),
+ add:async(k,v,ms)=>!!(await r(ms?['SET',k,v,'NX','PX',String(ms)]:['SET',k,v,'NX'])),put:(k,v,ms)=>r(ms?['SET',k,v,'PX',String(ms)]:['SET',k,v]),
+ incr:k=>r(['INCRBY',k,1]),sadd:(k,v)=>r(['SADD',k,v]),smembers:k=>r(['SMEMBERS',k])};
+async function rejectPendingBrokerFor(agentId){const ids=await r(['SMEMBERS','fm:broker:requests']);let n=0;for(const id of ids){const k='fm:broker:q:'+id;for(let i=0;i<8;i++){const raw=await r(['GET',k]),q=raw&&JSON.parse(raw);if(!q||q.agentId!==agentId||q.status!=='pending')break;if(await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify({...q,status:'blocked',reason:'bot_revoked',decidedAt:now()})])===1){n++;break;}}}if(n)bust();return n;}
+const linkedAgent=b=>als.run({ws:b.ws},()=>getJ('fm:agent:'+b.agentId));
+const botLink=new BL.BotLink({store:blStore,
+ onBotCreated:b=>als.run({ws:b.ws},async()=>(await createAgent(b.name,'Linked bot',b.type,false,{preset:'balanced',noGatewayKey:true})).agent.id),
+ authorize:async b=>{const a=await linkedAgent(b);return !!(a&&a.status==='active');},
+ actions:()=>Object.keys(ACTIONS),
+ // Governed is earned only when policy actually evaluated the action (a receipt or an approval request exists).
+ executeAct:(b,{action,params})=>als.run({ws:b.ws},async()=>{const a=await getJ('fm:agent:'+b.agentId);if(!a||a.status!=='active')return {status:403,body:{status:'blocked',reason:'Worker revoked'},governed:false};
+  const o=await gatewayAct(a,{action,params});await touchAgent(a);return {status:o.status,body:o.body,governed:!!(o.body&&(o.body.receipt_id||o.body.request_id))};}),
+ // An accepted link call (echo included) is real accepted activity: stamp the agent's last-seen so HQ shows the connection honestly.
+ onRealCall:(b,{op})=>b.agentId?als.run({ws:b.ws},async()=>{const a=await getJ('fm:agent:'+b.agentId);if(a)await touchAgent(a);}):null,
+ // Runs BEFORE the bot record is revoked: the agent is blocked first, so an in-flight act fails policy.
+ onRevoke:b=>b.agentId?als.run({ws:b.ws},async()=>{await updateAgent(b.agentId,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await rejectPendingBrokerFor(b.agentId);}):null,
+ onAlert:a=>als.run({ws:a.ws},()=>event(null,'alert',a.kind==='pairing_second_caller'?'A second caller used a pairing link. Pairing cancelled.':'A bot key was used twice. That bot needs a re-paste.',{kind:'ALERT',code:a.kind}))});
+const blCaller=req=>({userAgent:String(req.headers['user-agent']||''),ipRegion:String(req.headers['x-vercel-ip-country']||'unknown'),appId:String(req.headers['x-alter-app-id']||'')});
+// Bot side. /pair needs a live single-use pairing ID (plus the caller secret to collect); /link/call needs a link key.
+async function botLinkBotRoutes(req,res,path,body){res.setHeader('Cache-Control','no-store');const send=o=>res.status(o.status).json(o.body);
+ const pm=path.match(/^\/pair\/(pr_[A-Za-z0-9_-]{20,40})$/);
+ if(pm&&req.method==='POST')return send(await botLink.hello(pm[1],{nonce:body.nonce,callerSecret:body.callerSecret,fingerprint:blCaller(req),oldKey:body.oldKey||null}));
+ if(pm&&req.method==='GET'){const h=String(req.headers.authorization||'');if(!/^Pairing\s+/i.test(h))return send(await botLink.steps(pm[1],OAUTH_ORIGIN));return send(await botLink.pickup(pm[1],{callerSecret:h.replace(/^Pairing\s+/i,'')}));}
+ if(path==='/link/call'&&req.method==='POST'){const key=String(req.headers.authorization||'').replace(/^Bearer\s+/i,'').trim();return send(await botLink.call(key,{op:body.op,text:body.text,action:body.action,params:body.params,requestId:body.requestId}));}
+ return res.status(404).json({error:'not found'});}
+async function linkableAgents(ws){return als.run({ws},async()=>{const out=[];for(const a of await listAgents()){if(a.status!=='active'||a.harness||a.hosted)continue;if(await r(['GET','bl:agentBot:'+ws+':'+a.id]))continue;out.push({id:a.id,name:a.name,provider:a.provider});}return out;});}
+// Owner side: session cookie (HttpOnly) + per-session CSRF token + exact Origin on every write.
+async function botLinkOwnerRoutes(req,res,path,body,sess){res.setHeader('Cache-Control','no-store');const send=o=>res.status(o.status).json(o.body);
+ const ck='gl:blcsrf:'+sha(cookieOf(req)||'');
+ if(path==='/botlink/csrf'&&req.method==='GET'){let t=await r(['GET',ck]);if(!t){t=crypto.randomBytes(24).toString('hex');await r(['SET',ck,t,'EX',2592000]);}return res.json({csrf:t});}
+ if(path==='/botlink/types'&&req.method==='GET')return res.json({types:botLink.types()});
+ if(path==='/botlink/bots'&&req.method==='GET')return res.json({bots:await botLink.list(sess.ws)});
+ if(path==='/botlink/linkable'&&req.method==='GET')return res.json({agents:await linkableAgents(sess.ws)});
+ {const m=path.match(/^\/botlink\/pairings\/(pr_[A-Za-z0-9_-]{20,40})$/);if(m&&req.method==='GET')return send(await botLink.approvalView(sess.ws,m[1]));}
+ if(req.method!=='POST')return res.status(404).json({error:'not found'});
+ const t=await r(['GET',ck]),o=String(req.headers.origin||''),devOrigin=/^localhost(:\d+)?$/.test(String(req.headers.host))&&o==='http://'+req.headers.host;
+ const ownOrigin=o==='https://'+req.headers.host; // any deployment (prod, preview) accepts its own host: same-origin is the CSRF barrier
+ if(!t||typeof req.headers['x-alter-csrf']!=='string'||!crypto.timingSafeEqual(Buffer.from(sha(req.headers['x-alter-csrf'])),Buffer.from(sha(t)))||(o!==OAUTH_ORIGIN&&!ownOrigin&&!devOrigin))return res.status(403).json({error:'csrf'});
+ if(path==='/botlink/pairings'){let agentId=null;if(body.agentId!=null){if(!(await linkableAgents(sess.ws)).some(a=>a.id===body.agentId))return res.status(409).json({error:'agent_not_linkable'});agentId=body.agentId;}
+  return send(await botLink.createPairing({ws:sess.ws,account:sess.email,type:body.type,agentId,origin:OAUTH_ORIGIN}));}
+ {const m=path.match(/^\/botlink\/pairings\/(pr_[A-Za-z0-9_-]{20,40})\/(approve|cancel)$/);if(m)return send(m[2]==='approve'?await botLink.approve(sess.ws,m[1],{confirmBotId:body.confirmBotId||null}):await botLink.cancel(sess.ws,m[1]));}
+ {const m=path.match(/^\/botlink\/bots\/(bot_[A-Za-z0-9_-]+)\/(revoke|repaste)$/);if(m)return send(m[2]==='revoke'?await botLink.revoke(sess.ws,m[1]):await botLink.repasteMessage(sess.ws,m[1],OAUTH_ORIGIN));}
+ return res.status(404).json({error:'not found'});}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   if (req.method === 'OPTIONS') return res.status(204).end();
@@ -1072,7 +1217,8 @@ module.exports = async (req, res) => {
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path.startsWith('/runner/'))return await runnerRoutes(req,res,path,body);
-    if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);if(o.status===200&&body.persistent===true){const ws=await r(['GET','gl:key:'+sha(o.body.key)]);const out=await startRunnerSession(res,ws,o.body.agent.id,o.body.key);return res.status(200).json(out);}return res.status(o.status).json(o.body);}
+    if(path.startsWith('/pair/')||path==='/link/call')return await botLinkBotRoutes(req,res,path,body);
+    if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN&&req.headers.origin!=='https://'+req.headers.host)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);if(o.status===200&&body.persistent===true){const ws=await r(['GET','gl:key:'+sha(o.body.key)]);const out=await startRunnerSession(res,ws,o.body.agent.id,o.body.key);return res.status(200).json(out);}return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
     { const rm = (req.url || '').split('?')[0].match(/^\/receipt\/([^/?#]+)$/) || path.match(/^\/receipt\/([^/?#]+)$/); if (rm && req.method === 'GET') { const x = await publicReceiptRead(rm[1]); const host = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); res.setHeader('Referrer-Policy', 'no-referrer'); return res.status(x ? 200 : 404).send(receiptPage(x, host, BRAND_NAME)); } }
     { const pm = path.match(/^\/public-receipts\/([a-f0-9]{48})$/); if (pm && req.method === 'GET') { res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); const x = await publicReceiptRead(pm[1]); return x ? res.json(x) : res.status(404).json({ error: 'Receipt unavailable or expired' }); } }
@@ -1086,6 +1232,7 @@ module.exports = async (req, res) => {
     }
     const sess = await getSession(req);
     if (!sess) return res.status(401).json({ error: 'auth', message: 'Sign in required' });
+    if(path.startsWith('/botlink/'))return await botLinkOwnerRoutes(req,res,path,body,sess);
     if (path === '/funnel') { const f = await als.run({ ws: sess.ws }, () => funnel(sess.ws === 'legacy' ? null : sess.ws)); return /format=html/.test(req.url || '') ? res.setHeader('Content-Type', 'text/html; charset=utf-8').status(200).send(funnelHtml(f)) : res.json(f); }
     return await als.run({ ws: sess.ws }, () => routes(req, res, path, body, null));
   } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
@@ -1110,7 +1257,7 @@ async function routes(req, res, path, body, agentPre) {
       if(path==='/gateway/teammates'&&req.method==='GET')return res.json({bots:await teammates()});
       if(path==='/gateway/notifications'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return send(await notifications(agent,new URL(req.url,'https://local.invalid').searchParams.get('after')));}
       if(path==='/gateway/me'&&req.method==='GET'){if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked',reason:'Worker revoked or workspace paused'});res.setHeader('Cache-Control','no-store');return res.json({agent:{id:agent.id,name:agent.name,status:agent.status}});}
-      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway'});}
+      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway',presenceOnly:true});}
       if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
       if(path==='/gateway/broker/requests'&&req.method==='POST')return send(await brokerRequest(agent,body));
       {const bm=path.match(/^\/gateway\/broker\/requests\/(broker_[a-f0-9]+)$/);if(bm&&req.method==='GET'){const q=await getJ('fm:broker:q:'+bm[1]);return q&&q.agentId===agent.id?res.json({request:brokerPublic(q)}):res.status(404).json({error:'not found'});}}
@@ -1118,7 +1265,7 @@ async function routes(req, res, path, body, agentPre) {
       {const sm=path.match(/^\/gateway\/spend-requests\/(spend_[a-f0-9]+)$/);if(sm&&req.method==='GET'){const q=await getJ('fm:spendRequest:'+sm[1]);return q&&q.agentId===agent.id?res.json({request:q}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/chat-task' && req.method === 'POST') return send(await chatTask(agent,body));
       if(path==='/gateway/owner-conversation'&&req.method==='POST')return send(await ownerConversation(agent,body,'gateway'));
-      if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await touchAgent(agent);await event(agent.id,'interaction','Available: interacting with owner',{kind:'INTERACTION',source:'chat'});return res.json({status:'ok'});}
+      if (path === '/gateway/presence' && req.method === 'POST') {if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked'});await touchAgent(agent);await event(agent.id,'interaction','Runner presence accepted (not conversation or work)',{kind:'INTERACTION',source:'chat',presenceOnly:true});return res.json({status:'ok'});}
       {const tm=path.match(/^\/gateway\/tasks\/(\w+)$/);if(tm&&tm[1]!=='next'&&req.method==='GET'){const t=await taskForAgent(agent,tm[1]);return t?res.json({task:t}):res.status(404).json({error:'not found'});}}
       if (path === '/gateway/act' && req.method === 'POST') return send(await gatewayAct(agent, body));
       if (path === '/gateway/events' && req.method === 'POST') return send(await reportEvent(agent, body));
@@ -1146,6 +1293,7 @@ async function routes(req, res, path, body, agentPre) {
     {const cm=path.match(/^\/cards\/(card_[a-f0-9]+)\/(approve|deny)$/);if(cm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cardDecision(cm[1],cm[2],body.detailsHash));}}
 
     {const am=path.match(/^\/tasks\/(\w+)\/assign$/);if(am&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await assignTask(am[1],body));}}
+    {const dm=path.match(/^\/tasks\/(\w+)\/dismiss$/);if(dm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await dismissTask(dm[1]));}}
     if(path.startsWith('/public-receipts'))res.setHeader('Cache-Control','no-store');
     if(path==='/public-receipts'&&req.method==='GET')return res.json(await publicReceiptList(new URL(req.url,'https://local.invalid').searchParams.get('taskId')));
     if(path==='/public-receipts/draft'&&req.method==='GET')return send(await publicReceiptDraft(new URL(req.url,'https://local.invalid').searchParams.get('taskId')));
@@ -1156,7 +1304,65 @@ async function routes(req, res, path, body, agentPre) {
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
-    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started'); return res.json({ task: await newTask({ title: body.title, brief: body.brief, assignee: body.assignee }) }); }
+    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started');
+      let routed = null, category = null, routingReason = null, unrouted = false, assignee = body.assignee || null, handoffPlan = null, brief = body.brief;
+      if (body.route === true && !assignee) {
+        // One message can span categories: a lead bot takes the strongest one, further matched
+        // categories become a planned handoff chain. A hop happens only when a bot actually hands
+        // off via work.handoff (each hop passes the gateway policy gate); the plan is never faked.
+        const named = matchNamedBots(String(body.title || '') + ' ' + String(body.brief || ''), await listAgents());
+        const matches = categorizeAll(String(body.title || '') + ' ' + String(body.brief || ''));
+        const top = matches.length ? matches.filter(m => m.score === matches[0].score) : [];
+        let leadCat = null, tieNote = '', tieUnresolved = false;
+        if (top.length === 1) leadCat = top[0].category;
+        else if (top.length > 1) {
+          const scored = [];
+          for (const m of top) { const a = await routing(m.category); if (a.suggested) { const p = a.suggested.id && (a.bots.find(b => b.id === a.suggested.id) || {}).capabilities || {}; scored.push({ cat: m.category, n: (p[m.category] || {}).completed || 0 }); } }
+          scored.sort((x, y) => y.n - x.n);
+          if (scored.length && (scored.length === 1 || scored[0].n > scored[1].n)) { leadCat = scored[0].cat; tieNote = 'Categories ' + top.map(m => m.category).join(' and ') + ' matched equally; ' + leadCat + ' leads on scored history. '; }
+          else tieUnresolved = true;
+        }
+        if (named.length) {
+          // Owner named the bots: lead is the first name, the rest are the planned chain.
+          const lead = named[0]; assignee = lead.id;
+          category = top.length === 1 ? top[0].category : null;
+          routingReason = 'You named ' + named.map(a => a.name).join(', then ') + '.' + (category ? ' Category: ' + category + '.' : '');
+          if (named.length > 1) {
+            const chain = named.slice(1).map(a => ({ category: null, botId: a.id, botName: a.name, named: true, reason: 'Named by the owner' }));
+            handoffPlan = chain;
+            routingReason += ' Planned handoffs: ' + chain.map(h => h.botName).join(', then ') + '. Each hop happens only on a real handoff and passes policy.';
+            brief = String(brief || '') + '\n\nRouting plan: you were named first. When your part is done, hand the next part on with work.handoff: ' + chain.map(h => h.botName).join(', then ') + '.';
+          }
+          routed = { botId: lead.id, botName: lead.name, category: category || 'named', reason: routingReason, chain: handoffPlan || [], unstaffed: [], named: true };
+        }
+        if (!assignee && leadCat) {
+          const advice = await routing(leadCat);
+          if (advice.suggested) {
+            assignee = advice.suggested.id; category = leadCat; routingReason = tieNote + advice.suggested.reason;
+            const chain = [], unstaffed = [], used = new Set([assignee]);
+            for (const m of matches) {
+              if (m.category === leadCat) continue;
+              const a2 = await routing(m.category);
+              if (a2.suggested && !used.has(a2.suggested.id)) { used.add(a2.suggested.id); chain.push({ category: m.category, botId: a2.suggested.id, botName: a2.suggested.name, reason: a2.suggested.reason }); }
+              else if (!a2.suggested) unstaffed.push(m.category);
+            }
+            if (chain.length) {
+              handoffPlan = chain;
+              routingReason += ' Planned handoffs: ' + chain.map(h => h.botName + ' (' + h.category + ')').join(', then ') + '. Each hop happens only on a real handoff and passes policy.';
+              brief = String(brief || '') + '\n\nRouting plan: your part is ' + leadCat + '. When your part is done, hand the next part on with work.handoff: ' + chain.map(h => h.botName + ' takes ' + h.category).join(', then ') + '.';
+            }
+            if (unstaffed.length) routingReason += ' No scored bot for ' + unstaffed.join(', ') + ' yet; that part is not auto-planned.';
+            routed = { botId: advice.suggested.id, botName: advice.suggested.name, category: leadCat, reason: routingReason, chain, unstaffed };
+          }
+        }
+        if (!assignee) {
+          unrouted = true;
+          if (!matches.length) routingReason = 'No category matched this message. Left unassigned rather than guessed.';
+          else if (tieUnresolved) routingReason = 'Categories ' + top.map(m => m.category).join(' and ') + ' matched equally with no stronger scored history to pick a lead. Left unassigned rather than guessed.';
+          else routingReason = 'No bot has scored history in ' + (leadCat || top[0].category) + ' yet. Left unassigned rather than guessed.';
+        }
+      }
+      return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, handoffPlan }), routed, unrouted }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
@@ -1231,7 +1437,7 @@ async function routes(req, res, path, body, agentPre) {
         await track('connected', { provider: 'grok' }); return res.json({ agent: c.agent, hosted: true });
       }
       const c = await createAgent(name, String(body.role || '').trim(), prov, false, { preset });
-      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${OAUTH_ORIGIN}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it requires re-pairing. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
+      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${OAUTH_ORIGIN}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it stops presence; reopening this exact link in the saved browser resumes the pair unless revoked, reset or expired. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
       await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, noFirstTask: true, connectionStatus: 'awaiting_bot', instructions: msg, mcpUrl: base + '/api/mcp', runnerUrl: base + '/runner?agent=' + encodeURIComponent(c.agent.id) });
     }
     if (path === '/track' && req.method === 'POST') { if (['connect_started', 'first_task_started', 'approval_shown'].includes(body.step)) await track(body.step, body.provider ? { provider: String(body.provider).slice(0, 20) } : null); return res.json({ ok: true }); }

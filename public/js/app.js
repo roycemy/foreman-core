@@ -115,18 +115,21 @@
   BB.openEmergency = openEmergency;
   $('#resume').onclick = async () => { await BB.api('/api/kill', 'POST', { on: false }); BB.toast('Resumed. Bots can act again.'); BB.sync(true); };
 
-  /* ---------- composer: "Ask the team for something…" creates a real job ---------- */
+  /* ---------- type box: one message routes to the single best bot (scored history only, never a guess) ---------- */
   const ask = $('#ask'), askin = $('#askin');
   askin.addEventListener('input', () => ask.querySelector('button').disabled = !askin.value.trim());
   ask.onsubmit = async e => {
     e.preventDefault(); const raw = askin.value.trim(); if (!raw) return;
-    /* "@Name do this" assigns it straight to that bot */
+    /* "@Name do this" assigns it straight to that bot, skipping routing */
     let title = raw, assignee = null; const m = raw.match(/^@(\S+)\s+(.+)$/);
     if (m) { const bot = BB.assignable().find(a => a.name.toLowerCase().replace(/\s+/g, '') === m[1].toLowerCase()); if (bot) { assignee = bot.id; title = m[2]; } }
     ask.querySelector('button').disabled = true;
-    const j = await BB.api('/api/tasks', 'POST', { title, assignee });
+    const j = await BB.api('/api/tasks', 'POST', assignee ? { title, assignee } : { title, route: true });
     if (j.error) { BB.toast(j.error); ask.querySelector('button').disabled = false; return; }
-    askin.value = ''; BB.toast(assignee ? 'Sent to ' + BB.agent(assignee).name + '.' : 'Added to your inbox. Pick a bot for it.'); BB.sync(true);
+    askin.value = '';
+    if (j.routed) { const ch = j.routed.chain && j.routed.chain.length ? ' Then ' + j.routed.chain.map(h => h.botName + (h.category ? ' (' + h.category + ')' : '')).join(', then ') + ' - planned, each hop fires on a real handoff.' : ''; BB.toast('Sent to ' + j.routed.botName + (j.routed.named ? '' : ' (' + j.routed.category + ')') + '.' + ch); BB.sync(true); BB.openInspector && BB.openInspector(j.routed.botId); }
+    else if (j.unrouted) { BB.toast('Couldn\'t route this. It\'s in your inbox, marked unrouted.'); BB.sync(true); }
+    else { BB.toast(assignee ? 'Sent to ' + BB.agent(assignee).name + '.' : 'Added to your inbox. Pick a bot for it.'); BB.sync(true); }
   };
   BB.newJob = function () {
     const box = BB.modal(`<h3>New job</h3><p>Describe what you want done. Pick a bot now, or leave it in your inbox.</p>
@@ -171,7 +174,14 @@
     bar.hidden = !dark.length || !!(BB.S && BB.S.killed);
     if (dark.length) bar.querySelector('span').textContent = dark.map(a => a.name).join(', ') + ' went dark: no accepted activity for 60s. Authorization may still be saved.';
   }
-  BB.on(() => { paintTop(); paintCrew(); });
+  /* unrouted marker: type-box jobs no bot could take stay visible on the floor until assigned */
+  function paintUnrouted() {
+    const un = BB.tasks().filter(t => t.status === 'queued' && !t.assignee && t.unrouted), uc = $('#uchip');
+    if (!uc) return; uc.hidden = !un.length;
+    if (un.length) uc.textContent = un.length + ' unrouted - pick a bot';
+  }
+  const uchip = $('#uchip'); if (uchip) uchip.onclick = () => BB.openRail ? BB.openRail() : BB.go('#inbox');
+  BB.on(() => { paintTop(); paintCrew(); paintUnrouted(); });
 
   /* ---------- keyboard ---------- */
   document.addEventListener('keydown', e => {
@@ -200,7 +210,7 @@
     if (who.error) return needAuth();
     au.classList.remove('on');
     $('#acctmail').textContent = who.email; acct.textContent = BB.initials(who.email.split('@')[0].replace(/[._-]+/g, ' ')); acct.setAttribute('aria-label', 'Account (' + who.email + ')');
-    BB.who = who; applyRoute(); await BB.sync(true); BB.startPolling();
+    BB.who = who; applyRoute(); if (location.hash.replace(/^#/,'').split('/')[0] === 'connect') { history.replaceState(null, '', '#floor'); BB.openConnect && BB.openConnect(); } await BB.sync(true); BB.startPolling();
   }
   BB.boot = boot;
   if (window.BRAND) BB.t = BRAND.t;

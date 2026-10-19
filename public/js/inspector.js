@@ -96,7 +96,7 @@
     if (!P.classList.contains('on')) return; const a = BB.agent(cur); if (!a) return BB.closeInspector();
     const sc = P.querySelector('.scroll'), top = sc && !fresh ? sc.scrollTop : 0, focused = document.activeElement && P.contains(document.activeElement) ? document.activeElement.dataset : null;
     const body = tab === 'permissions' ? permissions(a) : tab === 'profile' ? profile(a) : activity(a);
-    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2><p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p></div><button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
+    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2><p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p></div><button class="b ghost sm" type="button" data-perms style="flex:none">Edit permissions</button><button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
       <div class="seg" role="tablist" aria-label="${esc(a.name)}">${['activity', 'permissions', 'profile'].map(k => `<button type="button" role="tab" aria-selected="${tab === k}" data-tab="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
       <div class="scroll" role="tabpanel">${body}</div>`;
     const s2 = P.querySelector('.scroll'); s2.scrollTop = top;
@@ -106,6 +106,7 @@
   }
   function bind(a) {
     P.querySelector('[data-x]').onclick = () => BB.closeInspector();
+    const ep = P.querySelector('[data-perms]'); if (ep) ep.onclick = () => { tab = 'permissions'; paint(); P.querySelector('[data-tab="permissions"]').focus(); };
     P.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { tab = b.dataset.tab; paint(); P.querySelector('[data-tab="' + tab + '"]').focus(); });
     P.querySelector('[role=tablist]').onkeydown = e => { if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return; const ks = ['activity', 'permissions', 'profile']; tab = ks[(ks.indexOf(tab) + (e.key === 'ArrowRight' ? 1 : 2)) % 3]; paint(); P.querySelector('[data-tab="' + tab + '"]').focus(); };
     P.querySelectorAll('[data-job]').forEach(b => b.onclick = () => { openJob = openJob === b.dataset.job ? null : b.dataset.job; paint(); if (openJob) loadJob(openJob); });
@@ -159,4 +160,21 @@
       </tbody></table></div>` : '<p class="meta" style="margin-top:16px">Connect a bot to set what it can do.</p>'}`, { wide: true, label: 'All permissions' });
     box.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { BB.closeModal(); BB.openInspector(b.dataset.open, { tab: 'permissions' }); });
   };
+})();
+
+/* Deep link from outside HQ: /app#bot/<id>[/permissions] opens that bot's card. The connect flow
+   lands here after a successful pairing. Waits for the first sync, then normalizes the hash. */
+(function () {
+  'use strict';
+  const BB = window.BB;
+  let tries = 0;
+  function openFromHash() {
+    const m = location.hash.match(/^#bot\/([^/]+)(\/permissions)?$/);
+    if (!m) return;
+    const a = BB.agent(decodeURIComponent(m[1]));
+    if (!a) { if (tries++ < 40) setTimeout(openFromHash, 250); return; }
+    history.replaceState(null, '', '#floor');
+    BB.openInspector(a.id, m[2] ? { tab: 'permissions' } : {});
+  }
+  BB.onRoute(() => { tries = 0; openFromHash(); });
 })();
