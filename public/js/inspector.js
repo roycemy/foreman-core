@@ -52,7 +52,7 @@
         ${a.permissionScope === 'job' && ['running', 'queued'].includes(t.status) && t.assignee === a.id ? `<div class="foot"><button class="b out sm" type="button" data-grant="${t.id}">${t.jobGrant && t.jobGrant.status === 'active' ? 'Change what this job may do' : 'Grant actions for this job'}</button></div>` : ''}
         <div class="foot">${finished ? `<button class="b out sm" type="button" data-receipt="${t.id}">Open receipt</button><button class="b ghost sm" type="button" data-share="${t.id}">Share…</button>` : ''}<span class="cost">${esc(t.modelCostUsd != null ? BB.modelCost(t.modelCostUsd) : 'Cost not reported')}${BB.jobDur(t) ? ' · ' + esc(BB.jobDur(t)) : ''}</span></div></div>`;
     }
-    return `<div class="job${open ? ' open' : ''}"><button type="button" aria-expanded="${open}" data-job="${t.id}"><span class="st ${s.cls}"><i></i></span><b>${esc(t.title)}</b><small>${esc(jobSmall(t))}</small></button>${body}</div>`;
+    return `<div class="job${open ? ' open' : ''}"><button type="button" aria-expanded="${open}" data-job="${t.id}"><span class="st ${s.cls}"><i></i></span><b>${esc(t.title)}</b><small>${esc(jobSmall(t) + BB.byLabel(t))}</small></button>${body}</div>`;
   }
   function activity(a) {
     const js = jobsOf(a);
@@ -76,13 +76,12 @@
 
   /* ---------- profile: role, provider, home room, connection, remove ---------- */
   function profile(a) {
-    const p = BB.presence(a), home = BB.homeRoomOf(a);
-    const conn = { connected: 'Connected', waiting: 'Waiting for the bot', prepared: 'Not connected yet', reconnect: 'Lost access', revoked: 'Access revoked' }[p] || p;
+    const p = BB.presence(a), home = BB.homeRoomOf(a), tag = BB.channelTag(a), bsk = BB.botState(a).kind;
     const seen = a.lastSeen ? 'Last heard from ' + BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago') : 'Has not reported yet';
     return `<div class="kv"><span class="k">Role</span><span class="v">${esc(a.role || 'Not set')}</span></div>
       <div class="kv"><span class="k">Provider</span><span class="v">${esc(a.provider || 'Custom')}${a.model ? ' · ' + esc(a.model) : ''}</span></div>
       <div class="kv"><span class="k">Home room</span><span class="choice"><select data-room aria-label="Home room">${BB.ROOMS.map(k => `<option value="${k}"${home === k || (k === 'sales' && home === 'support') ? ' selected' : ''}>${esc(BB.roomName(k))}</option>`).join('')}</select></span></div>
-      <div class="kv"><span class="k">Connection</span><span class="v"><span class="st ${p === 'connected' ? 'run' : p === 'reconnect' ? 'need' : 'q'}"><i></i>${esc(conn)}</span><br><small class="meta">${esc(seen)}</small>${BB.wentDark(a) ? `<br><span class="badge-dark">Went dark · last activity ${esc(new Date(a.lastSeen).toLocaleTimeString())}</span>` : ''}</span></div>
+      <div class="kv"><span class="k">Connection</span><span class="v"><span class="st ${tag.cls}"><i></i>${esc(tag.text)}</span><br><small class="meta">${esc(seen)}</small>${BB.wentDark(a) && bsk !== 'msg' ? `<br><span class="${BB.pollSec(a) ? 'badge-late' : 'badge-dim'}">${BB.pollSec(a) ? 'Late' : 'Went dark'} · last activity ${esc(new Date(a.lastSeen).toLocaleTimeString())}</span>` : ''}${['msg', 'dark', 'late'].includes(bsk) ? `<br><button class="b ghost sm" type="button" data-nudge style="margin-top:8px">Copy nudge</button>` : ''}</span></div>
       ${a.keyHint ? `<div class="kv"><span class="k">Key</span><span class="v"><code>${esc(a.keyHint)}</code></span></div>` : ''}
       <div class="kv"><span class="k">Bot ID</span><span class="v"><code>${esc(a.id)}</code></span></div>
       <div style="padding:8px 24px 24px;border-top:1px solid var(--line)">${a.status !== 'revoked' && !a.hosted ? `<button class="b ghost" type="button" data-revoke style="color:var(--vermilion-press);padding-left:0">Revoke access</button>` : ''}<button class="b ghost" type="button" data-remove style="color:var(--vermilion-press);padding-left:0">Remove ${esc(a.name)}</button><p class="meta">Disconnects it and deletes its stored key. Its receipts stay.</p></div>`;
@@ -121,6 +120,7 @@
     const pz = P.querySelector('[data-pause]'); if (pz) pz.onclick = async () => { const on = pz.getAttribute('aria-checked') !== 'true'; pz.setAttribute('aria-checked', on); const j = await BB.api('/api/agents/' + a.id + '/pause', 'POST', { on }); BB.toast(j.error || (on ? a.name + ' is paused. Nothing was deleted.' : a.name + ' is back to work.')); BB.sync(true); };
     const rm = P.querySelector('[data-room]'); if (rm) rm.onchange = async () => { const j = await BB.api('/api/agents/' + a.id + '/room', 'POST', { room: rm.value }); BB.toast(j.error || a.name + ' moved to the ' + BB.roomName(rm.value) + '.'); BB.sync(true); };
     const rc = P.querySelector('[data-rec]'); if (rc) rc.onclick = () => BB.reconnect && BB.reconnect(a.id);
+    const ng = P.querySelector('[data-nudge]'); if (ng) ng.onclick = async () => { const msg = BB.nudgeText(a); try { await navigator.clipboard.writeText(msg); } catch (e) { window.prompt('Copy this nudge', msg); } BB.toast('Copied - paste it into ' + a.name); };
     const rv = P.querySelector('[data-revoke]'); if (rv) rv.onclick = async () => { if (!rv.dataset.arm) { rv.dataset.arm = 1; rv.textContent = 'Click again to revoke'; return; } await BB.api('/api/agents/' + a.id + '/revoke', 'POST'); BB.toast('Access revoked. It must reconnect after you restore it.'); BB.sync(true); };
     const rs = P.querySelector('[data-restore]'); if (rs) rs.onclick = async () => { await BB.api('/api/agents/' + a.id + '/restore', 'POST'); BB.toast('Access restored.'); BB.sync(true); };
     const rmv = P.querySelector('[data-remove]'); if (rmv) rmv.onclick = async () => {
