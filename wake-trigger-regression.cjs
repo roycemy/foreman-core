@@ -2,18 +2,19 @@
 // push channel wired at setup - Instinct: content-free email; Grok: content-free Slack message or a
 // GitHub trigger issue closed right after creation (the notification is the wake signal).
 // No task details, no instructions, one ping per 30s per bot, silent no-op without a channel, schedule stays the backup.
-const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');
 let src=fs.readFileSync(require('path').join(__dirname,'api/index.js'),'utf8');
 src+='\nmodule.exports.t={maybeWakeBot,newTask,assignTask,reassignTaskUnlocked,getJ,setJ,r,als,mem,wakeTargetFrom,noteWakeTarget};';
-const sends=[],slacks=[],slackUrls=[],ghPosts=[],ghPatches=[];let fetchFail=false;
+const sends=[],slacks=[],slackUrls=[],whooks=[],ghPosts=[],ghPatches=[];let fetchFail=false;
 const ctx={require,module:{exports:{}},process:{env:{RESEND_API_KEY:'test-key',WAKE_EMAIL_FROM:'Alter <wake@alter.test>'}},global:{},console,
  fetch:(u,o)=>{u=String(u);
   if(fetchFail)return Promise.reject(new Error('network down'));
   if(u.includes('resend.com')){sends.push(JSON.parse(o.body));return Promise.resolve({ok:true,status:200});}
   if(u.includes('hooks.slack.com')){slacks.push(JSON.parse(o.body));slackUrls.push(u);return Promise.resolve({ok:true,status:200});}
+  if(u.includes('grok.com')||u.includes('x.ai')){whooks.push({u,headers:o.headers,body:o.body});return Promise.resolve({ok:true,status:202});}
   if(u.includes('api.github.com')){if(o.method==='PATCH'){ghPatches.push({u,body:JSON.parse(o.body)});return Promise.resolve({ok:true,status:200,json:async()=>({})});}ghPosts.push({u,body:JSON.parse(o.body)});return Promise.resolve({ok:true,status:201,json:async()=>({number:42})});}
   throw Error('NETWORK FORBIDDEN: '+u);},
- setTimeout,clearTimeout,URL,AbortSignal};
+ setTimeout,clearTimeout,URL,AbortSignal,Buffer};
 vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
 const inst=id=>({id,name:'Instinct '+id,providerId:'instinct',status:'active',paused:false,createdAt:'2026-10-19',limits:{perActionCents:10,dailyCents:50}});
 const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:false,createdAt:'2026-10-19',limits:{perActionCents:10,dailyCents:50}});
@@ -132,6 +133,26 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
  await f.noteWakeTarget(nwa,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'i10@mail.instinct.com'}));
  const stored=await f.getJ('fm:agent:i10');
  assert.equal(stored.wake.channel,'email');assert.equal(stored.wake.target,'i10@mail.instinct.com','declaration stored on the bot record');
+ // 17. declared webhook: signed content-free POST to the bot's own Grok Webhook Trigger, wins over env channels
+ ctx.process.env.WAKE_GROK_SLACK_WEBHOOK='https://hooks.slack.com/services/T00/B00/secret';
+ await f.setJ('fm:agent:g13',{...grok('g13'),wake:{channel:'webhook',target:'https://grok.com/api/automations/wh_123/deliveries',secret:'whsec_dGVzdHNlY3JldA==',declaredAt:'2026-10-19'}});
+ await f.newTask({title:'Webhook secret brief',assignee:'g13'});
+ assert.equal(whooks.length,1,'declared webhook fires');
+ assert.equal(slacks.length,2,'webhook wins over the env slack webhook');
+ const wh=whooks[0];
+ assert.equal(wh.u,'https://grok.com/api/automations/wh_123/deliveries','ping goes to the declared endpoint');
+ assert.deepEqual(JSON.parse(wh.body),{event:'alter.job.waiting'},'webhook ping is content-free');
+ assert.ok(/^msg_[a-f0-9]{32}$/.test(wh.headers['webhook-id']),'standard webhooks id');
+ assert.ok(Math.abs(Date.now()/1000-Number(wh.headers['webhook-timestamp']))<60,'fresh timestamp');
+ const expectSig='v1,'+crypto.createHmac('sha256',Buffer.from('dGVzdHNlY3JldA==','base64')).update(wh.headers['webhook-id']+'.'+wh.headers['webhook-timestamp']+'.'+wh.body).digest('base64');
+ assert.equal(wh.headers['webhook-signature'],expectSig,'HMAC signature matches the Standard Webhooks format');
+ // 18. wakeTargetFrom webhook validation: x.ai/grok.com https endpoint + whsec_ secret required
+ assert.deepEqual(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com/api/automations/wh_9/deliveries',wakeSecret:'whsec_dGVzdHNlY3JldA=='}),{channel:'webhook',target:'https://grok.com/api/automations/wh_9/deliveries',secret:'whsec_dGVzdHNlY3JldA=='},'webhook endpoint+secret accepted');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://evil.example.com/hook',wakeSecret:'whsec_dGVzdHNlY3JldA=='}),null,'off-platform endpoint rejected');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'http://grok.com/x',wakeSecret:'whsec_dGVzdHNlY3JldA=='}),null,'plain http rejected');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com/api/automations/wh_9/deliveries'}),null,'missing secret rejected');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com/api/automations/wh_9/deliveries',wakeSecret:'not-a-secret'}),null,'non-whsec secret rejected');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com.evil.com/x',wakeSecret:'whsec_dGVzdHNlY3JldA=='}),null,'lookalike host rejected');
  console.log('PASS wake triggers: queue/assign/reassign wake Instinct by email and Grok by slack/github, content-free, 30s dedupe, provider+pause+revoke guards, silent without a channel, failures recorded not thrown.');
 });})().catch(e=>{console.error(e);process.exit(1)});
 // source contract
@@ -148,3 +169,6 @@ assert.ok(api.includes("endsWith('@'+String(process.env.WAKE_EMAIL_DOMAIN||'mail
 assert.ok(api.includes('hooks\\.slack\\.com\\/services\\/'),'slack targets locked to webhook URLs');
 assert.ok(api.includes('const _wt=wakeTargetFrom(body);if(_wt)await noteWakeTarget(agent,_wt)'),'gateway hook records declared targets');
 assert.ok(api.includes('wakeTargetFrom(args||{})'),'MCP foreman_presence records declared targets');
+assert.ok(api.includes('webhook-signature'),'webhook sender signs deliveries');
+assert.ok(api.includes('alter.job.waiting'),'webhook ping body is the fixed content-free event');
+assert.ok(api.includes('whsec_'),'webhook secrets are validated in the whsec_ format');
