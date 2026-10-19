@@ -117,22 +117,23 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
  ctx.process.env.RESEND_API_KEY='test-key';
  // 15. wakeTargetFrom validation: domain-locked email, slack-only webhooks, nothing else
  assert.deepEqual(f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'ok@mail.instinct.com'}),{channel:'email',target:'ok@mail.instinct.com'},'on-domain email accepted');
- assert.equal(f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'evil@gmail.com'}),null,'off-domain email rejected');
+ assert.deepEqual(f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'owner@gmail.com'}),{channel:'email',target:'owner@gmail.com'},'any valid email accepted (own Gmail is the common case)');
  assert.equal(f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'not-an-email'}),null,'malformed email rejected');
  assert.deepEqual(f.wakeTargetFrom({wakeChannel:'slack',wakeTarget:'https://hooks.slack.com/services/T1AAAAAAA/B1BBBBBBB/secretsecret'}),{channel:'slack',target:'https://hooks.slack.com/services/T1AAAAAAA/B1BBBBBBB/secretsecret'},'slack webhook accepted');
  assert.equal(f.wakeTargetFrom({wakeChannel:'slack',wakeTarget:'https://evil.example.com/hook'}),null,'non-slack URL rejected');
  assert.equal(f.wakeTargetFrom({wakeChannel:'sms',wakeTarget:'+15551234567'}),null,'unknown channel rejected');
  assert.equal(f.wakeTargetFrom({}),null,'empty declaration rejected');
- ctx.process.env.WAKE_EMAIL_DOMAIN='wake.example.com';
- assert.deepEqual(f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'ok@wake.example.com'}),{channel:'email',target:'ok@wake.example.com'},'env wake domain accepted');
- assert.equal(f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'ok@mail.instinct.com'}),null,'default domain rejected once env overrides it');
- delete ctx.process.env.WAKE_EMAIL_DOMAIN;
  // 16. noteWakeTarget records a valid declaration and ignores repeats
  const nwa={...inst('i10')};
  await f.setJ('fm:agent:i10',nwa);
  await f.noteWakeTarget(nwa,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'i10@mail.instinct.com'}));
  const stored=await f.getJ('fm:agent:i10');
  assert.equal(stored.wake.channel,'email');assert.equal(stored.wake.target,'i10@mail.instinct.com','declaration stored on the bot record');
+ // 16b. email target changes are capped: the 6th distinct address in 24h is ignored
+ for(const t of ['a1@gmail.com','a2@gmail.com','a3@gmail.com','a4@gmail.com','a5@gmail.com'])await f.noteWakeTarget(nwa,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:t}));
+ assert.equal((await f.getJ('fm:agent:i10')).wake.target,'a5@gmail.com','five changes land');
+ await f.noteWakeTarget(nwa,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'a6@gmail.com'}));
+ assert.equal((await f.getJ('fm:agent:i10')).wake.target,'a5@gmail.com','the sixth change in 24h is ignored');
  // 17. declared webhook: signed content-free POST to the bot's own Grok Webhook Trigger, wins over env channels
  ctx.process.env.WAKE_GROK_SLACK_WEBHOOK='https://hooks.slack.com/services/T00/B00/secret';
  await f.setJ('fm:agent:g13',{...grok('g13'),wake:{channel:'webhook',target:'https://grok.com/api/automations/wh_123/deliveries',secret:'whsec_dGVzdHNlY3JldA==',declaredAt:'2026-10-19'}});
@@ -165,7 +166,7 @@ assert.ok(api.includes("state_reason: 'completed'"),'trigger issue closed as com
 assert.ok(!/text:.*t\.title/.test(api),'trigger bodies never interpolate task data');
 assert.ok(api.includes("presenceOnly: true });\n  } catch"),'wake events never count as bot activity');
 assert.ok(api.includes('declared target wins'),'per-bot declared target documented as winning over env');
-assert.ok(api.includes("endsWith('@'+String(process.env.WAKE_EMAIL_DOMAIN||'mail.instinct.com')"),'email targets locked to the wake domain');
+assert.ok(api.includes('gl:wakeChg:'),'email target changes are capped per bot per day');
 assert.ok(api.includes('hooks\\.slack\\.com\\/services\\/'),'slack targets locked to webhook URLs');
 assert.ok(api.includes('const _wt=wakeTargetFrom(body);if(_wt)await noteWakeTarget(agent,_wt)'),'gateway hook records declared targets');
 assert.ok(api.includes('wakeTargetFrom(args||{})'),'MCP foreman_presence records declared targets');
