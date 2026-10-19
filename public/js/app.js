@@ -189,7 +189,13 @@
     document.body.append(sp, c);
     const cw = 300, below = r.top < innerHeight / 2;
     c.style.left = Math.max(12, Math.min(innerWidth - cw - 12, r.left + r.width / 2 - cw / 2)) + 'px';
-    if (below) c.style.top = (r.bottom + 14) + 'px'; else c.style.bottom = (innerHeight - r.top + 14) + 'px';
+    if (below) c.style.top = (r.bottom + 14) + 'px';
+    else {
+      let gap = 14; const ch = $('#chips');
+      if (ch) { const cr = ch.getBoundingClientRect(), cardH = c.offsetHeight || 0;
+        if (r.top - gap > cr.top && r.top - gap - cardH < cr.bottom && cr.top - 12 - cardH >= 12) gap = (r.top - cr.top) + 12; }
+      c.style.bottom = (innerHeight - r.top + gap) + 'px';
+    }
     c.querySelector('.nx').onclick = () => tour(n + 1); c.querySelector('.skip').onclick = () => tour(9); c.querySelector('.nx').focus();
   }
   let toured = false;
