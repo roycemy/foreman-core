@@ -18,7 +18,9 @@ assert(i.msg.includes('every 5 minutes, open this console link, click Claim next
 assert(i.msg.includes('Checks in every 5 min')&&i.msg.includes('Late'),'instinct message promises only honest cadence status');
 assert(i.msg.includes('on your 5-minute schedule'),'instinct standing rule covers the schedule');
 assert(i.msg.includes('&wake=email:'),'instinct paste shows how to declare its wake inbox on the link');
-assert(i.msg.includes('wake email domain'),'instinct paste names the domain lock');
+assert(i.msg.includes('Gmail'),'instinct paste declares the user\'s own Gmail');
+assert(i.msg.includes('Gmail push wakes you in seconds'),'instinct paste names the gmail push path');
+assert(i.msg.includes('Any valid email address works'),'any inbox works, gmail is fastest');
 assert(i.msg.includes('content-free email'),'instinct wake email is content-free');
 assert(i.msg.includes('5-minute schedule still covers'),'instinct schedule stays the backup');
 assert(!i.msg.includes('Live'),'no live promise');
