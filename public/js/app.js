@@ -157,7 +157,7 @@
   }
   function paintRoster() {
     const as = BB.agents();
-    roster.innerHTML = `<h3>Crew <span>${as.length}</span></h3>` + as.map(a => `<button class="r" type="button" data-bot="${a.id}">${BB.av(a)}<span class="t"><b>${esc(a.name)}</b><small>${esc(BB.statusLine(a))}</small></span>${BB.presence(a) === 'reconnect' ? '<span class="st need"><i></i></span>' : BB.wentDark(a) ? '<span class="badge-dark" title="Last accepted activity: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Went dark</span>' : BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span>`}</button>`).join('') + `<button class="add" type="button" data-act="connect">${BB.ICON.plus} Connect a bot</button>`;
+    roster.innerHTML = `<h3>Crew <span>${as.length}</span></h3>` + as.map(a => `<button class="r" type="button" data-bot="${a.id}">${BB.av(a)}<span class="t"><b>${esc(a.name)}</b><small>${esc(BB.statusLine(a))}</small></span>${BB.presence(a) === 'reconnect' ? '<span class="st need"><i></i></span>' : BB.wentDark(a) ? (BB.pollSec(a) ? '<span class="badge-late" title="Last check-in: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Late</span>' : '<span class="badge-dim" title="Last accepted activity: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Went dark</span>') : BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span>`}</button>`).join('') + `<button class="add" type="button" data-act="connect">${BB.ICON.plus} Connect a bot</button>`;
     roster.querySelectorAll('[data-bot]').forEach(b => b.onclick = () => { setRoster(false); BB.openInspector && BB.openInspector(b.dataset.bot); });
   }
   function setRoster(on) { roster.classList.toggle('on', on); crew.setAttribute('aria-expanded', on); if (on) paintRoster(); }
@@ -216,8 +216,8 @@
     const tm = $('.top .mark'); if (tm) tm.classList.toggle('idle', !n);
     $('#ibtn').setAttribute('aria-label', 'Inbox' + (n ? ', ' + n + ' on you' : ''));
     $('#pausedbar').hidden = !(BB.S && BB.S.killed);
-    /* round 3 liveness, kept: a connected bot with no accepted activity for 60s "went dark" */
-    const dark = BB.agents().filter(a => BB.wentDark(a)), bar = $('#darkbar');
+    /* round 3 liveness, kept: a connected bot with no accepted activity for 60s "went dark"; pollers and Muse carry their own honest status instead */
+    const dark = BB.agents().filter(a => BB.goneDark(a)), bar = $('#darkbar');
     bar.hidden = !dark.length || !!(BB.S && BB.S.killed);
     if (dark.length) bar.querySelector('span').textContent = dark.map(a => a.name).join(', ') + ' went dark: no accepted activity for 60s. Authorization may still be saved.';
   }
