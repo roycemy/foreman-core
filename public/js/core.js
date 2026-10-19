@@ -154,8 +154,8 @@
   BB.botState = function (a) {
     /* one source of truth for the floor, the roster, the inspector header and the crew pill */
     const p = BB.presence(a);
-    if (p === 'revoked') return { kind: 'off', text: 'Access revoked' };
-    if (p === 'reconnect') return { kind: 'reconnect', text: 'Needs reconnecting' };
+    if (p === 'revoked') return { kind: 'off', text: "Can't run · access revoked" };
+    if (p === 'reconnect') return { kind: 'reconnect', text: "Can't run · needs re-paste" };
     if (p === 'prepared') return { kind: 'ghost', text: 'Not connected yet' };
     if (p === 'waiting') return { kind: 'ghost', text: 'Waiting to connect' };
     if (BB.S && BB.S.killed) return { kind: 'off', text: 'Paused (emergency stop)' };
@@ -164,8 +164,17 @@
     if (BB.onYou().some(i => i.a && i.a.id === a.id && ['approval', 'spend', 'card'].includes(i.type))) return { kind: 'needs', text: 'Waiting for you' };
     if (recentBlocked(a)) return { kind: 'blocked', text: 'Blocked' };
     const t = BB.runningTask(a);
-    /* PR #28: authorization is not activity. No accepted activity in 60s means quiet, whatever the job list says. */
-    if (BB.wentDark(a)) return { kind: 'dark', text: (t ? BB.sentenceCase(t.title) + ' · ' : '') + 'Went dark ' + BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago'), task: t };
+    /* presence model: Muse is message-mode (no verified push or poll hook) and never reads Live; it is honestly Dark until real work activity arrives. Poll-cadence bots are never Live: on time until they miss two beats, then Late. */
+    const liveNow = p === 'connected' && !!a.lastSeen && (BB.now() - Date.parse(a.lastSeen)) < 60000;
+    const poll = BB.pollSec(a);
+    const last = a.lastSeen ? BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago') : 'never';
+    if (a.providerId === 'muse' && !(t && liveNow)) return { kind: 'msg', text: 'Dark · acts when messaged', task: t };
+    /* PR #28: authorization is not activity. No accepted activity means quiet, whatever the job list says. */
+    if (BB.wentDark(a)) {
+      if (poll) return { kind: 'late', text: 'Late · checks in every ' + Math.round(poll / 60) + ' min · last check ' + last, task: t };
+      return { kind: 'dark', text: (t ? BB.sentenceCase(t.title) + ' · ' : '') + 'Went dark ' + BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago'), task: t };
+    }
+    if (poll && !t) return { kind: 'poll', text: 'Checks in every ' + Math.round(poll / 60) + ' min · last check ' + last };
     if (BB.signal(a) === 'inactive') return { kind: 'quiet', text: t ? BB.sentenceCase(t.title) + ' · no recent activity' : a.hosted ? 'Runs when you assign a job' : 'No recent activity', task: t };
     if (t && BB.budgetBlock(t)) return { kind: 'blocked', text: 'Blocked: over action budget', task: t };
     if (t) return { kind: 'run', text: t.title, task: t };
@@ -184,13 +193,45 @@
   /* PR #28 (floorActivitySignal): activity is evidence-based; authorization is not activity. */
   BB.signal = function (a, at) {
     at = at || BB.now(); const seen = Date.parse((a && a.lastSeen) || '');
-    if (!a || BB.presence(a) !== 'connected' || !Number.isFinite(seen) || at - seen >= 60000 || a.status === 'revoked' || (BB.S && BB.S.killed) || a.paused || recentBlocked(a)) return 'inactive';
+    const ps = BB.pollSec(a);
+    if (!a || BB.presence(a) !== 'connected' || !Number.isFinite(seen) || at - seen >= (ps ? 2 * ps * 1000 : 60000) || a.status === 'revoked' || (BB.S && BB.S.killed) || a.paused || recentBlocked(a)) return 'inactive';
     return BB.withOwner(a, at) || BB.runningTask(a) ? 'working' : 'available';
   };
-  /* round 3 liveness: connected over OAuth or the gateway, but no accepted activity for 60s. Authorization may still be saved. */
-  BB.wentDark = (a, at) => !!a && a.status === 'active' && !!a.connection && a.connection.status === 'active' && a.connection.transport !== 'botlink' && !!a.lastSeen && (at || BB.now()) - Date.parse(a.lastSeen) >= 60000; // botlink has no heartbeat expectation: Quiet shows as No recent activity, never Went dark
+  /* self-declared poll cadence in seconds, reported by the bot on its authenticated gateway calls; 0 means no declared cadence */
+  BB.pollSec = a => { const s = Number(a && a.pollSec); return Number.isFinite(s) && s >= 60 && s <= 3600 ? s : 0; };
+  /* round 3 liveness: connected over OAuth or the gateway, but no accepted activity for 60s. Authorization may still be saved. Pollers go dark after two missed beats, not the flat 60s. botlink has no heartbeat expectation: Quiet shows as No recent activity, never Went dark */
+  BB.wentDark = (a, at) => {
+    if (!a || a.status !== 'active' || !a.connection || a.connection.status !== 'active' || a.connection.transport === 'botlink' || !a.lastSeen) return false;
+    const ps = BB.pollSec(a);
+    return ((at || BB.now()) - Date.parse(a.lastSeen)) >= (ps ? 2 * ps * 1000 : 60000);
+  };
+  /* the owner alarm only covers live channels: pollers show Late in their own status and Muse is Dark by default */
+  BB.goneDark = (a, at) => BB.wentDark(a, at) && !BB.pollSec(a) && a.providerId !== 'muse';
   BB.SIGNAL_COPY = { working: 'Working', available: 'Available', inactive: 'No recent activity' };
   BB.statusLine = a => { const s = BB.botState(a); return s.kind === 'run' ? BB.sentenceCase(s.text) : s.text; };
+  /* the connection status chip: Live only when a channel acked inside its expectation, poll cadence in blue, Late in amber, Dark in grey, red only for Needs re-paste */
+  BB.channelTag = a => {
+    const p = BB.presence(a);
+    if (p === 'reconnect') return { cls: 'need', text: "Can't run · needs re-paste" };
+    if (p === 'revoked') return { cls: 'need', text: "Can't run · access revoked" };
+    if (p !== 'connected') return { cls: 'q', text: { waiting: 'Waiting for the bot', prepared: 'Not connected yet' }[p] || 'Not connected' };
+    const k = BB.botState(a).kind;
+    if (k === 'msg' || k === 'dark') return { cls: 'dim', text: k === 'msg' ? 'Dark · acts when messaged' : 'Dark' };
+    if (k === 'late') return { cls: 'late', text: 'Late' };
+    if (BB.pollSec(a)) return { cls: 'poll', text: 'Checks in every ' + Math.round(BB.pollSec(a) / 60) + ' min' };
+    return { cls: 'run', text: 'Live' };
+  };
+  /* the copy-nudge message the owner can paste into a dark or late bot's chat */
+  BB.nudgeText = a => {
+    const n = BB.tasks().filter(t => t.assignee === a.id && t.status === 'queued').length;
+    const base = (typeof location !== 'undefined' && location.origin ? location.origin : 'https://foreman-core.vercel.app') + '/hq';
+    return a.name + ' - check Alter: ' + (n ? n + (n === 1 ? ' job is' : ' jobs are') + ' waiting for you.' : 'the owner wants a check-in.') + ' ' + base;
+  };
+  BB.byLabel = t => {
+    if (!t || !['done', 'failed'].includes(t.status)) return '';
+    const r = t.assignee && BB.agent(t.assignee), name = (r && r.name) || 'the bot';
+    return t.runByAlter ? ' · by Alter for ' + name : ' · by ' + name;
+  };
   BB.sentenceCase = s => { s = String(s || ''); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; };
 
   /* ---------- activity: shown only while it is happening; message > research > write ---------- */
@@ -256,7 +297,7 @@
     ((BB.cards && BB.cards.proposals) || []).filter(q => q.status === 'pending' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'card', id: 'card:' + q.id, at: q.createdAt, a: BB.agent(q.botId), q }));
     BB.agents().filter(a => BB.presence(a) === 'reconnect').forEach(a => items.push({ type: 'reconnect', id: 'rec:' + a.id, at: (a.connection && a.connection.failedAt) || a.lastSeen, a }));
     /* the same 60-second rule as the went-dark banner: a dark bot is something the owner should know about */
-    BB.agents().filter(a => BB.wentDark(a)).forEach(a => items.push({ type: 'dark', id: 'dark:' + a.id, at: a.lastSeen, a }));
+    BB.agents().filter(a => BB.goneDark(a)).forEach(a => items.push({ type: 'dark', id: 'dark:' + a.id, at: a.lastSeen, a }));
     BB.tasks().forEach(t => { const b = BB.budgetBlock(t); if (b) items.push({ type: 'budget', id: 'budget:' + t.id + ':' + b.id, at: b.at, a: BB.agent(t.assignee), t, r: b }); });
     BB.tasks().filter(t => t.status === 'queued' && !t.assignee).forEach(t => items.push({ type: 'unassigned', id: 'task:' + t.id, at: t.createdAt, t }));
     const rank = { approval: 0, spend: 0, card: 0, budget: 0, reconnect: 1, dark: 1, unassigned: 2 };
@@ -266,7 +307,7 @@
      It never says "all on track" or "handling it" while a bot is dark or anything needs the owner. */
   BB.teamSummary = function (at) {
     at = at || BB.now();
-    const as = BB.agents().filter(a => a.status !== 'revoked'), dark = as.filter(a => BB.wentDark(a, at));
+    const as = BB.agents().filter(a => a.status !== 'revoked'), dark = as.filter(a => BB.goneDark(a, at));
     const active = as.filter(a => BB.signal(a, at) !== 'inactive'), working = as.filter(a => BB.signal(a, at) === 'working');
     const needs = BB.onYou().filter(i => i.type !== 'dark').length;
     const running = BB.tasks().filter(t => t.status === 'running' && t.assignee && BB.agent(t.assignee) && BB.signal(BB.agent(t.assignee), at) === 'working').length;
