@@ -428,6 +428,8 @@ h3.h{font-size:15px;font-weight:600;margin:44px 0 12px;letter-spacing:-.015em}
 .st.sig-inactive i{background:transparent;border:1.5px dashed var(--mute)}
 .ins-h p .st{vertical-align:1px}
 .badge-dark{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:6px;border:1px solid var(--vermilion-press);color:var(--vermilion-press);font-size:11.5px;font-weight:500;white-space:nowrap;flex:none}
+.badge-dim{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:6px;border:1px solid var(--mute);color:var(--stone);font-size:11.5px;font-weight:500;white-space:nowrap;flex:none}
+.badge-late{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:6px;border:1px solid #B7791F;color:#B7791F;font-size:11.5px;font-weight:500;white-space:nowrap;flex:none}
 .ch.dark .avs{opacity:.6}
 .dark-bar{position:fixed;top:calc(var(--h-top) + 12px);left:50%;transform:translateX(-50%);z-index:44;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 14px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--stone);box-shadow:var(--sh2);max-width:calc(100% - 48px)}
 .dark-bar i{width:7px;height:7px;border-radius:50%;border:1.5px solid var(--vermilion-press);flex:none}

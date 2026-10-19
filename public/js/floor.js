@@ -259,7 +259,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const waitList = []; waitingItems().forEach(i => { if (!waitList.includes(i.a.id)) waitList.push(i.a.id); });
     as.forEach((a, i) => {
       const r = ensure(a, i), t = targetOf(a, waitList), s = BB.botState(a);
-      r.el.classList.toggle('ghost', BB.isGhost(a)); r.el.classList.toggle('paused', s.kind === 'off'); r.el.dataset.signal = BB.signal(a); r.el.classList.toggle('dark', s.kind === 'dark');
+      r.el.classList.toggle('ghost', BB.isGhost(a)); r.el.classList.toggle('paused', s.kind === 'off'); r.el.dataset.signal = BB.signal(a); r.el.classList.toggle('dark', s.kind === 'dark' || s.kind === 'late' || s.kind === 'msg');
       r.el.setAttribute('aria-label', a.name + ': ' + BB.statusLine(a) + '. Open details');
       const moved = r.tk !== t.k || !r.tp || Math.abs(r.tp[0] - t.p[0]) + Math.abs(r.tp[1] - t.p[1]) > .3;
       r.tk = t.k; r.tp = t.p;

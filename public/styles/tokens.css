@@ -157,6 +157,9 @@ input[readonly].t,input[readonly].in{background:var(--surface-2);font-family:var
 .st.q i{background:transparent;border:1.5px dashed var(--mute)}                     /* dashed ring = queued */
 .st.fail i{background:transparent;border:1.5px solid var(--ink);border-radius:2px}  /* square = failed */
 .st.need i{background:var(--vermilion)}                                             /* vermilion = needs you */
+.st.poll i{background:#2F6FDE}                                                      /* blue = checks in on a cadence, on time */
+.st.late i{background:#B7791F}                                                      /* amber = missed its cadence */
+.st.dim i{background:transparent;border:1.5px solid var(--mute)}                    /* grey ring = dark */
 
 /* ---------- vermilion "needs you" ---------- */
 .need-dot{width:8px;height:8px;border-radius:50%;background:var(--vermilion);box-shadow:0 0 0 3px rgba(226,69,43,.16);flex:none}

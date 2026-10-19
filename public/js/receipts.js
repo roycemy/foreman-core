@@ -27,7 +27,7 @@
     const fs = finished(), phone = BB.phone();
     const row = t => {
       const who = BB.jobWho(t), a = who[0], cost = t.status === 'failed' ? 'Didn\'t finish' : t.modelCostUsd != null ? BB.modelCost(t.modelCostUsd) : '–';
-      const meta = (who.length ? who.map(x => x.name).join(' + ') : 'Unassigned') + ' · ' + BB.when(t.finishedAt);
+      const meta = (who.length ? (t.runByAlter ? 'by Alter for ' : 'by ') + who.map(x => x.name).join(' + ') : 'Unassigned') + ' · ' + BB.when(t.finishedAt);
       if (phone) return `<a class="kr" href="#receipts/${t.id}">${a ? `<span class="kav" style="--av:${BB.avColor(a)}">${esc(BB.initials(a.name))}</span>` : '<span class="kav merch">?</span>'}<div class="t"><b>${esc(t.title)}</b><small>${esc(meta)}</small></div><span class="r">${esc(cost)}</span></a>`;
       return `<a class="row" href="#receipts/${t.id}" style="text-decoration:none">${BB.jobAv(t)}<span class="t"><b>${esc(t.title)}</b><small>${esc(meta)}</small></span><span class="r" title="${t.modelCostUsd != null ? 'Model costs' : ''}">${esc(cost)}</span><span class="chev">${BB.ICON.chev}</span></a>`;
     };
