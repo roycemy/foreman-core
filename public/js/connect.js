@@ -157,6 +157,13 @@
     box.querySelector('#enterhq').onclick=()=>{box.querySelector('[data-close]')?.click();location.hash='floor';};
     box.querySelector('#morebots').onclick=()=>BB.openConnect();
   }
+  /* design pack v3: the reconnect flag copies exactly the message the Reconnect wizard copies (its default
+     browser-console path, runnerMessage, with a fresh one-time pairing code). Text is not changed here. */
+  BB.setupMessage = function (agent, pairCode) {
+    const pid = (agent.providerId || agent.provider || '').toLowerCase(), hit = P.find(p => p[0] === pid), keep = W;
+    W = { step: 2, p: hit ? hit[0] : pid, label: hit ? hit[1] : (agent.provider || 'assistant'), agent: { id: agent.id, name: agent.name }, reconnect: true, pairCode: pairCode ? String(pairCode).replace(/[- ]/g, '') : undefined };
+    try { return runnerMessage(); } finally { W = keep; }
+  };
   /* setup copy: unchanged from the shipped wizard (brand from BRAND) */
   function setupMessageFor(){return [
 'Connect my existing '+W.label+' assistant, '+W.agent.name+', to my '+BRAND.name+' workspace. Keep your own provider account and credits. Do not create another provider bot, buy credits, ask for an API key, or ask for my password in chat.',

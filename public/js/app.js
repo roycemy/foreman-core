@@ -157,7 +157,7 @@
   }
   function paintRoster() {
     const as = BB.agents();
-    roster.innerHTML = `<h3>Crew <span>${as.length}</span></h3>` + as.map(a => `<button class="r" type="button" data-bot="${a.id}">${BB.av(a)}<span class="t"><b>${esc(a.name)}</b><small>${esc(BB.statusLine(a))}</small></span>${BB.presence(a) === 'reconnect' ? '<span class="st need"><i></i></span>' : BB.pollSec(a) && BB.wentDark(a) ? '<span class="badge-late" title="Last check-in: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Late</span>' : BB.goneDark(a) ? '<span class="badge-dim" title="Last accepted activity: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Went dark</span>' : BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span>`}</button>`).join('') + `<button class="add" type="button" data-act="connect">${BB.ICON.plus} Connect a bot</button>`;
+    roster.innerHTML = `<h3>Crew <span>${as.length}</span></h3>` + as.map(a => { const hs = BB.honestStatus && !BB.isGhost(a) && BB.presence(a) !== 'revoked' ? BB.honestStatus(a) : null; return `<button class="r${hs ? ' bst' : ''}" type="button" data-bot="${a.id}"${hs ? ` data-s="${hs.s}"` : ''}>${BB.av(a)}<span class="t"><b>${esc(a.name)}</b>${hs ? `<span class="bst-line"><i class="bst-dot" aria-hidden="true"></i>${esc(hs.line)}</span>${hs.why ? `<span class="bst-why">${esc(hs.why)}</span>` : ''}` : `<small>${esc(BB.statusLine(a))}</small>`}</span>${hs && !(BB.pollSec(a) && BB.wentDark(a)) && !BB.goneDark(a) ? '' : BB.presence(a) === 'reconnect' ? '<span class="st need"><i></i></span>' : BB.pollSec(a) && BB.wentDark(a) ? '<span class="badge-late" title="Last check-in: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Late</span>' : BB.goneDark(a) ? '<span class="badge-dim" title="Last accepted activity: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Went dark</span>' : BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span>`}</button>`; }).join('') + `<button class="add" type="button" data-act="connect">${BB.ICON.plus} Connect a bot</button>`;
     roster.querySelectorAll('[data-bot]').forEach(b => b.onclick = () => { setRoster(false); BB.openInspector && BB.openInspector(b.dataset.bot); });
   }
   function setRoster(on) { roster.classList.toggle('on', on); crew.setAttribute('aria-expanded', on); if (on) paintRoster(); }
@@ -229,6 +229,15 @@
   }
   const uchip = $('#uchip'); if (uchip) uchip.onclick = () => BB.openRail ? BB.openRail() : BB.go('#inbox');
   BB.on(() => { paintTop(); paintCrew(); paintUnrouted(); paintChips(); maybeTour(); });
+  /* design pack v3: reconnect flag in the corner column with the crew pill; receipts ship when a real job flips to done/failed */
+  BB.reconnectFlag && BB.reconnectFlag.mount();
+  let finSeen = null;
+  BB.on(() => {
+    const fin = BB.tasks().filter(t => ['done', 'failed'].includes(t.status));
+    if (finSeen === null) { finSeen = new Set(fin.map(t => t.id)); return; }
+    fin.forEach(t => { if (finSeen.has(t.id)) return; finSeen.add(t.id); if (!t.synthetic && BB.shipReceipt) BB.shipReceipt(t); });
+  });
+  BB.receiptsBadge && BB.receiptsBadge();
 
   /* ---------- keyboard ---------- */
   document.addEventListener('keydown', e => {
