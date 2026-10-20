@@ -42,6 +42,10 @@
   }
   BB.costLine = t => t.modelCostUsd != null ? BB.modelCost(t.modelCostUsd) + ' model costs' : 'Model costs not reported';
   BB.jobDur = t => t.finishedAt ? BB.dur(Date.parse(t.finishedAt) - Date.parse(t.startedAt || t.createdAt)) : t.startedAt ? BB.dur(Date.now() - Date.parse(t.startedAt)) : '';
+  /* design pack v3: honest status in the header; estimates repaint once a minute, not on every 1s tick */
+  function hst(a) { const st = BB.honestStatus(a); return `<div class="bst" data-s="${st.s}"><i class="bst-dot" aria-hidden="true"></i><div class="bst-t"><span class="bst-line">${esc(st.line)}</span>${st.why ? `<span class="bst-why">${esc(st.why)}</span>` : ''}</div></div>`; }
+  const estMemo = {};
+  function est(t) { const k = t.id + ':' + t.status, m = estMemo[k], now = Date.now(); if (m && now - m.at < 60000) return m.h; const h = BB.estimateHTML(t, BB.tasks()); estMemo[k] = { at: now, h }; return h; }
   function jobHTML(t, a) {
     const s = BB.jobStatus(t), open = openJob === t.id, d = jobCache[t.id];
     let body = '';
@@ -52,7 +56,7 @@
         ${a.permissionScope === 'job' && ['running', 'queued'].includes(t.status) && t.assignee === a.id ? `<div class="foot"><button class="b out sm" type="button" data-grant="${t.id}">${t.jobGrant && t.jobGrant.status === 'active' ? 'Change what this job may do' : 'Grant actions for this job'}</button></div>` : ''}
         <div class="foot">${finished ? `<button class="b out sm" type="button" data-receipt="${t.id}">Open receipt</button><button class="b ghost sm" type="button" data-share="${t.id}">Share…</button>` : t.assignee ? `<button class="b ghost sm" type="button" data-stop="${t.id}" style="color:var(--vermilion-press)">Stop job</button>` : ''}<span class="cost">${esc(t.modelCostUsd != null ? BB.modelCost(t.modelCostUsd) : 'Cost not reported')}${BB.jobDur(t) ? ' · ' + esc(BB.jobDur(t)) : ''}</span></div></div>`;
     }
-    return `<div class="job${open ? ' open' : ''}"><button type="button" aria-expanded="${open}" data-job="${t.id}"><span class="st ${s.cls}"><i></i></span><b>${esc(t.title)}</b><small>${esc(jobSmall(t) + BB.byLabel(t))}</small></button>${body}</div>`;
+    return `<div class="job${open ? ' open' : ''}"><button type="button" aria-expanded="${open}" data-job="${t.id}"><span class="st ${s.cls}"><i></i></span><b>${esc(t.title)}</b><small>${esc(jobSmall(t) + BB.byLabel(t))}</small>${BB.estimateHTML && ['running', 'queued'].includes(t.status) ? est(t) : ''}</button>${body}</div>`;
   }
   function activity(a) {
     const js = jobsOf(a);
@@ -96,7 +100,7 @@
       : !a.hosted && ['prepared', 'waiting'].includes(ps) ? `<button class="b ink sm" type="button" data-rec style="flex:none">Finish connecting</button>`
       : `<button class="b ghost sm" type="button" data-perms style="flex:none">Edit permissions</button>`;
     const body = tab === 'permissions' ? permissions(a) : tab === 'profile' ? profile(a) : activity(a);
-    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2><p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p></div>${prim}<button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
+    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2>${BB.honestStatus && !BB.isGhost(a) && BB.presence(a) !== 'revoked' ? hst(a) : `<p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p>`}</div>${prim}<button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
       <div class="seg" role="tablist" aria-label="${esc(a.name)}">${['activity', 'permissions', 'profile'].map(k => `<button type="button" role="tab" aria-selected="${tab === k}" data-tab="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
       <div class="scroll" role="tabpanel">${body}</div>`;
     const s2 = P.querySelector('.scroll'); s2.scrollTop = top;
