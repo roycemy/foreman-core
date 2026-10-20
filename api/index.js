@@ -48,12 +48,16 @@ const nsKey = k => { const w = wsId(); return (typeof k === 'string' && k.starts
 const URL_ = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const TOK = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 const mem = global.__mem || (global.__mem = { kv: new Map(), lists: new Map() });
+let storeQuotaUntil = 0;
+const storeQuotaError = () => Object.assign(new Error('Database monthly command allowance exhausted. Service paused; no data was changed.'), {code:'store_quota'});
+function sendStoreError(res,e){if(e.code==='store_quota'){res.setHeader('Retry-After','900');return res.status(503).json({error:e.message,code:e.code,retryAfterSeconds:900});}return res.status(500).json({error:String(e.message||e)});}
 async function r(cmd0) {
+  if (URL_ && Date.now() < storeQuotaUntil) throw storeQuotaError();
   const cmd = cmd0.map((x, i) => i === 0 ? x : nsKey(x));
   if (!URL_) return memCmd(cmd);
   const res = await fetch(URL_, { method: 'POST', headers: { Authorization: 'Bearer ' + TOK, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd), ...((als.getStore()||{}).issuerDeadline?{signal:AbortSignal.timeout(Math.max(1,(als.getStore()||{}).issuerDeadline-Date.now()))}:{}) });
   const j = await res.json();
-  if (j.error) throw new Error('store: ' + j.error);
+  if (j.error) { if (/max requests limit exceeded|monthly.*(limit|quota)|command.*quota/i.test(j.error)) {storeQuotaUntil = Date.now() + 900000; throw storeQuotaError();} throw new Error('store: ' + j.error); }
   return j.result;
 }
 function memCmd(c) {
@@ -219,7 +223,7 @@ async function chatTask(agent, body) {
 }
 async function touchAgent(agent) {
   const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active')return;
-  await r(['SET','fm:seen:'+agent.id,now()]);bust();
+  await r(['SET','fm:seen:'+agent.id,now()]);
 }
 /* heartbeat economy (100-user scale): every accepted beat still stamps fm:seen - lastSeen drives all honest status - but the event feed only hears about a return after 10+ minutes away. A resume is feed-worthy; a steady pulse is not. This keeps fm:events useful and cuts each beat to a single SET. */
 async function runnerPresenceAccepted(agent){const prev=await r(['GET','fm:seen:'+agent.id]);await touchAgent(agent);if(!prev||Date.now()-Date.parse(prev)>=600000)await event(agent.id,'interaction','Runner presence resumed (not conversation or work)',{kind:'INTERACTION',source:'chat',presenceOnly:true});}
@@ -904,7 +908,7 @@ const pub = q => { const { rawParams, ...rest } = q; return rest; };
 const TASK_CATEGORY_ROOMS={marketing:'marketing',creative:'marketing',research:'finance',finance:'finance',outreach:'sales',sales:'sales',execution:'ops',operations:'ops',ops:'ops',support:'support',lounge:'lounge'};
 function taskRoom(agent,tasks){const t=tasks.filter(t=>t.assignee===agent.id&&t.status==='running').sort((a,b)=>String(b.startedAt||b.createdAt).localeCompare(String(a.startedAt||a.createdAt)))[0];return t&&TASK_CATEGORY_ROOMS[t.category]||agent.room||null;}
 async function fullState() {
-  { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 1500) return {...c.v,now:now()}; }
+  { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 30000) return {...c.v,now:now()}; }
   await expireStalledTasks();
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
@@ -1347,7 +1351,7 @@ module.exports = async (req, res) => {
     if(path.startsWith('/botlink/'))return await botLinkOwnerRoutes(req,res,path,body,sess);
     if (path === '/funnel') { const f = await als.run({ ws: sess.ws }, () => funnel(sess.ws === 'legacy' ? null : sess.ws)); return /format=html/.test(req.url || '') ? res.setHeader('Content-Type', 'text/html; charset=utf-8').status(200).send(funnelHtml(f)) : res.json(f); }
     return await als.run({ ws: sess.ws }, () => routes(req, res, path, body, null));
-  } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+  } catch (e) { return sendStoreError(res,e); }
 };
 async function routes(req, res, path, body, agentPre) {
   const send = (o) => res.status(o.status).json(o.body);
@@ -1369,7 +1373,7 @@ async function routes(req, res, path, body, agentPre) {
       if(path==='/gateway/teammates'&&req.method==='GET')return res.json({bots:await teammates()});
       if(path==='/gateway/notifications'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return send(await notifications(agent,new URL(req.url,'https://local.invalid').searchParams.get('after')));}
       if(path==='/gateway/me'&&req.method==='GET'){if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked',reason:'Worker revoked or workspace paused'});res.setHeader('Cache-Control','no-store');return res.json({agent:{id:agent.id,name:agent.name,status:agent.status}});}
-      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});await touchAgent(agent);const _ah=(req.headers['authorization']||'').replace(/^Bearer\s+/i,'').trim(),_rh=_ah?await r(['GET','gl:pairReplayKey:'+sha(_ah)]):await r(['GET','gl:pairReplayAgent:'+agent.id]);if(_rh){const _rp=await getJ('gl:pairReplay:'+_rh);await r(['DEL','gl:pairReplayKey:'+((_rp&&_rp.keyHash)||'')]);await r(['DEL','gl:pairReplayAgent:'+agent.id]);await r(['DEL','gl:pairReplay:'+_rh]);}if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway',presenceOnly:true});}const _ps=pollSecFrom(req,body);if(_ps)await notePollCadence(agent,_ps);const _wt=wakeTargetFrom(body);if(_wt)await noteWakeTarget(agent,_wt);await noteWakeNonce(agent,body);
+      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});if(path!=='/gateway/presence')await touchAgent(agent);const _ah=(req.headers['authorization']||'').replace(/^Bearer\s+/i,'').trim(),_rh=_ah?await r(['GET','gl:pairReplayKey:'+sha(_ah)]):await r(['GET','gl:pairReplayAgent:'+agent.id]);if(_rh){const _rp=await getJ('gl:pairReplay:'+_rh);await r(['DEL','gl:pairReplayKey:'+((_rp&&_rp.keyHash)||'')]);await r(['DEL','gl:pairReplayAgent:'+agent.id]);await r(['DEL','gl:pairReplay:'+_rh]);}if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway',presenceOnly:true});}const _ps=pollSecFrom(req,body);if(_ps)await notePollCadence(agent,_ps);const _wt=wakeTargetFrom(body);if(_wt)await noteWakeTarget(agent,_wt);await noteWakeNonce(agent,body);
       if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
       if(path==='/gateway/broker/requests'&&req.method==='POST')return send(await brokerRequest(agent,body));
       {const bm=path.match(/^\/gateway\/broker\/requests\/(broker_[a-f0-9]+)$/);if(bm&&req.method==='GET'){const q=await getJ('fm:broker:q:'+bm[1]);return q&&q.agentId===agent.id?res.json({request:brokerPublic(q)}):res.status(404).json({error:'not found'});}}
@@ -1564,7 +1568,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/demo/scout/tick' && req.method === 'POST') return res.json(await scoutTick(origin));
     if (path === '/demo/scout/state') return res.json({ ...(await getJ('fm:scout:state') || {}), agentId: await r(['GET', 'fm:scout:id']) });
     return res.status(404).json({ error: 'not found', path });
-  } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+  } catch (e) { return sendStoreError(res,e); }
 };
 
 // For api/og.js: read a public share without a session.

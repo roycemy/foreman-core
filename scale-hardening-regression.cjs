@@ -36,6 +36,6 @@ assert.ok(api.includes("ipRateLimited('connect',_ip,30,3600)"),'/connect is buck
 assert.ok(api.includes("gl:pairRate:"),'pairing redeem keeps its existing 10/min IP bucket');
 assert.ok(api.includes('staleAfterSeconds:150'),'session-restore staleness follows the 60s heartbeat');
 assert.ok(!rh.includes('setInterval(presence,30000)'),'console heartbeat thinned to 60s');
-assert.ok(rh.includes('setInterval(presence,60000)'),'60s heartbeat in place');
+assert.ok(rh.includes('setInterval(presence,300000)'),'5-minute heartbeat in place');
 assert.ok(cj.includes('BB.DARK_MS = 150000'),'flat dark rule is 150s (2.5 missed 60s beats)');
 assert.ok(!/2 \* ps \* 1000 : 60000/.test(cj),'old flat 60s rule gone');
