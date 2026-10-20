@@ -42,7 +42,10 @@ s = BB.honestStatus(grok); assert.equal(s.s, 'queued'); assert.equal(s.line, 'Qu
 // a running job but no recent activity is NOT working
 const stale = bot('h', 'Scout', { lastSeen: ago(3600) });
 state([stale], [{ id: 't2', assignee: 'h', status: 'running', title: 'X', startedAt: ago(4000) }]);
-s = BB.honestStatus(stale); assert.equal(s.s, 'queued'); assert.equal(s.why, '', 'no declared cadence means no promise');
+s = BB.honestStatus(stale); assert.notEqual(s.s, 'working'); assert.equal(s.line, 'Offline', 'silent 30+ min reads Offline (never Working)');
+const slow = bot('k', 'Scout2', { lastSeen: ago(20) });
+state([slow], [{ id: 't3', assignee: 'k', status: 'queued', title: 'X' }]);
+s = BB.honestStatus(slow); assert.equal(s.s, 'queued'); assert.equal(s.why, '', 'no declared cadence means no promise');
 // muse: message mode
 const muse = bot('m', 'Muse', { providerId: 'muse' }); state([muse]);
 assert.equal(BB.honestStatus(muse).why, 'Muse checks in when you message it');
