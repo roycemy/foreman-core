@@ -28,7 +28,7 @@ async function copy(id){const a=BB.agent&&BB.agent(id);if(!a||st[id]==='busy')re
  st[id]='copied';paint();setTimeout(()=>{st[id]='paste';paint()},reduce()?600:1600);}
 let host=null;
 /* a connected poller that has missed 2 of its own check-ins, or any bot silent 30+ min, also gets the flag: its session is likely lost */
-function needs(a){if(BB.presence(a)==='reconnect')return true;if(a.status!=='active'||a.hosted||BB.isGhost(a)||(a.providerId||'')==='muse'||!a.lastSeen)return false;return Date.now()-Date.parse(a.lastSeen)>=1800000;}
+function needs(a){return BB.presence(a)==='reconnect'||(BB.isOffline?BB.isOffline(a):false)}
 function paint(list){if(!host)return;list=list||(BB.agents?BB.agents().filter(needs):[]);
  const ids=new Set(list.map(a=>a.id));Object.keys(st).forEach(k=>{if(!ids.has(k)){delete st[k];delete extra[k]}});
  const f=host.querySelector('.rcf-slot'),h=card(list);if(f._h===h)return;f._h=h;f.innerHTML=h;f.querySelectorAll('[data-copy]').forEach(b=>b.onclick=e=>{e.stopPropagation();copy(b.dataset.copy)});}
