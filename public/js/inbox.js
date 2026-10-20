@@ -130,7 +130,7 @@
       if (['approval', 'spend', 'card'].includes(i.type)) {
         l = esc((i.a ? i.a.name + ' · ' : '') + (i.type === 'approval' ? ((i.q.params && (i.q.params.title || i.q.params.url)) || BB.reqLine(i.q)) + (i.q.costCents != null ? ' · ' + i.q.costCents + '¢' : '') : i.q.purpose));
         if (i.type === 'approval') t = esc((BB.ACTION_COPY[i.q.action] || {}).ask || i.q.label || i.q.action);
-        b = `<div class="kbtns"><button class="b pri" type="button" data-d="approve">Approve</button><button class="b out" type="button" data-d="deny">Deny</button></div>`;
+        b = `<div class="kbtns"><button class="b pri" type="button" data-d="approve"${BB.offline?' disabled':''}>Approve</button><button class="b out" type="button" data-d="deny"${BB.offline?' disabled':''}>Deny</button></div>`;
         return `<div class="swipe" data-item="${esc(i.id)}"><div class="under" aria-hidden="true">Approve</div><div class="kr">${kav}<div class="t"><b>${t}</b><small>${l}</small>${b}</div></div></div>`;
       }
       if (i.type === 'dark') return `<div class="kr" data-item="${esc(i.id)}">${kav}<div class="t"><b>${esc(i.a.name)} went dark</b><small>No accepted activity for ${esc(BB.dur(Date.now() - Date.parse(i.at)))}</small></div><button class="b out" type="button" style="height:36px;border-radius:11px" data-bot="${i.a.id}">Check</button></div>`;
