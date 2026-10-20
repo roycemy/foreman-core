@@ -2,18 +2,19 @@
 // push channel wired at setup - Instinct: content-free email; Grok: content-free Slack message or a
 // GitHub trigger issue closed right after creation (the notification is the wake signal).
 // No task details, no instructions, one ping per 30s per bot, silent no-op without a channel, schedule stays the backup.
-const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');
 let src=fs.readFileSync(require('path').join(__dirname,'api/index.js'),'utf8');
-src+='\nmodule.exports.t={maybeWakeBot,newTask,assignTask,reassignTaskUnlocked,getJ,setJ,r,als,mem};';
-const sends=[],slacks=[],ghPosts=[],ghPatches=[];let fetchFail=false;
+src+='\nmodule.exports.t={maybeWakeBot,newTask,assignTask,reassignTaskUnlocked,getJ,setJ,r,als,mem,wakeTargetFrom,noteWakeTarget};';
+const sends=[],slacks=[],slackUrls=[],whooks=[],ghPosts=[],ghPatches=[];let fetchFail=false;
 const ctx={require,module:{exports:{}},process:{env:{RESEND_API_KEY:'test-key',WAKE_EMAIL_FROM:'Alter <wake@alter.test>'}},global:{},console,
  fetch:(u,o)=>{u=String(u);
   if(fetchFail)return Promise.reject(new Error('network down'));
   if(u.includes('resend.com')){sends.push(JSON.parse(o.body));return Promise.resolve({ok:true,status:200});}
-  if(u.includes('hooks.slack.com')){slacks.push(JSON.parse(o.body));return Promise.resolve({ok:true,status:200});}
+  if(u.includes('hooks.slack.com')){slacks.push(JSON.parse(o.body));slackUrls.push(u);return Promise.resolve({ok:true,status:200});}
+  if(u.includes('grok.com')||u.includes('x.ai')){whooks.push({u,headers:o.headers,body:o.body});return Promise.resolve({ok:true,status:202});}
   if(u.includes('api.github.com')){if(o.method==='PATCH'){ghPatches.push({u,body:JSON.parse(o.body)});return Promise.resolve({ok:true,status:200,json:async()=>({})});}ghPosts.push({u,body:JSON.parse(o.body)});return Promise.resolve({ok:true,status:201,json:async()=>({number:42})});}
   throw Error('NETWORK FORBIDDEN: '+u);},
- setTimeout,clearTimeout,URL,AbortSignal};
+ setTimeout,clearTimeout,URL,AbortSignal,Buffer};
 vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
 const inst=id=>({id,name:'Instinct '+id,providerId:'instinct',status:'active',paused:false,createdAt:'2026-10-19',limits:{perActionCents:10,dailyCents:50}});
 const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:false,createdAt:'2026-10-19',limits:{perActionCents:10,dailyCents:50}});
@@ -92,14 +93,83 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
  await f.newTask({title:'Failing slack',assignee:'g11'});
  events=await f.r(['LRANGE','fm:events',0,50]);
  assert.ok(events.filter(e=>String(e).includes('wake_failed')).length>=2,'grok failure also lands in the event feed');
+ // 12. declared email target wins over the deployment default inbox
+ fetchFail=false;
+ ctx.process.env.WAKE_INSTINCT_EMAIL='zzz-default@mail.instinct.com';
+ await f.setJ('fm:agent:i8',{...inst('i8'),wake:{channel:'email',target:'crew99@mail.instinct.com',declaredAt:'2026-10-19'}});
+ await f.newTask({title:'Declared inbox',assignee:'i8'});
+ assert.equal(sends.length,4,'declared email target fires');
+ assert.deepEqual(sends[3].to,['crew99@mail.instinct.com'],'declared inbox wins over env default');
+ assert.equal(sends[3].subject,'Alter: job waiting for Instinct i8','declared-target email names the bot');
+ delete ctx.process.env.WAKE_INSTINCT_EMAIL;
+ // 13. declared slack target wins over the env webhook
+ ctx.process.env.WAKE_GROK_SLACK_WEBHOOK='https://hooks.slack.com/services/T00/B00/secret';
+ await f.setJ('fm:agent:g12',{...grok('g12'),wake:{channel:'slack',target:'https://hooks.slack.com/services/T11/B11/ownhook',declaredAt:'2026-10-19'}});
+ await f.newTask({title:'Declared hook',assignee:'g12'});
+ assert.equal(slacks.length,2,'declared slack target fires');
+ assert.equal(slackUrls[slackUrls.length-1],'https://hooks.slack.com/services/T11/B11/ownhook','declared webhook wins over env webhook');
+ assert.deepEqual(slacks[slacks.length-1],{text:'Alter: job waiting for Grok g12'},'declared-target slack names the bot, content-free');
+ // 14. declared email still needs the sender env: silent no-op without it
+ delete ctx.process.env.RESEND_API_KEY;
+ await f.setJ('fm:agent:i9',{...inst('i9'),wake:{channel:'email',target:'crew88@mail.instinct.com',declaredAt:'2026-10-19'}});
+ await f.newTask({title:'No sender declared',assignee:'i9'});
+ assert.equal(sends.length,4,'declared email without sender env is a silent no-op');
+ ctx.process.env.RESEND_API_KEY='test-key';
+ // 15. wakeTargetFrom validation: domain-locked email, slack-only webhooks, nothing else
+ assert.deepEqual(f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'ok@mail.instinct.com'}),{channel:'email',target:'ok@mail.instinct.com'},'on-domain email accepted');
+ assert.deepEqual(f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'owner@gmail.com'}),{channel:'email',target:'owner@gmail.com'},'any valid email accepted (own Gmail is the common case)');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'not-an-email'}),null,'malformed email rejected');
+ assert.deepEqual(f.wakeTargetFrom({wakeChannel:'slack',wakeTarget:'https://hooks.slack.com/services/T1AAAAAAA/B1BBBBBBB/secretsecret'}),{channel:'slack',target:'https://hooks.slack.com/services/T1AAAAAAA/B1BBBBBBB/secretsecret'},'slack webhook accepted');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'slack',wakeTarget:'https://evil.example.com/hook'}),null,'non-slack URL rejected');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'sms',wakeTarget:'+15551234567'}),null,'unknown channel rejected');
+ assert.equal(f.wakeTargetFrom({}),null,'empty declaration rejected');
+ // 16. noteWakeTarget records a valid declaration and ignores repeats
+ const nwa={...inst('i10')};
+ await f.setJ('fm:agent:i10',nwa);
+ await f.noteWakeTarget(nwa,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'i10@mail.instinct.com'}));
+ const stored=await f.getJ('fm:agent:i10');
+ assert.equal(stored.wake.channel,'email');assert.equal(stored.wake.target,'i10@mail.instinct.com','declaration stored on the bot record');
+ // 16b. email target changes are capped: the 6th distinct address in 24h is ignored
+ for(const t of ['a1@gmail.com','a2@gmail.com','a3@gmail.com','a4@gmail.com','a5@gmail.com'])await f.noteWakeTarget(nwa,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:t}));
+ assert.equal((await f.getJ('fm:agent:i10')).wake.target,'a5@gmail.com','five changes land');
+ await f.noteWakeTarget(nwa,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'a6@gmail.com'}));
+ assert.equal((await f.getJ('fm:agent:i10')).wake.target,'a5@gmail.com','the sixth change in 24h is ignored');
+ // 17. declared webhook: signed content-free POST to the bot's own Grok Webhook Trigger, wins over env channels
+ ctx.process.env.WAKE_GROK_SLACK_WEBHOOK='https://hooks.slack.com/services/T00/B00/secret';
+ await f.setJ('fm:agent:g13',{...grok('g13'),wake:{channel:'webhook',target:'https://grok.com/api/automations/wh_123/deliveries',secret:'whsec_dGVzdHNlY3JldA==',declaredAt:'2026-10-19'}});
+ await f.newTask({title:'Webhook secret brief',assignee:'g13'});
+ assert.equal(whooks.length,1,'declared webhook fires');
+ assert.equal(slacks.length,2,'webhook wins over the env slack webhook');
+ const wh=whooks[0];
+ assert.equal(wh.u,'https://grok.com/api/automations/wh_123/deliveries','ping goes to the declared endpoint');
+ assert.deepEqual(JSON.parse(wh.body),{event:'alter.job.waiting'},'webhook ping is content-free');
+ assert.ok(/^msg_[a-f0-9]{32}$/.test(wh.headers['webhook-id']),'standard webhooks id');
+ assert.ok(Math.abs(Date.now()/1000-Number(wh.headers['webhook-timestamp']))<60,'fresh timestamp');
+ const expectSig='v1,'+crypto.createHmac('sha256',Buffer.from('dGVzdHNlY3JldA==','base64')).update(wh.headers['webhook-id']+'.'+wh.headers['webhook-timestamp']+'.'+wh.body).digest('base64');
+ assert.equal(wh.headers['webhook-signature'],expectSig,'HMAC signature matches the Standard Webhooks format');
+ // 18. wakeTargetFrom webhook validation: x.ai/grok.com https endpoint + whsec_ secret required
+ assert.deepEqual(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com/api/automations/wh_9/deliveries',wakeSecret:'whsec_dGVzdHNlY3JldA=='}),{channel:'webhook',target:'https://grok.com/api/automations/wh_9/deliveries',secret:'whsec_dGVzdHNlY3JldA=='},'webhook endpoint+secret accepted');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://evil.example.com/hook',wakeSecret:'whsec_dGVzdHNlY3JldA=='}),null,'off-platform endpoint rejected');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'http://grok.com/x',wakeSecret:'whsec_dGVzdHNlY3JldA=='}),null,'plain http rejected');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com/api/automations/wh_9/deliveries'}),null,'missing secret rejected');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com/api/automations/wh_9/deliveries',wakeSecret:'not-a-secret'}),null,'non-whsec secret rejected');
+ assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com.evil.com/x',wakeSecret:'whsec_dGVzdHNlY3JldA=='}),null,'lookalike host rejected');
  console.log('PASS wake triggers: queue/assign/reassign wake Instinct by email and Grok by slack/github, content-free, 30s dedupe, provider+pause+revoke guards, silent without a channel, failures recorded not thrown.');
 });})().catch(e=>{console.error(e);process.exit(1)});
 // source contract
 const api=src;
 assert.ok(api.includes("'NX', 'PX', 30000]"),'30s dedupe window');
-assert.ok(api.includes("subject: 'Alter: job waiting for Instinct'"),'exact email subject');
-assert.ok(api.includes("text: 'Alter: job waiting for Grok'"),'exact slack text');
+assert.ok(api.includes("subject: 'Alter: job waiting for ' + who"),'email subject is a fixed prefix plus the bot name');
+assert.ok(api.includes("'Alter: job waiting for Grok'"),'default slack text literal kept for the env fallback');
 assert.ok(api.includes("title: 'Alter: job waiting for Grok'"),'exact issue title');
 assert.ok(api.includes("state_reason: 'completed'"),'trigger issue closed as completed');
 assert.ok(!/text:.*t\.title/.test(api),'trigger bodies never interpolate task data');
 assert.ok(api.includes("presenceOnly: true });\n  } catch"),'wake events never count as bot activity');
+assert.ok(api.includes('declared target wins'),'per-bot declared target documented as winning over env');
+assert.ok(api.includes('gl:wakeChg:'),'email target changes are capped per bot per day');
+assert.ok(api.includes('hooks\\.slack\\.com\\/services\\/'),'slack targets locked to webhook URLs');
+assert.ok(api.includes('const _wt=wakeTargetFrom(body);if(_wt)await noteWakeTarget(agent,_wt)'),'gateway hook records declared targets');
+assert.ok(api.includes('wakeTargetFrom(args||{})'),'MCP foreman_presence records declared targets');
+assert.ok(api.includes('webhook-signature'),'webhook sender signs deliveries');
+assert.ok(api.includes('alter.job.waiting'),'webhook ping body is the fixed content-free event');
+assert.ok(api.includes('whsec_'),'webhook secrets are validated in the whsec_ format');

@@ -1,5 +1,5 @@
 // Presence model (Royce's verdict, Oct 19): honest channel status, no fake Live.
-// - Poll-cadence bots (self-declared pollSec via the gateway): blue "Checks in every N min - last check X ago", amber "Late" after two missed beats, never Live, never the 60s Went dark.
+// - Poll-cadence bots (self-declared pollSec via the gateway): blue "Checks in every N min - last check X ago", amber "Late" after two missed beats, never Live, never the flat Went dark.
 // - Muse (message-mode, no verified push/poll hook): grey "Dark - acts when messaged", never Live, Copy nudge available.
 // - Live (green) only when a real channel acked inside its expectation; red only for Needs re-paste.
 // - Every finished job is tagged "by Grok" or "by Alter for Grok" (hosted run never pretends the bot did it).
@@ -36,8 +36,12 @@ assert.equal(BB.channelTag(a).cls, 'late');
 assert.equal(BB.teamSummary().calm, true, 'a late poller is a status, not an alarm');
 assert.equal(BB.onYou().filter(i => i.type === 'dark').length, 0);
 
-// 4. live channel past 60s: Went dark unchanged, raises the alarm
+// 4. console heartbeat is 60s: a bot between beats (90s) is NOT dark; past 150s (2.5 missed beats) it is, and raises the alarm
 state([bot('g1', 'Grok Bot', { providerId: 'grok', lastSeen: ago(90) })]);
+a = BB.S.agents[0];
+assert.equal(BB.wentDark(a), false, 'between 60s beats: never dark');
+assert.notEqual(BB.botState(a).kind, 'dark');
+state([bot('g1', 'Grok Bot', { providerId: 'grok', lastSeen: ago(200) })]);
 a = BB.S.agents[0];
 assert.equal(BB.wentDark(a), true); assert.equal(BB.botState(a).kind, 'dark'); assert.equal(BB.goneDark(a), true);
 assert.equal(BB.channelTag(a).cls, 'dim'); assert.ok(BB.teamSummary().text.includes('Grok Bot went dark'));
@@ -88,8 +92,8 @@ assert.ok(api.includes('body.runByAlter===true'), 'worker can self-label run-by-
 
 // 12. invalid pollSec values are ignored by the client model
 for (const bad of [0, 30, 5000, 'x', null, undefined]) {
-  state([bot('i1', 'Instinct', { providerId: 'instinct', pollSec: bad, lastSeen: ago(90) })]);
-  assert.equal(BB.pollSec(BB.S.agents[0]), 0); assert.equal(BB.botState(BB.S.agents[0]).kind, 'dark', 'no cadence: flat 60s rule');
+  state([bot('i1', 'Instinct', { providerId: 'instinct', pollSec: bad, lastSeen: ago(200) })]);
+  assert.equal(BB.pollSec(BB.S.agents[0]), 0); assert.equal(BB.botState(BB.S.agents[0]).kind, 'dark', 'no cadence: flat 150s rule');
 }
 
 console.log("PASS presence model + by-tags: poll cadence blue/late-amber at 2 missed beats, Muse grey Dark never-Live, red Cant-run with real reason, nudge, by-tags, pollSec clamped and recorded.");
