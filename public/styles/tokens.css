@@ -184,3 +184,69 @@ input[readonly].t,input[readonly].in{background:var(--surface-2);font-family:var
 .av.grok{--av:#121212}.av.instinct{--av:#1F6F5C}.av.muse{--av:#2F55A4}.av.scout{--av:#5B4470}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
 .dot.live{background:var(--ink)}.dot.need{background:var(--vermilion)}.dot.prep{border:1.5px dashed var(--mute)}.dot.idle{background:var(--mute)}
+/* Alter design tokens v3. Additive: every existing token in public/styles/tokens.css keeps its value.
+   New tokens are namespaced --a-*. Drop this file in after tokens.css. */
+:root{
+  /* color: ink on porcelain, one red */
+  --a-floor:#F4F4F1;          /* = --porcelain, the light gray floor/page */
+  --a-surface:#FFFFFF;        /* cards, sheets */
+  --a-surface-2:#FAFAF8;      /* quiet fill, hover, new-row wash base */
+  --a-ink:#121212;            /* text, primary buttons, confirmations */
+  --a-ink-2:#5C5C57;          /* secondary text (= --stone) */
+  --a-ink-3:#8C8C86;          /* tertiary text, estimates (= --mute) */
+  --a-line:rgba(18,18,18,.08);
+  --a-line-2:rgba(18,18,18,.14);
+  --a-red:#E2452B;            /* needs you ONLY: reconnect, Inbox, N new badge, tray dot */
+  --a-red-press:#C8361D;
+  --a-red-edge:rgba(226,69,43,.28);
+  --a-red-wash:rgba(226,69,43,.06);
+  --a-new-wash:rgba(18,18,18,.035); /* new receipt row wash: ink, not red */
+  --a-glow:rgba(255,255,255,.9);    /* meeting table glow */
+
+  /* radius */
+  --a-r-xs:6px; --a-r-sm:10px; --a-r-md:14px; --a-r-lg:18px; --a-r-pill:999px;
+
+  /* shadow */
+  --a-sh-1:0 1px 2px rgba(18,18,18,.04),0 1px 1px rgba(18,18,18,.03);
+  --a-sh-2:0 1px 2px rgba(18,18,18,.04),0 12px 32px -8px rgba(18,18,18,.12);
+  --a-sh-3:0 2px 4px rgba(18,18,18,.04),0 24px 64px -12px rgba(18,18,18,.22);
+
+  /* type: Geist only; mono only for a pairing code */
+  --a-font:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --a-mono:'Geist Mono',ui-monospace,Menlo,monospace;
+  --a-t-xs:12px;  --a-lh-xs:16px;   /* meta, estimates, reasons */
+  --a-t-sm:13px;  --a-lh-sm:18px;   /* card body */
+  --a-t-md:14px;  --a-lh-md:20px;   /* titles in cards, rows */
+  --a-t-lg:16px;  --a-lh-lg:22px;   /* sheet titles */
+  --a-t-xl:22px;  --a-lh-xl:28px;   /* 'Tell your team what to do' */
+  --a-t-code:20px;                  /* pairing code */
+  --a-w-reg:400; --a-w-med:500; --a-w-semi:600;
+  --a-track:-.01em; --a-track-xl:-.02em;
+
+  /* space (4pt) */
+  --a-s1:4px; --a-s2:8px; --a-s3:12px; --a-s4:16px; --a-s5:20px; --a-s6:24px; --a-s8:32px;
+
+  /* layout */
+  --a-top-h:60px;           /* top bar */
+  --a-dock-h:188px;         /* desktop bottom dock: heading + chips + type box + 24 gap */
+  --a-dock-h-phone:84px;    /* phone: tab bar 64 + 20 */
+  --a-dock-fade:56px;       /* soft fade above the dock */
+  --a-corner-w:340px;       /* bottom-left stack width (flag, crew pill) */
+
+  /* motion */
+  --a-ease-out:cubic-bezier(.2,.8,.2,1);
+  --a-ease-in-out:cubic-bezier(.45,.05,.3,1);
+  --a-ease-fly:cubic-bezier(.22,.9,.32,1);   /* receipt flight, ease-out */
+  --a-d-tap:120ms; --a-d-pop:180ms; --a-d-swap:240ms; --a-d-panel:280ms;
+  --a-d-fly:800ms;          /* receipt flight */
+  --a-d-bob:400ms;          /* one gather bob; three per gather */
+  --a-d-sit:200ms;          /* stand up / sit down */
+  --a-walk-ms-per-unit:42ms;/* same pace floor.js walkTo uses; legs clamp 320..1900ms */
+  --a-d-meet:4500ms;        /* handoff dwell at the table */
+  --a-d-glow:600ms;         /* table glow, once */
+  --a-d-copied:1600ms;      /* 'Copied' tick before the paste card settles */
+  --a-d-newrow:2400ms;      /* new-row wash fades out after this */
+}
+@media (prefers-reduced-motion:reduce){
+  :root{--a-d-fly:0ms;--a-d-bob:0ms;--a-d-sit:0ms;--a-d-glow:0ms;--a-d-pop:0ms;--a-d-swap:0ms;--a-d-panel:0ms}
+}

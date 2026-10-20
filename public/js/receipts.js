@@ -35,6 +35,7 @@
     if (phone) V.innerHTML = `<div class="kh"><h1>Receipts</h1><div class="end">${BB.acctAv ? BB.acctAv() : ''}</div></div><div class="ks">What your team finished.</div>${fs.length ? fs.map(row).join('') : '<div class="ks">Nothing finished yet. Finished jobs show up here with proof of how they got done.</div>'}${foot ? `<div style="padding:8px 20px">${foot}</div>` : ''}`;
     else V.innerHTML = `<div class="page-in narrow"><div class="page-h"><div><h1>Receipts</h1><p class="sub">What your team finished.</p></div></div>
       ${fs.length ? `<div class="list">${fs.map(row).join('')}</div>${foot}` : `<div class="list"><div class="list-empty"><b>Nothing finished yet</b>Finished jobs show up here with how they got done and what they cost.</div></div>`}</div>`;
+    BB.markNewRows && BB.markNewRows(V);
   }
   async function detail(id) {
     openId = id;

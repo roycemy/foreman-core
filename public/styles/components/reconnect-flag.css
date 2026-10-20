@@ -1,0 +1,41 @@
+/* Bottom-left corner stack. Rule: flag(s) and crew pill live in ONE flex column, so they can never overlap.
+   The tour card is never placed in this column (see tour rule in SPEC.md 1.4). */
+.a-corner{position:absolute;left:24px;bottom:24px;width:var(--a-corner-w);display:flex;flex-direction:column;align-items:flex-start;gap:8px;z-index:20;pointer-events:none}
+.a-corner>*{pointer-events:auto}
+.a-corner .crew{position:static}
+.rcf{width:100%;background:var(--a-surface);border:1px solid var(--a-red-edge);border-radius:var(--a-r-md);box-shadow:var(--a-sh-2);padding:12px 14px;font-family:var(--a-font);color:var(--a-ink);animation:rcf-in var(--a-d-pop) var(--a-ease-out)}
+.rcf-h{display:flex;align-items:center;gap:8px;font-size:var(--a-t-md);line-height:var(--a-lh-md);font-weight:var(--a-w-semi);letter-spacing:var(--a-track)}
+.rcf-h::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--a-red);flex:none}
+.rcf-why{margin:2px 0 10px 16px;font-size:var(--a-t-sm);line-height:var(--a-lh-sm);color:var(--a-ink-2)}
+.rcf-act{margin-left:16px;height:32px;padding:0 12px;border-radius:var(--a-r-sm);background:var(--a-ink);color:#fff;font:var(--a-w-med) var(--a-t-sm)/1 var(--a-font);border:0;display:inline-flex;align-items:center;gap:6px;cursor:pointer;text-decoration:none;transition:transform var(--a-d-tap)}
+.rcf-act:active{transform:scale(.98)}
+.rcf-act.ghost{background:transparent;color:var(--a-ink);border:1px solid var(--a-line-2)}
+.rcf-ok{display:flex;align-items:center;gap:6px;margin-left:16px;font-size:var(--a-t-sm);font-weight:var(--a-w-med);color:var(--a-ink);height:32px}
+.rcf-ok svg{width:14px;height:14px}
+/* just-paste state */
+.rcf.paste{border-color:var(--a-line-2)}
+.rcf.paste .rcf-h::before{background:var(--a-ink)}
+.rcf-row{display:flex;align-items:center;gap:8px;margin-left:16px}
+.rcf-code{font:500 var(--a-t-code)/1 var(--a-mono);letter-spacing:.12em;padding:8px 12px;border-radius:var(--a-r-sm);background:var(--a-surface-2);border:1px solid var(--a-line)}
+/* stacked: several bots in ONE card */
+.rcf.many .rcf-list{margin:6px 0 0;padding:0;list-style:none}
+.rcf.many li{display:flex;align-items:center;gap:10px;padding:8px 0 8px 16px;border-top:1px solid var(--a-line)}
+.rcf.many li:first-child{border-top:0}
+.rcf.many li div{flex:1;min-width:0}
+.rcf.many li b{display:block;font-size:var(--a-t-sm);font-weight:var(--a-w-med)}
+.rcf.many li small{display:block;font-size:var(--a-t-xs);color:var(--a-ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rcf.many li .rcf-act,.rcf.many li .rcf-ok{margin-left:0;height:28px;flex:none}
+@keyframes rcf-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media (max-width:760px){.a-corner{left:16px;right:16px;width:auto;bottom:calc(var(--a-dock-h-phone) + env(safe-area-inset-bottom))}.rcf{padding:14px 16px}.rcf-act{height:36px}}
+@media (prefers-reduced-motion:reduce){.rcf{animation:none}}
+/* the welcome tour has the corner while it runs (a few seconds). The flag waits, the Inbox still says it needs you. */
+body:has(.tour) .a-corner .rcf-slot{visibility:hidden;height:0;overflow:hidden}
+/* crew roster opens inside the same column; while it is open the flag steps aside (the roster row already says Needs reconnect) */
+.a-corner .roster{position:static;width:100%;max-height:min(480px,calc(100vh - 260px))}
+.a-corner .roster:not(.on){display:none}
+.a-corner:has(.roster.on) .rcf-slot{display:none}
+.a-corner .crew{white-space:nowrap;max-width:100%}
+@media (max-width:760px){.a-corner .crew{white-space:normal}}
+.rcf-row .rcf-act{margin-left:0}
+/* iPad / small desktop: keep the corner column clear of the centred chips and type box */
+@media (min-width:761px) and (max-width:1180px){.a-corner{width:min(var(--a-corner-w),calc(50vw - 250px))}}

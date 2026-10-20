@@ -1,0 +1,21 @@
+/* Receipt card that flies floor -> Receipts tab */
+.rship{position:fixed;z-index:60;width:232px;background:var(--a-surface);border:1px solid var(--a-line);border-radius:var(--a-r-md);box-shadow:var(--a-sh-3);padding:12px 14px;font-family:var(--a-font);pointer-events:none;transform-origin:50% 50%}
+.rship-who{display:flex;align-items:center;gap:8px;font-size:var(--a-t-xs);color:var(--a-ink-3)}
+.rship-who .av{width:20px;height:20px;border-radius:50%;background:var(--av,#121212);color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center}
+.rship b{display:block;margin-top:8px;font-size:var(--a-t-md);line-height:var(--a-lh-md);font-weight:var(--a-w-semi);letter-spacing:var(--a-track);color:var(--a-ink)}
+.rship p{margin:2px 0 0;font-size:var(--a-t-sm);line-height:var(--a-lh-sm);color:var(--a-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rship-foot{display:flex;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px dashed var(--a-line-2);font-size:var(--a-t-xs);color:var(--a-ink-3)}
+.rship-foot span:last-child{color:var(--a-ink);font-weight:var(--a-w-med);font-variant-numeric:tabular-nums}
+/* N new badge: desktop nav link */
+.nav a .nnew{display:inline-flex;align-items:center;height:18px;padding:0 6px;margin-left:6px;border-radius:var(--a-r-pill);background:var(--a-red);color:#fff;font-size:11px;font-weight:var(--a-w-semi);vertical-align:1px;animation:nnew-in var(--a-d-pop) var(--a-ease-out)}
+/* phone tab: same badge, top-right of the Receipts icon */
+.tabs a{position:relative}
+.tabs a .nnew{position:absolute;top:4px;left:calc(50% + 6px);height:16px;padding:0 5px;border-radius:var(--a-r-pill);background:var(--a-red);color:#fff;font-size:10px;font-weight:var(--a-w-semi);line-height:16px;white-space:nowrap}
+.nav a.catch,.tabs a.catch{animation:tab-catch 240ms var(--a-ease-out)}
+@keyframes tab-catch{50%{transform:scale(1.06)}}
+@keyframes nnew-in{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+/* new rows, this visit only */
+.list .row.is-new,.kr.is-new{background:var(--a-new-wash);position:relative;transition:background 600ms var(--a-ease-out)}
+.list .row.is-new::before,.kr.is-new::before{content:'';position:absolute;left:6px;top:50%;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:var(--a-ink)}
+.list .row.is-new.settled,.kr.is-new.settled{background:transparent}
+@media (prefers-reduced-motion:reduce){.nav a .nnew,.nav a.catch,.tabs a.catch{animation:none}}
