@@ -174,6 +174,7 @@
       if (poll) return { kind: 'late', text: 'Late · checks in every ' + Math.round(poll / 60) + ' min · last check ' + last, task: t };
       return { kind: 'dark', text: (t ? BB.sentenceCase(t.title) + ' · ' : '') + 'Went dark ' + BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago'), task: t };
     }
+    if (poll && !t && a.instantWake) return { kind: 'poll', text: 'Instant wake on · backup check every ' + Math.round(poll / 60) + ' min · last check ' + last };
     if (poll && !t) return { kind: 'poll', text: 'Checks in every ' + Math.round(poll / 60) + ' min · last check ' + last };
     if (BB.signal(a) === 'inactive') return { kind: 'quiet', text: t ? BB.sentenceCase(t.title) + ' · no recent activity' : a.hosted ? 'Runs when you assign a job' : 'No recent activity', task: t };
     if (t && BB.budgetBlock(t)) return { kind: 'blocked', text: 'Blocked: over action budget', task: t };
@@ -219,6 +220,7 @@
     const k = BB.botState(a).kind;
     if (k === 'msg' || k === 'dark') return { cls: 'dim', text: k === 'msg' ? 'Dark · acts when messaged' : 'Dark' };
     if (k === 'late') return { cls: 'late', text: 'Late' };
+    if (BB.pollSec(a) && a.instantWake) return { cls: 'poll', text: 'Instant wake on · backup every ' + Math.round(BB.pollSec(a) / 60) + ' min' };
     if (BB.pollSec(a)) return { cls: 'poll', text: 'Checks in every ' + Math.round(BB.pollSec(a) / 60) + ' min' };
     return { cls: 'run', text: 'Live' };
   };

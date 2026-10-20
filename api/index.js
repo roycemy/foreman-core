@@ -235,14 +235,7 @@ async function noteWakeTarget(agent,w){const live=await getJ('fm:agent:'+agent.i
 async function maybeWakeBot(a) {
   if (!a || a.status !== 'active' || a.paused || a.hosted) return;
   const w = a.wake && a.wake.channel ? a.wake : null; // a bot's own declared target wins; deployment env is the fallback
-  const channel = w && w.channel === 'webhook' && w.secret ? 'webhook'
-    : w && w.channel === 'email' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
-    : w && w.channel === 'slack' ? 'slack'
-    : !w && a.providerId === 'instinct' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
-    : !w && a.providerId === 'grok' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM && process.env.WAKE_GROK_EMAIL ? 'email'
-    : !w && a.providerId === 'grok' && process.env.WAKE_GROK_SLACK_WEBHOOK ? 'slack'
-    : !w && a.providerId === 'grok' && process.env.WAKE_GITHUB_TOKEN && process.env.WAKE_GITHUB_REPO ? 'github'
-    : null;
+  const channel = wakeChannelFor(a);
   if (!channel) return; // no free push channel wired for this bot: silent no-op; its own schedule still covers it
   const got = await r(['SET', 'gl:wake:' + a.id, String(now()), 'NX', 'PX', 30000]);
   if (!got) return;
@@ -268,6 +261,17 @@ async function maybeWakeBot(a) {
   } catch (e) {
     await event(a.id, 'wake_failed', 'Instant wake failed: ' + String((e && e.message) || e).slice(0, 120), { kind: 'WAKE', presenceOnly: true });
   }
+}
+function wakeChannelFor(a) {
+  const w = a.wake && a.wake.channel ? a.wake : null; // a bot's own declared target wins; deployment env is the fallback
+  return w && w.channel === 'webhook' && w.secret ? 'webhook'
+    : w && w.channel === 'email' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
+    : w && w.channel === 'slack' ? 'slack'
+    : !w && a.providerId === 'instinct' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
+    : !w && a.providerId === 'grok' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM && process.env.WAKE_GROK_EMAIL ? 'email'
+    : !w && a.providerId === 'grok' && process.env.WAKE_GROK_SLACK_WEBHOOK ? 'slack'
+    : !w && a.providerId === 'grok' && process.env.WAKE_GITHUB_TOKEN && process.env.WAKE_GITHUB_REPO ? 'github'
+    : null;
 }
 async function postSignedPing(w) {
   const ping = JSON.stringify({ event: 'alter.job.waiting' });
@@ -909,7 +913,7 @@ async function fullState() {
   const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
   const cls = agents.length ? await r(['MGET', ...agents.map(a => 'fm:claimSeen:' + a.id)]) : [];
   const connections=await Promise.all(agents.map(connectionState));const conversations=await Promise.all(agents.map(a=>getJ('fm:conversation:'+a.id)));
-  const agentsPub = agents.map((a, i) => ({ ...a, wake: a.wake && a.wake.channel ? { channel: a.wake.channel, declaredAt: a.wake.declaredAt || null, hasSecret: !!a.wake.secret } : null, strengths:effStrengths(a), lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
+  const agentsPub = agents.map((a, i) => ({ ...a, wake: a.wake && a.wake.channel ? { channel: a.wake.channel, declaredAt: a.wake.declaredAt || null, hasSecret: !!a.wake.secret } : null, instantWake: !!(a.status === 'active' && !a.paused && !a.hosted && wakeChannelFor(a)), strengths:effStrengths(a), lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
   const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
   CACHES.set(wsId(), { t: Date.now(), v }); return v;
