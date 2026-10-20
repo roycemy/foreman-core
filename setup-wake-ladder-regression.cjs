@@ -27,9 +27,11 @@ assert(!i.msg.includes('Live'),'no live promise');
 
 // Grok: rung 2 via its own routine on the MCP connector
 const g=forP('grok');
+assert(g.msg.includes('ALTER AUTO-WAKE SETUP')&&g.msg.includes('Register email wake')&&g.msg.includes('Verify email wake'),'default browser Copy setup includes working email-wake controls');
+assert(!g.msg.includes('You only act when I message you'),'no message-only contradiction for Grok');
 assert(g.mcp.includes('ALTER AUTO-WAKE SETUP')&&g.mcp.includes('+alter')&&g.mcp.includes('Email trigger'),'grok creates its own +alter email-trigger routine');
 assert(g.mcp.includes('Alter: claim queued jobs')&&g.mcp.includes('Alter: backup check')&&/every 5 minutes/i.test(g.mcp)&&g.mcp.includes('foreman_next_task'),'grok creates both routines');
-assert(g.mcp.includes('wakeChannel')&&g.mcp.includes('wakeTarget')&&g.mcp.includes('pollSec 300')&&g.mcp.includes('wakeNonce'),'grok registers its address and echoes the test code');
+assert(g.mcp.includes('wakeChannel')&&g.mcp.includes('wakeTarget')&&g.mcp.includes('pollSec:300')&&g.mcp.includes('wakeNonce'),'grok registers its address and echoes the test code');
 assert(g.mcp.includes('wake verified')&&g.mcp.includes('only after'),'verified only after the test email wakes it');
 assert(!/paste (the|a) (trigger|key|secret)/i.test(g.mcp),'no paste step');
 assert(!g.url.includes('poll='),'grok link declares no console cadence');
