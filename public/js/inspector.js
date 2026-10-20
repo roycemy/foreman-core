@@ -52,7 +52,7 @@
         ${a.permissionScope === 'job' && ['running', 'queued'].includes(t.status) && t.assignee === a.id ? `<div class="foot"><button class="b out sm" type="button" data-grant="${t.id}">${t.jobGrant && t.jobGrant.status === 'active' ? 'Change what this job may do' : 'Grant actions for this job'}</button></div>` : ''}
         <div class="foot">${finished ? `<button class="b out sm" type="button" data-receipt="${t.id}">Open receipt</button><button class="b ghost sm" type="button" data-share="${t.id}">Share…</button>` : t.assignee ? `<button class="b ghost sm" type="button" data-stop="${t.id}" style="color:var(--vermilion-press)">Stop job</button>` : ''}<span class="cost">${esc(t.modelCostUsd != null ? BB.modelCost(t.modelCostUsd) : 'Cost not reported')}${BB.jobDur(t) ? ' · ' + esc(BB.jobDur(t)) : ''}</span></div></div>`;
     }
-    return `<div class="job${open ? ' open' : ''}"><button type="button" aria-expanded="${open}" data-job="${t.id}"><span class="st ${s.cls}"><i></i></span><b>${esc(t.title)}</b><small>${esc(jobSmall(t) + BB.byLabel(t))}</small></button>${body}</div>`;
+    return `<div class="job${open ? ' open' : ''}"><button type="button" aria-expanded="${open}" data-job="${t.id}"><span class="st ${s.cls}"><i></i></span><b>${esc(t.title)}</b><small>${esc(jobSmall(t) + BB.byLabel(t) + (BB.etaFor(t) ? ' · ' + BB.etaFor(t) : ''))}</small></button>${body}</div>`;
   }
   function activity(a) {
     const js = jobsOf(a);
@@ -96,7 +96,7 @@
       : !a.hosted && ['prepared', 'waiting'].includes(ps) ? `<button class="b ink sm" type="button" data-rec style="flex:none">Finish connecting</button>`
       : `<button class="b ghost sm" type="button" data-perms style="flex:none">Edit permissions</button>`;
     const body = tab === 'permissions' ? permissions(a) : tab === 'profile' ? profile(a) : activity(a);
-    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2><p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p></div>${prim}<button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
+    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2><p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p>${BB.statusWhy(a) ? `<p class="meta" style="margin-top:4px">${esc(BB.statusWhy(a))}</p>` : ''}</div>${prim}<button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
       <div class="seg" role="tablist" aria-label="${esc(a.name)}">${['activity', 'permissions', 'profile'].map(k => `<button type="button" role="tab" aria-selected="${tab === k}" data-tab="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
       <div class="scroll" role="tabpanel">${body}</div>`;
     const s2 = P.querySelector('.scroll'); s2.scrollTop = top;
