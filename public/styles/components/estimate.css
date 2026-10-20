@@ -1,0 +1,7 @@
+/* Job time estimate in inspector job rows. Text only, never a bar, never seconds. */
+.est{display:block;margin-top:2px;font-family:var(--a-font);font-size:var(--a-t-xs);line-height:var(--a-lh-xs);color:var(--a-ink-3);font-variant-numeric:normal}
+.est[data-k=long]{color:var(--a-ink-2)}
+.est[data-k=none]{color:var(--a-ink-3);opacity:.8}
+/* in the inspector job row the estimate takes its own line under the title, aligned with it */
+.job>button:has(.est){flex-wrap:wrap;row-gap:2px}
+.job>button .est{flex-basis:100%;margin:0;padding-left:20px}

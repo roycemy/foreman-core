@@ -79,7 +79,7 @@ assert.ok(!/href="\/hq|clone/.test(html), 'Run this job must not link into the a
   assert.deepEqual(copied, ['Write three short hero lines.\nAsk for the audience first.\n\nBudget: up to $0.84.']);
   assert.equal(pnet.length, 0, 'Run this job made a network request');
   /* no script in the app auto-creates a job from a receipt link after sign-in */
-  for (const f of fs.readdirSync(path.join(__dirname, 'public/js'))) { const src = read('public/js/' + f); assert.ok(!/receipts\/clone|[?&]clone=|BB\.booted\s*=/.test(src), f + ' still auto-copies a receipt into a workspace'); }
+  for (const f of fs.readdirSync(path.join(__dirname, 'public/js'), { recursive: true }).filter(f => f.endsWith('.js'))) { const src = read('public/js/' + f); assert.ok(!/receipts\/clone|[?&]clone=|BB\.booted\s*=/.test(src), f + ' still auto-copies a receipt into a workspace'); }
   assert.ok(!/BB\.booted\(/.test(read('public/js/app.js')));
   console.log('PASS public "Run this job" copies the template and budget only: no request, no app link, no auto-POST after sign-in; footer states what the hash proves');
 })().catch(e => { console.error(e); process.exit(1); });

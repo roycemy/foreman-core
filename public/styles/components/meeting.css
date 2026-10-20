@@ -1,0 +1,9 @@
+/* Meeting room handoff */
+.mbub{position:absolute;transform:translate(-50%,calc(-100% - 10px));background:var(--a-surface);color:var(--a-ink);border:1px solid var(--a-line);border-radius:var(--a-r-sm);box-shadow:var(--a-sh-2);padding:7px 11px;font:var(--a-w-med) var(--a-t-sm)/var(--a-lh-sm) var(--a-font);white-space:nowrap;pointer-events:none;z-index:2000;animation:mbub-in var(--a-d-pop) var(--a-ease-out)}
+.mbub::after{content:'';position:absolute;left:50%;bottom:-5px;width:8px;height:8px;background:var(--a-surface);border-right:1px solid var(--a-line);border-bottom:1px solid var(--a-line);transform:translateX(-50%) rotate(45deg)}
+.mbub small{color:var(--a-ink-3);font-weight:var(--a-w-reg);margin-left:4px}
+.mglow{opacity:0}
+.mglow.on{animation:mglow var(--a-d-glow) var(--a-ease-out) 1}
+@keyframes mglow{30%{opacity:.85}100%{opacity:0}}
+@keyframes mbub-in{from{opacity:0;translate:0 4px}to{opacity:1;translate:0 0}}
+@media (prefers-reduced-motion:reduce){.mbub{animation:none}.mglow.on{animation:none;opacity:0}}
