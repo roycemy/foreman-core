@@ -74,7 +74,6 @@ body.app>main{position:fixed;inset:var(--h-top) 0 0 0}
 .ch.paused .avs{opacity:.55}
 .ch:focus-visible .avs{outline:2px solid var(--ink);outline-offset:3px;border-radius:4px}
 @keyframes bb-breathe{0%,100%{transform:translateY(0)}50%{transform:translateY(-1px)}}
-.ch:not(.walk) .avs{animation:bb-breathe var(--breathe) ease-in-out infinite;animation-delay:var(--bd,0s)}
 .ch.ghost .avs{animation:none}
 @keyframes pv-step{0%,100%{transform:translateY(-3px)}50%{transform:translateY(0)}}
 @keyframes pv-swing{0%,100%{transform:rotate(11deg)}50%{transform:rotate(-11deg)}}
