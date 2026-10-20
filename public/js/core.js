@@ -28,28 +28,31 @@
   BB.S = null; BB.money = { requests: [] }; BB.cards = { proposals: [], bots: [], ledger: [] };
   BB.on = fn => { subs.add(fn); return () => subs.delete(fn); };
   BB.emit = () => { subs.forEach(fn => { try { fn(BB.S); } catch (e) { console.error(e); } }); };
-  let syncing = null, lastSide = 0;
+  let syncing = null, lastSide = 0, retryAt = 0, syncFailures = 0;
   let clockOffset = 0; BB.now = () => Date.now() + clockOffset;
   BB.timeZone = 'America/New_York';
   BB.sync = async function (full) {
     if (syncing) return syncing;
+    if (Date.now() < retryAt) return;
     syncing = (async () => {
       try {
-        const side = full || Date.now() - lastSide > 9000;
+        const side = full || Date.now() - lastSide > 300000;
         const [s, m, c] = await Promise.all([BB.api('/api/state'), side ? BB.api('/api/money').catch(() => null) : null, side ? BB.api('/api/cards').catch(() => null) : null]);
+        if (!s || s.error) { const e = new Error((s && s.error) || 'State unavailable'); e.quota = s && (s.code === 'store_quota' || /max requests|quota|limit exceeded/i.test(s.error)); throw e; }
+        syncFailures = 0; retryAt = 0;
         if (s && !s.error) { BB.S = s; const serverNow = Date.parse(s.now || ''); if (Number.isFinite(serverNow)) clockOffset = serverNow - Date.now(); }
         if (m && !m.error) BB.money = m;
         if (c && !c.error) BB.cards = c;
         if (side) lastSide = Date.now();
         BB.lastSync = Date.now(); BB.offline = false;
         BB.emit();
-      } catch (e) { if (!e.auth) { BB.offline = true; BB.emit(); } }
+      } catch (e) { if (!e.auth) { syncFailures++; retryAt = Date.now() + (e.quota ? 900000 : Math.min(300000, 30000 * 2 ** Math.min(syncFailures, 4))); BB.offline = true; BB.emit(); } }
       finally { syncing = null; }
     })();
     return syncing;
   };
   let timer = null;
-  BB.startPolling = () => { clearInterval(timer); timer = setInterval(() => { if (!document.hidden) BB.sync(); }, 4000); };
+  BB.startPolling = () => { clearInterval(timer); timer = setInterval(() => { if (!document.hidden) BB.sync(); }, 30000); };
   // Local redraw only, no network and no telemetry: expire typing/availability promptly even during a dropped fetch.
   setInterval(() => { if (!document.hidden && BB.S) BB.emit(); }, 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && BB.S) BB.sync(true); });
