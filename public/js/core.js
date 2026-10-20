@@ -209,7 +209,39 @@
   /* the owner alarm only covers live channels: pollers show Late in their own status and Muse is Dark by default */
   BB.goneDark = (a, at) => BB.wentDark(a, at) && !BB.pollSec(a) && a.providerId !== 'muse';
   BB.SIGNAL_COPY = { working: 'Working', available: 'Available', inactive: 'No recent activity' };
-  BB.statusLine = a => { const s = BB.botState(a); return s.kind === 'run' ? BB.sentenceCase(s.text) : s.text; };
+  /* honest job status: "Working" only on a real claim (a running job); otherwise "Queued" with the last check-in and the plain reason it has not started.
+     Shown instead of "Available" whenever a job is assigned and not claimed, so the owner never has to guess. */
+  const agoTxt = iso => { const g = BB.ago(iso); return g === 'just now' ? 'just now' : g + ' ago'; };
+  BB.jobTruth = a => {
+    if (!a || !BB.S) return null;
+    const run = BB.runningTask(a);
+    if (run) { const at = run.progressAt || run.startedAt || run.createdAt; return { kind: 'working', line: 'Working · ' + BB.sentenceCase(BB.shortTitle(run.title)), why: 'Claimed ' + agoTxt(run.startedAt || run.createdAt) + (run.progressAt ? ', last progress ' + agoTxt(at) : ', no progress reported yet') + '.' }; }
+    const q = BB.tasks().filter(t => t.assignee === a.id && t.status === 'queued'); if (!q.length) return null;
+    const pr = BB.presence(a), ps = BB.pollSec(a), seen = a.lastSeen ? 'last check-in ' + agoTxt(a.lastSeen) : 'no check-in yet';
+    let why;
+    if (pr === 'reconnect') why = 'It needs reconnecting, so it cannot take jobs.'; else if (pr === 'revoked') why = 'Its access is revoked.';
+    else if (pr !== 'connected') why = "It isn't connected yet.";
+    else if (a.paused || (BB.S && BB.S.killed)) why = 'It is paused.';
+    else if (a.providerId === 'muse') why = 'Muse only acts when you message it.';
+    else if (BB.wentDark(a)) why = "It hasn't checked in for " + BB.dur(BB.now() - Date.parse(a.lastSeen)) + '. It picks the job up when it next checks in or you message it.';
+    else if (ps) why = 'It checks in every ' + Math.round(ps / 60) + ' min and takes the job at its next check.';
+    else why = 'It takes the job the next time it checks in or you message it.';
+    return { kind: 'queued', n: q.length, line: 'Queued' + (q.length > 1 ? ' (' + q.length + ' jobs)' : '') + ' · ' + seen, why };
+  };
+  /* estimated time to finish: only from this bot's own finished jobs (median of its last 10 real durations, at least 3). Always labeled an estimate. */
+  const mins = ms => { const m = Math.round(ms / 60000); return m < 1 ? 'under a minute' : 'about ' + m + ' min'; };
+  BB.etaFor = t => {
+    if (!t || !t.assignee || !['queued', 'running'].includes(t.status)) return '';
+    const ds = BB.tasks().filter(x => x.assignee === t.assignee && x.status === 'done' && x.startedAt && x.finishedAt).sort((x, y) => String(y.finishedAt).localeCompare(String(x.finishedAt))).slice(0, 10)
+      .map(x => Date.parse(x.finishedAt) - Date.parse(x.startedAt)).filter(d => Number.isFinite(d) && d > 0).sort((x, y) => x - y);
+    if (ds.length < 3) return t.status === 'running' ? 'No estimate yet (too few finished jobs)' : '';
+    const med = ds[Math.floor(ds.length / 2)];
+    if (t.status === 'queued') return 'Usually ' + mins(med) + ' once started (estimate)';
+    const el = BB.now() - Date.parse(t.startedAt || t.createdAt);
+    return el < med ? '~' + mins(Math.max(60000, med - el)).replace('about ', '') + ' left (estimate)' : 'Taking longer than usual (usually ' + mins(med) + ')';
+  };
+  BB.statusWhy = a => { const j = BB.jobTruth(a), k = BB.botState(a).kind; return j && ['idle', 'poll', 'late', 'dark', 'quiet', 'msg', 'run'].includes(k) ? j.why : ''; };
+  BB.statusLine = a => { const s = BB.botState(a), j = BB.jobTruth(a); if (j && j.kind === 'queued' && ['idle', 'poll', 'late', 'dark', 'quiet', 'msg'].includes(s.kind)) return j.line; return s.kind === 'run' ? BB.sentenceCase(s.text) : s.text; };
   /* the connection status chip: Live only when a channel acked inside its expectation, poll cadence in blue, Late in amber, Dark in grey, red only for Needs re-paste */
   BB.channelTag = a => {
     const p = BB.presence(a);
