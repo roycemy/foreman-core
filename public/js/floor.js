@@ -16,9 +16,10 @@
   SEATW.support = SEATW.sales;
   const ROOM_TYPES = { studio: { name: 'Studio', props: ['easel', 'canvases', 'tripod'], verb: 'designing' }, library: { name: 'Library', props: ['bookcase', 'bookcase', 'armchair'], verb: 'reading' },
     workshop: { name: 'Workshop', props: ['bench', 'toolbox', 'crates'], verb: 'building' }, mailroom: { name: 'Mailroom', props: ['pigeonholes', 'parcels', 'cart'], verb: 'writing' },
+    meeting: { name: 'Meeting room', props: ['maptable', 'board', 'mugs'], verb: 'in a meeting' },
     lounge: { name: 'Lounge', props: ['records', 'mugs', 'beanbag'], verb: 'taking a break' },
     callcenter: { name: 'Call center', props: [], verb: 'with you' } };
-  const ROOM_MAP = Object.assign({ finance: 'library', marketing: 'studio', sales: 'mailroom', support: 'mailroom', ops: 'workshop', lounge: 'lounge', call: 'callcenter' }, window.HQ_ROOMS || {});
+  const ROOM_MAP = Object.assign({ finance: 'library', marketing: 'studio', sales: 'meeting', support: 'meeting', ops: 'workshop', lounge: 'lounge', call: 'callcenter' }, window.HQ_ROOMS || {});
   const typeOf = k => ROOM_TYPES[ROOM_MAP[k]] || ROOM_TYPES.workshop;
   BB.roomName = k => typeOf(k).name;
   BB.ROOMS = ['finance', 'marketing', 'sales', 'ops', 'lounge'];
@@ -209,11 +210,21 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     /* everything a bot is bringing to the owner: gateway approvals, spend requests, card requests */
     return BB.onYou().filter(i => ['approval', 'spend', 'card'].includes(i.type) && i.a && !BB.isGhost(i.a)).sort((x, y) => String(x.at).localeCompare(String(y.at)));
   }
+  /* real-state gate for "working": a claimed, running job with a connected bot and no stall (same 30-minute no-progress rule that auto-stops a hung job). Never a timer. */
+  function busyReal(a) {
+    if (!a || !BB.S || BB.isGhost(a) || a.status !== 'active' || a.paused || BB.S.killed || BB.presence(a) !== 'connected' || BB.withOwner(a)) return false;
+    const t = BB.runningTask(a); if (!t) return false;
+    const last = Math.max(Date.parse(t.progressAt || 0) || 0, Date.parse(t.startedAt || t.createdAt || 0) || 0, Date.parse(a.lastSeen || 0) || 0);
+    return BB.now() - last < 30 * 60000;
+  }
+  BB.busyReal = busyReal;
   function targetOf(a, waitList) {
     if (BB.isGhost(a)) { const g = BB.agents().filter(BB.isGhost); return { k: 'arr', p: ARRIVALS[Math.max(0, g.findIndex(b => b.id === a.id)) % ARRIVALS.length] }; }
     const wi = waitList.indexOf(a.id);
     if (wi >= 0 && wi < TRAY_SLOTS.length) return { k: 'tray', p: TRAY_SLOTS[wi] };
     if (BB.withOwner(a)) { const seated = BB.agents().filter(b => BB.withOwner(b)), i = Math.max(0, seated.findIndex(b => b.id === a.id)); return { k: 'call:' + i, p: W2P(65 + (i % 2) * 5, 91 + Math.floor(i / 2) * 5) }; }
+    const mt = F[a.id] && F[a.id].meet; if (mt) return { k: 'meet:' + mt.id, p: mt.p };
+    const er = F[a.id] && F[a.id].errand; if (er && busyReal(a)) return { k: 'errand:' + er.id, p: er.p };
     const room = BB.roomOf(a), same = BB.agents().filter(b => !BB.isGhost(b) && (['sales', 'support'].includes(room) ? ['sales', 'support'].includes(BB.roomOf(b)) : BB.roomOf(b) === room));
     const slot = Math.max(0, same.findIndex(b => b.id === a.id)), seats = SEATW[room] || SEATW.ops, v = seats[slot % 4];
     const pt = W2P(v[0] + Math.floor(slot / 4) * 2.2, v[1] + Math.floor(slot / 4) * 1.6);
@@ -237,7 +248,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   function draw(r) {
     const a = BB.agent(r.id); if (!a) return;
     const ghost = BB.isGhost(a), s = BB.botState(a), walking = r.el.classList.contains('walk') && !BB.reduced();
-    const pose = BB.withOwner(a) && !walking && r.tk && r.tk.startsWith('call') ? 'sit' : walking ? 'walk' : (s.kind === 'run' && BB.signal(a) === 'working' && r.tk && r.tk.startsWith('home') ? 'sit' : 'stand');
+    const pose = BB.withOwner(a) && !walking && r.tk && r.tk.startsWith('call') ? 'sit' : walking ? 'walk' : ((s.kind === 'run' && BB.signal(a) === 'working' || busyReal(a)) && r.tk && r.tk.startsWith('home') ? 'sit' : 'stand');
     r.el.dataset.activity = BB.withOwner(a) ? 'replying' : pose === 'sit' ? 'working' : 'idle';
     const key = [ghost, pose, a.name, BB.cast(a).k].join('|'); if (r.key === key) return; r.key = key;
     r.el.querySelector('.avs').innerHTML = figureSVG(a, { ghost, pose });
@@ -280,7 +291,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     BB.agents().forEach((a, i) => {
       const r = F[a.id], p = pos(a.id); if (!r || !p || r.el.classList.contains('walk')) return;
       const k = BB.activity(a), sit = r.key && r.key.includes('|sit|');
-      if (k === 'message') { const b = document.createElement('div'); b.className = 'fx bubble'; b.style.left = (p[0] + 1.2) + '%'; b.style.top = (p[1] - (sit ? 9.6 : 12.4)) + '%'; b.innerHTML = '<i></i><i></i><i></i>'; b.setAttribute('aria-hidden', 'true'); ov.appendChild(b); }
+      if (k === 'message' || r.meetHere) { const b = document.createElement('div'); b.className = 'fx bubble'; b.style.left = (p[0] + 1.2) + '%'; b.style.top = (p[1] - (sit ? 9.6 : 12.4)) + '%'; b.innerHTML = '<i></i><i></i><i></i>'; b.setAttribute('aria-hidden', 'true'); ov.appendChild(b); }
       else if (k) { const g = document.createElement('div'); g.className = 'fx'; g.style.left = p[0] + '%'; g.style.top = (p[1] - (sit ? 10.4 : 13.2)) + '%'; g.innerHTML = BB.glyph(a, -(i * .37)); ov.appendChild(g); }
     });
     /* inspected bot: soft ink ring at its feet */
@@ -348,6 +359,75 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     setTimeout(() => c.remove(), 3200);
   }
   BB.on(doneMoment);
+
+  /* ---------- working on the floor: while a bot has a real running job it walks from its desk to a prop in its room, gathers
+     materials, carries them back and sits down again. Driven only by busyReal() (claimed job + connected + not stalled); it
+     stops the moment the job ends, pauses, revokes or goes quiet for 30 minutes. Presentation only: nothing here changes state. ---------- */
+  const dwell = a => 7000 + (BB.hash(a.id) % 6000);
+  function station(a, r) {
+    const room = BB.roomOf(a), key = room === 'support' ? 'sales' : room, slots = SLOTS[key], box = BOXW[key]; if (!slots || !box || !r.tp) return null;
+    const kinds = typeOf(room).props; if (!kinds.length) return null;
+    const n = r.errandN = (r.errandN || 0) + 1, i = (BB.hash(a.id) + n) % slots.length, kind = kinds[i % kinds.length], f = FOOT[kind] || [3, 3], sl = slots[i];
+    const c = [sl[0] + f[0] / 2, sl[1] + f[1] / 2], seat = P2W(r.tp[0], r.tp[1]), dx = seat[0] - c[0], dy = seat[1] - c[1], len = Math.hypot(dx, dy) || 1, off = Math.max(f[0], f[1]) / 2 + 1.8;
+    const w = [Math.min(box[2] - 2, Math.max(box[0] + 2, c[0] + dx / len * off)), Math.min(box[3] - 2, Math.max(box[1] + 2, c[1] + dy / len * off))];
+    return { id: key + ':' + i, p: W2P(w[0], w[1]), kind };
+  }
+  function errandTick() {
+    if (!built || !BB.S || BB.reduced() || document.hidden) return;
+    const now = Date.now(); let changed = false;
+    BB.agents().forEach(a => {
+      const r = F[a.id]; if (!r || r.x == null || r.meet) return;
+      const walking = r.el.classList.contains('walk'), home = r.tk && r.tk.startsWith('home');
+      if (r.carry && home && !walking) { r.carry = false; r.el.classList.remove('carry'); changed = true; }
+      if (!busyReal(a)) { if (r.errand || r.carry || r.el.classList.contains('gather')) { r.errand = null; r.carry = false; r.el.classList.remove('carry', 'gather'); changed = true; } r.nextErrand = 0; return; }
+      if (walking) return;
+      if (!r.errand) {
+        if (!home) return;
+        if (!r.nextErrand) r.nextErrand = now + dwell(a);
+        if (now >= r.nextErrand) { const st = station(a, r); if (st) { r.errand = Object.assign(st, { until: 0 }); changed = true; } else r.nextErrand = now + dwell(a); }
+      } else if (r.tk && r.tk.startsWith('errand:') && Math.abs(r.x - r.errand.p[0]) + Math.abs(r.y - r.errand.p[1]) < 1) {
+        if (!r.errand.until) { r.errand.until = now + 2800; r.el.classList.add('gather'); }
+        else if (now >= r.errand.until) { r.errand = null; r.carry = true; r.el.classList.remove('gather'); r.el.classList.add('carry'); r.nextErrand = now + dwell(a); changed = true; }
+      }
+    });
+    if (changed) render();
+  }
+  BB.on(errandTick);
+
+  /* ---------- meeting room (the old mail room): a real handoff between two bots sends both to the table, they talk briefly, then
+     each walks back to its own desk. Driven only by HANDOFF events that name both bots, seen live and under 20 seconds old.
+     Show only: it never touches jobs. Skipped under reduced motion or when the tab is hidden. ---------- */
+  const SPOTS = [[21.5, 88], [33.2, 88], [27.5, 83.6], [24, 94]];
+  let meetSeen = null; const meetings = [];
+  function handoffs() { return ((BB.S && BB.S.events) || []).filter(e => e.kind === 'HANDOFF' && e.agentId && e.toAgentId && e.agentId !== e.toAgentId); }
+  const hkey = e => [e.id || e.at, e.agentId, e.toAgentId, e.taskId || ''].join('|');
+  function meetTick() {
+    if (!built || !BB.S) return;
+    const hs = handoffs();
+    if (meetSeen === null) { meetSeen = new Set(hs.map(hkey)); return; }
+    const now = Date.now(); let changed = false;
+    hs.forEach(e => {
+      const k = hkey(e); if (meetSeen.has(k)) return; meetSeen.add(k);
+      if (BB.reduced() || document.hidden || BB.now() - Date.parse(e.at) > 20000) return;
+      const A = BB.agent(e.agentId), B = BB.agent(e.toAgentId), ra = A && F[A.id], rb = B && F[B.id];
+      if (!ra || !rb || ra.x == null || rb.x == null || [A, B].some(x => BB.isGhost(x) || x.status !== 'active' || BB.presence(x) !== 'connected' || x.paused || BB.withOwner(x))) return;
+      if (meetings.some(m => m.ids.includes(A.id) || m.ids.includes(B.id))) return;
+      if ([ra, rb].some(r => r.tk === 'tray' || (r.tk && r.tk.startsWith('call')))) return;
+      const m = { ids: [A.id, B.id], born: now, until: 0 }; meetings.push(m);
+      m.ids.forEach((id, i) => { F[id].meet = { id: 'm' + now + ':' + i, p: W2P(...SPOTS[i]) }; F[id].errand = null; });
+      changed = true;
+    });
+    for (let i = meetings.length - 1; i >= 0; i--) {
+      const m = meetings[i], rs = m.ids.map(id => F[id]);
+      const drop = () => { rs.forEach(r => { if (r) { r.meet = null; r.meetHere = false; } }); meetings.splice(i, 1); changed = true; };
+      if (rs.some(r => !r) || now - m.born > 60000) { drop(); continue; }
+      const here = rs.every(r => r.meet && r.tk === 'meet:' + r.meet.id && !r.el.classList.contains('walk') && Math.abs(r.x - r.meet.p[0]) + Math.abs(r.y - r.meet.p[1]) < 1);
+      if (here && !m.until) { m.until = now + 4500; rs.forEach(r => { r.meetHere = true; }); changed = true; }
+      else if (m.until && now >= m.until) drop();
+    }
+    if (changed) render();
+  }
+  BB.on(meetTick);
   BB.floorPlace = place;
   BB.itemTitle = i => i.type === 'approval' ? BB.reqTitle(i.q) : i.type === 'spend' ? 'Spend ' + BB.usd(i.q.amountCents) + ' on ' + i.q.merchant : i.type === 'card' ? 'Charge ' + BB.usd(i.q.amountCents) + ' at ' + i.q.merchant : i.type === 'reconnect' ? 'Reconnect ' + i.a.name : i.type === 'dark' ? i.a.name + ' went dark' : i.t ? i.t.title : '';
   BB.figureSVG = figureSVG;
