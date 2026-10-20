@@ -6,7 +6,7 @@ const SHELL = [
   '/hq', '/app.html', '/brand.js', '/manifest.webmanifest',
   '/styles/tokens.css', '/styles/app.css',
   '/js/core.js', '/js/floor.js', '/js/inbox.js', '/js/inspector.js', '/js/connect.js', '/js/pop.js',
-  '/js/cmdk.js', '/js/card.js', '/js/receipt-doc.js', '/js/receipts.js', '/js/share.js', '/js/app.js',
+  '/js/cmdk.js', '/js/flags.js', '/js/card.js', '/js/receipt-doc.js', '/js/receipts.js', '/js/share.js', '/js/app.js',
   '/brand/favicon.svg', '/brand/alter-icon-light-180.png', '/brand/alter-icon-light-512.png'
 ];
 self.addEventListener('install', e => {
