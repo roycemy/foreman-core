@@ -227,7 +227,7 @@
   /* the copy-nudge message the owner can paste into a dark or late bot's chat */
   BB.nudgeText = a => {
     const n = BB.tasks().filter(t => t.assignee === a.id && t.status === 'queued').length;
-    const base = (typeof location !== 'undefined' && location.origin ? location.origin : 'https://foreman-core.vercel.app') + '/hq';
+    const base = (typeof location !== 'undefined' && location.origin ? location.origin : 'https://www.alterhq.app') + '/hq';
     return a.name + ' - check Alter: ' + (n ? n + (n === 1 ? ' job is' : ' jobs are') + ' waiting for you.' : 'the owner wants a check-in.') + ' ' + base;
   };
   BB.byLabel = t => {
