@@ -210,4 +210,28 @@ function gatewayMessage(){return [
 'Work outside this gateway is not visible or controlled by '+BRAND.name+'. No money moves through this connection. The key does not auto-renew: if lost, rotate it in owner settings and update secure storage. Owner revocation blocks access.'
 ].join('\n\n')}
 
+
+  /* One-tap reconnect from the red flag: builds the exact setup message for this bot and copies it. Grok gets the connector
+     message (no code needed). Console bots get a fresh one-time pairing code first. Returns {ok, text, url}. Never opens a wizard. */
+  const PROVIDER_URL = { grok: 'https://grok.com' };
+  BB.providerUrl = a => PROVIDER_URL[String((a && (a.providerId || a.provider)) || '').toLowerCase()] || null;
+  BB.reconnectCopy = async function (id) {
+    const d = BB.agent(id); if (!d) return { ok: false };
+    const pid = String(d.providerId || d.provider || '').toLowerCase(), hit = P.find(p => p[0] === pid);
+    const local = { step: 2, p: hit ? hit[0] : pid, label: hit ? hit[1] : (d.provider || 'assistant'), agent: { id: d.id, name: d.name }, reconnect: true };
+    const build = async () => {
+      if (pid !== 'grok') { const j = await BB.api('/api/agents/' + d.id + '/pairing', 'POST', {}); if (j.error) throw Error(j.error); local.pairCode = j.code.replace(/[- ]/g, ''); }
+      const saved = W; W = local; try { return pid === 'grok' ? setupMessageFor() : runnerMessage(); } finally { W = saved; }
+    };
+    const textP = build(); textP.catch(() => {});
+    const url = BB.providerUrl(d);
+    try {
+      if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) await navigator.clipboard.write([new ClipboardItem({ 'text/plain': textP.then(t => new Blob([t], { type: 'text/plain' })) })]);
+      else await navigator.clipboard.writeText(await textP);
+      return { ok: true, url };
+    } catch (e) {
+      try { const t = await textP; try { await navigator.clipboard.writeText(t); return { ok: true, url }; } catch (e2) { return { ok: false, text: t, url }; } }
+      catch (e3) { return { ok: false, error: e3.message, url }; }
+    }
+  };
 })();
