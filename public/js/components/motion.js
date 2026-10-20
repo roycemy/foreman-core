@@ -25,7 +25,7 @@ function station(e){const x=String(e.action||(e.details&&e.details.action)||e.te
 const map=xs=>Object.fromEntries(xs.map(x=>[x.id,JSON.parse(JSON.stringify(x))]));
 B.on(function(s){if(!s)return;const next={agents:map(s.agents||[]),tasks:map(s.tasks||[]),requests:map([...(s.requests||[]),...((B.cards&&B.cards.proposals)||[])])},events=s.events||[];
  if(!prev||B.offline){prev=next;events.forEach(e=>seenEvents.add(e.id));Object.values(next.agents).filter(a=>a.lastSeen).forEach(a=>stretched.add(a.id));return;}
- 
+
  for(const a of Object.values(next.agents)){const old=prev.agents[a.id];
   if(a.lastSeen&&(!old||!old.lastSeen)&&(!a.firstSeenAt||Date.now()-Date.parse(a.firstSeenAt)<120000)&&!stretched.has(a.id)&&B.presence(a)==='connected'){stretched.add(a.id);motion(a.id,'stretch','Connected');}
   if(old&&B.sleeping(old)&&!B.sleeping(a))motion(a.id,'wake','Connected');
