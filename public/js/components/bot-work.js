@@ -5,7 +5,7 @@
 BB.CRATE='<svg class="crate" viewBox="0 0 24 20" aria-hidden="true"><polygon points="12,1 23,6 12,11 1,6" fill="#E2C9A0"/><polygon points="1,6 12,11 12,19 1,14" fill="#C9A673"/><polygon points="23,6 12,11 12,19 23,14" fill="#B38F5E"/><polygon points="6.5,3.5 17.5,8.5 17.5,9.6 6.5,4.6" fill="#C99634" opacity=".7"/></svg>';
 const PROP_BY_ROOM={ops:1,finance:0,marketing:1,sales:0,lounge:0}; // toolbox/crates, bookcase, canvases, map table, records
 const done=new Set();
-BB.workCycle=async function(r,a,home,eventId,station){const t=BB.runningTask(a);if(!t||!eventId||done.has(eventId)||r.away)return;done.add(eventId);
+BB.workCycle=async function(r,a,home,eventId,station){const t=BB.runningTask(a);if(!t||!eventId||done.has(eventId))return;if(r.away){r.toolPending={eventId,station};return;}done.add(eventId);
  if(!r.el.querySelector('.crate'))r.el.querySelector('.body').insertAdjacentHTML('beforeend',BB.CRATE);
  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
  /* Only called by an unseen TOOL_USED diff. First-load history never reaches this path. */
@@ -16,6 +16,7 @@ BB.workCycle=async function(r,a,home,eventId,station){const t=BB.runningTask(a);
   r.el.classList.add('gather');await BB.sleep(600);r.el.classList.remove('gather');if(!still())return await BB.walkTo(r,home[0],home[1]);
   r.el.classList.add('carry');await BB.walkTo(r,home[0],home[1]);r.el.classList.remove('carry');}
  finally{r.el.classList.remove('carry','gather');r.away=false;BB.floorDraw&&BB.floorDraw(r);}
- if(still()){await BB.sleep(200);r.el.classList.add('has-desk-crate')}};
+ if(still()){await BB.sleep(200);r.el.classList.add('has-desk-crate')}
+ const pending=r.toolPending;r.toolPending=null;if(pending&&still())BB.workCycle(r,a,r.tp||home,pending.eventId,pending.station);};
 /* indicator: <=5 working bots keep the existing activity glyph; 6+ collapse every glyph to a .wdot so the floor stays readable */
 BB.useDots=()=>BB.agents().filter(a=>BB.signal(a)==='working').length>=6;})();
