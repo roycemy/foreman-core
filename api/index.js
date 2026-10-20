@@ -223,6 +223,7 @@ async function chatTask(agent, body) {
 }
 async function touchAgent(agent) {
   const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active')return;
+  if(!live.firstSeenAt){await updateAgent(agent.id,a=>{if(!a.firstSeenAt)a.firstSeenAt=a.lastSeen||now();});}
   await r(['SET','fm:seen:'+agent.id,now()]);
 }
 /* heartbeat economy (100-user scale): every accepted beat still stamps fm:seen - lastSeen drives all honest status - but the event feed only hears about a return after 10+ minutes away. A resume is feed-worthy; a steady pulse is not. This keeps fm:events useful and cuts each beat to a single SET. */
@@ -264,7 +265,7 @@ async function maybeWakeBot(a, jobId) {
       ok = resp.ok; status = resp.status;
       if (ok) { const issue = await resp.json(); await fetch('https://api.github.com/repos/' + process.env.WAKE_GITHUB_REPO + '/issues/' + issue.number, { method: 'PATCH', headers: hdr, body: JSON.stringify({ state: 'closed', state_reason: 'completed' }) }); }
     }
-    await event(a.id, ok ? 'wake_sent' : 'wake_failed', ok ? 'Instant wake sent (' + channel + ')' : 'Instant wake failed (' + channel + '): HTTP ' + status, { kind: 'WAKE', presenceOnly: true });
+    await event(a.id, ok ? 'wake_sent' : 'wake_failed', ok ? 'Instant wake sent (' + channel + ')' : 'Instant wake failed (' + channel + '): HTTP ' + status, { kind: 'WAKE', presenceOnly: true, taskId:jobId||null });
   } catch (e) {
     await event(a.id, 'wake_failed', 'Instant wake failed: ' + String((e && e.message) || e).slice(0, 120), { kind: 'WAKE', presenceOnly: true });
   }
@@ -747,7 +748,7 @@ async function resetOwnerWorkspace(req,res,body){
   if(!await r(['SET','fm:ownerResetLock','1','NX','EX',120]))return res.status(409).json({error:'Reset busy'});
   try{
    const oldWs=sess.ws,newWs='ws'+crypto.randomBytes(6).toString('hex');
-   for(const a of agents){await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await r(['DEL','fm:secret:'+a.id]);const kh=await r(['GET','fm:gatewayKeyHash:'+a.id]);if(kh){await r(['DEL','fm:key:'+kh]);await r(['DEL','gl:key:'+kh]);}
+   for(const a of agents){await updateAgent(a.id,x=>{x.status='revoked';x.revokedBy='owner';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await r(['DEL','fm:secret:'+a.id]);const kh=await r(['GET','fm:gatewayKeyHash:'+a.id]);if(kh){await r(['DEL','fm:key:'+kh]);await r(['DEL','gl:key:'+kh]);}
     for(const gid of await r(['SMEMBERS','fm:oauth:grants:'+a.id])){const g=await getJ('gl:oauth:grant:'+gid);if(g&&g.ws===oldWs&&g.agentId===a.id)await setJ('gl:oauth:grant:'+gid,{...g,revoked:true,revokedAt:now(),failureReason:'owner_workspace_reset'});}}
    for(const token of await r(['SMEMBERS','fm:publicReceipts'])){const p=await getJ('gl:publicReceipt:'+token);if(p&&p.ownerWs===oldWs)await setJ('gl:publicReceipt:'+token,{...p,revoked:true,revokedAt:now()});}
    for(const t of await listTasks())for(const token of await r(['SMEMBERS','fm:shares:'+t.id])){const p=await getJ('gl:share:'+token);if(p&&p.ws===oldWs)await setJ('gl:share:'+token,{...p,revoked:true,revokedAt:now()});}
@@ -1294,7 +1295,7 @@ const botLink=new BL.BotLink({store:blStore,
  // An accepted link call (echo included) is real accepted activity: stamp the agent's last-seen so HQ shows the connection honestly.
  onRealCall:(b,{op})=>b.agentId?als.run({ws:b.ws},async()=>{const a=await getJ('fm:agent:'+b.agentId);if(a)await touchAgent(a);}):null,
  // Runs BEFORE the bot record is revoked: the agent is blocked first, so an in-flight act fails policy.
- onRevoke:b=>b.agentId?als.run({ws:b.ws},async()=>{await updateAgent(b.agentId,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await rejectPendingBrokerFor(b.agentId);}):null,
+ onRevoke:b=>b.agentId?als.run({ws:b.ws},async()=>{await updateAgent(b.agentId,x=>{x.status='revoked';x.revokedBy='unknown';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await rejectPendingBrokerFor(b.agentId);}):null,
  onAlert:a=>als.run({ws:a.ws},()=>event(null,'alert',a.kind==='pairing_second_caller'?'A second caller used a pairing link. Pairing cancelled.':'A bot key was used twice. That bot needs a re-paste.',{kind:'ALERT',code:a.kind}))});
 const blCaller=req=>({userAgent:String(req.headers['user-agent']||''),ipRegion:String(req.headers['x-vercel-ip-country']||'unknown'),appId:String(req.headers['x-alter-app-id']||'')});
 // Bot side. /pair needs a live single-use pairing ID (plus the caller secret to collect); /link/call needs a link key.
@@ -1511,7 +1512,7 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='permissions' && (!ACTIONS[body.action] || !['AUTO','ASK','NEVER'].includes(body.mode)))return res.status(400).json({error:'bad input'});
       const a=await updateAgent(m[1],a=>{
         if(op==='room'){a.room=body.room;}
-        if(op==='revoke'){a.status='revoked';a.revokedAt=now();a.oauthEpoch=(a.oauthEpoch||0)+1;}
+        if(op==='revoke'){a.status='revoked';a.revokedBy='owner';a.revokedAt=now();a.oauthEpoch=(a.oauthEpoch||0)+1;}
         if(op==='restore'){a.status='active';delete a.revokedAt;}
         if(op==='strengths'){a.strengths=[...new Set(body.strengths)];}
         if(op==='permissions'){a.permissions={...(a.permissions||{}),[body.action]:body.mode};}
@@ -1529,7 +1530,7 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='pause')await event(a.id,body.on?'paused':'resumed',body.on?'Owner paused '+a.name:'Owner resumed '+a.name,{source:'owner'});
       return res.json({ agent: a });
     }
-    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
+    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedBy='owner';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
     if (path === '/kill' && req.method === 'POST') { bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
     // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
     if (path === '/connect' && req.method === 'POST') {
