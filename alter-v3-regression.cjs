@@ -34,7 +34,7 @@ assert.ok(!/sec|\d+:\d\d/.test(BB.estimateHTML({ id: 'r', assignee: 'g', status:
 console.log('PASS estimate: median of last 10 finished jobs (min 3), four copy variants, whole minutes');
 
 // status: working only with a real running job and a working signal
-const grok = bot('g', 'Grok Bot', { providerId: 'grok', pollSec: 300, lastSeen: ago(240) });
+const grok = bot('g', 'Grok Bot', { providerId: 'grok', pollSec: 300, lastSeen: ago(240), lastClaimAt: ago(4) });
 state([grok], [{ id: 't1', assignee: 'g', status: 'running', title: 'Draft launch note', startedAt: ago(60) }]);
 let s = BB.honestStatus(grok); assert.equal(s.s, 'working'); assert.equal(s.line, 'Working · Draft launch note');
 state([grok], [{ id: 't1', assignee: 'g', status: 'queued', title: 'Draft launch note' }]);
@@ -43,7 +43,7 @@ s = BB.honestStatus(grok); assert.equal(s.s, 'queued'); assert.equal(s.line, 'Qu
 const stale = bot('h', 'Scout', { lastSeen: ago(3600) });
 state([stale], [{ id: 't2', assignee: 'h', status: 'running', title: 'X', startedAt: ago(4000) }]);
 s = BB.honestStatus(stale); assert.notEqual(s.s, 'working'); assert.equal(s.line, 'Offline', 'silent 30+ min reads Offline (never Working)');
-const slow = bot('k', 'Scout2', { lastSeen: ago(20) });
+const slow = bot('k', 'Scout2', { lastSeen: ago(20), lastClaimAt: ago(2) });
 state([slow], [{ id: 't3', assignee: 'k', status: 'queued', title: 'X' }]);
 s = BB.honestStatus(slow); assert.equal(s.s, 'queued'); assert.equal(s.why, '', 'no declared cadence means no promise');
 // muse: message mode
