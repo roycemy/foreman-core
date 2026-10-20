@@ -14,7 +14,10 @@ BB.checkInWhy=function(a){const ps=BB.pollSec?BB.pollSec(a):0;
  if(ps)return first(a.name)+' checks in about every '+Math.round(ps/60)+' min';
  if((a.providerId||'').toLowerCase()==='muse')return first(a.name)+' checks in when you message it';
  return '';};
+/* Offline = connected on paper but silent 30+ min (Muse, hosted, revoked and not-yet-connected bots never count). */
+BB.isOffline=a=>{if(!a||a.status!=='active'||a.hosted||!a.lastSeen||(a.providerId||'')==='muse'||(BB.isGhost&&BB.isGhost(a))||(BB.presence&&BB.presence(a)==='reconnect'))return false;return Date.now()-Date.parse(a.lastSeen)>=1800000;};
 BB.honestStatus=function(a){const p=BB.presence?BB.presence(a):'connected';
+ if(BB.isOffline(a))return{s:'reconnect',line:'Offline',why:'No check-in for '+ago(a.lastSeen).replace(' ago','')+'. One tap copies a fresh setup message.'};
  if(p==='reconnect')return{s:'reconnect',line:'Needs reconnect',why:WHY[BB.reconnectReason(a)]};
  if(a.paused||(BB.S&&BB.S.killed))return{s:'paused',line:'Paused',why:BB.S&&BB.S.killed?'Everything is paused':'You paused this bot'};
  const t=BB.runningTask&&BB.runningTask(a);
