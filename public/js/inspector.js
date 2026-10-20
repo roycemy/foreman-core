@@ -97,12 +97,13 @@
     const ps = BB.presence(a);
     const prim = a.status === 'revoked' ? `<button class="b ink sm" type="button" data-restore style="flex:none">Restore access</button>`
       : BB.isOffline && BB.isOffline(a) ? `<button class="b ink sm" type="button" data-offcopy style="flex:none">Copy pairing code</button>`
+      : !a.hosted && a.providerId === 'grok' ? `<button class="b ink sm" type="button" data-rec style="flex:none">Reconnect</button>`
       : !a.hosted && ps === 'reconnect' ? `<button class="b ink sm" type="button" data-rec style="flex:none">Reconnect</button>`
       : !a.hosted && ['prepared', 'waiting'].includes(ps) ? `<button class="b ink sm" type="button" data-rec style="flex:none">Finish connecting</button>`
       : `<button class="b ghost sm" type="button" data-perms style="flex:none">Edit permissions</button>`;
-    const rec2 = !a.hosted && a.status !== 'revoked' && !['reconnect', 'prepared', 'waiting'].includes(ps) && !(BB.isOffline && BB.isOffline(a)) ? `<button class="b out sm" type="button" data-newcode style="flex:none">New pairing code</button>` : '';
+    const rec2 = !a.hosted && a.status !== 'revoked' && a.providerId !== 'grok' && !['reconnect', 'prepared', 'waiting'].includes(ps) && !(BB.isOffline && BB.isOffline(a)) ? `<button class="b out sm" type="button" data-newcode style="flex:none">New pairing code</button>` : '';
     const body = tab === 'permissions' ? permissions(a) : tab === 'profile' ? profile(a) : activity(a);
-    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2>${BB.honestStatus && !BB.isGhost(a) && BB.presence(a) !== 'revoked' ? hst(a) : `<p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p>`}</div>${prim}${rec2}<button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
+    P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2>${BB.honestStatus && !BB.isGhost(a) && BB.presence(a) !== 'revoked' ? hst(a) : `<p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p>`}</div><div class="ins-acts">${prim}${rec2}</div><button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
       <div class="seg" role="tablist" aria-label="${esc(a.name)}">${['activity', 'permissions', 'profile'].map(k => `<button type="button" role="tab" aria-selected="${tab === k}" data-tab="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
       <div class="scroll" role="tabpanel">${body}</div>`;
     const s2 = P.querySelector('.scroll'); s2.scrollTop = top;
