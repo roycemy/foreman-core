@@ -23,3 +23,8 @@
 @media (max-width:760px){.ins-h{flex-wrap:wrap}.ins-h .t{flex:1 1 calc(100% - 140px)}.ins-h [data-perms]{order:5;margin-left:auto}.ins-h .bst-line{white-space:normal}}
 /* the side sheet is narrow: let the status wrap rather than cut the check-in time */
 .ins-h .bst-line{white-space:normal}
+
+/* inspector header: the side sheet is narrow at every width, so the header always wraps. Row 1 is the figure, name and status; row 2 is the actions. The status never shares a row with buttons. */
+.ins-h{flex-wrap:wrap}
+.ins-h .t{flex:1 1 200px;min-width:160px}
+.ins-h .ins-acts{order:5;flex:1 1 100%;display:flex;flex-wrap:wrap;gap:8px}
