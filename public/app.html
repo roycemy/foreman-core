@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="/styles/components/bot-status.css">
 <link rel="stylesheet" href="/styles/components/estimate.css">
 <link rel="stylesheet" href="/styles/components/bot-work.css">
+<link rel="stylesheet" href="/styles/components/motion.css">
 <link rel="stylesheet" href="/styles/components/meeting.css">
 <link rel="stylesheet" href="/styles/components/receipt-ship.css">
 <link rel="stylesheet" href="/styles/components/reconnect-flag.css">
@@ -58,7 +59,7 @@
       <div class="zoom" role="group" aria-label="Zoom"><button type="button" id="zout" aria-label="Zoom out">−</button><button type="button" id="zin" aria-label="Zoom in">+</button></div>
     </div>
   </section>
-  <section class="view page" id="v-inbox" aria-label="Inbox"></section>
+  <section class="view page" id="v-inbox" aria-label="HQ"></section>
   <section class="view page" id="v-receipts" aria-label="Receipts"></section>
   <section class="view page" id="v-card" aria-label="Card"></section>
 </main>
@@ -68,7 +69,7 @@
 <div class="pop" id="pop" role="dialog" aria-modal="false" aria-labelledby="pop-h"></div>
 
 <nav class="tabs" id="tabs" aria-label="Main">
-  <a href="#inbox" data-v="inbox">${inbox}Inbox<i id="tcount" role="button" aria-label="Anything on me?" hidden></i></a>
+  <a href="#inbox" data-v="inbox">${inbox}HQ<i id="tcount" role="button" aria-label="Anything on me?" hidden></i></a>
   <a href="#receipts" data-v="receipts">${receipt}Receipts</a>
   <a href="#card" data-v="card">${card}Card</a>
 </nav>
@@ -115,10 +116,11 @@
 <script src="/js/components/meeting.js"></script>
 <script src="/js/components/receipt-ship.js"></script>
 <script src="/js/components/reconnect-flag.js"></script>
+<script src="/js/components/motion.js"></script>
 <script src="/js/app.js"></script>
 <script>(function(){
 /* Installed PWAs stay alive for days and keep old JS in memory. On every resume: ask for a new service worker, and compare the app files with what this page loaded. A change reloads at once, or shows an Update bar if you are typing. */
-var reloaded=false,base=null,files=['/js/core.js','/js/connect.js','/js/inspector.js','/js/app.js','/styles/app.css'];
+var reloaded=false,base=null,files=['/js/components/motion.js','/styles/components/motion.css','/js/floor.js','/js/inbox.js','/js/core.js','/js/connect.js','/js/inspector.js','/js/app.js','/styles/app.css'];
 function bar(){if(document.getElementById('upd'))return;var b=document.createElement('div');b.id='upd';b.setAttribute('role','status');b.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:999;background:#121212;color:#fff;border-radius:12px;padding:12px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;font:14px system-ui';b.innerHTML='<span>A new version of Alter is ready.</span><button style="background:#fff;color:#121212;border:0;border-radius:8px;padding:8px 14px;font:600 14px system-ui" type="button">Update</button>';b.querySelector('button').onclick=function(){location.reload()};document.body.appendChild(b)}
 function typing(){var a=document.activeElement;return !!(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.value)}
 function fp(){return Promise.all(files.map(function(u){return fetch(u,{cache:'no-store'}).then(function(r){return r.text()}).then(function(t){return t.length+':'+t.slice(0,30)+t.slice(-40)})})).then(function(a){var s=a.join('|');if(base===null){base=s;return}if(s!==base&&!reloaded){if(typing())bar();else{reloaded=true;location.reload()}}}).catch(function(){})}
