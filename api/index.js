@@ -253,10 +253,7 @@ async function maybeWakeBot(a) {
       const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [w && w.channel === 'email' ? w.target : (a.providerId === 'grok' ? process.env.WAKE_GROK_EMAIL : (process.env.WAKE_INSTINCT_EMAIL || 'xt1udv@mail.instinct.com'))], subject: 'Alter: job waiting for ' + who, text: 'A job is waiting for ' + who + ' in Alter.' }) });
       ok = resp.ok; status = resp.status;
     } else if (channel === 'webhook') {
-      const ping = JSON.stringify({ event: 'alter.job.waiting' });
-      const msgId = 'msg_' + crypto.randomBytes(16).toString('hex'), ts = String(Math.floor(Date.now() / 1000));
-      const sig = crypto.createHmac('sha256', Buffer.from(String(w.secret).replace(/^whsec_/, ''), 'base64')).update(msgId + '.' + ts + '.' + ping).digest('base64');
-      const resp = await fetch(w.target, { method: 'POST', headers: { 'content-type': 'application/json', 'webhook-id': msgId, 'webhook-timestamp': ts, 'webhook-signature': 'v1,' + sig }, body: ping });
+      const resp = await postSignedPing(w);
       ok = resp.status === 202 || resp.ok; status = resp.status;
     } else if (channel === 'slack') {
       const resp = await fetch(w && w.channel === 'slack' ? w.target : process.env.WAKE_GROK_SLACK_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: w && w.channel === 'slack' ? 'Alter: job waiting for ' + String(a.name || 'your bot').slice(0, 40) : 'Alter: job waiting for Grok' }) });
@@ -271,6 +268,24 @@ async function maybeWakeBot(a) {
   } catch (e) {
     await event(a.id, 'wake_failed', 'Instant wake failed: ' + String((e && e.message) || e).slice(0, 120), { kind: 'WAKE', presenceOnly: true });
   }
+}
+async function postSignedPing(w) {
+  const ping = JSON.stringify({ event: 'alter.job.waiting' });
+  const msgId = 'msg_' + crypto.randomBytes(16).toString('hex'), ts = String(Math.floor(Date.now() / 1000));
+  const sig = crypto.createHmac('sha256', Buffer.from(String(w.secret).replace(/^whsec_/, ''), 'base64')).update(msgId + '.' + ts + '.' + ping).digest('base64');
+  return fetch(w.target, { method: 'POST', headers: { 'content-type': 'application/json', 'webhook-id': msgId, 'webhook-timestamp': ts, 'webhook-signature': 'v1,' + sig }, body: ping });
+}
+/* owner-set wake target (connect page paste): same validation as a bot-declared one; the secret is stored server side and never returned. */
+async function setOwnerWake(agentId, body) {
+  const live = await getJ('fm:agent:' + agentId); if (!live || live.status !== 'active') return { status: 404, body: { error: 'Bot not found or not active.' } };
+  if (body && body.clear) { delete live.wake; await setJ('fm:agent:' + agentId, live); bust(); return { status: 200, body: { ok: true, cleared: true } }; }
+  const w = wakeTargetFrom({ wakeChannel: 'webhook', wakeTarget: body && body.url, wakeSecret: body && body.secret });
+  if (!w) return { status: 400, body: { error: 'Paste the trigger URL (https, x.ai or grok.com) and its signing secret (starts with whsec_).' } };
+  live.wake = { channel: 'webhook', target: w.target, secret: w.secret, declaredAt: now(), by: 'owner' }; await setJ('fm:agent:' + agentId, live); bust();
+  let status = 0, ok = false, err = '';
+  try { const resp = await postSignedPing(live.wake); status = resp.status; ok = resp.status === 202 || resp.ok; } catch (e) { err = String((e && e.message) || e).slice(0, 80); }
+  await event(agentId, ok ? 'wake_sent' : 'wake_failed', ok ? 'Test wake accepted (webhook)' : 'Test wake failed (webhook): ' + (status ? 'HTTP ' + status : err), { kind: 'WAKE', presenceOnly: true });
+  return { status: 200, body: { ok, httpStatus: status, saved: true } };
 }
 async function taskForAgent(agent,id) {
   const t=await getJ('fm:task:' + id);if(!t)return null;
@@ -883,7 +898,7 @@ async function fullState() {
   const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
   const cls = agents.length ? await r(['MGET', ...agents.map(a => 'fm:claimSeen:' + a.id)]) : [];
   const connections=await Promise.all(agents.map(connectionState));const conversations=await Promise.all(agents.map(a=>getJ('fm:conversation:'+a.id)));
-  const agentsPub = agents.map((a, i) => ({ ...a, lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
+  const agentsPub = agents.map((a, i) => ({ ...a, wake: a.wake && a.wake.channel ? { channel: a.wake.channel, declaredAt: a.wake.declaredAt || null, hasSecret: !!a.wake.secret } : null, lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
   const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
   CACHES.set(wsId(), { t: Date.now(), v }); return v;
@@ -1443,6 +1458,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
+    {const wm=path.match(/^\/agents\/(\w+)\/wake$/);if(wm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setOwnerWake(wm[1],body));}}
     {const pm=path.match(/^\/agents\/(\w+)\/pairing$/);if(pm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuePairing(pm[1]));}}
     if(path==='/routing'&&req.method==='GET')return res.json(await routing(new URL(req.url,'https://local.invalid').searchParams.get('category')||''));
     if (path === '/state') return res.json(await fullState());
