@@ -249,7 +249,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const motion = r.motion || '', bed = !walking && r.tk && r.tk.startsWith('bed'), lounge = !walking && r.tk && r.tk.startsWith('lounge');
     r.el.dataset.motion=motion; r.el.classList.toggle('bed',!!bed); r.el.classList.toggle('lounge',!!lounge);
     const key = [ghost, pose, a.name, BB.cast(a).k, asleep, bed, lounge, motion, BB.pendingReqs().some(q=>q.agentId===a.id),BB.tasks().filter(t=>t.assignee===a.id).map(t=>[t.status,t.sandboxGrant&&t.sandboxGrant.spentCents]).join(',')].join('|'); if (r.key === key) return; r.key = key;
-    r.el.querySelector('.avs').innerHTML = bed && BB.bedSVG ? BB.bedSVG(a) : BB.poseSVG ? BB.poseSVG(a,{ghost,pose:lounge?'sit':pose,asleep:asleep||lounge&&(a.providerId==='muse'),motion,lounge}) : figureSVG(a, { ghost, pose, asleep });
+    r.el.querySelector('.avs').innerHTML = bed && BB.bedSVG ? BB.bedSVG(a) : BB.poseSVG ? BB.poseSVG(a,{ghost,pose:lounge?'sit':pose,asleep:motion!=='wake'&&motion!=='stretch'&&(asleep||lounge&&(a.providerId==='muse')),motion,lounge}) : figureSVG(a, { ghost, pose, asleep });
   }
   function ensure(a, i) {
     let r = F[a.id]; if (r) return r;
