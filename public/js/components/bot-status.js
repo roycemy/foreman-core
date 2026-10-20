@@ -22,5 +22,8 @@ BB.honestStatus=function(a){const p=BB.presence?BB.presence(a):'connected';
  if(a.paused||(BB.S&&BB.S.killed))return{s:'paused',line:'Paused',why:BB.S&&BB.S.killed?'Everything is paused':'You paused this bot'};
  const t=BB.runningTask&&BB.runningTask(a);
  if(t&&BB.signal&&BB.signal(a)==='working')return{s:'working',line:'Working · '+t.title,why:''};
- return{s:'queued',line:'Queued · last check-in '+(a.lastSeen?ago(a.lastSeen):'never'),why:BB.checkInWhy(a)};};
+ const waiting=BB.tasks&&BB.tasks().some(x=>x.status==='queued'&&x.assignee===a.id),claimAge=a.lastClaimAt?Date.now()-Date.parse(a.lastClaimAt):Infinity;
+ /* a bot that pings but never asks for work looks healthy and is not: say so */
+ const why=waiting&&claimAge>600000?first(a.name)+' is checking in but has not asked for work ('+(a.lastClaimAt?'last '+ago(a.lastClaimAt):'never')+'). Jobs are waiting.':BB.checkInWhy(a);
+ return{s:'queued',line:'Queued · last check-in '+(a.lastSeen?ago(a.lastSeen):'never'),why};};
 BB.statusHTML=(a,st)=>{st=st||BB.honestStatus(a);const e=BB.esc||(x=>x);return `<div class="bst" data-s="${st.s}"><i class="bst-dot" aria-hidden="true"></i><div class="bst-t"><b>${e(a.name)}</b><span class="bst-line">${e(st.line)}</span>${st.why?`<span class="bst-why">${e(st.why)}</span>`:''}</div></div>`};})();
