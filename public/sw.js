@@ -1,9 +1,9 @@
 /* Alter app shell service worker.
-   Caches only static shell files so the floor, inbox and type box open offline.
+   Caches static shell files as an offline fallback; the network always wins when online.
    /api is always live network: no work state, approval or receipt is ever served from cache. */
-const CACHE = 'alter-shell-v1';
+const CACHE = 'alter-shell-v2';
 const SHELL = [
-  '/app', '/app.html', '/brand.js', '/manifest.webmanifest',
+  '/hq', '/app.html', '/brand.js', '/manifest.webmanifest',
   '/styles/tokens.css', '/styles/app.css',
   '/js/core.js', '/js/floor.js', '/js/inbox.js', '/js/inspector.js', '/js/connect.js', '/js/pop.js',
   '/js/cmdk.js', '/js/card.js', '/js/receipt-doc.js', '/js/receipts.js', '/js/share.js', '/js/app.js',
@@ -20,16 +20,14 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || u.origin !== location.origin) return;
   if (u.pathname.startsWith('/api/') || u.pathname.startsWith('/oauth/') || u.pathname.startsWith('/receipt/')) return; // always live
   if (e.request.mode === 'navigate') {
-    e.respondWith(fetch(e.request).catch(() => caches.match('/app')));
+    e.respondWith(fetch(e.request).catch(() => caches.match('/hq')));
     return;
   }
+  // Network-first: always the newest files when online, cache only as the offline fallback.
   e.respondWith(
-    caches.match(e.request).then(hit => {
-      const fresh = fetch(e.request).then(res => {
-        if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
-        return res;
-      }).catch(() => hit);
-      return hit || fresh;
-    })
+    fetch(e.request).then(res => {
+      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
+      return res;
+    }).catch(() => caches.match(e.request))
   );
 });
