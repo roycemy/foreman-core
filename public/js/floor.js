@@ -328,7 +328,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
       const from = BB.agent(t.createdBy), to = BB.agent(t.assignee), rf = F[t.createdBy], rt = F[t.assignee];
       if (!from || !to || !rf || !rt || BB.isGhost(from) || BB.isGhost(to) || rf.away || rt.away || rf.x == null || rt.x == null) return;
       const parent = BB.task(t.parentId);
-      BB.handoff(rf, rt, BB.handoffLine(from, to, WHAT[(parent && parent.category) || t.category]), [rf.tp, rt.tp]);
+      BB.handoff(rf, rt, BB.handoffLine(from, to, WHAT[(parent && parent.category) || t.category]), [rf.tp, rt.tp], t.id);
     });
   }
   function placeTrayCard() {
