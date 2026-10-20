@@ -6,7 +6,7 @@ const WHY={session_expired:'Its session expired.',token_reused:'Its renewal toke
 const TICK='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg>';
 const CHAT={grok:'https://grok.com'}; // only providers whose chat address is known; others get no button
 const st={},extra={}; // per bot: 'idle' | 'busy' | 'copied' | 'paste'; extra: code, expiresAt
-function why(a){return WHY[BB.reconnectReason?BB.reconnectReason(a):'session_expired']}
+function why(a){return WHY[BB.presence(a)!=='reconnect'?'quiet':(BB.reconnectReason?BB.reconnectReason(a):'session_expired')]}
 const pid=a=>(a.providerId||'').toLowerCase();
 function isConsole(a){const c=a.connection||{};return a.harness==='console'||c.transport==='botlink'||c.transport==='runner'||/console/i.test(a.providerId||'')}
 function provider(a){return pid(a)==='grok'?"Grok's":a.name+"'s"}
@@ -27,10 +27,12 @@ async function copy(id){const a=BB.agent&&BB.agent(id);if(!a||st[id]==='busy')re
  try{await navigator.clipboard.writeText(msg)}catch(e){st[id]='idle';paint();return BB.reconnect&&BB.reconnect(id)} // wizard has the select-and-copy fallback
  st[id]='copied';paint();setTimeout(()=>{st[id]='paste';paint()},reduce()?600:1600);}
 let host=null;
-function paint(list){if(!host)return;list=list||(BB.agents?BB.agents().filter(a=>BB.presence(a)==='reconnect'):[]);
+/* a connected poller that has missed 2 of its own check-ins, or any bot silent 30+ min, also gets the flag: its session is likely lost */
+function needs(a){if(BB.presence(a)==='reconnect')return true;if(a.status!=='active'||a.hosted||BB.isGhost(a)||(a.providerId||'')==='muse'||!a.lastSeen)return false;return Date.now()-Date.parse(a.lastSeen)>=1800000;}
+function paint(list){if(!host)return;list=list||(BB.agents?BB.agents().filter(needs):[]);
  const ids=new Set(list.map(a=>a.id));Object.keys(st).forEach(k=>{if(!ids.has(k)){delete st[k];delete extra[k]}});
  const f=host.querySelector('.rcf-slot'),h=card(list);if(f._h===h)return;f._h=h;f.innerHTML=h;f.querySelectorAll('[data-copy]').forEach(b=>b.onclick=e=>{e.stopPropagation();copy(b.dataset.copy)});}
-BB.reconnectFlag={card,paint,state:st,
+BB.reconnectFlag={card,paint,needs,state:st,
  mount(){const stage=document.getElementById('stage'),crew=document.getElementById('crew');if(!stage||!crew||host)return;
   host=document.createElement('div');host.className='a-corner';host.innerHTML='<div class="rcf-slot" style="width:100%"></div>';stage.appendChild(host);host.appendChild(crew);
   const roster=document.getElementById('roster');if(roster)host.insertBefore(roster,crew);
