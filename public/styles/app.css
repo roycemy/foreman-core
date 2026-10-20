@@ -506,7 +506,8 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
   .ask{display:none}
   .uchip{display:none}
   .zoom{right:16px;top:calc(env(safe-area-inset-top,0px) + 16px);bottom:auto}
-  .dark-bar{top:calc(env(safe-area-inset-top,0px) + 60px)}
+  .dark-bar{top:calc(env(safe-area-inset-top,0px) + 64px);left:16px;right:16px;transform:none;max-width:none;font-size:14px;line-height:1.4}
+  .crew{right:16px;max-width:none}
   .roster{left:16px;right:16px;width:auto;bottom:calc(var(--h-tabs) + 72px)}
   /* panels become full sheets */
   .panel,.panel.insp{top:auto;left:8px;right:8px;bottom:8px;width:auto;height:calc(100dvh - 48px);border-radius:var(--r-sheet);transform:translateY(calc(100% + 24px));z-index:62}

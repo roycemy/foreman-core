@@ -173,7 +173,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const W = st.clientWidth, H = st.clientHeight; if (!W) return;
     const phone = BB.phone();
     const hero = document.getElementById('hero'), hh = !phone && hero && hero.offsetParent ? 120 : 0;   // round M: leave room for the first-action line
-    const base = phone ? W - 16 : Math.min(W * .875, (H - 40 - hh) * .9 * ASPECT);
+    const base = phone ? W * 1.2 : Math.min(W * .875, (H - 40 - hh) * .9 * ASPECT);
     fw = Math.max(320, base * zoom);
     const shift = !phone && BB.panelOpen && BB.panelOpen() && W > 1100 ? -200 : 0;
     f.style.setProperty('--fw', fw + 'px'); f.style.setProperty('--figw', (fw * .0475) + 'px');

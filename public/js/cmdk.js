@@ -13,7 +13,7 @@
     A('Open inbox', BB.ICON.inbox, () => BB.openRail(), 'I');
     A('New job', BB.ICON.plus, () => BB.newJob());
     A('Connect a bot', BB.ICON.plus, () => BB.openConnect());
-    A('Floor', BB.ICON.floor, () => BB.go('#floor'));
+    A('HQ', BB.ICON.floor, () => BB.go('#floor'));
     A('Receipts', BB.ICON.receipt, () => BB.go('#receipts'));
     A('Card', BB.ICON.card, () => BB.go('#card'));
     A('All permissions', BB.ICON.grid, () => BB.openPermsOverview());

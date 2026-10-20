@@ -111,6 +111,78 @@ svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var
 .btn{border-radius:12px}.btn.pri,.btn.red{background:var(--ink);border-color:var(--ink);color:#fff}
 .minicard{border-radius:14px}
 .wm{font-size:17px}
+
+/* Readability pass (all widths): AA secondary text, no tiny mono */
+.bb .muted{color:var(--stone)}
+.addrline{min-width:0}
+.addrline .url{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.addrline .chip{flex:none}
+.costline{font-size:var(--fs-14);margin-bottom:12px}
+.traydemo .hd{font:500 var(--fs-13) var(--f-ui);letter-spacing:0;padding:var(--s-3) var(--s-4)}
+.traydemo .hd span:last-child{color:#C9C9C2}
+.ledger{display:grid;border-top:1px solid var(--c-border);font-size:var(--fs-15)}
+.ledger>div{display:flex;justify-content:space-between;gap:var(--s-4);padding:var(--s-3) 0;border-bottom:1px solid var(--c-border)}
+.ledger span:first-child{font-weight:600}.ledger span:last-child{color:var(--stone)}
+.cta .btn.pri{background:#fff;border-color:#fff;color:var(--ink)}
+.cta .eyebrow{color:#B8B8B1}
+.flinks{display:flex;gap:var(--s-6)}
+.flinks a{display:inline-flex;align-items:center;min-height:44px}
+@media (max-width:760px){
+  body{font-size:16px}
+  .nav{padding:calc(env(safe-area-inset-top,0px) + 12px) max(20px,env(safe-area-inset-right)) 4px max(20px,env(safe-area-inset-left))}
+  .nav nav{font-size:15px;gap:var(--s-5);-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .nav nav a{display:inline-flex;align-items:center;min-height:44px;white-space:nowrap}
+  .hero{padding:56px 24px 24px;gap:40px}
+  .hero .eyebrow{font-size:15px;margin-bottom:12px}
+  .hero h1{font-size:52px;line-height:1.02;margin:0 0 20px;letter-spacing:-.035em}
+  .hero .sub{font-size:18px;line-height:1.5;margin-bottom:32px}
+  .ctas .btn.lg{width:100%;justify-content:center;height:52px}
+  .ctas{align-items:stretch;gap:20px}.ctas .tlink{align-self:flex-start;font-size:16px}
+  .trust{font-size:14px;margin-top:32px;line-height:1.5;align-items:flex-start}.trust i{margin-top:7px;flex:none}
+  .stage{margin:0 -24px}
+  #hero-floor{aspect-ratio:390/300;background-size:132% auto}
+  .minicard{margin:8px 20px 0;padding:18px;font-size:16px;border-radius:18px}
+  .minicard .muted{font-size:14px!important;margin-top:2px}
+  .minicard .row{margin-top:16px;gap:10px}
+  .minicard .cost{font-size:15px;color:var(--c-text);font-weight:500}
+  .minicard .pill{font-size:15px;height:40px;padding:0 14px 0 8px}
+  .figcap{font-size:14px;padding:14px 24px 0;line-height:1.5}
+  .band,.sec{padding:96px 24px}
+  .band h2,.sec h2,.cta h2{font-size:38px;line-height:1.08}
+  .eyebrow{font-size:15px}
+  .step .n{font-size:32px;padding-top:40px}
+  .step .body{padding:12px 0 40px;gap:32px}
+  .step h3{font-size:26px;line-height:1.15}
+  .step p{font-size:16px;line-height:1.55}
+  .addrline{padding:6px 6px 6px 14px;border-radius:12px;font-size:14px;margin-top:20px}
+  .addrline .chip{height:36px;padding:0 12px;font-size:14px;border-radius:10px}
+  .states>div{padding:14px 0}.states b{font-size:16px}.states small{font-size:14px}
+  .traydemo{border-radius:16px;overflow:hidden}
+  .traydemo .hd{font-size:14px;padding:14px 18px}
+  .traydemo .bd{padding:18px}
+  .traydemo .who small{font-size:14px}
+  .traydemo .ask{font-size:17px;line-height:1.4}
+  .costline{font-size:15px}
+  .traydemo .acts .btn{height:44px;font-size:15px}
+  .never>div{padding:20px 0;font-size:16px}.never span{font-size:15px;line-height:1.5}
+  .botrow{padding:28px 0;gap:12px}.botrow p{font-size:16px;line-height:1.5}.botrow .tlink{justify-self:start;min-height:32px}
+  .sand{padding:28px 22px 24px;gap:28px;border-radius:18px}
+  .sand .tag{font:600 13px var(--f-ui);letter-spacing:0;border-radius:6px;padding:5px 10px}
+  .sand p{font-size:16px;line-height:1.55}
+  .ledger{font-size:15px}.ledger>div{padding:14px 0}
+  .pricegrid{gap:16px!important;padding-top:56px!important}
+  .pricegrid p{font-size:16px;line-height:1.55}
+  .cta{padding:96px 24px;gap:28px}
+  .cta p{font-size:16px;line-height:1.55}
+  .cta .btn.lg{width:100%;justify-content:center;height:52px}
+  .foot{padding:28px 24px calc(28px + env(safe-area-inset-bottom,0px));gap:12px;font-size:15px}
+  .foot>span[data-brand-attr]{display:none}
+  .flinks{gap:24px}
+  .step .body>*{min-width:0}
+  .minicard kbd,.traydemo kbd{display:none}
+  .nav nav{margin-right:-20px;padding-right:20px;-webkit-mask-image:linear-gradient(90deg,#000 85%,transparent);mask-image:linear-gradient(90deg,#000 85%,transparent)}
+  .nav nav::-webkit-scrollbar{display:none}
+}
 </style></head>
 <body>
 <div class="bb" id="app">
@@ -160,7 +232,7 @@ svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var
           <div>
             <h3>Connect a bot you already run.</h3>
             <p>Pick Muse, Grok Bot or Instinct. <span data-brand>The app</span> gives you one address and a setup message. Paste it into the bot. Nothing is connected until that bot reports back.</p>
-            <div class="addrline"><span class="mono">https://foreman-core.vercel.app/api/mcp</span><span class="chip">Copy setup message</span></div>
+            <div class="addrline"><span class="mono url" title="https://foreman-core.vercel.app/api/mcp">https://foreman-core.vercel.app/api/mcp</span><span class="chip">Copy setup message</span></div>
           </div>
           <div class="states" aria-label="Connection states">
             <div><span class="av muse">MU</span><div><b>Muse</b><small>Prepared · not connected yet</small></div><span class="ind prep" aria-hidden="true"></span></div>
@@ -187,11 +259,11 @@ svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var
             <p>When a bot needs you, it walks to the approval island and the request lands as a card. One click, or the A and D keys. Approve once is the only vermilion button on the floor.</p>
           </div>
           <div class="traydemo">
-            <div class="hd"><span><i></i>In the tray · 1 waiting</span><span>Needs Approval</span></div>
+            <div class="hd"><span><i></i>In the tray · 1 waiting</span><span>Needs approval</span></div>
             <div class="bd">
               <div class="who"><span class="av grok">GB</span><div><b>Grok Bot</b><small>Research · from Research Center · 3m</small></div></div>
               <div class="ask"><b>Grok Bot</b> wants to <b>Save a note</b> · Q4 campaign brief</div>
-              <div class="muted mono" style="font-size:12px;margin-bottom:12px">costs 2¢ · notes.write · once</div>
+              <div class="muted mono costline">costs 2¢ · notes.write · once</div>
               <div class="acts"><span class="btn pri sm">Approve once <kbd>A</kbd></span><span class="btn red sm">Deny <kbd>D</kbd></span></div>
             </div>
           </div>
@@ -236,7 +308,7 @@ svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var
       <h2 class="disp" style="font-size:var(--fs-32);margin:12px 0">Sandbox. No real money moves.</h2>
       <p class="muted">Practice a spend proposal, a per-bot cap and an approval. The provider is fake. Mercury and JPMorgan are not connected. Every real charge remains $0.</p>
     </div>
-    <div class="mono muted" style="font-size:13px">pending · sandbox · $0 charged<br>approved · sandbox · $0 charged</div>
+    <div class="ledger" aria-label="Sandbox ledger"><div><span>Pending</span><span>sandbox · $0 charged</span></div><div><span>Approved</span><span>sandbox · $0 charged</span></div></div>
   </div>
 </section>
 
@@ -263,7 +335,7 @@ svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var
 <footer class="foot">
   <span class="wm"><span class="mark"></span><span data-brand="upper">alter</span></span>
   <span data-brand-attr="aria-label:{brand}">&nbsp;</span>
-  <span><a id="mk-foot-sec" href="#security">Security</a> · <a id="mk-foot-price" href="#pricing">Pricing</a> · <a id="mk-foot-in" href="/hq" data-brand-href="appUrl" data-goto="signin">Sign in</a></span>
+  <span class="flinks"><a id="mk-foot-sec" href="#security">Security</a><a id="mk-foot-price" href="#pricing">Pricing</a><a id="mk-foot-in" href="/hq" data-brand-href="appUrl" data-goto="signin">Sign in</a></span>
 </footer>
 
 </div>
