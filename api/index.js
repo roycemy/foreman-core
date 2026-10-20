@@ -317,11 +317,22 @@ const CATEGORY_KEYWORDS = {
   support: ['support', 'ticket', 'tickets', 'customer', 'complaint', 'refund'],
   research: ['research', 'compare', 'investigate', 'look into', 'summarize', 'summarise', 'analyze', 'analyse', 'find out'],
   finance: ['invoice', 'invoices', 'budget', 'expense', 'expenses', 'forecast', 'accounting', 'payroll'],
-  marketing: ['marketing', 'campaign', 'social', 'newsletter', 'brand', 'launch'],
+  marketing: ['marketing', 'campaign', 'social', 'newsletter', 'brand', 'launch', 'tweet', 'twitter', 'linkedin', 'instagram'],
   creative: ['design', 'logo', 'mockup', 'illustration', 'creative', 'visual'],
   sales: ['sales', 'outreach', 'prospect', 'prospects', 'leads', 'pitch'],
   ops: ['deploy', 'fix', 'automate', 'spreadsheet', 'ops', 'operations', 'execution', 'build'],
 };
+// Declared strengths (routing phase 1): which job categories a bot says it is good at. Owner-editable.
+// Existing bots get the provider default until the owner sets their own. Used only when scored history
+// has no answer, and only when exactly one active bot declares the category; otherwise the job stays unrouted.
+const DEFAULT_STRENGTHS = { instinct: ['ops', 'sales', 'support', 'finance'], grok: ['research'], muse: ['marketing', 'creative'] };
+function effStrengths(a) { return Array.isArray(a && a.strengths) ? a.strengths.filter(k => CATEGORY_KEYWORDS[k]) : ((a && DEFAULT_STRENGTHS[a.providerId]) || []).slice(); }
+async function routingOrDeclared(cat) {
+  const adv = await routing(cat); if (adv.suggested) return adv;
+  const ds = (await listAgents()).filter(a => a.status === 'active' && !a.harness && !a.hosted && !a.paused && effStrengths(a).includes(cat));
+  if (ds.length !== 1) return adv;
+  return { ...adv, suggested: { id: ds[0].id, name: ds[0].name, category: cat, declared: true, reason: 'Declared strength: ' + ds[0].name + ' lists ' + cat + ' and is the only bot that does. No scored history yet, so this is a declaration, not a track record.' } };
+}
 function categorizeText(s) {
   const text = ' ' + String(s || '').toLowerCase() + ' ';
   let best = null, bestScore = 0, tied = false;
@@ -898,7 +909,7 @@ async function fullState() {
   const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
   const cls = agents.length ? await r(['MGET', ...agents.map(a => 'fm:claimSeen:' + a.id)]) : [];
   const connections=await Promise.all(agents.map(connectionState));const conversations=await Promise.all(agents.map(a=>getJ('fm:conversation:'+a.id)));
-  const agentsPub = agents.map((a, i) => ({ ...a, wake: a.wake && a.wake.channel ? { channel: a.wake.channel, declaredAt: a.wake.declaredAt || null, hasSecret: !!a.wake.secret } : null, lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
+  const agentsPub = agents.map((a, i) => ({ ...a, wake: a.wake && a.wake.channel ? { channel: a.wake.channel, declaredAt: a.wake.declaredAt || null, hasSecret: !!a.wake.secret } : null, strengths:effStrengths(a), lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
   const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
   CACHES.set(wsId(), { t: Date.now(), v }); return v;
@@ -1428,13 +1439,13 @@ async function routes(req, res, path, body, agentPre) {
           routed = { botId: lead.id, botName: lead.name, category: category || 'named', reason: routingReason, chain: handoffPlan || [], unstaffed: [], named: true };
         }
         if (!assignee && leadCat) {
-          const advice = await routing(leadCat);
+          const advice = await routingOrDeclared(leadCat);
           if (advice.suggested) {
             assignee = advice.suggested.id; category = leadCat; routingReason = tieNote + advice.suggested.reason;
             const chain = [], unstaffed = [], used = new Set([assignee]);
             for (const m of matches) {
               if (m.category === leadCat) continue;
-              const a2 = await routing(m.category);
+              const a2 = await routingOrDeclared(m.category);
               if (a2.suggested && !used.has(a2.suggested.id)) { used.add(a2.suggested.id); chain.push({ category: m.category, botId: a2.suggested.id, botName: a2.suggested.name, reason: a2.suggested.reason }); }
               else if (!a2.suggested) unstaffed.push(m.category);
             }
@@ -1451,7 +1462,7 @@ async function routes(req, res, path, body, agentPre) {
           unrouted = true;
           if (!matches.length) routingReason = 'No category matched this message. Left unassigned rather than guessed.';
           else if (tieUnresolved) routingReason = 'Categories ' + top.map(m => m.category).join(' and ') + ' matched equally with no stronger scored history to pick a lead. Left unassigned rather than guessed.';
-          else routingReason = 'No bot has scored history in ' + (leadCat || top[0].category) + ' yet. Left unassigned rather than guessed.';
+          else routingReason = 'No bot has scored history or a single declared strength in ' + (leadCat || top[0].category) + ' yet. Left unassigned rather than guessed.';
         }
       }
       return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, handoffPlan }), routed, unrouted }); }
@@ -1478,15 +1489,17 @@ async function routes(req, res, path, body, agentPre) {
       }finally{if(await r(['GET',lockKey])===lock)await r(['DEL',lockKey]);}
     }}
     if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
-    if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits|room|pause)$/)) && req.method === 'POST') {
+    if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits|room|pause|strengths)$/)) && req.method === 'POST') {
       const op=m[2];
       const rooms={ops:'Execution Center',sales:'Outreach Center',marketing:'Creative / Marketing',finance:'Research Center',support:'Outreach Center',lounge:'Lounge'};
       if(op==='room' && !Object.prototype.hasOwnProperty.call(rooms,body.room))return res.status(400).json({error:'Choose a valid room'});
+      if(op==='strengths' && (!Array.isArray(body.strengths) || body.strengths.length>8 || body.strengths.some(k=>!Object.prototype.hasOwnProperty.call(CATEGORY_KEYWORDS,k))))return res.status(400).json({error:'Choose job types from the list'});
       if(op==='permissions' && (!ACTIONS[body.action] || !['AUTO','ASK','NEVER'].includes(body.mode)))return res.status(400).json({error:'bad input'});
       const a=await updateAgent(m[1],a=>{
         if(op==='room'){a.room=body.room;}
         if(op==='revoke'){a.status='revoked';a.revokedAt=now();a.oauthEpoch=(a.oauthEpoch||0)+1;}
         if(op==='restore'){a.status='active';delete a.revokedAt;}
+        if(op==='strengths'){a.strengths=[...new Set(body.strengths)];}
         if(op==='permissions'){a.permissions={...(a.permissions||{}),[body.action]:body.mode};}
         if(op==='limits'){a.limits={perActionCents:body.perActionCents==null?null:+body.perActionCents,dailyCents:body.dailyCents==null?null:+body.dailyCents};}
         if(op==='pause'){if(body.on){a.paused=true;a.pausedAt=now();}else{delete a.paused;delete a.pausedAt;}}
@@ -1497,6 +1510,7 @@ async function routes(req, res, path, body, agentPre) {
       if (m[2] === 'restore') { await event(a.id, 'restored', `Owner restored ${a.name}'s access`); }
       if (m[2] === 'permissions') { await event(a.id, 'permission', `${body.action} set to ${body.mode}`); }
       if (m[2] === 'limits') { await event(a.id, 'limits', `Limits set: per action ${a.limits.perActionCents}c, daily ${a.limits.dailyCents}c`); }
+      if(op==='strengths')await event(a.id,'strengths_changed','Best at: '+(effStrengths(a).join(', ')||'nothing declared'),{strengths:effStrengths(a)});
       if(op==='room')await event(a.id,'room_changed','Moved to '+rooms[a.room],{room:a.room});
       if(op==='pause')await event(a.id,body.on?'paused':'resumed',body.on?'Owner paused '+a.name:'Owner resumed '+a.name,{source:'owner'});
       return res.json({ agent: a });
