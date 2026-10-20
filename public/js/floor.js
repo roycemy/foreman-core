@@ -15,10 +15,10 @@
   const SEATW = { finance: [[12, 18.6], [26, 18.6], [12, 32.6], [26, 32.6]], marketing: [[60, 16.6], [74, 16.6], [88, 16.6], [60, 31.6]], sales: [[12, 64.6], [26, 64.6], [12, 80.6], [26, 80.6]], ops: [[58, 59.6], [72, 59.6], [58, 73.6], [72, 73.6]], lounge: [[95, 57.5], [100, 57.5], [95, 68], [100, 68]] };
   SEATW.support = SEATW.sales;
   const ROOM_TYPES = { studio: { name: 'Studio', props: ['easel', 'canvases', 'tripod'], verb: 'designing' }, library: { name: 'Library', props: ['bookcase', 'bookcase', 'armchair'], verb: 'reading' },
-    workshop: { name: 'Workshop', props: ['bench', 'toolbox', 'crates'], verb: 'building' }, mailroom: { name: 'Mailroom', props: ['pigeonholes', 'parcels', 'cart'], verb: 'writing' },
+    workshop: { name: 'Workshop', props: ['bench', 'toolbox', 'crates'], verb: 'building' }, mailroom: { name: 'Mailroom', props: ['pigeonholes', 'parcels', 'cart'], verb: 'writing' }, meeting: { name: 'Meeting room', props: ['maptable', 'board', 'mugs'], verb: 'meeting' },
     lounge: { name: 'Lounge', props: ['records', 'mugs', 'beanbag'], verb: 'taking a break' },
     callcenter: { name: 'Call center', props: [], verb: 'with you' } };
-  const ROOM_MAP = Object.assign({ finance: 'library', marketing: 'studio', sales: 'mailroom', support: 'mailroom', ops: 'workshop', lounge: 'lounge', call: 'callcenter' }, window.HQ_ROOMS || {});
+  const ROOM_MAP = Object.assign({ finance: 'library', marketing: 'studio', sales: 'meeting', support: 'meeting', ops: 'workshop', lounge: 'lounge', call: 'callcenter' }, window.HQ_ROOMS || {});
   const typeOf = k => ROOM_TYPES[ROOM_MAP[k]] || ROOM_TYPES.workshop;
   BB.roomName = k => typeOf(k).name;
   BB.ROOMS = ['finance', 'marketing', 'sales', 'ops', 'lounge'];
@@ -151,7 +151,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const roomPolys = BB.ROOMS.concat('call').map(k => { const b = BOXW[k], pts = [W2P(b[0], b[1]), W2P(b[2], b[1]), W2P(b[2], b[3]), W2P(b[0], b[3])]; return `<polygon data-room="${k}" tabindex="0" role="img" points="${pts.map(p => p.join(',')).join(' ')}"><title>${esc(typeOf(k).name)}</title></polygon>`; }).join('');
     f.innerHTML = `<img class="environment" src="/hq/floor.svg" alt="" draggable="false">`
       + `<svg class="layer" id="rooms" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Rooms">${roomPolys}</svg>`
-      + `<svg class="layer" id="fx" viewBox="${PJ.X0} ${PJ.Y0} ${PJ.W} ${PJ.H}" aria-hidden="true"><defs><radialGradient id="pvLamp"><stop offset="0" stop-color="#FFE7B0" stop-opacity=".55"/><stop offset="1" stop-color="#FFE7B0" stop-opacity="0"/></radialGradient></defs><g id="tray">${islandB()}</g><g id="ring"><ellipse cx="0" cy="0" rx="24" ry="9.5" fill="rgba(18,18,18,.06)" stroke="#121212" stroke-opacity=".55" stroke-width="1.3"/></g><g id="collab"></g></svg>`
+      + `<svg class="layer" id="fx" viewBox="${PJ.X0} ${PJ.Y0} ${PJ.W} ${PJ.H}" aria-hidden="true"><defs><radialGradient id="pvLamp"><stop offset="0" stop-color="#FFE7B0" stop-opacity=".55"/><stop offset="1" stop-color="#FFE7B0" stop-opacity="0"/></radialGradient></defs><g id="tray">${islandB()}</g><g id="ring"><ellipse cx="0" cy="0" rx="24" ry="9.5" fill="rgba(18,18,18,.06)" stroke="#121212" stroke-opacity=".55" stroke-width="1.3"/></g><g id="collab"></g>${BB.meetGlowSVG ? BB.meetGlowSVG() : ''}</svg>`
       + `<div id="chl"></div><div id="ov"><div class="tip" id="tip" role="tooltip"></div><div class="isl-card" id="islcard" role="region" aria-label="Request at the tray"></div></div>`;
     const chl = $('#chl');
     propsSVG().forEach(([d, svg, z]) => { const e = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); e.setAttribute('class', 'pv-prop'); e.setAttribute('aria-hidden', 'true'); e.setAttribute('viewBox', PJ.X0 + ' ' + PJ.Y0 + ' ' + PJ.W + ' ' + PJ.H); e.style.zIndex = z; e.innerHTML = svg; chl.appendChild(e); });
@@ -176,6 +176,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     fw = Math.max(320, base * zoom);
     const shift = !phone && BB.panelOpen && BB.panelOpen() && W > 1100 ? -200 : 0;
     f.style.setProperty('--fw', fw + 'px'); f.style.setProperty('--figw', (fw * .0475) + 'px');
+    if (BB.clampPan) pan = BB.clampPan(pan, fw, W, H);
     f.style.setProperty('--px', (pan[0] + shift) + 'px'); f.style.setProperty('--py', (pan[1] - hh / 2) + 'px');
     BB.$$('.ch', f).forEach(e => e.style.setProperty('--fig', (fw * .0475) + 'px'));
   }
@@ -237,8 +238,8 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   function draw(r) {
     const a = BB.agent(r.id); if (!a) return;
     const ghost = BB.isGhost(a), s = BB.botState(a), walking = r.el.classList.contains('walk') && !BB.reduced();
-    const pose = BB.withOwner(a) && !walking && r.tk && r.tk.startsWith('call') ? 'sit' : walking ? 'walk' : (s.kind === 'run' && BB.signal(a) === 'working' && r.tk && r.tk.startsWith('home') ? 'sit' : 'stand');
-    r.el.dataset.activity = BB.withOwner(a) ? 'replying' : pose === 'sit' ? 'working' : 'idle';
+    const pose = BB.withOwner(a) && !walking && r.tk && r.tk.startsWith('call') ? 'sit' : walking ? 'walk' : (!r.away && r.tk && r.tk.startsWith('home') && !ghost && s.kind !== 'reconnect' ? 'sit' : 'stand');
+    r.el.dataset.idle = String(s.kind !== 'run'); r.el.dataset.activity = BB.withOwner(a) ? 'replying' : pose === 'sit' ? 'working' : 'idle';
     const key = [ghost, pose, a.name, BB.cast(a).k].join('|'); if (r.key === key) return; r.key = key;
     r.el.querySelector('.avs').innerHTML = figureSVG(a, { ghost, pose });
   }
@@ -265,7 +266,12 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
       r.tk = t.k; r.tp = t.p;
       if (r.x == null) setPos(r, t.p[0], t.p[1], 0); else if (moved) walkTo(r, t.p[0], t.p[1]);
       draw(r);
+      /* design pack v3: walk-gather-carry only on a real running job; crate leaves with the job */
+      const rt = BB.runningTask(a);
+      if (rt && BB.signal(a) === 'working' && t.k.startsWith('home') && BB.workCycle) BB.workCycle(r, a, t.p);
+      else if (!rt) r.el.classList.remove('has-desk-crate', 'carry', 'gather');
     });
+    handoffs(as);
     place();
     /* tray: vermilion dot and paper only while a request waits */
     const tray = $('#tray'), waiting = waitList.length > 0;
@@ -281,6 +287,9 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
       const r = F[a.id], p = pos(a.id); if (!r || !p || r.el.classList.contains('walk')) return;
       const k = BB.activity(a), sit = r.key && r.key.includes('|sit|');
       if (k === 'message') { const b = document.createElement('div'); b.className = 'fx bubble'; b.style.left = (p[0] + 1.2) + '%'; b.style.top = (p[1] - (sit ? 9.6 : 12.4)) + '%'; b.innerHTML = '<i></i><i></i><i></i>'; b.setAttribute('aria-hidden', 'true'); ov.appendChild(b); }
+      if (BB.signal(a) === 'working' && BB.runningTask(a) && !BB.withOwner(a)) { const w = document.createElement('div'); w.className = 'fx wdot'; w.style.left = p[0] + '%'; w.style.top = (p[1] - (sit ? 11.2 : 14)) + '%'; w.style.setProperty('--wd', (-(i * .37)) + 's'); w.setAttribute('aria-hidden', 'true'); ov.appendChild(w); if (BB.useDots && BB.useDots()) return; }
+      else if (k && BB.useDots && BB.useDots() && BB.signal(a) === 'working') return;
+      if (k === 'message') return;
       else if (k) { const g = document.createElement('div'); g.className = 'fx'; g.style.left = p[0] + '%'; g.style.top = (p[1] - (sit ? 10.4 : 13.2)) + '%'; g.innerHTML = BB.glyph(a, -(i * .37)); ov.appendChild(g); }
     });
     /* inspected bot: soft ink ring at its feet */
@@ -305,6 +314,22 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     });
     if (cg) cg.innerHTML = svg;
     placeTrayCard();
+  }
+  /* design pack v3: meeting room. A real handoff is a new job whose parent was finished by another connected bot
+     (api: foreman_handoff / work.handoff creates {parentId, createdBy: sender, assignee: receiver}). First load never replays. */
+  let handSeen = null;
+  const WHAT = { research: 'research', marketing: 'draft', outreach: 'outreach' };
+  function handoffs(as) {
+    const ts = BB.tasks();
+    if (handSeen === null) { handSeen = new Set(ts.map(t => t.id)); return; }
+    ts.forEach(t => {
+      if (handSeen.has(t.id)) return; handSeen.add(t.id);
+      if (!t.parentId || !t.createdBy || t.createdBy === t.assignee || !BB.handoff || document.hidden) return;
+      const from = BB.agent(t.createdBy), to = BB.agent(t.assignee), rf = F[t.createdBy], rt = F[t.assignee];
+      if (!from || !to || !rf || !rt || BB.isGhost(from) || BB.isGhost(to) || rf.away || rt.away || rf.x == null || rt.x == null) return;
+      const parent = BB.task(t.parentId);
+      BB.handoff(rf, rt, BB.handoffLine(from, to, WHAT[(parent && parent.category) || t.category]), [rf.tp, rt.tp]);
+    });
   }
   function placeTrayCard() {
     const card = $('#islcard'); if (!card) return;
@@ -354,4 +379,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   BB.on(render);
   setInterval(() => { if (BB.S && !document.hidden) place(); }, 15000);
   window.HQ_FLOOR = { W2P, P2W, route, fit, PJ };
+  /* design pack v3 hooks: the work cycle and the meeting-room handoff reuse the floor's own walk and projection */
+  BB.W2P = W2P; BB.PJ = PJ; BB.F = F; BB.walkTo = walkTo; BB.setPos = setPos; BB.floorDraw = draw;
+  BB.propPoint = (room, i) => { room = room === 'support' ? 'sales' : room; const sl = (SLOTS[room] || SLOTS.ops)[i] || (SLOTS[room] || SLOTS.ops)[0], pr = typeOf(room).props, f = FOOT[pr[i % pr.length]] || [3, 3]; return W2P(sl[0] + f[0] + 1.2, sl[1] + f[1] / 2); };
 })();
