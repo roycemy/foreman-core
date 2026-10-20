@@ -1141,9 +1141,9 @@ async function reconnectAgent(id,body){
  if(!body.client_id||!body.redirect_uri||!body.code_challenge)return {status:409,body:{error:'client_reconnect_required',agentId:id,requires:['client_id','redirect_uri','code_challenge','code_challenge_method'],connection:await connectionState(a)}};
  const client=await getJ('gl:oauth:client:'+body.client_id);
  if(!client||!client.redirect_uris.includes(body.redirect_uri)||body.code_challenge_method!=='S256'||!/^[A-Za-z0-9_-]{43}$/.test(body.code_challenge))return {status:400,body:{error:'invalid_client_parameters'}};
- const params=new URLSearchParams({client_id:body.client_id,redirect_uri:body.redirect_uri,response_type:'code',code_challenge_method:'S256',code_challenge:body.code_challenge,scope:'blackbox.bot',resource:OAUTH_ORIGIN+'/api/mcp',agent_id:id});
+ const params=new URLSearchParams({client_id:body.client_id,redirect_uri:body.redirect_uri,response_type:'code',code_challenge_method:'S256',code_challenge:body.code_challenge,scope:'blackbox.bot',resource:PUBLIC_ORIGIN+'/api/mcp',agent_id:id});
  if(body.state)params.set('state',String(body.state));
- return {status:200,body:{agentId:id,authorizationUrl:OAUTH_ORIGIN+'/oauth/authorize?'+params.toString(),createsBot:false}};
+ return {status:200,body:{agentId:id,authorizationUrl:PUBLIC_ORIGIN+'/oauth/authorize?'+params.toString(),createsBot:false}};
 }
 async function oauthRoutes(req,res,path,body){
  const send=(n,b)=>res.status(n).json(b),url=new URL(req.url,OAUTH_ORIGIN),params=Object.fromEntries(url.searchParams);
@@ -1478,7 +1478,7 @@ async function routes(req, res, path, body, agentPre) {
       return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, handoffPlan }), routed, unrouted }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
-    {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
+    {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
     {const wm=path.match(/^\/agents\/(\w+)\/wake$/);if(wm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setOwnerWake(wm[1],body));}}
     {const pm=path.match(/^\/agents\/(\w+)\/pairing$/);if(pm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuePairing(pm[1]));}}
     if(path==='/routing'&&req.method==='GET')return res.json(await routing(new URL(req.url,'https://local.invalid').searchParams.get('category')||''));
