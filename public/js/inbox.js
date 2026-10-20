@@ -146,7 +146,7 @@
     };
     v.innerHTML = `<div class="kh"><h1>Your HQ</h1><div class="end"><button class="plus" type="button" aria-label="New job" data-newjob>${BB.ICON.plus}</button>${BB.acctAv ? BB.acctAv() : ''}</div></div><div class="ks">${esc(sub)}</div>
       ${needs.length ? `<div class="kl">Needs you</div>${needs.map(card).join('')}` : ''}
-      <div class="kl" style="padding-top:${needs.length ? 28 : 8}px">Jobs today</div>${todays.length ? todays.map(jrow).join('') : `<div class="ks" style="padding-top:4px">No jobs today. Tap + to ask the team for something.</div>`}
+      <div class="kl" style="padding-top:${needs.length ? 28 : 8}px">Jobs today</div>${todays.length ? todays.map(jrow).join('') : `<div class="ks" style="padding-top:4px">${BB.offline ? (BB.S ? 'Job updates are unavailable. This is the last saved view.' : 'Jobs could not load. Your workspace is not empty; its status is unavailable.') : 'No jobs today. Tap + to ask the team for something.'}</div>`}
       <div class="mobile-team-head"><h2>Your team</h2><button class="link" type="button" data-go-floor>View animated floor ↗</button></div><div class="mobile-team">${BB.agents().filter(a=>!a.harness).map(a=>`<button type="button" class="mobile-bot" data-bot="${esc(a.id)}">${BB.av(a,'s28')}<span><b>${esc(a.name)}</b><small>${esc(BB.statusLine(a))}</small></span><span aria-hidden="true">↗</span></button>`).join('')||'<p class="ks">Connect a bot to start building your team.</p>'}</div>`;
     BB.bindItems(v, needs.concat(BB.onYou()));
     v.querySelector('[data-newjob]').onclick = () => BB.newJob();
