@@ -617,3 +617,40 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .tour .nx{background:#fff;color:var(--ink);height:34px;padding:0 16px;border-radius:10px;font-weight:600;font-size:13px;border:0}
 @media (prefers-reduced-motion:reduce){#tray.waiting .dot-halo{animation:none;opacity:.22}.spot{transition:none}}
 @media (max-width:940px){.hero{display:none}}
+
+/* owner flags: reconnect flag under the crew pill, receipts that ship */
+.recflags{position:absolute;left:24px;bottom:84px;display:flex;flex-direction:column;gap:8px;z-index:21;max-width:340px}
+.roster.on ~ .recflags{display:none}
+.recflag{display:flex;align-items:flex-start;gap:10px;text-align:left;background:var(--vermilion);color:#fff;border:0;border-radius:14px;padding:10px 14px 10px 12px;box-shadow:var(--sh2);cursor:pointer;font:inherit}
+.recflag:hover{background:var(--vermilion-press)}
+.recflag:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.recflag.busy{opacity:.7;pointer-events:none}
+.recflag .fi{margin-top:2px;flex:none}
+.recflag .ft{display:flex;flex-direction:column;gap:2px}
+.recflag b{font-size:13.5px;font-weight:600}
+.recflag small{font-size:12px;opacity:.92;line-height:1.35}
+.recguide{position:fixed;left:50%;bottom:96px;transform:translate(-50%,12px);width:min(360px,calc(100vw - 32px));background:var(--ink);color:#fff;border-radius:16px;padding:14px 16px;box-shadow:var(--sh3);z-index:90;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s}
+.recguide.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.recguide b{font-size:15px}.recguide p{margin:4px 0 10px;font-size:13.5px;color:rgba(255,255,255,.85)}
+.recguide .acts{display:flex;gap:8px;justify-content:flex-start}
+.recguide .b.ghost{color:#fff;border-color:rgba(255,255,255,.3)}
+.rbadge{font-style:normal;font-size:11px;font-weight:600;color:#fff;background:var(--vermilion);border-radius:999px;padding:1px 7px;margin-left:6px;white-space:nowrap}
+.rbadge[hidden]{display:none}
+.rbadge.pop{animation:rbpop .5s cubic-bezier(.3,1.6,.5,1)}
+@keyframes rbpop{0%{transform:scale(.6)}60%{transform:scale(1.25)}100%{transform:scale(1)}}
+.tabs a .rbadge{position:absolute;top:-4px;left:calc(50% + 6px);margin:0;padding:1px 6px;font-size:10px}
+.rcard{position:fixed;left:50%;bottom:104px;width:min(300px,calc(100vw - 40px));background:#fff;border:1px solid var(--line-2);border-radius:12px 12px 4px 4px;box-shadow:var(--sh3);padding:12px 14px 16px;z-index:95;text-decoration:none;color:var(--ink);display:flex;flex-direction:column;gap:6px;opacity:0;transform:translate(-50%,24px)}
+.rcard .rc-top{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
+.rcard .rc-av{width:22px;height:22px;border-radius:50%;background:var(--av,#121212);color:#fff;font-size:9px;display:inline-flex;align-items:center;justify-content:center;letter-spacing:0}
+.rcard .rc-t{margin-left:auto;text-transform:none;letter-spacing:0}
+.rcard .rc-h{font-size:15px;font-weight:600;line-height:1.25}
+.rcard .rc-m{font-size:12.5px;color:var(--stone)}
+.rcard .rc-edge{position:absolute;left:0;right:0;bottom:-7px;height:8px;background:linear-gradient(135deg,#fff 50%,transparent 50%) 0 0/10px 8px,linear-gradient(225deg,#fff 50%,transparent 50%) 0 0/10px 8px;filter:drop-shadow(0 1px 0 var(--line-2))}
+@media (max-width:760px){.rcard{bottom:calc(var(--h-tabs) + 24px)}.recguide{bottom:calc(var(--h-tabs) + 16px)}}
+.kr.new,.row.new{box-shadow:inset 3px 0 0 var(--vermilion)}
+
+/* working on the floor: gather bob and the carried crate */
+.ch.gather .avs .figure{animation:gbob 1.1s ease-in-out infinite}
+@keyframes gbob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3%)}}
+.ch.carry .avs::after{content:'';position:absolute;left:50%;bottom:28%;width:38%;height:20%;transform:translateX(-50%);background:#C49C66;border:1px solid #8A6A3F;border-radius:2px;box-shadow:inset 0 3px 0 #DDBE8E;pointer-events:none}
+@media (prefers-reduced-motion:reduce){.ch.gather .avs .figure{animation:none}}
