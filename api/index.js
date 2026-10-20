@@ -239,6 +239,7 @@ async function maybeWakeBot(a) {
     : w && w.channel === 'email' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
     : w && w.channel === 'slack' ? 'slack'
     : !w && a.providerId === 'instinct' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM ? 'email'
+    : !w && a.providerId === 'grok' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM && process.env.WAKE_GROK_EMAIL ? 'email'
     : !w && a.providerId === 'grok' && process.env.WAKE_GROK_SLACK_WEBHOOK ? 'slack'
     : !w && a.providerId === 'grok' && process.env.WAKE_GITHUB_TOKEN && process.env.WAKE_GITHUB_REPO ? 'github'
     : null;
@@ -248,8 +249,8 @@ async function maybeWakeBot(a) {
   try {
     let ok = false, status = 0;
     if (channel === 'email') {
-      const who = w && w.channel === 'email' ? String(a.name || 'your bot').slice(0, 40) : 'Instinct';
-      const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [w && w.channel === 'email' ? w.target : (process.env.WAKE_INSTINCT_EMAIL || 'xt1udv@mail.instinct.com')], subject: 'Alter: job waiting for ' + who, text: 'A job is waiting for ' + who + ' in Alter.' }) });
+      const who = (w && w.channel === 'email') || a.providerId === 'grok' ? String(a.name || 'your bot').slice(0, 40) : 'Instinct';
+      const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [w && w.channel === 'email' ? w.target : (a.providerId === 'grok' ? process.env.WAKE_GROK_EMAIL : (process.env.WAKE_INSTINCT_EMAIL || 'xt1udv@mail.instinct.com'))], subject: 'Alter: job waiting for ' + who, text: 'A job is waiting for ' + who + ' in Alter.' }) });
       ok = resp.ok; status = resp.status;
     } else if (channel === 'webhook') {
       const ping = JSON.stringify({ event: 'alter.job.waiting' });
@@ -446,7 +447,9 @@ function timelineOf(t,events,requests,receipts,kids,name){
   else if(q.status==='blocked')out.push({at:q.decidedAt||q.createdAt,text:'Blocked: '+w,kind:'denied',detail:q.reason||null});}
  for(const k of kids)if(['done','failed'].includes(k.status))out.push({at:k.finishedAt,text:name(k.assignee)+(k.status==='done'?' finished “'+k.title+'”':' could not finish “'+k.title+'”'),kind:'step'});
  for(const k of kids)if(k.status==='running')out.push({at:k.startedAt||k.createdAt,text:name(k.assignee)+' is working on its part',kind:'step'});else if(k.status==='queued')out.push({at:k.createdAt,text:'A part waits for '+name(k.assignee),kind:'step'});
- if(t.status==='done')out.push({at:t.finishedAt,text:'Delivered',kind:'step',end:true});
+ const openKids=kids.filter(k=>['queued','running'].includes(k.status));
+ /* a handed-off part that is not done yet means the job is NOT delivered: say who it waits on */
+ if(t.status==='done')out.push({at:t.finishedAt,text:openKids.length?'Waiting on '+[...new Set(openKids.map(k=>name(k.assignee)))].join(' and '):'Delivered',kind:'step',end:true});
  if(t.status==='failed')out.push({at:t.finishedAt,text:'Stopped without a result',kind:'denied',end:true,detail:t.result?String(t.result).slice(0,160):null});
  return out.filter(x=>x.at).sort((a,b)=>String(a.at).localeCompare(String(b.at))||(a.end?1:0)-(b.end?1:0));}
 
@@ -545,7 +548,7 @@ async function grantJob(id,body){return withJobLock(id,async()=>{const t=await g
 async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return {code:'unknown_action',reason:'Action is not in the catalog'};if(agent.permissionScope!=='job')return null;if(!taskId)return {code:'job_required',reason:'Register or claim the real job first; gated actions require an owner job grant'};const t=await getJ('fm:task:'+taskId),g=t?.jobGrant;if(!t||t.assignee!==agent.id||t.status!=='running')return {code:'job_inactive',reason:'Job is not running under this worker'};if(!g||g.status!=='active'||g.agentId!==agent.id||grantId&&g.id!==grantId)return {code:'job_grant_required',reason:'Owner must grant actions and a ledger budget for this job'};if(!g.actions[action])return {code:'job_action',reason:'Action is outside the job grant'};if(Number(g.spentCents||0)+ACTIONS[action].costCents>g.budgetCents)return {code:'limit_job',reason:'Job ledger budget would be exceeded'};return null;}
 async function closeJobGrant(t,reason){if(t.jobGrant){t.jobGrant={...t.jobGrant,status:'closed',closedAt:now(),closeReason:reason};}await cancelJobRequests(t.id,reason);}
 
-async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;await expireStalledTasks();const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
+async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;await r(['SET','fm:claimSeen:'+agent.id,now(),'EX','604800']);await expireStalledTasks();const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
   const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); t.progressAt = t.startedAt;if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
 async function completeTask(agent,id,body){return withJobLock(id,()=>completeTaskUnlocked(agent,id,body));}
 async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
@@ -878,8 +881,9 @@ async function fullState() {
   const day = now().slice(0, 10);
   const sp = agents.length ? await r(['MGET', ...agents.map(a => `fm:spend:${a.id}:${day}`)]) : [];
   const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
+  const cls = agents.length ? await r(['MGET', ...agents.map(a => 'fm:claimSeen:' + a.id)]) : [];
   const connections=await Promise.all(agents.map(connectionState));const conversations=await Promise.all(agents.map(a=>getJ('fm:conversation:'+a.id)));
-  const agentsPub = agents.map((a, i) => ({ ...a, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
+  const agentsPub = agents.map((a, i) => ({ ...a, lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
   const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
   CACHES.set(wsId(), { t: Date.now(), v }); return v;
