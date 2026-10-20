@@ -1,7 +1,7 @@
 /* Alter app shell service worker.
    Caches static shell files as an offline fallback; the network always wins when online.
    /api is always live network: no work state, approval or receipt is ever served from cache. */
-const CACHE = 'alter-shell-v4';
+const CACHE = 'alter-shell-v5';
 const SHELL = [
   '/hq', '/app.html', '/brand.js', '/manifest.webmanifest',
   '/styles/tokens.css', '/styles/app.css',
@@ -22,12 +22,12 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || u.origin !== location.origin) return;
   if (u.pathname.startsWith('/api/') || u.pathname.startsWith('/oauth/') || u.pathname.startsWith('/receipt/')) return; // always live
   if (e.request.mode === 'navigate') {
-    e.respondWith(fetch(e.request).catch(() => caches.match('/hq')));
+    e.respondWith(fetch(e.request, { cache: 'no-cache' }).catch(() => caches.match('/hq')));
     return;
   }
   // Network-first: always the newest files when online, cache only as the offline fallback.
   e.respondWith(
-    fetch(e.request).then(res => {
+    fetch(e.request, { cache: 'no-cache' }).then(res => {
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
       return res;
     }).catch(() => caches.match(e.request))

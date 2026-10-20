@@ -81,9 +81,7 @@
       <div class="box2"><b>No custom MCP support?</b><p>The HTTP gateway works only if your bot can make authenticated HTTPS calls and securely store a credential. A chat message alone cannot add those capabilities.</p><button class="b out sm" type="button" id="gatewayroute" style="margin-top:10px">Set up HTTP gateway</button></div>
       <div class="status" id="linkstatus" role="status" aria-live="polite"></div>
       <p class="meta" style="margin-top:12px">Only routed activity is visible. Availability depends on your provider supporting this connector. Existing bots are not automatically imported.</p>
-      ${W.p==='grok'?wakeBoxHtml():''}
       ${W.p==='grok'?'<p class="meta" style="margin-top:8px">Optional, free: instant push on queued jobs. The setup message has Grok create its own Webhook-trigger automation and declare it to Alter - no other apps or accounts, nothing to set here. Alternatives: set WAKE_GROK_SLACK_WEBHOOK (a Slack incoming webhook) for the whole deployment, or let Grok declare its own; WAKE_GITHUB_TOKEN and WAKE_GITHUB_REPO stay a developer extra. A bot\'s own declared target wins over the deployment default. Without any of these, the 5-minute routine still covers new jobs.</p>':''}`);
-    if (W.p === 'grok') bindWake(box);
     status(W.reconnect ? 'reconnect' : 'waiting', W.reconnect ? '<b>Reconnect needed.</b> Waiting for ' + esc(W.agent.name) + ' to authorize again.' : 'Waiting for your bot. No live connection confirmed yet.');
     box.querySelector('#gatewayroute').onclick = () => { clearInterval(timer); W.gateway = true; drawGateway(); };
     box.querySelector('#copysetup').onclick = () => copy(setupMessageFor(), 'Setup message copied. Paste it into your existing bot.', '#setupfallback');
@@ -97,15 +95,6 @@
   /* browser console pairing (Muse, Instinct): a short one-time code, no long key to type */
   /* wake ladder, rung 2: the Instinct link carries &poll=300 so the console declares that cadence on its own calls; HQ then shows Checks in every 5 min and Late if a check is missed - never a live promise. Muse stays rung 3 (acts when messaged). */
   function pairUrl(){const u=PRODUCTION_ORIGIN+'/runner?agent='+encodeURIComponent(W.agent.id)+(W.p==='instinct'?'&poll=300':'');return W.pairCode?u+'#pair='+W.pairCode:u;}
-  /* Grok instant wake: paste the Webhook trigger URL and signing secret. Shown on the Grok connect sheet and the Reconnect sheet. */
-  function wakeBoxHtml() { return '<div class="box2" id="wakebox"><b>Instant jobs for Grok (optional, free)</b><p>In Grok, open your Alter automation, add a Webhook trigger, save it, and copy its endpoint and signing secret. Paste both here. The secret is sent over HTTPS, stored on the server, and never shown again.</p><label>Trigger URL<input class="in" id="wakeurl" autocomplete="off" placeholder="https://..."></label><label>Signing secret<input class="in" id="wakesec" type="password" autocomplete="off" placeholder="whsec_..."></label><div class="acts" style="justify-content:flex-start;margin-top:8px"><button class="b ink sm" type="button" id="wakesave">Save and send test</button></div><p class="meta" id="wakemsg" role="status"></p></div>'; }
-  function bindWake(box) { box.querySelector('#wakesave').onclick = async () => {
-      const m = $('#wakemsg'); m.textContent = 'Saving...';
-      const j = await BB.api('/api/agents/' + W.agent.id + '/wake', 'POST', { url: $('#wakeurl').value.trim(), secret: $('#wakesec').value.trim() });
-      if (j.error) { m.textContent = j.error; return; }
-      $('#wakesec').value = '';
-      m.textContent = j.ok ? 'Saved. Grok accepted the test ping (HTTP ' + j.httpStatus + '). Queued jobs now wake it at once.' : 'Saved, but the test failed' + (j.httpStatus ? ' (HTTP ' + j.httpStatus + ')' : '') + '. Check the URL and secret, or rotate the secret in Grok and paste it again.';
-  }; }
   function drawPairing() {
     BB.linkWaiting = W.agent.id; const label = W.label || 'your assistant';
     const box = shell(`<h3>One paste connects ${esc(W.agent.name)}.</h3><p>Copy the setup message and paste it into ${label}. The link inside carries a one-time pairing code, so ${label} opens it and pairs itself. No second step, no code to retype.</p>
@@ -113,9 +102,7 @@
       <p class="meta" id="pairmeta">Preparing a one-time code...</p>
       <p class="meta" style="margin-top:12px">Expected bot: ${esc(W.agent.name)} · <code>${esc(W.agent.id)}</code></p><p class="err" id="pairerr" role="alert"></p>
       <textarea id="pairfallback" class="in" readonly hidden style="min-height:200px" aria-label="Setup message"></textarea>
-      ${W.p==='grok'?wakeBoxHtml():''}
       <div class="status" id="linkstatus" role="status" aria-live="polite"></div><p class="meta">The code works once and expires 5 minutes after it is issued. It rides in the link fragment, which never reaches ${BRAND.name} servers or logs. Reopening the same bot link later resumes the saved session, until access expires or is revoked.</p><details><summary>My bot cannot open a browser</summary><p>Only use an alternative your assistant supports.</p><div class="acts"><button class="b ghost sm" id="chooseoauth">MCP connector help</button><button class="b ghost sm" id="choosehttp">Secure HTTP help</button></div></details><div class="acts" id="connectionfinish" hidden><button class="b out" id="anotherbot">Connect another bot</button><button class="b ink" id="finishsetup">Finish connections</button></div>`);
-    if (W.p === 'grok') bindWake(box);
     status('waiting', 'Waiting for an accepted connection.');
     async function issue() {
       $('#pairerr').textContent = ''; $('#newpair').hidden = true; $('#copypairmsg').disabled = true; $('#pairmeta').textContent = 'Preparing a one-time code...';

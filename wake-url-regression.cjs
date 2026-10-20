@@ -18,7 +18,5 @@ assert(!wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://api.x.ai/hook'
   assert(!/task|brief/i.test(body),'ping carries no task details');
   assert(/wake: a\.wake && a\.wake\.channel \? \{ channel: a\.wake\.channel, declaredAt: a\.wake\.declaredAt \|\| null, hasSecret/.test(srv),'state shows only channel and hasSecret, never the secret');
   assert(/agents\\\/\(\\w\+\)\\\/wake\$/.test(srv)&&/origin'\}\);return send\(await setOwnerWake/.test(srv),'owner endpoint is origin checked');
-  const ui=fs.readFileSync('public/js/connect.js','utf8');
-  assert(/id="wakesec" type="password"/.test(ui)&&/\$\('#wakesec'\)\.value = ''/.test(ui),'secret field is masked and cleared after save');
   console.log('PASS wake-url: owner-pasted webhook is validated, signed, hidden');
 })().catch(e=>{console.error('FAIL',e.message);process.exit(1)});
