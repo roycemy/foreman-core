@@ -1105,6 +1105,9 @@ async function cardControlUnlocked(body){
 
 // OAuth for outbound MCP connections. Providers never lend us their account password.
 const OAUTH_ORIGIN='https://foreman-core.vercel.app';
+const PUBLIC_ORIGIN='https://www.alterhq.app';
+const originOk=o=>o===OAUTH_ORIGIN||o===PUBLIC_ORIGIN;
+const originFor=req=>/^(www\.)?alterhq\.app$/.test(String(req&&req.headers&&req.headers.host||''))?PUBLIC_ORIGIN:OAUTH_ORIGIN;
 const validRedirect=u=>{try{const x=new URL(u);return !x.username&&!x.password&&!x.hash&&(x.protocol==='https:'||x.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(x.hostname));}catch{return false;}};
 // Refresh grants have no routine expiry. Rotation is atomic; replay revokes the family.
 // Raw refresh secrets are never persisted. Owner revoke increments the bot epoch.
@@ -1144,8 +1147,8 @@ async function reconnectAgent(id,body){
 }
 async function oauthRoutes(req,res,path,body){
  const send=(n,b)=>res.status(n).json(b),url=new URL(req.url,OAUTH_ORIGIN),params=Object.fromEntries(url.searchParams);
- if(path==='/.well-known/oauth-protected-resource'||path==='/.well-known/oauth-protected-resource/api/mcp')return send(200,{resource:OAUTH_ORIGIN+'/api/mcp',authorization_servers:[OAUTH_ORIGIN],scopes_supported:['blackbox.bot'],bearer_methods_supported:['header']});
- if(path==='/.well-known/oauth-authorization-server')return send(200,{issuer:OAUTH_ORIGIN,authorization_endpoint:OAUTH_ORIGIN+'/oauth/authorize',token_endpoint:OAUTH_ORIGIN+'/api/oauth/token',registration_endpoint:OAUTH_ORIGIN+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code','refresh_token'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['blackbox.bot']});
+ if(path==='/.well-known/oauth-protected-resource'||path==='/.well-known/oauth-protected-resource/api/mcp'){const O=originFor(req);return send(200,{resource:O+'/api/mcp',authorization_servers:[O],scopes_supported:['blackbox.bot'],bearer_methods_supported:['header']});}
+ if(path==='/.well-known/oauth-authorization-server'){const O=originFor(req);return send(200,{issuer:O,authorization_endpoint:O+'/oauth/authorize',token_endpoint:O+'/api/oauth/token',registration_endpoint:O+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code','refresh_token'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['blackbox.bot']});}
  if(path==='/oauth/register'&&req.method==='POST'){
  if(!Array.isArray(body.redirect_uris)||body.redirect_uris.length<1||body.redirect_uris.length>5||!body.redirect_uris.every(validRedirect))return send(400,{error:'invalid_redirect_uri'});
  const ip=String(req.headers['x-forwarded-for']||'local').split(',')[0],n=await r(['INCRBY','gl:oauth:rate:'+sha(ip),1]);await r(['EXPIRE','gl:oauth:rate:'+sha(ip),3600]);if(n>30)return send(429,{error:'rate_limited'});
@@ -1154,13 +1157,13 @@ async function oauthRoutes(req,res,path,body){
  if(path==='/oauth/context'&&req.method==='GET'){
  const c=await getJ('gl:oauth:client:'+params.client_id);if(!c||!c.redirect_uris.includes(params.redirect_uri)||params.response_type!=='code'||params.code_challenge_method!=='S256'||!/^[A-Za-z0-9_-]{43}$/.test(params.code_challenge||''))return send(400,{error:'Invalid sign-in request. Return to your bot and reconnect.'});
  if(params.scope&&params.scope!=='blackbox.bot')return send(400,{error:'invalid_scope'});
- if(params.resource&&params.resource!==OAUTH_ORIGIN+'/api/mcp')return send(400,{error:'invalid_target'});
+ if(params.resource&&params.resource!==OAUTH_ORIGIN+'/api/mcp'&&params.resource!==PUBLIC_ORIGIN+'/api/mcp')return send(400,{error:'invalid_target'});
  const sess=await getSession(req);if(!sess)return send(401,{error:'auth'});
  const csrf=crypto.randomBytes(24).toString('hex');await setJ('gl:oauth:consent:'+sha(csrf),{ws:sess.ws,params,expires:Date.now()+600000});
  const bots=await als.run({ws:sess.ws},listAgents);if(params.agent_id&&!bots.some(a=>a.id===params.agent_id&&a.status==='active'&&!a.hosted&&!a.harness&&!a.live))return send(400,{error:'bot_not_available'});return send(200,{client:c.client_name,redirectOrigin:new URL(params.redirect_uri).origin,bots:bots.filter(a=>a.status==='active'&&!a.hosted&&!a.harness&&!a.live&&(!params.agent_id||a.id===params.agent_id)).map(a=>({id:a.id,name:a.name,provider:a.provider})),csrf});
  }
  if(path==='/oauth/consent'&&req.method==='POST'){
- if(req.headers.origin!==OAUTH_ORIGIN)return send(403,{error:'origin'});
+ if(!originOk(req.headers.origin))return send(403,{error:'origin'});
  const sess=await getSession(req),key='gl:oauth:consent:'+sha(String(body.csrf||'')),raw=await r(['GET',key]),v=raw&&JSON.parse(raw);
  if(!sess||!v||v.ws!==sess.ws||v.expires<Date.now())return send(403,{error:'Sign-in expired. Reconnect from your bot.'});
  const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify({used:true})]);if(won!==1)return send(409,{error:'Already authorized'});
@@ -1172,7 +1175,7 @@ async function oauthRoutes(req,res,path,body){
  }
  if(path==='/oauth/token'&&req.method==='POST'){
  res.setHeader('Cache-Control','no-store');res.setHeader('Pragma','no-cache');
- if(body.resource&&body.resource!==OAUTH_ORIGIN+'/api/mcp')return send(400,{error:'invalid_target'});
+ if(body.resource&&body.resource!==OAUTH_ORIGIN+'/api/mcp'&&body.resource!==PUBLIC_ORIGIN+'/api/mcp')return send(400,{error:'invalid_target'});
  if(body.scope&&body.scope!=='blackbox.bot')return send(400,{error:'invalid_scope'});
  if(body.grant_type==='refresh_token'){
  const hash=sha(String(body.refresh_token||'')),ref=await getJ('gl:oauth:refresh:'+hash);
@@ -1210,7 +1213,7 @@ async function oauthRoutes(req,res,path,body){
 async function joinWaitlist(req,res,body){
  res.setHeader('Cache-Control','no-store');
  if(req.method!=='POST')return res.status(405).json({error:'POST required'});
- if(req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});
+ if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
  if(body.website)return res.json({ok:true});
  const email=String(body.email||'').trim().toLowerCase();
  if(email.length>254||! /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||body.consent!==true)return res.status(400).json({error:'Enter your email and agree to an access update.'});
@@ -1248,9 +1251,9 @@ async function runnerRoutes(req,res,path,body){
  res.setHeader('Cache-Control','no-store');
  const m=path.match(/^\/runner\/(agent_[a-f0-9]+)\/(.*)$/);if(!m)return res.status(404).json({error:'Runner not found'});
  const id=m[1],action=m[2],sess=await runnerSession(req,id);if(!sess)return res.status(401).json({error:'Runner session unavailable. Pair this bot again.'});
- if(req.headers.origin&&req.headers.origin!==OAUTH_ORIGIN)return res.status(403).json({error:'origin'});
+ if(req.headers.origin&&!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
  if(req.headers['sec-fetch-site']==='cross-site')return res.status(403).json({error:'cross-site'});
- if(req.method!=='GET'&&(req.headers.origin!==OAUTH_ORIGIN||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
+ if(req.method!=='GET'&&(!originOk(req.headers.origin)||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
  if(action==='session'&&req.method==='GET'){
   // Validation above checks exact bot, epoch, gateway key, expiry and request origin.
   // Preserve the token and CSRF value so simultaneous tabs do not invalidate each other.
@@ -1294,7 +1297,7 @@ const blCaller=req=>({userAgent:String(req.headers['user-agent']||''),ipRegion:S
 async function botLinkBotRoutes(req,res,path,body){res.setHeader('Cache-Control','no-store');const send=o=>res.status(o.status).json(o.body);
  const pm=path.match(/^\/pair\/(pr_[A-Za-z0-9_-]{20,40})$/);
  if(pm&&req.method==='POST')return send(await botLink.hello(pm[1],{nonce:body.nonce,callerSecret:body.callerSecret,fingerprint:blCaller(req),oldKey:body.oldKey||null}));
- if(pm&&req.method==='GET'){const h=String(req.headers.authorization||'');if(!/^Pairing\s+/i.test(h))return send(await botLink.steps(pm[1],OAUTH_ORIGIN));return send(await botLink.pickup(pm[1],{callerSecret:h.replace(/^Pairing\s+/i,'')}));}
+ if(pm&&req.method==='GET'){const h=String(req.headers.authorization||'');if(!/^Pairing\s+/i.test(h))return send(await botLink.steps(pm[1],PUBLIC_ORIGIN));return send(await botLink.pickup(pm[1],{callerSecret:h.replace(/^Pairing\s+/i,'')}));}
  if(path==='/link/call'&&req.method==='POST'){const key=String(req.headers.authorization||'').replace(/^Bearer\s+/i,'').trim();return send(await botLink.call(key,{op:body.op,text:body.text,action:body.action,params:body.params,requestId:body.requestId}));}
  return res.status(404).json({error:'not found'});}
 async function linkableAgents(ws){return als.run({ws},async()=>{const out=[];for(const a of await listAgents()){if(a.status!=='active'||a.harness||a.hosted)continue;if(await r(['GET','bl:agentBot:'+ws+':'+a.id]))continue;out.push({id:a.id,name:a.name,provider:a.provider});}return out;});}
@@ -1311,9 +1314,9 @@ async function botLinkOwnerRoutes(req,res,path,body,sess){res.setHeader('Cache-C
  const ownOrigin=o==='https://'+req.headers.host; // any deployment (prod, preview) accepts its own host: same-origin is the CSRF barrier
  if(!t||typeof req.headers['x-alter-csrf']!=='string'||!crypto.timingSafeEqual(Buffer.from(sha(req.headers['x-alter-csrf'])),Buffer.from(sha(t)))||(o!==OAUTH_ORIGIN&&!ownOrigin&&!devOrigin))return res.status(403).json({error:'csrf'});
  if(path==='/botlink/pairings'){let agentId=null;if(body.agentId!=null){if(!(await linkableAgents(sess.ws)).some(a=>a.id===body.agentId))return res.status(409).json({error:'agent_not_linkable'});agentId=body.agentId;}
-  return send(await botLink.createPairing({ws:sess.ws,account:sess.email,type:body.type,agentId,origin:OAUTH_ORIGIN}));}
+  return send(await botLink.createPairing({ws:sess.ws,account:sess.email,type:body.type,agentId,origin:PUBLIC_ORIGIN}));}
  {const m=path.match(/^\/botlink\/pairings\/(pr_[A-Za-z0-9_-]{20,40})\/(approve|cancel)$/);if(m)return send(m[2]==='approve'?await botLink.approve(sess.ws,m[1],{confirmBotId:body.confirmBotId||null}):await botLink.cancel(sess.ws,m[1]));}
- {const m=path.match(/^\/botlink\/bots\/(bot_[A-Za-z0-9_-]+)\/(revoke|repaste)$/);if(m)return send(m[2]==='revoke'?await botLink.revoke(sess.ws,m[1]):await botLink.repasteMessage(sess.ws,m[1],OAUTH_ORIGIN));}
+ {const m=path.match(/^\/botlink\/bots\/(bot_[A-Za-z0-9_-]+)\/(revoke|repaste)$/);if(m)return send(m[2]==='revoke'?await botLink.revoke(sess.ws,m[1]):await botLink.repasteMessage(sess.ws,m[1],PUBLIC_ORIGIN));}
  return res.status(404).json({error:'not found'});}
 
 module.exports = async (req, res) => {
@@ -1334,7 +1337,7 @@ module.exports = async (req, res) => {
     if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
     if (path.startsWith('/gateway') || path === '/ingest' || path === '/mcp') {
       const ra = await resolveAgent(req);
-      if(!ra&&path==='/mcp')res.setHeader('WWW-Authenticate','Bearer resource_metadata="'+OAUTH_ORIGIN+'/.well-known/oauth-protected-resource/api/mcp"');
+      if(!ra&&path==='/mcp')res.setHeader('WWW-Authenticate','Bearer resource_metadata="'+originFor(req)+'/.well-known/oauth-protected-resource/api/mcp"');
       if (!ra) return path === '/mcp' ? res.status(401).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unknown or invalid agent key' } }) : res.status(401).json({ status: 'unauthorized', reason: 'Unknown or invalid agent key' });
       req.gatewayKeyAuth=!!ra.apiKey;
       return await als.run({ ws: ra.ws }, () => routes(req, res, path, body, ra.agent));
@@ -1528,7 +1531,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/connect' && req.method === 'POST') {
       const _ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();if(await ipRateLimited('connect',_ip,30,3600))return res.status(429).json({error:'Too many connection attempts. Try again later.'});
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
-      const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = OAUTH_ORIGIN;
+      const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = PUBLIC_ORIGIN;
       if (prov === 'muse' && body.connectionMode !== 'existing') {
         let k = String(body.apiKey || '').trim().replace(/^MODEL_API_KEY=/i, '').replace(/^Bearer\s+/i, '').trim(); if (k.length > 1 && ((k[0] === '"' && k.endsWith('"')) || (k[0] === "'" && k.endsWith("'")))) k = k.slice(1, -1).trim();
         if (!/^LLM(?:_[^\s_|]+_[^\s|]+|\|[^\s|]+\|[^\s|]+)$/.test(k)) return res.status(400).json({ error: 'Paste your Meta Model API key from dev.meta.ai. It starts with LLM_ (LLM_<id>_<secret>).' });
@@ -1552,7 +1555,7 @@ async function routes(req, res, path, body, agentPre) {
         await track('connected', { provider: 'grok' }); return res.json({ agent: c.agent, hosted: true });
       }
       const c = await createAgent(name, String(body.role || '').trim(), prov, false, { preset });
-      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${OAUTH_ORIGIN}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it stops presence; reopening this exact link in the saved browser resumes the pair unless revoked, reset or expired. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
+      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${PUBLIC_ORIGIN}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it stops presence; reopening this exact link in the saved browser resumes the pair unless revoked, reset or expired. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
       await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, noFirstTask: true, connectionStatus: 'awaiting_bot', instructions: msg, mcpUrl: base + '/api/mcp', runnerUrl: base + '/runner?agent=' + encodeURIComponent(c.agent.id) });
     }
     if (path === '/track' && req.method === 'POST') { if (['connect_started', 'first_task_started', 'approval_shown'].includes(body.step)) await track(body.step, body.provider ? { provider: String(body.provider).slice(0, 20) } : null); return res.json({ ok: true }); }
