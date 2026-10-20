@@ -164,7 +164,7 @@ assert.ok(api.includes("'Alter: job waiting for Grok'"),'default slack text lite
 assert.ok(api.includes("title: 'Alter: job waiting for Grok'"),'exact issue title');
 assert.ok(api.includes("state_reason: 'completed'"),'trigger issue closed as completed');
 assert.ok(!/text:.*t\.title/.test(api),'trigger bodies never interpolate task data');
-assert.ok(api.includes("presenceOnly: true });\n  } catch"),'wake events never count as bot activity');
+assert.ok(api.includes("presenceOnly: true, taskId:jobId||null });\n  } catch"),'wake events never count as bot activity');
 assert.ok(api.includes('declared target wins'),'per-bot declared target documented as winning over env');
 assert.ok(api.includes('gl:wakeChg:'),'email target changes are capped per bot per day');
 assert.ok(api.includes('hooks\\.slack\\.com\\/services\\/'),'slack targets locked to webhook URLs');
