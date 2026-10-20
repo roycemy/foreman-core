@@ -27,17 +27,11 @@ assert(!i.msg.includes('Live'),'no live promise');
 
 // Grok: rung 2 via its own routine on the MCP connector
 const g=forP('grok');
-assert(g.mcp.includes('add a Routine')&&/every 5 minutes/i.test(g.mcp)&&g.mcp.includes('foreman_next_task'),'grok message creates its own 5-min routine');
-assert(g.mcp.includes('on your 5-minute routine'),'grok standing rule covers the routine');
-assert(g.mcp.includes('Email trigger')&&g.mcp.includes('Gmail'),'grok paste leads with the email-trigger automation on the owner gmail');
-assert(g.mcp.includes('Alter: job waiting for'),'grok email trigger filters on the stable wake subject');
-assert(g.mcp.includes('Webhook trigger')&&g.mcp.includes('wakeSecret')&&g.mcp.includes('whsec_'),'webhook stays as the documented alternative');
-assert(g.mcp.includes('no other apps or accounts'),'grok instant wake needs no Slack/GitHub or other account');
-assert(g.mcp.includes('developer-only extra'),'github stays framed as a dev extra');
-assert(g.mcp.includes('routine stays as backup'),'5-minute routine remains the backup');
-assert(g.mcp.includes('wakeChannel')&&g.mcp.includes('wakeTarget'),'grok paste offers declaring its own wake target');
-assert(g.mcp.includes('pollSec 300'),'grok paste declares its routine cadence on foreman_presence');
-assert(g.mcp.includes('Slack incoming webhook URL'),'grok self-declared slack target named');
+assert(g.mcp.includes('ALTER AUTO-WAKE SETUP')&&g.mcp.includes('+alter')&&g.mcp.includes('Email trigger'),'grok creates its own +alter email-trigger routine');
+assert(g.mcp.includes('Alter: claim queued jobs')&&g.mcp.includes('Alter: backup check')&&/every 5 minutes/i.test(g.mcp)&&g.mcp.includes('foreman_next_task'),'grok creates both routines');
+assert(g.mcp.includes('wakeChannel')&&g.mcp.includes('wakeTarget')&&g.mcp.includes('pollSec 300')&&g.mcp.includes('wakeNonce'),'grok registers its address and echoes the test code');
+assert(g.mcp.includes('wake verified')&&g.mcp.includes('only after'),'verified only after the test email wakes it');
+assert(!/paste (the|a) (trigger|key|secret)/i.test(g.mcp),'no paste step');
 assert(!g.url.includes('poll='),'grok link declares no console cadence');
 
 // Muse: rung 3 only - no cadence, no routine; still one paste with the code in the fragment
