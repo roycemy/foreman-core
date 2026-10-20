@@ -117,7 +117,8 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
  if(e.k==='bun')s+='<path d="M-9.8 -61 a9.8 10 0 0 1 19.6 0 c-4 -3 -12 -4 -19.6 0z"'+F(H)+'/><circle cx="0" cy="-73" r="4.6"'+F(H)+'/>'+(ghost?'':'<circle cx="-9.4" cy="-56.5" r="1.3" fill="'+A+'"/><circle cx="9.4" cy="-56.5" r="1.3" fill="'+A+'"/>');
  s+='</g>';
  if(sit)s+='<rect x="-11" y="-17" width="22" height="7" rx="3.5"'+F(PANTS)+'/><rect x="-9.5" y="-12" width="5" height="11" rx="2.5"'+F(PANTS)+'/><rect x="4.5" y="-12" width="5" height="11" rx="2.5"'+F(PANTS)+'/><ellipse cx="-7" cy="-1.4" rx="3.6" ry="2"'+F(SHOE)+'/><ellipse cx="7" cy="-1.4" rx="3.6" ry="2"'+F(SHOE)+'/>'+(ghost?'':'<path d="M-12 -31 L12 -31 L10 -17 L-10 -17 Z" fill="#B7BDC2"/><path d="M-12 -31 L12 -31 L11.6 -29.4 L-11.6 -29.4 Z" fill="#D7DBDF"/><circle cx="0" cy="-24" r="1.6" fill="#F4F4F1"/><circle class="arm-t l" cx="-12" cy="-18.5" r="2.6" fill="'+SKIN+'"/><circle class="arm-t r" cx="12" cy="-18.5" r="2.6" fill="'+SKIN+'"/>');
- return '<svg class="figure pose-'+pose+'" viewBox="-30 -96 60 104" aria-hidden="true" focusable="false">'+s+'</svg>'}
+ if(opts.asleep){s=s.replace(/<ellipse cx="(-?3\.3)" cy="-60\.5" rx="1\.15" ry="1\.4" fill="#2B2D31"\/>/g,(m,x)=>'<path d="M'+(x-1.8)+' -60 q1.8 1.5 3.6 0" fill="none" stroke="#2B2D31" stroke-width="1.1" stroke-linecap="round"/>')+'<g class="zzz" fill="#8C8C86" font-family="Geist,system-ui,sans-serif" font-weight="600"><text x="10" y="-72" font-size="10">z</text><text x="17" y="-82" font-size="8">z</text></g>';}
+  return '<svg class="figure pose-'+pose+(opts.asleep?' asleep':'')+'" viewBox="-30 -96 60 104" aria-hidden="true" focusable="false">'+s+'</svg>'}
 
   /* ---------- island: the H1 logo tray (round M, B2). Porcelain top, ink band, a cast shadow to the lower right
      (light from the top left) in a shallow inset bay. ONE vermilion dot, shown and glowing only while a request waits. ---------- */
@@ -240,8 +241,10 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const ghost = BB.isGhost(a), s = BB.botState(a), walking = r.el.classList.contains('walk') && !BB.reduced();
     const pose = BB.withOwner(a) && !walking && r.tk && r.tk.startsWith('call') ? 'sit' : walking ? 'walk' : (!r.away && r.tk && r.tk.startsWith('home') && !ghost && s.kind !== 'reconnect' ? 'sit' : 'stand');
     r.el.dataset.idle = String(s.kind !== 'run'); r.el.dataset.activity = BB.withOwner(a) ? 'replying' : pose === 'sit' ? 'working' : 'idle';
-    const key = [ghost, pose, a.name, BB.cast(a).k].join('|'); if (r.key === key) return; r.key = key;
-    r.el.querySelector('.avs').innerHTML = figureSVG(a, { ghost, pose });
+    /* real signals only: never reconnected (key expired), went dark, or Muse with no job (acts when messaged). Static closed eyes and Zs, no loop. */
+    const asleep = !ghost && !walking && ['reconnect', 'dark', 'msg'].includes(s.kind);
+    const key = [ghost, pose, a.name, BB.cast(a).k, asleep].join('|'); if (r.key === key) return; r.key = key;
+    r.el.querySelector('.avs').innerHTML = figureSVG(a, { ghost, pose, asleep });
   }
   function ensure(a, i) {
     let r = F[a.id]; if (r) return r;
