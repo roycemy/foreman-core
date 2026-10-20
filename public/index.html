@@ -1,14 +1,15 @@
-<!doctype html>
+<!DOCTYPE html>
+
 <html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8"/><meta content="width=device-width, initial-scale=1" name="viewport"/>
 <title data-brand-title="{brand} · Your AI employees, on one floor">Your AI employees, on one floor</title>
-<meta name="description" content="Every AI employee. One workplace. Connect the bots you already run, set what they may do, and approve anything risky.">
-<meta name="theme-color" content="#F4F4F1">
-<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml"><link rel="icon" href="/brand/favicon-32.png" sizes="32x32" type="image/png"><link rel="icon" href="/brand/favicon-16.png" sizes="16x16" type="image/png"><link rel="apple-touch-icon" href="/brand/alter-icon-light-180.png">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<meta content="Every AI employee. One workplace. Connect the bots you already run, set what they may do, and approve anything risky." name="description"/>
+<meta content="#F4F4F1" name="theme-color"/>
+<link href="/brand/favicon.svg" rel="icon" type="image/svg+xml"/><link href="/brand/favicon-32.png" rel="icon" sizes="32x32" type="image/png"/><link href="/brand/favicon-16.png" rel="icon" sizes="16x16" type="image/png"/><link href="/brand/alter-icon-light-180.png" rel="apple-touch-icon"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
 <!-- Shared design system and brand token (served from the app's public/ folder). -->
-<link rel="stylesheet" href="/styles/tokens.css">
+<link href="/styles/tokens.css" rel="stylesheet"/>
 <script src="/brand.js"></script>
 <style>
 /* Marketing surface only: public, signed-out. The app shell never loads this. */
@@ -111,160 +112,114 @@ svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var
 .btn{border-radius:12px}.btn.pri,.btn.red{background:var(--ink);border-color:var(--ink);color:#fff}
 .minicard{border-radius:14px}
 .wm{font-size:17px}
+</style><style>
+/* Mobile-first hierarchy. Examples are static and labeled; no invented live feed. */
+.mobile-menu{display:none}.short-step{display:block}.how{grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;border-top:0}.short-step .n{display:block;border:0;font-size:20px;padding:20px 0 12px;color:var(--stone)}.short-step .body{display:block;padding:0 0 20px;border:0}.short-step{border-top:1px solid var(--line)}.short-step h3{font-size:26px}.short-step p{font-size:16px}.cta .btn{background:#fff;color:#121212}.figcap{font-family:var(--font)}
+@media(max-width:760px){
+.nav{height:68px;padding:12px 20px;flex-wrap:nowrap;gap:16px;justify-content:space-between}.nav>.desktop-links,.nav>.desktop-only{display:none}.nav>#mk-open{height:42px;padding:0 14px;order:2}.mobile-menu{display:block;order:3;position:relative}.mobile-menu summary{list-style:none;font:500 14px var(--font);padding:12px 0;cursor:pointer}.mobile-menu summary::-webkit-details-marker{display:none}.mobile-menu nav{display:flex;position:absolute;right:0;top:45px;width:210px;flex-direction:column;gap:0;padding:8px;background:#fff;border:1px solid var(--line);box-shadow:var(--sh-2);border-radius:14px;z-index:20}.mobile-menu nav a{padding:12px;min-height:44px}
+.hero{padding:26px 20px 32px;gap:22px}.hero .eyebrow{font-size:13px;line-height:19px}.hero h1{font-size:44px;line-height:1.04;letter-spacing:-.045em;margin:12px 0 14px}.hero .sub{font-size:16px;line-height:24px;margin:0 0 20px}.ctas{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center}.ctas .btn{height:46px;min-width:132px}.ctas .tlink{font-size:13px;border:0}.trust{font-size:12px;margin:14px 0 0;line-height:18px}.stage{margin:0;display:flex;flex-direction:column;gap:0}#hero-floor{aspect-ratio:350/145;background-size:contain}.minicard{margin:0;padding:14px 16px;width:auto;border-radius:16px;box-shadow:0 4px 18px #1212120a;font-size:14px}.minicard .muted{font-size:12px!important}.minicard .row{margin-top:12px}.minicard .pill{padding:8px 12px;font-size:13px}.minicard .cost{font:12px var(--font)}.figcap{padding:10px 0 0;text-align:center;font-size:11px;color:var(--stone)}.band,.sec{padding:44px 20px}.band h2,.sec h2,.cta h2{font-size:32px;line-height:1.1}.band h2{margin:12px 0 24px}.how{display:grid;grid-template-columns:1fr;gap:0}.short-step{display:grid;grid-template-columns:32px 1fr;gap:12px;padding:18px 0}.short-step .n{font-size:13px;padding:3px 0}.short-step .body{padding:0}.short-step h3{font-size:20px;margin:0 0 6px;font-weight:600}.short-step p{font-size:14px;line-height:21px}.secgrid{gap:16px}.sec h2{margin-bottom:16px}.never>div{padding:14px 0}.never b{font-size:20px}.never span{font-size:14px;line-height:21px}.botrow{padding:20px 0;gap:8px}.botrow h3{font-size:20px}.botrow p{font-size:14px;line-height:21px}.botrow a{min-height:40px;display:inline-flex;align-items:center;justify-self:start;font-size:14px}.sand{padding:20px;gap:16px}.sand p,.pricegrid p{font-size:14px;line-height:21px}.sand h2{font-size:26px!important}.pricegrid{padding-top:30px!important;gap:8px!important}.cta{padding:40px 20px;gap:20px}.cta .btn{width:100%;height:46px}.foot{padding:24px 20px calc(24px + env(safe-area-inset-bottom,0px));gap:16px}.foot a{display:inline-flex;min-height:44px;align-items:center}.muted{color:var(--stone)}
+}
 </style></head>
 <body>
 <div class="bb" id="app">
-
 <header class="nav">
-  <a class="wm" id="mk-home" href="#top"><span class="mark" aria-hidden="true"></span><span data-brand="upper">alter</span></a>
-  <nav aria-label="Marketing">
-    <a id="mk-product" href="#product">Product</a>
-    <a id="mk-hq" href="#hq">HQ</a>
-    <a id="mk-security" href="#security">Security</a>
-    <a id="mk-pricing" href="#pricing">Pricing</a><a href="/waitlist">Join the waitlist</a>
-  </nav>
-  <div class="sp"></div>
-  <a id="mk-signin" href="/hq" data-brand-href="appUrl" data-goto="signin" style="text-decoration:none;font-weight:500">Sign in</a>
-  <a id="mk-open" class="btn pri" href="/hq" data-brand-href="appUrl" data-goto="signin">Open your HQ</a>
+<a class="wm" href="#top" id="mk-home"><span aria-hidden="true" class="mark"></span><span data-brand="upper">alter</span></a>
+<details class="mobile-menu"><summary aria-label="Open navigation">Menu</summary><nav aria-label="Mobile navigation"><a href="#product">How it works</a><a href="#security">Safety</a><a href="#connect">Connect a bot</a></nav></details><nav aria-label="Marketing" class="desktop-links">
+<a href="#product" id="mk-product">Product</a>
+<a href="#hq" id="mk-hq">HQ</a>
+<a href="#security" id="mk-security">Security</a>
+<a href="#pricing" id="mk-pricing">Pricing</a><a href="/waitlist">Join the waitlist</a>
+</nav>
+<div class="sp desktop-only"></div>
+<a class="desktop-only" data-brand-href="appUrl" data-goto="signin" href="/hq" id="mk-signin" style="text-decoration:none;font-weight:500">Sign in</a>
+<a class="btn pri" data-brand-href="appUrl" data-goto="signin" href="/hq" id="mk-open">Open HQ</a>
 </header>
-
 <section class="hero" id="top">
-  <div>
-    <div class="eyebrow">Control plane for AI employees</div>
-    <h1 class="disp">Your AI staff,<br><em>in plain sight.</em></h1>
-    <p class="sub">Connect the bots you already use. Watch them work on one floor. Every request lands on your desk.</p>
-    <div class="ctas">
-      <a id="mk-open-2" class="btn pri lg" href="/hq" data-brand-href="appUrl" data-goto="signin">Open your HQ</a>
-      <a id="mk-connect" class="tlink" href="#connect">Connect an existing bot →</a>
-    </div>
-    <div class="trust mono"><i></i>OAuth 2.1 + PKCE · per-bot permissions · kill switch</div>
-  </div>
-  <div class="stage" aria-hidden="false">
-    <div id="hero-floor" role="img" aria-label="The Alter floor: bots at their desks and one approval waiting at the tray"></div>
-    <div class="minicard" role="group" aria-label="Approval tray, preview">
-      <div class="who" style="display:flex;gap:8px;align-items:center"><span class="av muse">MU</span><div><b>Muse</b> wants to <b>Publish a post</b><div class="muted" style="font-size:12px">from Creative / Marketing · waiting 1m</div></div></div>
-      <div class="row"><span class="mono cost">costs 4¢</span><span class="pill acc"><kbd>A</kbd> Approve</span><span class="pill"><kbd>D</kbd> Deny</span></div>
-    </div>
-    <div class="figcap mono">Live floor · Muse is walking a request to the tray</div>
-  </div>
+<div>
+<div class="eyebrow">Your bots. One place to run the day.</div>
+<h1 class="disp">Your AI staff,<br/><em>in plain sight.</em></h1>
+<p class="sub">Give your team a job. See what is moving, what is done, and what needs your say.</p>
+<div class="ctas">
+<a class="btn pri lg" data-brand-href="appUrl" data-goto="signin" href="/hq" id="mk-open-2">Open your HQ</a>
+<a class="tlink" href="#connect" id="mk-connect">Connect an existing bot →</a>
+</div>
+<div class="trust mono">Your existing bots · Your permission comes first</div>
+</div>
+<div aria-hidden="false" class="stage">
+<div aria-label="The Alter floor: bots at their desks and one approval waiting at the tray" id="hero-floor" role="img"></div>
+<div aria-label="Example approval, no real action" class="minicard" role="group">
+<div class="who" style="display:flex;gap:8px;align-items:center"><span class="av muse">MU</span><div><b>Muse</b> wants to <b>Publish a post</b><div class="muted" style="font-size:12px">Example · waiting for your approval</div></div></div>
+<div class="row"><span class="mono cost">Example request</span><span aria-hidden="true" class="pill acc"> Approve</span><span aria-hidden="true" class="pill"> Deny</span></div>
+</div>
+<div class="figcap mono">Example workspace · not live activity</div>
+</div>
 </section>
-
 <section class="band" id="product">
-  <div class="wrap">
-    <div class="eyebrow">How it works</div>
-    <h2 class="disp">Three moves. No dashboard to learn.</h2>
-    <div class="how">
-      <div class="step">
-        <div class="n">01</div>
-        <div class="body">
-          <div>
-            <h3>Connect a bot you already run.</h3>
-            <p>Pick Muse, Grok Bot or Instinct. <span data-brand>The app</span> gives you one address and a setup message. Paste it into the bot. Nothing is connected until that bot reports back.</p>
-            <div class="addrline"><span class="mono">https://www.alterhq.app/api/mcp</span><span class="chip">Copy setup message</span></div>
-          </div>
-          <div class="states" aria-label="Connection states">
-            <div><span class="av muse">MU</span><div><b>Muse</b><small>Prepared · not connected yet</small></div><span class="ind prep" aria-hidden="true"></span></div>
-            <div><span class="av grok">GB</span><div><b>Grok Bot</b><small>Waiting for your bot. No live connection yet.</small></div><span class="ind wait" aria-hidden="true"></span></div>
-            <div><span class="av instinct">IN</span><div><b>Instinct</b><small style="color:var(--c-live);font-weight:600">Connected: Instinct · 14:02</small></div><span class="ind live" aria-hidden="true"></span></div>
-          </div>
-        </div>
-      </div>
-      <div class="step">
-        <div class="n">02</div>
-        <div class="body">
-          <div>
-            <h3>Watch it take a desk.</h3>
-            <p>Each bot is a person on the HQ floor: its own color, its own room, a name you can read. It walks between Research, Creative, Outreach and Execution. A bot that has never reported is a ghost, not a worker.</p>
-          </div>
-          <p class="muted">Rooms stay labeled. Movement follows the corridors. Reduced motion skips the walk and jumps the bot to its desk.</p>
-        </div>
-      </div>
-      <div class="step" id="hq">
-        <div class="n">03</div>
-        <div class="body">
-          <div>
-            <h3>Decide from the tray.</h3>
-            <p>When a bot needs you, it walks to the approval island and the request lands as a card. One click, or the A and D keys. Approve once is the only vermilion button on the floor.</p>
-          </div>
-          <div class="traydemo">
-            <div class="hd"><span><i></i>In the tray · 1 waiting</span><span>Needs Approval</span></div>
-            <div class="bd">
-              <div class="who"><span class="av grok">GB</span><div><b>Grok Bot</b><small>Research · from Research Center · 3m</small></div></div>
-              <div class="ask"><b>Grok Bot</b> wants to <b>Save a note</b> · Q4 campaign brief</div>
-              <div class="muted mono" style="font-size:12px;margin-bottom:12px">costs 2¢ · notes.write · once</div>
-              <div class="acts"><span class="btn pri sm">Approve once <kbd>A</kbd></span><span class="btn red sm">Deny <kbd>D</kbd></span></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+<div class="wrap">
+<div class="eyebrow">How it works</div>
+<h2 class="disp">From a request to a result.</h2>
+<div class="how"><article class="step short-step"><span class="n">01</span><div class="body"><h3>Bring your bot.</h3><p>Choose Grok Bot, Instinct or Muse. Paste one setup message. It only appears connected after it reports back.</p></div></article><article class="step short-step"><span class="n">02</span><div class="body"><h3>Give it a job.</h3><p>See the real job, who has it, and when it last moved. Quiet means quiet, not pretend work.</p></div></article><article class="step short-step"><span class="n">03</span><div class="body"><h3>Keep the last word.</h3><p>Review requests, approve what you intend, and find the result in Receipts.</p></div></article></div>
+</div>
 </section>
-
 <section class="sec" id="security">
-  <div class="secgrid">
-    <div>
-      <div class="eyebrow">Security</div>
-      <h2 class="disp">A connection is a narrow door, not a key to the building.</h2>
-      <p style="color:#B8B8B1;max-width:46ch">OAuth 2.1 with PKCE. Each bot has its own permissions: Auto, Ask or Never, per action. The kill switch stops every bot at once. Access tokens renew automatically in clients that support OAuth refresh. Authorization stays available until you revoke the bot.</p>
-    </div>
-    <div>
-      <div class="eyebrow" style="margin-bottom:8px">A bot can never</div>
-      <div class="never">
-        <div><span class="x">×</span><div><b>Import your provider account.</b><span>Your bot stays signed into its own provider. <span data-brand>It</span> never takes that login.</span></div></div>
-        <div><span class="x">×</span><div><b>Read your other bots.</b><span>A connection sees only the one bot you selected.</span></div></div>
-        <div><span class="x">×</span><div><b>Move money.</b><span>It cannot charge a card. The card sandbox is synthetic, and every real charge stays $0.</span></div></div>
-      </div>
-    </div>
-  </div>
+<div class="secgrid">
+<div>
+<div class="eyebrow">Security</div>
+<h2 class="disp">A connection is a narrow door, not a key to the building.</h2>
+<p style="color:#B8B8B1;max-width:46ch">OAuth 2.1 with PKCE. Each bot has its own permissions: Auto, Ask or Never, per action. The kill switch stops every bot at once. Access tokens renew automatically in clients that support OAuth refresh. Authorization stays available until you revoke the bot.</p>
+</div>
+<div>
+<div class="eyebrow" style="margin-bottom:8px">A bot can never</div>
+<div class="never">
+<div><span class="x">×</span><div><b>Import your provider account.</b><span>Your bot stays signed into its own provider. <span data-brand="">It</span> never takes that login.</span></div></div>
+<div><span class="x">×</span><div><b>Read your other bots.</b><span>A connection sees only the one bot you selected.</span></div></div>
+<div><span class="x">×</span><div><b>Move money.</b><span>It cannot charge a card. The card sandbox is synthetic, and every real charge stays $0.</span></div></div>
+</div>
+</div>
+</div>
 </section>
-
 <section class="band" id="connect">
-  <div class="bots">
-    <div class="eyebrow">Bots you can connect</div>
-    <h2 class="disp" style="font-size:var(--fs-44);margin:12px 0 8px">Bring the ones you already pay for.</h2>
-    <div class="botrow"><span class="av instinct" style="width:40px;height:40px">IN</span><div><h3>Instinct</h3><p>Ops and execution. Connects as a remote MCP client and reports presence back to the floor.</p></div><a class="tlink" id="mk-instinct" href="/hq" data-brand-href="appUrl">Connect Instinct →</a></div>
-    <div class="botrow"><span class="av grok" style="width:40px;height:40px">GB</span><div><h3>Grok Bot</h3><p>Research. In Grok, add a custom MCP server, choose Remote HTTPS, and paste the connector address.</p></div><a class="tlink" id="mk-grok" href="/hq" data-brand-href="appUrl">Connect Grok Bot →</a></div>
-    <div class="botrow"><span class="av muse" style="width:40px;height:40px">MU</span><div><h3>Muse</h3><p>Writing and creative. Add <span data-brand>the app</span> as a custom connector; OAuth brings you back to approve the one bot.</p></div><a class="tlink" id="mk-muse" href="/hq" data-brand-href="appUrl">Connect Muse →</a></div>
-  </div>
+<div class="bots">
+<div class="eyebrow">Choose your bot</div>
+<h2 class="disp" style="font-size:var(--fs-44);margin:12px 0 8px">Bring the ones you already pay for.</h2>
+<div class="botrow"><span class="av instinct" style="width:40px;height:40px">IN</span><div><h3>Instinct</h3><p>Connect your existing assistant with a setup message. Availability depends on what your provider supports.</p></div><a class="tlink" data-brand-href="appUrl" href="/hq" id="mk-instinct">Connect Instinct →</a></div>
+<div class="botrow"><span class="av grok" style="width:40px;height:40px">GB</span><div><h3>Grok Bot</h3><p>Connect your existing assistant with a setup message. Availability depends on what your provider supports.</p></div><a class="tlink" data-brand-href="appUrl" href="/hq" id="mk-grok">Connect Grok Bot →</a></div>
+<div class="botrow"><span class="av muse" style="width:40px;height:40px">MU</span><div><h3>Muse</h3><p>Connect your existing assistant with a setup message. Availability depends on what your provider supports.</p></div><a class="tlink" data-brand-href="appUrl" href="/hq" id="mk-muse">Connect Muse →</a></div>
+</div>
 </section>
-
 <section class="band" id="sandbox" style="padding-top:0">
-  <div class="sand hatch">
-    <div>
-      <span class="tag">Card sandbox</span>
-      <h2 class="disp" style="font-size:var(--fs-32);margin:12px 0">Sandbox. No real money moves.</h2>
-      <p class="muted">Practice a spend proposal, a per-bot cap and an approval. The provider is fake. Mercury and JPMorgan are not connected. Every real charge remains $0.</p>
-    </div>
-    <div class="mono muted" style="font-size:13px">pending · sandbox · $0 charged<br>approved · sandbox · $0 charged</div>
-  </div>
+<div class="sand hatch">
+<div>
+<span class="tag">Card sandbox</span>
+<h2 class="disp" style="font-size:var(--fs-32);margin:12px 0">Sandbox. No real money moves.</h2>
+<p class="muted">Practice a spend proposal, a per-bot cap and an approval. The provider is fake. Mercury and JPMorgan are not connected. Every real charge remains $0.</p>
+</div>
+<div class="mono muted" style="font-size:13px">pending · sandbox · $0 charged<br/>approved · sandbox · $0 charged</div>
+</div>
 </section>
-
 <section class="band" id="pricing" style="padding-top:0">
-  <div class="wrap pricegrid" style="display:grid;grid-template-columns:200px 1fr;gap:32px;border-top:1px solid var(--c-border);padding-top:48px">
-    <div class="eyebrow">Pricing</div>
-    <div>
-      <h2 class="disp" style="font-size:var(--fs-44)">You already pay your bots.<br>Watching them is the job.</h2>
-      <p class="muted" style="margin-top:16px;max-width:62ch"><span data-brand>The app</span> does not issue cards and does not sit in the payment path. Limits you set here are proposals and permissions, not charges. The sandbox ledger is synthetic on purpose.</p>
-    </div>
-  </div>
+<div class="wrap pricegrid" style="display:grid;grid-template-columns:200px 1fr;gap:32px;border-top:1px solid var(--c-border);padding-top:48px">
+<div class="eyebrow">Pricing</div>
+<div>
+<h2 class="disp" style="font-size:var(--fs-44)">You already pay your bots.<br/>Watching them is the job.</h2>
+<p class="muted" style="margin-top:16px;max-width:62ch"><span data-brand="">The app</span> does not issue cards and does not sit in the payment path. Limits you set here are proposals and permissions, not charges. The sandbox ledger is synthetic on purpose.</p>
+</div>
+</div>
 </section>
-
 <section class="cta">
-  <div>
-    <div class="eyebrow">Open the floor</div>
-    <h2 class="disp">Put your staff where you can see them.</h2>
-  </div>
-  <div>
-    <p style="margin-bottom:16px">Sign in, connect one bot, and wait until it reports. Only then does it look live.</p>
-    <a id="mk-open-3" class="btn pri lg" href="/hq" data-brand-href="appUrl" data-goto="signin">Open your HQ</a>
-  </div>
+<div>
+<div class="eyebrow">Open the floor</div>
+<h2 class="disp">Put your staff where you can see them.</h2>
+</div>
+<div>
+<p style="margin-bottom:16px">Sign in, connect a bot, then give your team a job. Activity appears only when the bot reports it.</p>
+<a class="btn pri lg" data-brand-href="appUrl" data-goto="signin" href="/hq" id="mk-open-3">Open your HQ</a>
+</div>
 </section>
 <footer class="foot">
-  <span class="wm"><span class="mark"></span><span data-brand="upper">alter</span></span>
-  <span data-brand-attr="aria-label:{brand}">&nbsp;</span>
-  <span><a id="mk-foot-sec" href="#security">Security</a> · <a id="mk-foot-price" href="#pricing">Pricing</a> · <a id="mk-foot-in" href="/hq" data-brand-href="appUrl" data-goto="signin">Sign in</a></span>
+<span class="wm"><span class="mark"></span><span data-brand="upper">alter</span></span>
+<span data-brand-attr="aria-label:{brand}"> </span>
+<span><a href="#security" id="mk-foot-sec">Security</a> · <a href="#pricing" id="mk-foot-price">Pricing</a> · <a data-brand-href="appUrl" data-goto="signin" href="/hq" id="mk-foot-in">Sign in</a></span>
 </footer>
-
 </div>
 </body></html>
