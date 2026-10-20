@@ -81,7 +81,15 @@
       <div class="box2"><b>No custom MCP support?</b><p>The HTTP gateway works only if your bot can make authenticated HTTPS calls and securely store a credential. A chat message alone cannot add those capabilities.</p><button class="b out sm" type="button" id="gatewayroute" style="margin-top:10px">Set up HTTP gateway</button></div>
       <div class="status" id="linkstatus" role="status" aria-live="polite"></div>
       <p class="meta" style="margin-top:12px">Only routed activity is visible. Availability depends on your provider supporting this connector. Existing bots are not automatically imported.</p>
+      ${W.p==='grok'?'<div class="box2" id="wakebox"><b>Instant jobs for Grok (optional, free)</b><p>In Grok, open your Alter automation, add a Webhook trigger, save it, and copy its endpoint and signing secret. Paste both here. The secret is sent over HTTPS, stored on the server, and never shown again.</p><label>Trigger URL<input class="in" id="wakeurl" autocomplete="off" placeholder="https://..."></label><label>Signing secret<input class="in" id="wakesec" type="password" autocomplete="off" placeholder="whsec_..."></label><div class="acts" style="justify-content:flex-start;margin-top:8px"><button class="b ink sm" type="button" id="wakesave">Save and send test</button></div><p class="meta" id="wakemsg" role="status"></p></div>':''}
       ${W.p==='grok'?'<p class="meta" style="margin-top:8px">Optional, free: instant push on queued jobs. The setup message has Grok create its own Webhook-trigger automation and declare it to Alter - no other apps or accounts, nothing to set here. Alternatives: set WAKE_GROK_SLACK_WEBHOOK (a Slack incoming webhook) for the whole deployment, or let Grok declare its own; WAKE_GITHUB_TOKEN and WAKE_GITHUB_REPO stay a developer extra. A bot\'s own declared target wins over the deployment default. Without any of these, the 5-minute routine still covers new jobs.</p>':''}`);
+    if (W.p === 'grok') box.querySelector('#wakesave').onclick = async () => {
+      const m = $('#wakemsg'); m.textContent = 'Saving...';
+      const j = await BB.api('/api/agents/' + W.agent.id + '/wake', 'POST', { url: $('#wakeurl').value.trim(), secret: $('#wakesec').value.trim() });
+      if (j.error) { m.textContent = j.error; return; }
+      $('#wakesec').value = '';
+      m.textContent = j.ok ? 'Saved. Grok accepted the test ping (HTTP ' + j.httpStatus + '). Queued jobs now wake it at once.' : 'Saved, but the test failed' + (j.httpStatus ? ' (HTTP ' + j.httpStatus + ')' : '') + '. Check the URL and secret, or rotate the secret in Grok and paste it again.';
+    };
     status(W.reconnect ? 'reconnect' : 'waiting', W.reconnect ? '<b>Reconnect needed.</b> Waiting for ' + esc(W.agent.name) + ' to authorize again.' : 'Waiting for your bot. No live connection confirmed yet.');
     box.querySelector('#gatewayroute').onclick = () => { clearInterval(timer); W.gateway = true; drawGateway(); };
     box.querySelector('#copysetup').onclick = () => copy(setupMessageFor(), 'Setup message copied. Paste it into your existing bot.', '#setupfallback');
