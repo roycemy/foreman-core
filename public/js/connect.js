@@ -4,7 +4,9 @@
 (function () {
   'use strict';
   const BB = window.BB, $ = BB.$, esc = BB.esc;
-  const PRODUCTION_ORIGIN = 'https://foreman-core.vercel.app';
+  const PRODUCTION_ORIGIN = 'https://www.alterhq.app';
+  const ALT_ORIGIN = 'https://foreman-core.vercel.app';
+  const onProd = () => location.origin === PRODUCTION_ORIGIN || location.origin === ALT_ORIGIN;
   let W = {}, timer = null;
   const P = [['instinct', 'Instinct'], ['grok', 'Grok Bot'], ['studio', 'Studio'], ['muse', 'Muse']];
   const toast = m => BB.toast(m);
@@ -21,9 +23,9 @@
     catch (e) { const f = $(fallbackSel); if (f) { f.hidden = false; f.value = text; f.focus(); f.select(); toast('Select and copy the message below.'); } }
   }
 
-  BB.openConnect = function () { if(location.origin !== PRODUCTION_ORIGIN && !/\.vercel\.app$/.test(location.hostname)){BB.toast('Connect bots on the live Alter site, not a preview.');location.href=PRODUCTION_ORIGIN+'/hq';return;} stop(); W = { step: 0 }; draw(); };
+  BB.openConnect = function () { if(!onProd() && !/\.vercel\.app$/.test(location.hostname)){BB.toast('Connect bots on the live Alter site, not a preview.');location.href=PRODUCTION_ORIGIN+'/hq';return;} stop(); W = { step: 0 }; draw(); };
   BB.reconnect = function (id) {
-    if(location.origin !== PRODUCTION_ORIGIN && !/\.vercel\.app$/.test(location.hostname)){location.href=PRODUCTION_ORIGIN+'/hq';return;}
+    if(!onProd() && !/\.vercel\.app$/.test(location.hostname)){location.href=PRODUCTION_ORIGIN+'/hq';return;}
     const d = BB.agent(id); if (!d) return; stop(); BB.closeInspector && BB.closeInspector(true);
     const pid = (d.providerId || d.provider || '').toLowerCase(), hit = P.find(p => p[0] === pid);
     W = { step: 2, p: hit ? hit[0] : pid, label: hit ? hit[1] : (d.provider || 'assistant'), agent: { id: d.id, name: d.name }, reconnect: BB.presence(d) === 'reconnect', reason: d.connection && d.connection.reason };
