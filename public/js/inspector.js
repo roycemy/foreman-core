@@ -96,10 +96,11 @@
     const sc = P.querySelector('.scroll'), top = sc && !fresh ? sc.scrollTop : 0, focused = document.activeElement && P.contains(document.activeElement) ? document.activeElement.dataset : null;
     const ps = BB.presence(a);
     const prim = a.status === 'revoked' ? `<button class="b ink sm" type="button" data-restore style="flex:none">Restore access</button>`
+      : BB.isOffline && BB.isOffline(a) ? `<button class="b ink sm" type="button" data-offcopy style="flex:none">Copy pairing code</button>`
       : !a.hosted && ps === 'reconnect' ? `<button class="b ink sm" type="button" data-rec style="flex:none">Reconnect</button>`
       : !a.hosted && ['prepared', 'waiting'].includes(ps) ? `<button class="b ink sm" type="button" data-rec style="flex:none">Finish connecting</button>`
       : `<button class="b ghost sm" type="button" data-perms style="flex:none">Edit permissions</button>`;
-    const rec2 = !a.hosted && a.status !== 'revoked' && !['reconnect', 'prepared', 'waiting'].includes(ps) ? `<button class="b out sm" type="button" data-newcode style="flex:none">New pairing code</button>` : '';
+    const rec2 = !a.hosted && a.status !== 'revoked' && !['reconnect', 'prepared', 'waiting'].includes(ps) && !(BB.isOffline && BB.isOffline(a)) ? `<button class="b out sm" type="button" data-newcode style="flex:none">New pairing code</button>` : '';
     const body = tab === 'permissions' ? permissions(a) : tab === 'profile' ? profile(a) : activity(a);
     P.innerHTML = `<div class="ins-h"><div class="ins-fig" aria-hidden="true">${BB.figureSVG(a, { ghost: BB.isGhost(a), pose: 'stand' })}</div><div class="t"><h2>${esc(a.name)}</h2>${BB.honestStatus && !BB.isGhost(a) && BB.presence(a) !== 'revoked' ? hst(a) : `<p>${BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span> `}${esc(BB.statusLine(a))}</p>`}</div>${prim}${rec2}<button class="x" type="button" aria-label="Close" data-x>${BB.ICON.x}</button></div>
       <div class="seg" role="tablist" aria-label="${esc(a.name)}">${['activity', 'permissions', 'profile'].map(k => `<button type="button" role="tab" aria-selected="${tab === k}" data-tab="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
@@ -126,6 +127,10 @@
     const pz = P.querySelector('[data-pause]'); if (pz) pz.onclick = async () => { const on = pz.getAttribute('aria-checked') !== 'true'; pz.setAttribute('aria-checked', on); const j = await BB.api('/api/agents/' + a.id + '/pause', 'POST', { on }); BB.toast(j.error || (on ? a.name + ' is paused. Nothing was deleted.' : a.name + ' is back to work.')); BB.sync(true); };
     const rm = P.querySelector('[data-room]'); if (rm) rm.onchange = async () => { const j = await BB.api('/api/agents/' + a.id + '/room', 'POST', { room: rm.value }); BB.toast(j.error || a.name + ' moved to the ' + BB.roomName(rm.value) + '.'); BB.sync(true); };
     const rc = P.querySelector('[data-rec]'); if (rc) rc.onclick = () => BB.reconnect && BB.reconnect(a.id);
+    const oc = P.querySelector('[data-offcopy]'); if (oc) oc.onclick = async () => { oc.disabled = true;
+      try { const j = await BB.api('/api/agents/' + a.id + '/pairing', 'POST', {}); if (!j || j.error || !j.code) throw Error('no code');
+        await navigator.clipboard.writeText(BB.setupMessage(a, j.code)); BB.toast('Copied. Paste it into ' + a.name + '.'); oc.textContent = 'Copied'; }
+      catch (e) { oc.disabled = false; BB.toast("Couldn't copy. Opening the pairing screen."); BB.reconnect && BB.reconnect(a.id); } };
     const rc2 = P.querySelector('[data-newcode]'); if (rc2) rc2.onclick = () => BB.reconnect && BB.reconnect(a.id);
     const ng = P.querySelector('[data-nudge]'); if (ng) ng.onclick = async () => { const msg = BB.nudgeText(a); try { await navigator.clipboard.writeText(msg); } catch (e) { window.prompt('Copy this nudge', msg); } BB.toast('Copied - paste it into ' + a.name); };
     const rv = P.querySelector('[data-revoke]'); if (rv) rv.onclick = async () => { if (!rv.dataset.arm) { rv.dataset.arm = 1; rv.textContent = 'Click again to revoke'; return; } await BB.api('/api/agents/' + a.id + '/revoke', 'POST'); BB.toast('Access revoked. It must reconnect after you restore it.'); BB.sync(true); };
