@@ -8,7 +8,7 @@
   const ALT_ORIGIN = 'https://foreman-core.vercel.app';
   const onProd = () => location.origin === PRODUCTION_ORIGIN || location.origin === ALT_ORIGIN;
   let W = {}, timer = null;
-  const P = [['instinct', 'Instinct'], ['grok', 'Grok Bot'], ['studio', 'Studio'], ['muse', 'Muse']];
+  const P = [['instinct', 'Instinct'], ['grok', 'Grok Bot'], ['muse', 'Muse']];
   const toast = m => BB.toast(m);
   const stop = () => { clearInterval(timer); timer = null; BB.linkWaiting = null; };
   function shell(html) {

@@ -1,0 +1,1 @@
+const fs=require('fs'),assert=require('node:assert/strict');const s=fs.readFileSync('public/js/connect.js','utf8'),p=s.match(/const P = (.*);/)[1];assert(!p.includes('studio'));for(const x of ['Instinct','Grok Bot','Muse'])assert(p.includes(x));assert(s.includes('data-link="custom"'));console.log('PASS connect choices omit Studio and preserve supported bots/custom');
