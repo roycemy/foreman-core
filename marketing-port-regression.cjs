@@ -8,3 +8,4 @@ assert(h.includes('"Inspired" by Kevin MacLeod (incompetech.com), licensed under
 for(const m of h.matchAll(/(?:src|href|poster)="(\/marketing\/[^"#]+)"/g))assert(fs.existsSync('public'+m[1]),m[1]);
 const js=fs.readFileSync('public/marketing/hero.js','utf8');for(const s of ['Approve Meta ads for $49','Publish post','Delete 120 old files'])assert(js.includes(s));
 assert(!/fetch\(|XMLHttpRequest/.test(js));console.log('PASS Hero A homepage, three-link nav, illustration rotation, demo assets, music credit and no rejected alternatives');
+assert.equal((h.match(/Claim your founding seat/g)||[]).length,2);assert(!h.includes('Open your HQ'));const wait=fs.readFileSync('public/waitlist.html','utf8');assert(wait.includes('Claim your founding seat'));assert(wait.includes("fetch('/api/waitlist'"));assert(wait.includes('consent'));console.log('PASS public CTAs request founding access through existing unique-email waitlist; Sign in remains for existing users');
