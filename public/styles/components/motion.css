@@ -41,3 +41,5 @@
 .floor-bot-label{width:max-content}.floor-bot-label small{max-width:116px;overflow:hidden;text-overflow:ellipsis}
 /* On phones the Inbox owns reconnect actions, leaving the island unobstructed. */
 @media(max-width:760px){body:has(#v-floor.on) .a-corner .rcf-slot{display:none}.dark-bar{width:calc(100% - 32px);max-width:none;font-size:11px;line-height:16px}.dark-bar span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.floor-bot-label{display:none}}
+
+.floor-bot-label{z-index:1800;margin-left:var(--label-shift,0px)}

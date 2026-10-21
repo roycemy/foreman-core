@@ -217,7 +217,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const pt = W2P(v[0] + Math.floor(slot / 4) * 2.2, v[1] + Math.floor(slot / 4) * 1.6);
     return { k: 'home:' + room + ':' + slot, p: pt };
   }
-  function setPos(r, x, y, ms) { r.x = x; r.y = y; const e = r.el; e.style.transitionDuration = ms + 'ms'; e.style.left = x + '%'; e.style.top = y + '%'; e.style.zIndex = Math.round(y * 10); }
+  function setPos(r, x, y, ms) { r.x = x; r.y = y; const e = r.el; e.style.transitionDuration = ms + 'ms'; e.style.left = x + '%'; e.style.top = y + '%'; e.style.zIndex = "auto"; e.querySelector(".body").style.zIndex = Math.round(y * 10); }
   async function walkTo(r, x, y) {
     const token = r.walk = (r.walk || 0) + 1;
     if (BB.reduced() || document.hidden || r.x == null || Math.hypot(r.x-x,r.y-y)<.6) {
@@ -275,6 +275,8 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     as.forEach((a, i) => {
       const r = ensure(a, i), t = targetOf(a, waitList), s = BB.botState(a);
       r.el.classList.toggle('owner-revoked',a.status==='revoked'&&a.revokedBy==='owner');r.el.classList.toggle('ghost', BB.isGhost(a)); r.el.classList.toggle('paused', s.kind === 'off'); r.el.dataset.signal = BB.signal(a); r.el.classList.toggle('dark', s.kind === 'dark' || s.kind === 'late' || s.kind === 'msg');
+      const sameRoom=as.filter(b=>BB.roomOf(b)===BB.roomOf(a)), labelShift=sameRoom.length>1?(sameRoom.indexOf(a)%2?28:-28):0;
+      r.el.style.setProperty('--label-shift',labelShift+'px');
       r.el.querySelector('.floor-bot-label b').textContent=a.name;
       r.el.querySelector('.floor-bot-label small').textContent=BB.isGhost(a)?'Not connected':a.status==='revoked'?'Access revoked':BB.presence(a)==='reconnect'?'Reconnect':['dark','late'].includes(s.kind)?'No recent activity':s.kind==='msg'?'Acts when messaged':BB.signal(a)==='working'&&BB.runningTask(a)?'Working':a.paused||BB.S.killed?'Paused':'Idle';
       r.el.setAttribute('aria-label', a.name + ': ' + BB.statusLine(a) + (BB.sleeping && BB.sleeping(a) ? '. Open connection setup' : '. Open details'));
