@@ -1,0 +1,38 @@
+/* Alter design tokens v2. One source of truth. Geist only; mono for real code (pairing codes) only. */
+@font-face{font-family:Geist;src:url(fonts/Geist-Regular.ttf);font-weight:400}
+@font-face{font-family:Geist;src:url(fonts/Geist-Medium.ttf);font-weight:500}
+@font-face{font-family:Geist;src:url(fonts/Geist-SemiBold.ttf);font-weight:600}
+:root{
+  /* ink + paper */
+  --ink:#111111; --ink-2:#2A2A27; --stone:#5C5C57; --mute:#8C8B85; --faint:#B5B3AC;
+  --paper:#F4F3EF; --floor:#EEEDE8; --surface:#FFFFFF; --line:#E4E2DC; --line-2:#D6D3CB;
+  /* the one red: needs you (reconnect flag, Inbox, N new, tray dot). Nothing else. */
+  --v:#E8452C; --v-ink:#C4381F; --v-wash:#FDF0ED; --v-glow:rgba(232,69,44,.35);
+  /* calm "done/copied" confirmation: ink, never green */
+  --ok:#111111;
+  /* room accents: low-chroma floor tints, never red, never text color */
+  --room-library:#E5EBE3; --room-studio:#F1EADF; --room-review:#E2E7EE; --room-meeting:#ECE6EE;
+  --room-outbox:#ECE8DF; --room-spend:#E1EAE8; --room-lounge:#F0EEE7;
+  /* daylight: floor light temperature (applied as overlay on the floor only) */
+  --light-day:rgba(255,250,240,0); --light-dusk:rgba(255,196,140,.10); --light-night:rgba(40,48,72,.16);
+  /* radius */
+  --r-xs:6px; --r-sm:8px; --r:12px; --r-lg:16px; --r-xl:22px; --r-full:999px;
+  /* shadow */
+  --sh1:0 1px 2px rgba(17,17,17,.06); --sh2:0 4px 16px rgba(17,17,17,.08);
+  --sh3:0 18px 48px rgba(17,17,17,.16); --sh-float:0 10px 30px rgba(17,17,17,.12),0 1px 2px rgba(17,17,17,.06);
+  /* type scale (Geist) */
+  --font:"Geist",system-ui,-apple-system,sans-serif; --mono:"Geist Mono",ui-monospace,monospace;
+  --t-xs:12px/16px var(--font); --t-sm:13px/18px var(--font); --t-base:15px/22px var(--font);
+  --t-md:17px/24px var(--font); --t-lg:22px/28px var(--font); --t-xl:28px/34px var(--font);
+  --track-tight:-.01em;
+  /* spacing (4pt) */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s8:32px; --s10:40px;
+  /* layout */
+  --topbar:64px; --dock:132px; --dock-phone:150px; --safe-b:env(safe-area-inset-bottom,0px);
+  /* motion */
+  --ease:cubic-bezier(.2,.7,.2,1); --ease-out:cubic-bezier(.16,1,.3,1); --ease-in-out:cubic-bezier(.65,0,.35,1);
+  --d-fast:120ms; --d:180ms; --d-slow:320ms; --d-ship:800ms; --d-walk-step:420ms; --d-meet:4500ms; --d-glow:900ms;
+  --walk-speed:22; /* world units per second */
+}
+@media (prefers-reduced-motion:reduce){:root{--d-fast:0ms;--d:0ms;--d-slow:0ms;--d-ship:0ms;--d-glow:0ms}}
+*{box-sizing:border-box} body{margin:0;font:var(--t-base);color:var(--ink);background:var(--paper);-webkit-font-smoothing:antialiased;letter-spacing:var(--track-tight)}

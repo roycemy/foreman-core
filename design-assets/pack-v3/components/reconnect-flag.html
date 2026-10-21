@@ -1,0 +1,21 @@
+<!-- 1. single bot -->
+<div class="rcf" role="status" data-bot="a1">
+  <div class="rcf-h">Grok Bot needs reconnecting</div>
+  <p class="rcf-why">Its session expired.</p>
+  <button class="rcf-act" type="button" data-copy>Copy setup message</button>
+</div>
+<!-- 2. copied (1.6s), then 3 -->
+<div class="rcf" role="status"><div class="rcf-h">Grok Bot needs reconnecting</div><p class="rcf-why">Its session expired.</p>
+  <div class="rcf-ok"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 8.5l3 3 7-7"/></svg>Copied</div></div>
+<!-- 3. just paste (chat bot) -->
+<div class="rcf paste" role="status"><div class="rcf-h">Paste it in Grok's chat</div><p class="rcf-why">The setup message is copied. Grok does the rest.</p>
+  <div class="rcf-row"><a class="rcf-act" href="https://grok.com" target="_blank" rel="noopener">Open Grok's chat</a></div></div>
+<!-- 3b. just paste (console bot) -->
+<div class="rcf paste" role="status"><div class="rcf-h">Enter this code in the console</div><p class="rcf-why">It works once, for the next 10 min.</p>
+  <div class="rcf-row"><span class="rcf-code">K7Q-42M</span></div></div>
+<!-- 4. several bots -->
+<div class="rcf many" role="status"><div class="rcf-h">2 bots need reconnecting</div>
+  <ul class="rcf-list">
+    <li><div><b>Grok Bot</b><small>Its session expired.</small></div><button class="rcf-act" type="button" data-copy="a1">Copy setup</button></li>
+    <li><div><b>Muse</b><small>Its renewal token was used twice.</small></div><button class="rcf-act" type="button" data-copy="a2">Copy setup</button></li>
+  </ul></div>

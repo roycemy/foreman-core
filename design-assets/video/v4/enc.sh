@@ -1,0 +1,7 @@
+enc(){ in=$1; out=$2; vb=$3; aud=$4; P=/tmp/p4_$(basename $out); C="-c:v libx264 -preset slow -tune film -b:v $vb -maxrate 3M -bufsize 6M -pix_fmt yuv420p -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -movflags +faststart"; ffmpeg -loglevel error -y -i $in $C -pass 1 -passlogfile $P -an -f mp4 /dev/null && if [ "$aud" = 1 ]; then ffmpeg -loglevel error -y -i $in -i audio/mix_final.wav -map 0:v -map 1:a $C -pass 2 -passlogfile $P -c:a aac -b:a 128k -shortest $out; else ffmpeg -loglevel error -y -i $in $C -pass 2 -passlogfile $P -an $out; fi; }
+enc master-d.mp4 out/alter-hero-v4-16x9.mp4 1250k 1 & enc master-m.mp4 out/alter-hero-v4-9x16.mp4 1250k 1 & enc master-d.mp4 out/alter-hero-v4-16x9-silent.mp4 1350k 0 & enc master-m.mp4 out/alter-hero-v4-9x16-silent.mp4 1350k 0 & wait
+enc master-d-nocap.mp4 out/alter-hero-v4-16x9-nocaptions.mp4 1250k 1
+ffmpeg -loglevel error -y -ss 22.5 -i master-d.mp4 -frames:v 1 -q:v 2 out/alter-hero-v4-16x9-poster.jpg; ffmpeg -loglevel error -y -ss 31.8 -i master-m.mp4 -frames:v 1 -q:v 2 out/alter-hero-v4-9x16-poster.jpg; cp audio/mix_final.wav out/alter-hero-v4-mix.wav
+for f in out/*; do echo $f $(stat -c%s $f) $(ffprobe -v error -show_entries format=duration -of csv=p=0 $f); done
+ffmpeg -i out/alter-hero-v4-16x9.mp4 -af ebur128=peak=true -f null - 2>&1 | grep -A20 Summary | grep -E "I:|Peak:"
+echo DONE

@@ -1,0 +1,26 @@
+@font-face{font-family:Geist;font-weight:400;src:url(../assets/Geist-Regular.ttf)}
+@font-face{font-family:Geist;font-weight:500;src:url(../assets/Geist-Medium.ttf)}
+@font-face{font-family:Geist;font-weight:600;src:url(../assets/Geist-SemiBold.ttf)}
+:root{--p:#F4F4F1;--s:#fff;--ink:#121212;--stone:#5C5C57;--mute:#8C8C86;--line:rgba(18,18,18,.08);--line2:rgba(18,18,18,.14);--v:#E2452B;--night:#0E0E0F}
+*{box-sizing:border-box;margin:0}
+body{font-family:Geist,system-ui,sans-serif;color:var(--ink);background:var(--p);-webkit-font-smoothing:antialiased}
+.mark{display:inline-block}
+.btn{display:flex;align-items:center;justify-content:center;height:52px;border-radius:14px;background:var(--ink);color:#fff;font:500 16px Geist;border:0;width:100%}
+.btn.o{background:var(--s);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line2)}
+.field{height:52px;border-radius:12px;background:var(--s);box-shadow:inset 0 0 0 1px var(--line2);display:flex;align-items:center;padding:0 16px;font-size:16px;color:var(--ink)}
+.field.ph{color:var(--mute)}
+.meta{font-size:13px;color:var(--mute)}
+.h{font-weight:600;letter-spacing:-.035em}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--v);display:inline-block}
+.code{font-family:ui-monospace,Menlo,monospace;font-size:14px}
+.pin{position:absolute;transform:translate(-50%,-100%);background:var(--ink);color:#fff;font:500 13px Geist;padding:7px 11px;border-radius:10px;white-space:nowrap;display:flex;gap:7px;align-items:center}
+.pin:after{content:"";position:absolute;left:50%;bottom:-5px;margin-left:-5px;border:5px solid transparent;border-bottom:0;border-top-color:var(--ink)}
+.halo{position:absolute;width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;box-shadow:0 0 0 1.5px var(--v),0 0 0 10px rgba(226,69,43,.08)}
+/* hero floor v2: real app floor captured at 4x, lit (dark) or day (light) treatment */
+.fimg{position:absolute;aspect-ratio:6440/4024;background:url(../assets/floor-dark.jpg) 0 0/100% 100%}
+.tl .fimg{background-image:url(../assets/floor-light.jpg)}
+.night{background:#0E0E0F}
+.tl .night{background:#F4F4F1}
+.pin.lt{background:#F4F4F1;color:var(--ink)}.pin.lt:after{border-top-color:#F4F4F1}
+.tl .pin.lt{background:var(--ink);color:#fff}.tl .pin.lt:after{border-top-color:var(--ink)}
+.halo{box-shadow:0 0 0 2px var(--v),0 0 0 12px rgba(226,69,43,.14),0 0 40px 10px rgba(255,214,170,.18)}

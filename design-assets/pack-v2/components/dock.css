@@ -1,0 +1,29 @@
+/* Floor stage + bottom dock. Fix for owner note A: the floor never slides under the dock or top bar. */
+.stage{position:fixed;left:0;right:0;top:var(--topbar);bottom:calc(var(--dock) + var(--safe-b));overflow:hidden;background:var(--paper);touch-action:none}
+.stage .hq{position:absolute;inset:0;width:100%;height:100%;transition:transform var(--d-slow) var(--ease-out)}
+.stage::after{content:"";position:absolute;left:0;right:0;bottom:0;height:56px;pointer-events:none;background:linear-gradient(to bottom,rgba(244,243,239,0),var(--paper))}
+.stage::before{content:"";position:absolute;left:0;right:0;top:0;height:20px;pointer-events:none;z-index:1;background:linear-gradient(to top,rgba(244,243,239,0),var(--paper))}
+.dock{position:fixed;left:0;right:0;bottom:0;height:calc(var(--dock) + var(--safe-b));padding:0 var(--s5) var(--safe-b);background:var(--paper);display:grid;grid-template-columns:1fr minmax(0,560px) 1fr;align-items:end;gap:var(--s4);padding-bottom:calc(var(--s5) + var(--safe-b))}
+.dock .mid{min-width:0;display:flex;flex-direction:column;align-items:center;gap:10px}
+.dock h2{font:600 var(--t-lg);margin:0;letter-spacing:-.02em;transition:opacity var(--d) var(--ease),transform var(--d) var(--ease)}
+.chips{display:flex;gap:8px;flex-wrap:nowrap;overflow:hidden;transition:opacity var(--d) var(--ease),max-height var(--d) var(--ease);max-height:40px}
+.chip{font:var(--t-sm);color:var(--ink-2);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-full);padding:7px 12px;white-space:nowrap}
+.typebox{width:100%;display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh2);padding:6px 6px 6px 18px;height:52px}
+.typebox input{flex:1;border:0;outline:0;font:var(--t-base);background:none;color:var(--ink)} .typebox input::placeholder{color:var(--mute)}
+.send{width:40px;height:40px;border-radius:12px;border:0;background:var(--ink);color:#fff;display:grid;place-items:center}
+.send svg{width:18px;height:18px}
+/* panning: heading folds into the placeholder, chips hide */
+.dock.panning h2{opacity:0;transform:translateY(8px);height:0;margin-top:-10px}
+.dock.panning .chips{opacity:0;max-height:0}
+
+.left,.right{display:flex;flex-direction:column;gap:8px;align-self:end}
+.right{align-items:flex-end}
+.zoom{display:flex;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh1)} .zoom button{width:40px;height:40px;border:0;background:none;font:500 18px var(--font);color:var(--stone)}
+.crew{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh1);padding:8px 14px 8px 8px;font:500 var(--t-sm);width:max-content;max-width:100%}
+.av{display:flex} .av i{width:26px;height:26px;border-radius:50%;border:2px solid #fff;margin-left:-7px;display:grid;place-items:center;font:600 10px var(--font);color:#fff;font-style:normal} .av i:first-child{margin-left:0}
+@media (max-width:700px){
+ :root{--dock:var(--dock-phone)} .dock{grid-template-columns:minmax(0,1fr);padding:0 12px calc(12px + var(--safe-b));gap:8px}
+ .dock .left{position:fixed;left:12px;right:12px;bottom:calc(var(--dock) + var(--safe-b) + 8px);z-index:3} .dock .right{display:none}
+ .dock h2{font:600 var(--t-md)} .chip:nth-child(n+2){display:none} .typebox{height:48px}
+ .stage .hq{transform-origin:center} .stage{bottom:calc(var(--dock) + var(--safe-b) + 56px)}
+}

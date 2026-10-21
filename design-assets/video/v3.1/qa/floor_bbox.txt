@@ -1,0 +1,18 @@
+== floor black slab corners (left x, right x, bottom-tip y, side y) d
+ 1 hook             t=  1.0  left 440  right 1479  bottom 743  side-y 455  width 1039
+ 1 hook             t=  4.0  left 440  right 1479  bottom 743  side-y 455  width 1039
+ 3 connect walk-in  t=  8.0  left 441  right 1479  bottom 743  side-y 455  width 1038
+ 3 connect walk-in  t= 10.5  left 441  right 1479  bottom 743  side-y 455  width 1038
+ 4 team             t= 12.0  left 441  right 1479  bottom 743  side-y 455  width 1038
+ 4 team             t= 14.5  left 441  right 1479  bottom 743  side-y 455  width 1038
+ 6 handoffs         t= 19.0  left 441  right 1479  bottom 759  side-y 455  width 1038
+ 6 handoffs         t= 20.8  left 441  right 1479  bottom 743  side-y 455  width 1038
+== floor black slab corners (left x, right x, bottom-tip y, side y) m
+ 1 hook             t=  1.0  left 112  right 967  bottom 1449  side-y 1112  width 855
+ 1 hook             t=  4.0  left 112  right 967  bottom 1449  side-y 1112  width 855
+ 3 connect walk-in  t=  8.0  left 112  right 967  bottom 1449  side-y 1112  width 855
+ 3 connect walk-in  t= 10.5  left 112  right 967  bottom 1449  side-y 1112  width 855
+ 4 team             t= 12.0  left 112  right 967  bottom 1449  side-y 1111  width 855
+ 4 team             t= 14.5  left 112  right 967  bottom 1449  side-y 1111  width 855
+ 6 handoffs         t= 19.0  left 112  right 967  bottom 1449  side-y 1112  width 855
+ 6 handoffs         t= 20.8  left 112  right 967  bottom 1449  side-y 1112  width 855

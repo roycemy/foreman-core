@@ -1,0 +1,15 @@
+am_michael hook1 | Your AI bot just asked for $1,200.
+am_michael hook2 | Did you approve it?
+am_michael setup1 | It started with one small favor.
+am_michael setup2 | Book the team offsite by what's needed.
+am_michael value | With Altar, four bots share one card. You hold the keys.
+am_michael work | So they got to work, splitting it up, handing it off.
+am_michael tension | Then Scout found a venue.
+am_michael ask | $1,200 deposit due today.
+am_michael humor | Scout has great taste and a $500 limit.
+am_michael intercept | Alter caught it, checked the rule, then asked me.
+am_michael deny | Deny.
+am_michael small | Badges and snacks, sure.
+am_michael keep | and the bots kept going inside their limits.
+am_michael close | Your bots work. You stay in control.
+am_michael cta | claim your founding spot.

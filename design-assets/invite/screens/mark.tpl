@@ -1,0 +1,1 @@
+<svg class="mark" width="__" height="__" viewBox="0 0 64 64"><path d="M8 33 V37 L32 49 L56 37 V33" fill="#111" stroke="#111" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="#F4F3EF" stroke="#111" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg>

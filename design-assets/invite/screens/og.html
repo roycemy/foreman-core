@@ -1,0 +1,24 @@
+<!doctype html><html><head><link rel=stylesheet href=base.css><script src=tl.js></script><style>
+body{width:1200px;height:630px;overflow:hidden;position:relative}
+.bgw{position:absolute;inset:0}
+/* floor: 2000px wide, seat anchored at (760,380) */
+.fimg{width:2000px;left:calc(690px - 2000px*.3030);top:calc(420px - 2000px*.3727)}
+.fade{position:absolute;inset:0;background:linear-gradient(90deg,#0E0E0F 0,#0E0E0F 30%,rgba(14,14,15,.0) 58%)}
+.tl .fade{background:linear-gradient(90deg,#F4F4F1 0,#F4F4F1 30%,rgba(244,244,241,0) 58%)}
+.seat{position:absolute;left:690px;top:420px}
+.seat .halo{left:0;top:0;width:68px;height:68px;margin:-34px 0 0 -34px}
+.seat .pin{left:0;top:-44px;font-size:18px;padding:10px 15px;border-radius:12px}
+.l{position:absolute;left:72px;top:76px;width:470px;color:#F4F4F1}
+.tl .l{color:var(--ink)}
+.l h1{font-size:64px;line-height:1.02;font-weight:600;letter-spacing:-.04em}
+.l p{margin-top:24px;font-size:26px;color:#B8B8B1;letter-spacing:-.015em;line-height:1.3}
+.tl .l p{color:var(--stone)}
+.ft{position:absolute;left:72px;bottom:64px;display:flex;align-items:center;gap:14px;font:500 24px Geist;letter-spacing:-.02em;color:#F4F4F1}
+.ft span{color:#8C8C86;font-weight:400}.tl .ft{color:var(--ink)}
+.mk-l{display:none}.tl .mk-l{display:inline}.tl .mk-d{display:none}
+</style></head><body>
+<div class="bgw night"></div><div class=fimg></div><div class=fade></div>
+<div class=seat><div class=halo></div><div class="pin lt"><i class=dot></i>Your seat</div></div>
+<div class=l><h1>Royce saved you a place.</h1><p>Founding seats for the first 1,000 people running AI teams on Alter.</p></div>
+<div class=ft><span class=mk-d style="color:inherit"><svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 64 64"><path d="M8 33 V37 L32 49 L56 37 V33" fill="#F4F3EF" stroke="#F4F3EF" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="#111" stroke="#F4F3EF" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg></span><span class=mk-l><svg class="mark" width="40" height="40" viewBox="0 0 64 64"><path d="M8 33 V37 L32 49 L56 37 V33" fill="#111" stroke="#111" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="#F4F3EF" stroke="#111" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg></span> Alter <span>alterhq.app</span></div>
+</body></html>

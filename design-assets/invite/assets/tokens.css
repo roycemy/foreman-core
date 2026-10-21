@@ -1,0 +1,252 @@
+/* Alter design system: the single token layer for every surface (app, receipt, oauth, runner, marketing).
+   Spec: vnext/DIRECTIONS.md "System". The product name lives in /brand.js, never here.
+   Rules this file encodes:
+   - Porcelain page, white surfaces, ink text and neutral actions. Vermilion is the ONE accent and means "needs you".
+   - No green. Status is ink-only and told apart by shape: filled dot = running, ring = done, dashed ring = queued.
+   - Geist only. No uppercase, no mono except real code (connector address, ids, keys).
+   - 4-based spacing. Radius 9-10 controls, 14 inner cards, 18-20 panels/sheets/card/artifact.
+   - Shadows: sh1 resting controls, sh2 floating pills/tooltips, sh3 only the panel or sheet on top. Borders 1px at 8% ink.
+     Never a border and a heavy shadow together. */
+:root{
+  /* ---- color ---- */
+  --porcelain:#F4F4F1;      /* page */
+  --porcelain-phone:#FBFBF9;/* phone page (K) */
+  --surface:#FFFFFF;        /* panels, cards, controls */
+  --surface-2:#FAFAF8;      /* expanded row, popover footer */
+  --ink:#121212;            /* text, primary-neutral actions */
+  --stone:#5C5C57;          /* secondary text */
+  --mute:#8C8C86;           /* meta */
+  --tab-off:#9A9A94;        /* inactive phone tab */
+  --line:rgba(18,18,18,.08);/* every 1px border */
+  --line-2:rgba(18,18,18,.14);/* outline buttons, rails */
+  --vermilion:#E2452B;      /* the one accent: needs you */
+  --vermilion-press:#C8361D;/* hover / pressed */
+  --vermilion-tint:rgba(226,69,43,.08);
+  --on-ink:#FFFFFF;
+  /* Alter pack names, mapped onto the live values (the shots use these values; keep existing names above) */
+  --paper:var(--porcelain); --v:var(--vermilion); --v-ink:var(--vermilion-press); --v-wash:var(--vermilion-tint);
+  --card:#16161A; --card-ink:#ECE9E2; --mono:var(--font-code); --dur:180ms;
+  --r-sm:8px; --r:12px; --r-lg:16px; --r-xl:22px;
+  --scrim:rgba(18,18,18,.28);
+
+  /* ---- type: Geist only ---- */
+  --font:'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-code:'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; /* real code only */
+  /* display 30-34/600 -.035em · panel title 22/600 -.025em · section 15-17/600 · body 14/400 1.45 · meta 12.5 mute */
+  --t-display:34px; --t-display-m:30px; --t-og:76px; --t-panel:22px; --t-section:15px; --t-section-l:17px;
+  --t-body:14px; --t-meta:12.5px; --t-money:40px;
+  --tr-display:-.035em; --tr-panel:-.025em; --tr-section:-.015em; --tr-num:-.03em;
+  --lh-body:1.45;
+
+  /* ---- spacing: 4-based ---- */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-8:32px; --sp-10:40px; --sp-14:56px;
+
+  /* ---- radius ---- */
+  --r-control:10px; --r-control-s:9px; --r-inner:14px; --r-panel:20px; --r-sheet:28px; --r-pill:999px;
+
+  /* ---- shadows ---- */
+  --sh1:0 1px 2px rgba(18,18,18,.04),0 1px 1px rgba(18,18,18,.03);
+  --sh2:0 1px 2px rgba(18,18,18,.04),0 12px 32px -8px rgba(18,18,18,.12);
+  --sh3:0 2px 4px rgba(18,18,18,.04),0 24px 64px -12px rgba(18,18,18,.22);
+  --sh-focus:0 0 0 2px var(--surface),0 0 0 4px var(--ink);
+
+  /* ---- motion ---- */
+  --ease:cubic-bezier(.2,.8,.2,1);
+  --mark:url(/brand/alter-mark.svg); --mark-idle:url(/brand/alter-mark-idle.svg); --mark-card:url(/brand/alter-mark-card.svg);
+  --m-tip:120ms;        /* tooltips fade + rise */
+  --m-pop:180ms;        /* "Anything on me?" opens */
+  --m-collapse:200ms;   /* approved row collapses */
+  --m-reflow:240ms;     /* list reflows after collapse */
+  --m-panel:280ms;      /* panels slide in */
+  --m-dot:160ms;        /* tray dot, inspected ring */
+  --m-paper:240ms;      /* paper slides into the tray */
+  --breathe:3.2s;       /* idle breathing, 1px rise */
+  --bob:2s;             /* activity glyph, 1.5px */
+  --typing:900ms;       /* three-dot typing pulse */
+  --dash-drift:8s;      /* collab line */
+
+  /* ---- layout ---- */
+  --h-top:60px; --h-tabs:82px; --w-rail:420px; --w-inspector:460px; --w-pop:392px;
+
+  /* ---- legacy aliases: marketing, oauth and runner pages read these names. Values follow vNext. ---- */
+  --bb-porcelain:var(--porcelain); --bb-porcelain-2:#EDEDE8; --bb-card:var(--surface); --bb-sunk:#EDEDE8;
+  --bb-ink:var(--ink); --bb-stone:var(--stone); --bb-stone-2:var(--mute); --bb-hair:var(--line-2); --bb-hair-strong:var(--line-2);
+  --bb-signal:var(--vermilion); --bb-signal-deep:var(--vermilion-press); --bb-signal-ink:var(--on-ink); --bb-signal-wash:var(--vermilion-tint);
+  --bb-live:var(--ink); --bb-live-wash:rgba(18,18,18,.05); --bb-danger:var(--vermilion-press); --bb-ask:var(--stone); --bb-ask-wash:rgba(18,18,18,.05);
+  --c-bg:var(--porcelain); --c-surface:var(--surface); --c-sunken:#EDEDE8;
+  --c-text:var(--ink); --c-text-2:var(--stone); --c-border:var(--line); --c-border-strong:var(--line-2);
+  --c-accent:var(--vermilion); --c-accent-fill:var(--vermilion); --c-on-accent:var(--on-ink);
+  --c-focus:var(--ink); --c-live:var(--ink); --c-inverse:var(--ink); --c-on-inverse:var(--on-ink); --c-scrim:var(--scrim);
+  --f-display:var(--font); --f-ui:var(--font); --f-mono:var(--font); --f-code:var(--font-code);
+  --fs-11:11px; --fs-12:12.5px; --fs-13:13px; --fs-14:14px; --fs-15:15px; --fs-16:16px; --fs-18:17px; --fs-20:20px;
+  --fs-24:22px; --fs-32:30px; --fs-44:34px; --fs-60:40px; --fs-80:56px; --fs-104:76px;
+  --lh-tight:1.05; --lh-snug:1.2; --tr-caps:0;
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:20px; --s-6:24px; --s-8:32px; --s-10:40px; --s-12:48px; --s-16:56px; --s-20:80px; --s-24:96px; --s-32:128px;
+  --r-0:0; --r-1:10px; --r-2:9px; --r-3:14px;
+  --sh-1:var(--sh1); --sh-2:var(--sh2); --sh-3:var(--sh3);
+  --m-fast:var(--m-tip); --m-base:var(--m-collapse); --m-slow:var(--m-panel);
+  --w-content:1200px;
+}
+
+/* ---------- base ---------- */
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;background:var(--porcelain)}
+body{font:400 var(--t-body)/var(--lh-body) var(--font);color:var(--ink);letter-spacing:-.005em;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+h1,h2,h3,h4,h5{margin:0;font-weight:600}
+p{margin:0}
+a{color:inherit}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;padding:0}
+input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px;border-radius:6px}
+code,pre,samp,kbd,.code,[data-code]{font-family:var(--font-code);font-size:12px;letter-spacing:0}
+.num{font-variant-numeric:tabular-nums;letter-spacing:var(--tr-num)}
+.meta,.muted{color:var(--mute);font-size:var(--t-meta)}
+.stone{color:var(--stone)}
+.sr{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+[hidden]{display:none!important}
+
+/* ---------- mark ---------- */
+.mark,.wm{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:16px;letter-spacing:-.045em;text-transform:none;text-decoration:none;color:var(--ink)}
+.mark i,span.mark:empty,.wm>.mark:empty{display:inline-block;flex:none;width:28px;height:18px;background:var(--mark) center/contain no-repeat}
+.mark.idle i,.mark.idle:empty{background-image:var(--mark-idle)}
+
+/* ---------- buttons: controls are 9-10 radius, sh1 at rest ---------- */
+.b{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);height:36px;padding:0 14px;border-radius:var(--r-control);font-weight:500;font-size:13.5px;white-space:nowrap;text-decoration:none;cursor:pointer;transition:background var(--m-tip) var(--ease),border-color var(--m-tip) var(--ease),opacity var(--m-tip)}
+.b:disabled{opacity:.45;cursor:not-allowed}
+.b.pri{background:var(--vermilion);color:var(--on-ink)}            /* only for "needs you": Approve */
+.b.pri:hover:not(:disabled),.b.pri:active{background:var(--vermilion-press)}
+.b.ink{background:var(--ink);color:var(--on-ink)}
+.b.ink:hover:not(:disabled){background:#2A2A29}
+.b.out{background:var(--surface);border:1px solid var(--line-2);color:var(--ink)}
+.b.out:hover:not(:disabled){border-color:rgba(18,18,18,.3)}
+.b.ghost{color:var(--stone)}
+.b.ghost:hover:not(:disabled){color:var(--ink);background:rgba(18,18,18,.04)}
+.b.sm{height:32px;padding:0 12px;font-size:13px;border-radius:var(--r-control-s)}
+.b.lg{height:42px;border-radius:12px;font-size:14.5px}
+.b.block{width:100%}
+
+/* ---------- fields ---------- */
+.fld{display:grid;gap:6px;font-size:13px;font-weight:500}
+.fld small{font-weight:400;color:var(--mute)}
+.in,input.t,select.t,textarea.t{width:100%;height:40px;padding:0 12px;border:1px solid var(--line-2);border-radius:var(--r-control);background:var(--surface);font-size:14px;box-shadow:var(--sh1)}
+textarea.t,textarea.in{height:auto;min-height:120px;padding:10px 12px}
+.in:focus,input.t:focus,select.t:focus,textarea.t:focus{outline:none;border-color:var(--ink);box-shadow:0 0 0 3px rgba(18,18,18,.08)}
+input[readonly].t,input[readonly].in{background:var(--surface-2);font-family:var(--font-code);font-size:12.5px}
+
+/* ---------- surfaces ---------- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-inner);padding:var(--sp-5)}
+.panel-surface{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-panel);box-shadow:var(--sh3)}
+
+/* ---------- avatars ---------- */
+.av{width:30px;height:30px;border-radius:50%;background:var(--av,var(--ink));color:var(--on-ink);display:inline-grid;place-items:center;font-size:11px;font-weight:600;flex:none;letter-spacing:0}
+.av.s22{width:22px;height:22px;font-size:9px}
+.av.s24{width:24px;height:24px;font-size:9px}
+.av.s28{width:28px;height:28px;font-size:10px}
+.av.s36{width:36px;height:36px;font-size:12px}
+.av.s40{width:40px;height:40px;font-size:14px}
+.av.ghost{background:transparent;color:var(--stone);border:1.5px dashed var(--mute)}
+.stack{display:flex}
+.stack>.av{border:2px solid var(--surface);margin-left:-8px}
+.stack>.av:first-child{margin-left:0}
+
+/* ---------- status: ink only, told apart by shape ---------- */
+.st{display:inline-flex;align-items:center;gap:6px;font-size:var(--t-meta);color:var(--stone);white-space:nowrap}
+.st i{width:6px;height:6px;border-radius:50%;flex:none;background:var(--ink)}
+.st.run i{background:var(--ink);box-shadow:0 0 0 3px rgba(18,18,18,.08)}            /* filled = running */
+.st.done i{background:transparent;border:1.5px solid var(--stone)}                   /* ring = done */
+.st.q i{background:transparent;border:1.5px dashed var(--mute)}                     /* dashed ring = queued */
+.st.fail i{background:transparent;border:1.5px solid var(--ink);border-radius:2px}  /* square = failed */
+.st.need i{background:var(--vermilion)}                                             /* vermilion = needs you */
+.st.poll i{background:#2F6FDE}                                                      /* blue = checks in on a cadence, on time */
+.st.late i{background:#B7791F}                                                      /* amber = missed its cadence */
+.st.dim i{background:transparent;border:1.5px solid var(--mute)}                    /* grey ring = dark */
+
+/* ---------- vermilion "needs you" ---------- */
+.need-dot{width:8px;height:8px;border-radius:50%;background:var(--vermilion);box-shadow:0 0 0 3px rgba(226,69,43,.16);flex:none}
+.count{min-width:20px;height:20px;border-radius:7px;background:var(--vermilion);color:var(--on-ink);font-size:12px;font-weight:600;display:inline-grid;place-items:center;padding:0 6px;font-variant-numeric:tabular-nums}
+
+/* ---------- reduced motion: breathing, walk, bubble pulse and slides go; changes become instant fades ---------- */
+@media (prefers-reduced-motion:reduce){
+  :root{--m-panel:0ms;--m-pop:0ms;--m-collapse:0ms;--m-reflow:0ms;--m-paper:0ms}
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important}
+}
+
+/* ---------- legacy class names still used by the marketing page (/index.html). Same look as the vNext classes above. ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);height:40px;padding:0 16px;border-radius:var(--r-control);border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font:500 14px var(--font);text-decoration:none;white-space:nowrap;cursor:pointer;box-shadow:var(--sh1)}
+.btn.pri,.btn.ink{background:var(--ink);border-color:var(--ink);color:var(--on-ink);box-shadow:none}
+.btn.lg{height:44px;padding:0 20px;font-size:15px}
+.btn.sm{height:32px;padding:0 12px;font-size:13px}
+.eyebrow{font-size:13px;font-weight:500;color:var(--stone)}
+.disp{font-weight:600;letter-spacing:var(--tr-display);line-height:1.05}
+.disp em{font-style:normal;color:var(--stone)}
+.mono{font-family:var(--font)}
+.chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:1px solid var(--line);border-radius:var(--r-pill);font-size:12.5px;font-weight:500;background:var(--surface)}
+.av.grok{--av:#121212}.av.instinct{--av:#1F6F5C}.av.muse{--av:#2F55A4}.av.scout{--av:#5B4470}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.dot.live{background:var(--ink)}.dot.need{background:var(--vermilion)}.dot.prep{border:1.5px dashed var(--mute)}.dot.idle{background:var(--mute)}
+/* Alter design tokens v3. Additive: every existing token in public/styles/tokens.css keeps its value.
+   New tokens are namespaced --a-*. Drop this file in after tokens.css. */
+:root{
+  /* color: ink on porcelain, one red */
+  --a-floor:#F4F4F1;          /* = --porcelain, the light gray floor/page */
+  --a-surface:#FFFFFF;        /* cards, sheets */
+  --a-surface-2:#FAFAF8;      /* quiet fill, hover, new-row wash base */
+  --a-ink:#121212;            /* text, primary buttons, confirmations */
+  --a-ink-2:#5C5C57;          /* secondary text (= --stone) */
+  --a-ink-3:#8C8C86;          /* tertiary text, estimates (= --mute) */
+  --a-line:rgba(18,18,18,.08);
+  --a-line-2:rgba(18,18,18,.14);
+  --a-red:#E2452B;            /* needs you ONLY: reconnect, Inbox, N new badge, tray dot */
+  --a-red-press:#C8361D;
+  --a-red-edge:rgba(226,69,43,.28);
+  --a-red-wash:rgba(226,69,43,.06);
+  --a-new-wash:rgba(18,18,18,.035); /* new receipt row wash: ink, not red */
+  --a-glow:rgba(255,255,255,.9);    /* meeting table glow */
+
+  /* radius */
+  --a-r-xs:6px; --a-r-sm:10px; --a-r-md:14px; --a-r-lg:18px; --a-r-pill:999px;
+
+  /* shadow */
+  --a-sh-1:0 1px 2px rgba(18,18,18,.04),0 1px 1px rgba(18,18,18,.03);
+  --a-sh-2:0 1px 2px rgba(18,18,18,.04),0 12px 32px -8px rgba(18,18,18,.12);
+  --a-sh-3:0 2px 4px rgba(18,18,18,.04),0 24px 64px -12px rgba(18,18,18,.22);
+
+  /* type: Geist only; mono only for a pairing code */
+  --a-font:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --a-mono:'Geist Mono',ui-monospace,Menlo,monospace;
+  --a-t-xs:12px;  --a-lh-xs:16px;   /* meta, estimates, reasons */
+  --a-t-sm:13px;  --a-lh-sm:18px;   /* card body */
+  --a-t-md:14px;  --a-lh-md:20px;   /* titles in cards, rows */
+  --a-t-lg:16px;  --a-lh-lg:22px;   /* sheet titles */
+  --a-t-xl:22px;  --a-lh-xl:28px;   /* 'Tell your team what to do' */
+  --a-t-code:20px;                  /* pairing code */
+  --a-w-reg:400; --a-w-med:500; --a-w-semi:600;
+  --a-track:-.01em; --a-track-xl:-.02em;
+
+  /* space (4pt) */
+  --a-s1:4px; --a-s2:8px; --a-s3:12px; --a-s4:16px; --a-s5:20px; --a-s6:24px; --a-s8:32px;
+
+  /* layout */
+  --a-top-h:60px;           /* top bar */
+  --a-dock-h:188px;         /* desktop bottom dock: heading + chips + type box + 24 gap */
+  --a-dock-h-phone:84px;    /* phone: tab bar 64 + 20 */
+  --a-dock-fade:56px;       /* soft fade above the dock */
+  --a-corner-w:340px;       /* bottom-left stack width (flag, crew pill) */
+
+  /* motion */
+  --a-ease-out:cubic-bezier(.2,.8,.2,1);
+  --a-ease-in-out:cubic-bezier(.45,.05,.3,1);
+  --a-ease-fly:cubic-bezier(.22,.9,.32,1);   /* receipt flight, ease-out */
+  --a-d-tap:120ms; --a-d-pop:180ms; --a-d-swap:240ms; --a-d-panel:280ms;
+  --a-d-fly:800ms;          /* receipt flight */
+  --a-d-bob:400ms;          /* one gather bob; three per gather */
+  --a-d-sit:200ms;          /* stand up / sit down */
+  --a-walk-ms-per-unit:42ms;/* same pace floor.js walkTo uses; legs clamp 320..1900ms */
+  --a-d-meet:4500ms;        /* handoff dwell at the table */
+  --a-d-glow:600ms;         /* table glow, once */
+  --a-d-copied:1600ms;      /* 'Copied' tick before the paste card settles */
+  --a-d-newrow:2400ms;      /* new-row wash fades out after this */
+}
+@media (prefers-reduced-motion:reduce){
+  :root{--a-d-fly:0ms;--a-d-bob:0ms;--a-d-sit:0ms;--a-d-glow:0ms;--a-d-pop:0ms;--a-d-swap:0ms;--a-d-panel:0ms}
+}

@@ -1,0 +1,25 @@
+andrew 0 4.54s Your AI bots can already spend your money. So who's in control?
+andrew 1 5.88s Alter connects anybody you already use with a single paste. It walks right into your HQ.
+andrew 2 3.17s Everybody you run, working in one place.
+andrew 3 4.87s Give a team one big ask. They split it up, hand it off, get it done.
+andrew 4 6.60s Nothing spins without you. Every charge reaches your phone. One tap, approve or deny.
+andrew 5 7.06s Each box gets its own daily budget on one card. It's a sandbox today, so you can try it with zero risk.
+andrew 6 4.66s Let your bots work. You stay in control. Alt-A-H-Q-Dot-Up
+brian 0 4.80s Your AI bots can already spend your money, so who's in control?
+brian 1 6.74s Alter connects any bot you already use with a single paste. It walks right into your HQ.
+brian 2 3.00s Every bot you run working in one place.
+brian 3 5.71s Give the team one big ask. They split it up, hand it off, get it done.
+brian 4 7.25s Nothing spends without you. Every charge reaches your phone. One tap. Approve or deny.
+brian 5 7.37s Each bot gets its own daily budget on one card. It's a sandbox today, so you can try it with zero risk.
+brian 6 5.64s Let your bots work. You stay in control. Altarage Qdotap
+Traceback (most recent call last):
+  File "/workspace/alter-video/v3/wh.py", line 7, in <module>
+    d=float(subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',f],capture_output=True,text=True).stdout)
+ValueError: could not convert string to float: ''
+brian3 0 4.66s Your AI bots can already spend your money, so who's in control?
+brian3 1 6.55s Alter connects any bot you already use with a single paste. It walks right into your HQ.
+brian3 2 2.90s Every bot you run working in one place.
+brian3 3 5.52s Give the team one big ask. They split it up, hand it off, get it done.
+brian3 4 7.06s Nothing spends without you. Every charge reaches your phone. One tap, approve or deny.
+brian3 5 7.13s Each bot gets its own daily budget on one card. It's a sandbox today, so you can try it with zero risk.
+brian3 6 6.34s Let your bots work. You stay in control. Altair HQ Dota.

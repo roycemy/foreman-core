@@ -1,0 +1,12 @@
+/* Bots working: carry prop, gather bob, working indicator. Pose classes go on .ch (floor.js figure root). */
+.ch .crate{position:absolute;left:50%;bottom:calc(var(--fig,46px)*.62);width:calc(var(--fig,46px)*.46);transform:translateX(-50%);z-index:2;pointer-events:none;display:none}
+.ch.carry .crate{display:block}
+.ch.gather .avs{animation:work-bob var(--a-d-bob) var(--a-ease-in-out) 3}
+@keyframes work-bob{50%{transform:translateY(calc(var(--fig,46px)*.06))}}
+/* crate left on the desk while the job runs */
+.desk-crate{position:absolute;width:calc(var(--fig,46px)*.42);transform:translate(-50%,-100%);pointer-events:none}
+/* working indicator: one 5px ink dot over the head. Calm, no labels; label appears on hover via the existing .tip */
+.wdot{position:absolute;width:5px;height:5px;border-radius:50%;background:var(--a-ink);transform:translate(-50%,-100%);pointer-events:none;animation:bst-pulse 2.4s ease-in-out infinite;animation-delay:var(--wd,0s)}
+@keyframes bst-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.ch.gather .avs,.wdot{animation:none}}
+.ch[data-idle=true] .figure .arm-t{animation:none!important}

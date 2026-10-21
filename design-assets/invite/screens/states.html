@@ -1,0 +1,18 @@
+<!doctype html><html><head><meta name=viewport content="width=device-width"><link rel=stylesheet href=base.css><style>
+body{padding:24px 24px 32px;min-height:100vh;display:flex;flex-direction:column}
+.top{display:flex;align-items:center;gap:8px;font:600 17px Geist;letter-spacing:-.02em}
+.mid{margin:auto 0;padding:40px 0}
+h1{font-size:30px;line-height:1.08;letter-spacing:-.035em;font-weight:600}
+p{margin-top:10px;font-size:16px;line-height:1.4;color:var(--stone)}
+.btn{margin-top:24px}.btn.o{margin-top:10px}
+.sk{height:14px;border-radius:7px;background:rgba(18,18,18,.06);margin-top:12px}
+.top circle{display:none}</style></head><body><div class=top><svg class="mark" width="28" height="28" viewBox="0 0 64 64"><path d="M8 33 V37 L32 49 L56 37 V33" fill="#111" stroke="#111" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="#F4F3EF" stroke="#111" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg> Alter</div><div class=mid id=m></div>
+<script>
+const S={
+loading:'<div class=sk style="width:80%;height:30px"></div><div class=sk style="width:55%;height:30px"></div><div class=sk style="width:90%;margin-top:22px"></div><div class=sk style="width:70%"></div>',
+invalid:'<h1>This invite link doesn\'t work.</h1><p>It may be mistyped or turned off by the person who sent it. Ask them for a new one.</p><button class="btn o">Go to alterhq.app</button>',
+member:'<h1>You\'re already in.</h1><p>You\'re founding member #88. Your HQ is waiting.</p><button class=btn>Open your HQ</button>',
+cap:'<h1>All 1,000 founding seats are taken.</h1><p>Royce\'s invite still gets you in. You just won\'t have a founding number.</p><button class=btn>Join Alter</button>',
+used:'<h1>Royce\'s seats are all taken.</h1><p>This link has been used up. Ask Royce for a new one, or join Alter on your own.</p><button class="btn o">Join Alter</button>'};
+document.getElementById('m').innerHTML=S[new URLSearchParams(location.search).get('s')||'invalid'];
+</script></body></html>

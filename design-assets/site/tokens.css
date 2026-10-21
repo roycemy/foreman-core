@@ -1,0 +1,19 @@
+/* Alter marketing tokens. Extends /public/styles/tokens.css (same values), adds the lit-on-dark surface. */
+@font-face{font-family:Geist;src:url(assets/Geist-Regular.ttf);font-weight:400}
+@font-face{font-family:Geist;src:url(assets/Geist-Medium.ttf);font-weight:500}
+@font-face{font-family:Geist;src:url(assets/Geist-SemiBold.ttf);font-weight:600 700}
+:root{
+  --paper:#F4F4F1; --surface:#FFFFFF; --ink:#121212; --stone:#55554F; --mute:#6E6E68;
+  --line:rgba(18,18,18,.08); --line-2:rgba(18,18,18,.14);
+  --night:#0C0C0D; --night-2:#151517; --night-line:rgba(244,243,239,.10);
+  --on-night:#F4F3EF; --on-night-2:#B4B3AC; /* 9.6:1 on --night */ --on-night-3:#8F8E88; /* 6.0:1 */
+  --v:#E2452B; /* the one accent: "needs you" only */
+  --font:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --code:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace; /* real code only */
+  --t-hero:clamp(40px,6.4vw,84px); --t-h2:clamp(32px,4.2vw,56px); --t-h3:20px; --t-lead:clamp(17px,1.5vw,20px); --t-body:16px; --t-meta:14px;
+  --tr-hero:-.045em; --tr-h2:-.035em;
+  --r-sm:10px; --r:14px; --r-lg:20px; --r-xl:28px;
+  --s-sec:clamp(96px,12vw,168px); --gutter:clamp(20px,5vw,64px); --max:1200px;
+  --tap:44px;
+  --ease:cubic-bezier(.2,.7,.2,1); --dur:520ms;
+}

@@ -1,0 +1,8 @@
+/* Bottom dock: the floor never slides under the heading, chips or type box. */
+.stage{--dock:var(--a-dock-h)}
+.stage::after{content:'';position:absolute;left:0;right:0;bottom:0;height:calc(var(--dock) + var(--a-dock-fade));z-index:15;pointer-events:none;
+  background:linear-gradient(to bottom,rgba(244,244,241,0) 0,var(--a-floor) var(--a-dock-fade),var(--a-floor) 100%)}
+.stage::before{content:'';position:absolute;left:0;right:0;top:0;height:20px;z-index:15;pointer-events:none;background:linear-gradient(var(--a-floor),rgba(244,244,241,0))}
+.hero{bottom:96px;z-index:20}.ask,.crew,.zoom,.a-corner{z-index:20}
+@media (max-width:940px){.stage{--dock:96px}}
+@media (max-width:760px){.stage{--dock:var(--a-dock-h-phone)}.stage::after{background:linear-gradient(to bottom,rgba(251,251,249,0) 0,var(--porcelain-phone) var(--a-dock-fade),var(--porcelain-phone) 100%)}}

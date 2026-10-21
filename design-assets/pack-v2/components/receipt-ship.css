@@ -1,0 +1,15 @@
+.rcard{width:240px;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--sh-float);padding:12px 14px;font:var(--t-xs)}
+.rcard .h{display:flex;align-items:center;gap:8px;color:var(--stone)} .rcard .h i{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;color:#fff;font:600 9px var(--font);font-style:normal}
+.rcard b{display:block;font:600 var(--t-sm);color:var(--ink);margin:6px 0 2px} .rcard .r{color:var(--stone)} .rcard .c{display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);color:var(--stone)} .rcard .c span:last-child{color:var(--ink);font-weight:500}
+/* flight: JS sets --dx/--dy to the Receipts tab; card scales to .18 and fades in the last 20% */
+.rcard.fly{position:fixed;z-index:20;animation:ship var(--d-ship) var(--ease-out) forwards;transform-origin:top left}
+@keyframes ship{0%{transform:translate(0,0) scale(1);opacity:1}70%{opacity:1}100%{transform:translate(var(--dx),var(--dy)) scale(.18);opacity:0}}
+.badge-new.bump{animation:bump 320ms var(--ease-out)} @keyframes bump{40%{transform:scale(1.18)}}
+/* receipts list */
+.rlist{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.rrow{display:grid;grid-template-columns:28px 1fr auto;gap:12px;align-items:center;padding:14px 16px;border-top:1px solid var(--line);position:relative}
+.rrow:first-child{border-top:0} .rrow i{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;color:#fff;font:600 10px var(--font);font-style:normal}
+.rrow b{font:500 var(--t-sm);display:block} .rrow small{font:var(--t-xs);color:var(--stone)} .rrow .amt{font:500 var(--t-sm);text-align:right} .rrow .amt small{display:block}
+.rrow.new{background:linear-gradient(90deg,#FBF7F1,var(--surface) 70%)} .rrow.new::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;border-radius:2px;background:var(--ink)}
+.rrow.new .nt{font:500 11px var(--font);color:var(--ink);margin-left:6px}
+@media (prefers-reduced-motion:reduce){.rcard.fly{animation:fade 200ms linear forwards}@keyframes fade{to{opacity:0}}}

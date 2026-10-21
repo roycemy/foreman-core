@@ -1,0 +1,23 @@
+/* Honest status line: bot cards (crew roster rows, inspector header, hover tip) */
+.bst{display:flex;align-items:flex-start;gap:10px;font-family:var(--a-font)}
+.bst-dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:none;background:var(--a-ink)}
+.bst[data-s=queued] .bst-dot{background:transparent;box-shadow:inset 0 0 0 1.5px var(--a-ink-3)}
+.bst[data-s=reconnect] .bst-dot{background:var(--a-red)}
+.bst[data-s=paused] .bst-dot{background:var(--a-ink-3);border-radius:2px;width:8px;height:8px}
+.bst[data-s=working] .bst-dot{animation:bst-pulse 2.4s ease-in-out infinite}
+.bst-t{min-width:0;flex:1}
+.bst-t b{display:block;font-size:var(--a-t-md);line-height:var(--a-lh-md);font-weight:var(--a-w-med);color:var(--a-ink);letter-spacing:var(--a-track)}
+.bst-line{display:block;font-size:var(--a-t-sm);line-height:var(--a-lh-sm);color:var(--a-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bst-why{display:block;font-size:var(--a-t-xs);line-height:var(--a-lh-xs);color:var(--a-ink-3);margin-top:1px}
+.bst[data-s=reconnect] .bst-line{color:var(--a-ink)}
+@keyframes bst-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.bst[data-s=working] .bst-dot{animation:none}}
+@media (max-width:760px){.bst-t b{font-size:15px}.bst-line{font-size:14px;line-height:20px;white-space:normal}.bst-why{font-size:13px;line-height:18px}}
+/* inline form used inside roster rows (.r.bst) and the inspector header */
+.bst .bst-line .bst-dot{display:inline-block;width:7px;height:7px;margin:0 6px 1px 0;vertical-align:middle}
+.roster button.r.bst{align-items:flex-start}
+.roster button.r.bst .av{margin-top:2px}
+/* inspector header: the status takes the free width; on phone 'Edit permissions' drops below so the status never squeezes */
+.ins-h .t{flex:1;min-width:0}
+.ins-h .bst-line{white-space:nowrap}
+@media (max-width:760px){.ins-h{flex-wrap:wrap}.ins-h .t{flex:1 1 calc(100% - 140px)}.ins-h [data-perms]{order:5;margin-left:auto}.ins-h .bst-line{white-space:normal}}

@@ -1,0 +1,4 @@
+warm-male | Your AI bots can already spend your money, so who's in control? Alter connects any bot you already use with a single paste. It walks right into your HQ. | 11.8 s
+warm-female | Your AI bots can already spend your money, so who's in control? Altar connects any bot you already use with a single paste. It walks right into your HQ. | 10.8 s
+british-male | Your AI bots can already spend your money, so who's in control? Altar connects any bot you already use with a single paste. It walks right into your HQ. | 12.8 s
+bright-female | Your AI bots can already spend your money, so who's in control? Alter connects any bot you already use with a single paste. It walks right into your HQ. | 10.6 s

@@ -1,0 +1,32 @@
+af_heart hook1 | Your AI bot just asked for $1,200.
+af_heart hook2 | Did you approve it?
+af_heart setup1 | It started with one small favor.
+af_heart setup2 | Book the team off-site by what's needed.
+af_heart value | With Alter, four bots share one card, and you still hold the keys.
+af_heart work | So they got to work, splitting it up, handing it off.
+af_heart tension | Then scout found a venue.
+af_heart ask | $1,200 deposit due today.
+af_heart humor | Scout has great taste and a $500 limit.
+af_heart intercept | Alter caught it before Ascent moved. Check the rule and ask me.
+af_heart phone | right here on my phone.
+af_heart deny | deny.
+af_heart small | Badges and snacks? Sure.
+af_heart keep | and the bots kept going inside their limits on one card.
+af_heart close | Your bots work, you stay in control.
+af_heart cta | claim your founding spot.
+am_michael hook1 | Your AI bot just asked for $1,200.
+am_michael hook2 | Did you approve it?
+am_michael setup1 | it started with one small favor.
+am_michael setup2 | Book the team offsite by what's needed.
+am_michael value | With Altar, four bots share one card and you still hold the keys.
+am_michael work | So they got to work, splitting it up, handing it off.
+am_michael tension | Then Scout found a venue.
+am_michael ask | $1,200 deposit due today.
+am_michael humor | Scout has great taste and a $500 limit.
+am_michael intercept | Alter caught it before Ascent moved, checked the rule, and asked me.
+am_michael phone | right here on my phone.
+am_michael deny | Deny.
+am_michael small | Badges and snacks, sure.
+am_michael keep | and the bots kept going inside their limits on one card.
+am_michael close | Your bots work. You stay in control.
+am_michael cta | claim your founding spot.

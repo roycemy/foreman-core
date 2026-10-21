@@ -1,0 +1,45 @@
+<!doctype html><html><head><meta name=viewport content="width=device-width"><link rel=stylesheet href=base.css><style>
+html,body{height:100%;overflow:hidden}
+#bg{position:fixed;inset:0;background:var(--night)}
+#floorwrap{position:absolute;left:30%;top:38%;width:0;height:0}
+#floor{width:var(--fw);left:calc(var(--fw)*-.3030);top:calc(var(--fw)*-.3727)}
+#mk{position:absolute;left:50%;top:40%;transform:translate(-50%,-50%)}
+#seat{position:absolute;left:0;top:0}
+#seat .halo{left:0;top:0}
+#seat .pin{left:0;top:-38px}
+#sheet{position:fixed;left:0;right:0;bottom:0;height:290px;background:var(--p);border-radius:26px 26px 0 0}
+#cap{position:absolute;left:24px;right:24px;bottom:120px;text-align:left}
+#cap h1{font-size:34px;line-height:1.05;letter-spacing:-.035em;font-weight:600}
+#cap p{margin-top:10px;font-size:16px;color:var(--stone)}
+#cta{position:absolute;left:24px;right:24px;bottom:40px}
+@media(min-width:900px){#sheet{height:300px;left:24px;right:24px}#floorwrap{left:50%;top:42%}#mk{top:42%}#sheet{position:fixed;left:0;right:0;bottom:0;height:290px;background:var(--p);border-radius:26px 26px 0 0}
+#cap{left:50%;right:auto;width:560px;margin-left:-280px;bottom:150px;text-align:center}#cap h1{font-size:48px}#cta{left:50%;right:auto;width:320px;margin-left:-160px;bottom:72px}}
+</style></head><body>
+<div id=bg></div>
+<div id=floorwrap><div id=floor class=fimg></div><div id=seat><div class=halo></div><div class="pin lt"><i class=dot></i>Your seat</div></div></div>
+<div id=mk><svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 64 64"><path d="M8 33 V37 L32 49 L56 37 V33" fill="#F4F3EF" stroke="#F4F3EF" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="#111" stroke="#F4F3EF" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg></div>
+<div id=sheet></div><div id=cap><h1>Royce saved you a place.</h1><p>Founding seat, reserved for you.</p></div>
+<div id=cta><button class=btn>Take your seat</button></div>
+<script>
+const D=innerWidth>=900;document.documentElement.style.setProperty('--fw',(D?2400:1400)+'px');
+const c=(x)=>Math.max(0,Math.min(1,x)), seg=(t,a,b)=>c((t-a)/(b-a));
+const eo=x=>1-Math.pow(1-x,3); // easeOutCubic ~ cubic-bezier(.33,1,.68,1)
+const es=x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2; // easeInOutCubic
+const mix=(a,b,k)=>a+(b-a)*k;
+const $=id=>document.getElementById(id);
+window.setT=function(t){
+ // 0-250 black. 250-750 mark in. 750-1050 dot lights. 1050-1650 floor lights, bg->porcelain, mark out
+ const m=eo(seg(t,250,750)), mo=es(seg(t,1050,1450));
+ $('mk').style.opacity=m*(1-mo);$('mk').style.transform=`translate(-50%,-50%) scale(${mix(.92,1,m)*mix(1,1.6,mo)})`;
+ $('mk').querySelector('circle').style.opacity=eo(seg(t,750,950));
+ const L=es(seg(t,1050,1650));
+ 
+ $('floor').style.opacity=seg(t,1050,1300);$('floor').style.filter=`brightness(${mix(.08,1,L)})`;
+ $('floorwrap').style.transform=`scale(${mix(1.12,1,eo(seg(t,1050,2000)))})`;
+ const s=eo(seg(t,1650,2050));$('seat').querySelector('.halo').style.opacity=s;$('seat').querySelector('.halo').style.transform=`scale(${mix(.6,1,s)})`;
+ const p=eo(seg(t,1850,2200));$('seat').querySelector('.pin').style.opacity=p;$('seat').querySelector('.pin').style.transform=`translate(-50%,calc(-100% + ${mix(6,0,p)}px))`;
+ const h=eo(seg(t,2100,2550));$('cap').style.opacity=h;$('sheet').style.opacity=eo(seg(t,1350,1800));$('cap').style.transform=`translateY(${mix(12,0,h)}px)`;
+ const b=eo(seg(t,2450,2900));$('cta').style.opacity=b;$('cta').style.transform=`translateY(${mix(8,0,b)}px)`;
+};
+setT(new URLSearchParams(location.search).get('t')??3000);
+</script></body></html>

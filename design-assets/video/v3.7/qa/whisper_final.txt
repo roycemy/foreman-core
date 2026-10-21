@@ -1,0 +1,12 @@
+  0.0- 4.7 Your AI bots can already spend your money, so who's in control?
+  4.7-11.7 Copy one message, paste it into your bots chat, sets itself up and walks into your HQ.
+ 11.7-15.1 Every bot you run, working in one place.
+ 15.1-21.3 Give the team one big ask, they split it up, hand it off, get it done.
+ 21.3-23.2 Nothing spends without you.
+ 23.2-25.4 Every charge reaches your phone.
+ 25.4-28.1 One tap, approve or deny.
+ 28.1-31.4 Each bot gets its own daily budget on one card.
+ 31.4-35.1 It's a sandbox today, so you can try it with zero risk.
+ 35.1-36.7 Let your bots work.
+ 36.7-38.4 You stay in control.
+ 38.4-39.9 AlterHQ.app

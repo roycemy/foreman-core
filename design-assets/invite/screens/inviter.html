@@ -1,0 +1,36 @@
+<!doctype html><html><head><meta name=viewport content="width=device-width"><link rel=stylesheet href=base.css><style>
+body{background:var(--p);min-height:100vh;position:relative;overflow:hidden}
+.bgf{position:absolute;inset:0;background:#0E0E0F}.bgf .fimg{width:1500px;left:calc(30% - 1500px*.3030);top:calc(26% - 1500px*.3727)}.bgf .seat{position:absolute;left:30%;top:26%}.bgf .seat .halo{left:0;top:0;box-shadow:0 0 0 2px #F4F4F1,0 0 0 12px rgba(244,244,241,.12)}@media(min-width:900px){.bgf .fimg{width:2700px;left:calc(30% - 2700px*.3030);top:calc(55% - 2700px*.3727)}.bgf .seat{left:30%;top:55%}}
+.scrim{position:absolute;inset:0;background:rgba(14,14,15,.12)}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:var(--s);border-radius:22px 22px 0 0;padding:10px 24px 32px;box-shadow:0 -10px 40px rgba(0,0,0,.12)}
+.grab{width:36px;height:5px;border-radius:3px;background:var(--line2);margin:0 auto 18px}
+h2{font-size:22px;letter-spacing:-.025em;font-weight:600}
+.s{margin-top:6px;font-size:15px;color:var(--stone)}
+.link{margin-top:18px;display:flex;align-items:center;gap:10px;height:52px;border-radius:12px;background:var(--p);padding:0 6px 0 16px}
+.link .code{flex:1}.link button{height:40px;padding:0 14px;border-radius:10px;border:0;background:var(--ink);color:#fff;font:500 14px Geist}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.st{border-radius:14px;box-shadow:inset 0 0 0 1px var(--line);padding:14px 16px}
+.st b{display:block;font-size:28px;letter-spacing:-.03em;font-weight:600}.st span{font-size:13px;color:var(--mute)}
+.lh{margin-top:22px;font:600 15px Geist;display:flex}.lh span{margin-left:auto;font-weight:400;color:var(--mute);font-size:13px}
+ul{list-style:none;padding:0;margin-top:8px}
+li{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line);font-size:15px}
+li:first-child{border-top:0}
+.av{width:34px;height:34px;border-radius:50%;background:var(--p);display:grid;place-items:center;font:600 13px Geist;color:var(--stone)}
+li .m{margin-left:auto;font-size:13px;color:var(--mute)}
+li.p .av{background:transparent;box-shadow:inset 0 0 0 1.5px var(--line2);border:0}
+.toast{position:absolute;left:16px;right:16px;top:16px;background:#F4F4F1;color:var(--ink);border-radius:16px;padding:14px 16px;display:flex;gap:12px;align-items:center;box-shadow:0 10px 30px rgba(0,0,0,.2)}
+.toast b{font-weight:600}.toast span{color:var(--stone);font-size:14px}
+.toast .dot{flex:none}
+@media(min-width:900px){.sheet{left:auto;right:24px;top:24px;bottom:24px;width:420px;border-radius:20px;padding:28px}.grab{display:none}.toast{left:auto;right:468px;width:360px;top:24px}}
+</style></head><body>
+<div class=bgf><div class=fimg></div><div class=seat><div class=halo></div></div></div><div class=scrim></div>
+<div class=toast id=toast><i style="width:8px;height:8px;border-radius:50%;box-shadow:inset 0 0 0 1.5px #121212;flex:none"></i><div><b>Maya took her seat.</b><br><span>Founding member #215 · joined with your link</span></div></div>
+<div class=sheet><div class=grab></div>
+<h2>Invite</h2><p class=s>Save a founding seat for someone you trust.</p>
+<div class=link><span class=code>alterhq.app/i/royce</span><button>Copy</button></div>
+<div class=stats><div class=st><b>3</b><span>joined with your link</span></div><div class=st><b>214</b><span>of 1,000 founding seats taken</span></div></div>
+<div class=lh>Joined <span>live</span></div>
+<ul><li><div class=av>M</div>Maya Chen<span class=m>#215 · just now</span></li>
+<li><div class=av>D</div>Dev Patel<span class=m>#188 · Oct 18</span></li>
+<li><div class=av>S</div>Sam Ortiz<span class=m>#141 · Oct 15</span></li></ul>
+</div></body></html>
