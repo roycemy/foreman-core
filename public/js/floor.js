@@ -172,7 +172,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const sr = st.getBoundingClientRect();
     const dockTop = dock && dock.offsetParent ? dock.getBoundingClientRect().top - sr.top : H - 24;
     const heroTop = hero && hero.offsetParent ? hero.getBoundingClientRect().top - sr.top : dockTop;
-    const top = BB.phone() ? 32 : 20, bottom = Math.max(top + 100, Math.min(dockTop, heroTop) - 4);
+    const top = BB.phone() ? 32 : 50, bottom = Math.max(top + 100, Math.min(dockTop, heroTop) - 4);
     fw = Math.max(100, Math.min(W - (BB.phone() ? 8 : 24), (bottom - top) * ASPECT));
     f.style.setProperty('--fw', fw + 'px');
     f.style.setProperty('--figw', (fw * .062) + 'px');
@@ -209,11 +209,10 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     return BB.onYou().filter(i => ['approval', 'spend', 'card'].includes(i.type) && i.a && !BB.isGhost(i.a)).sort((x, y) => String(x.at).localeCompare(String(y.at)));
   }
   function targetOf(a, waitList) {
-    if (BB.isGhost(a)) { const g = BB.agents().filter(BB.isGhost); return { k: 'arr', p: ARRIVALS[Math.max(0, g.findIndex(b => b.id === a.id)) % ARRIVALS.length] }; }
     const wi = waitList.indexOf(a.id);
     if (wi >= 0 && wi < TRAY_SLOTS.length) return { k: 'tray', p: TRAY_SLOTS[wi] };
     if (BB.withOwner(a)) { const seated = BB.agents().filter(b => BB.withOwner(b)), i = Math.max(0, seated.findIndex(b => b.id === a.id)); return { k: 'call:' + i, p: W2P(65 + (i % 2) * 5, 91 + Math.floor(i / 2) * 5) }; }
-    const room = BB.roomOf(a), same = BB.agents().filter(b => !BB.isGhost(b) && (['sales', 'support'].includes(room) ? ['sales', 'support'].includes(BB.roomOf(b)) : BB.roomOf(b) === room));
+    const room = BB.roomOf(a), same = BB.agents().filter(b => (['sales', 'support'].includes(room) ? ['sales', 'support'].includes(BB.roomOf(b)) : BB.roomOf(b) === room));
     const slot = Math.max(0, same.findIndex(b => b.id === a.id)), seats = SEATW[room] || SEATW.ops, v = seats[slot % 4];
     const pt = W2P(v[0] + Math.floor(slot / 4) * 2.2, v[1] + Math.floor(slot / 4) * 1.6);
     return { k: 'home:' + room + ':' + slot, p: pt };
