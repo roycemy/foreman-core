@@ -1,7 +1,7 @@
 /* Alter app shell service worker.
    Caches static shell files as an offline fallback; the network always wins when online.
    /api is always live network: no work state, approval or receipt is ever served from cache. */
-const CACHE = 'alter-shell-v9';
+const CACHE = 'alter-shell-v10';
 const SHELL = [
   '/hq', '/app.html', '/brand.js', '/manifest.webmanifest',
   '/styles/tokens.css', '/styles/app.css',
