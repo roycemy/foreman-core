@@ -1,6 +1,6 @@
 /* Observed transitions only. First snapshot is a baseline; one pending action per bot. */
 (function(){'use strict';const B=window.BB,esc=B.esc;
-B.sleeping=a=>!!a&&a.revokedBy!=='owner'&&(!['connected'].includes(B.presence(a))||(a.providerId!=='muse'&&B.wentDark(a))||(B.isOffline&&B.isOffline(a)));
+B.sleeping=a=>!!a&&a.status!=='revoked'&&(!['connected'].includes(B.presence(a))||(a.providerId!=='muse'&&B.wentDark(a))||(B.isOffline&&B.isOffline(a)));
 const arms=/<rect x="(-15|10)" y="-47" width="5" height="(21|16)" rx="2.5"( fill="[^"]+")\/>/g;
 B.poseSVG=function(a,o){let svg=B.figureSVG(a,o);const m=o.motion||(B.pendingReqs().some(q=>q.agentId===a.id)?'approval':B.presence(a)==='reconnect'?'wave':B.tasks().some(t=>t.assignee===a.id&&t.status==='queued')?'paper':B.tasks().some(t=>t.assignee===a.id&&t.status==='running'&&B.tasks().some(c=>c.parentId===t.id&&['queued','running'].includes(c.status)))?'wait':''),angles={stretch:[160,-160],wave:[0,-150],approval:[0,-172],failed:[48,-48],blocked:[35,-35],collect:[0,-95],claim:[-35,35],paper:[-35,35]};
  if(angles[m])svg=svg.replace(arms,(v,x)=>'<g class="gesture-arm" transform="rotate('+angles[m][x==='-15'?0:1]+' '+(+x+2.5)+' -45)">'+v+'</g>');
@@ -30,7 +30,7 @@ B.on(function(s){if(!s)return;const next={agents:map(s.agents||[]),tasks:map(s.t
   if(a.lastSeen&&(!old||!old.lastSeen)&&(!a.firstSeenAt||Date.now()-Date.parse(a.firstSeenAt)<120000)&&!stretched.has(a.id)&&B.presence(a)==='connected'){stretched.add(a.id);motion(a.id,'stretch','Connected');}
   if(old&&B.sleeping(old)&&!B.sleeping(a))motion(a.id,'wake','Connected');
   if(old&&B.presence(old)!=='reconnect'&&B.presence(a)==='reconnect')motion(a.id,'wave','Reconnect');
-  if(old&&old.status!=='revoked'&&a.status==='revoked'&&a.revokedBy==='owner')motion(a.id,'leave','Disconnected');
+  if(old&&old.status!=='revoked'&&a.status==='revoked')motion(a.id,'leave','Disconnected');
   const before=old&&old.sandboxGrant&&old.sandboxGrant.spentCents,after=a.sandboxGrant&&a.sandboxGrant.spentCents;if(before!=null&&after>before)motion(a.id,'spend','Budget updated');
  }
  for(const t of Object.values(next.tasks)){const old=prev.tasks[t.id];

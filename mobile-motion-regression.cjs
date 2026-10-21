@@ -16,3 +16,5 @@ const reqs=[];const updateRequests=()=>cb({agents,tasks,requests:reqs,events});
 reqs.push({id:'p',agentId:'a',status:'pending'});updateRequests();assert.equal(r.motion,'approval');flush();reqs[0].status='denied';updateRequests();assert.equal(r.motion,'blocked');flush();reqs.push({id:'p2',agentId:'a',status:'pending'});updateRequests();flush();reqs[1].status='executed';updateRequests();assert.equal(r.motion,'unlock');flush();reqs.push({id:'p3',botId:'a',status:'pending'});updateRequests();flush();reqs[2].status='limit_blocked';updateRequests();assert.equal(r.motion,'limit');flush();
 B.offline=true;const quiet=draws;tasks[0].progressAt='offline-progress';update();assert.equal(draws,quiet,'no choreography while source unavailable');B.offline=false;update();assert.equal(draws,quiet,'no outage replay');
 console.log('PASS signal coverage: first handshake, reconnect/return, sandbox spend, approval/denial/unlock/limit and outage baseline');
+
+assert.equal(B.sleeping({id:'rev',status:'revoked'}),false,'revoked access never looks like a sleeping authorized bot');
