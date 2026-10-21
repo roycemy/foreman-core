@@ -16,7 +16,7 @@ assert(cj.includes("BB.api('/api/agents/' + W.agent.id + '/pairing', 'POST', {})
 // runner reads the code from the fragment, with a scrubbed ?pair= query fallback for browsers that drop fragments, and auto-pairs only when no saved session
 assert(rh.includes("const pc=hp.get('pair')||qp.get('pair');"),'runner must read the fragment with query fallback');
 assert(rh.includes("qp.delete('pair')"),'runner must scrub the query pair param');
-assert(rh.includes("if(pc&&expected&&!persistent)$('pairconnect').click()"),'runner must auto-pair');
+assert(rh.includes("if(pc&&expected&&!persistent&&sessionMissing)$('pairconnect').click()"),'runner must auto-pair');
 // redeem endpoint still rejects query-string-only knowledge: code validation unchanged server-side
 const api=fs.readFileSync('api/index.js','utf8');
 assert(api.includes("if(!await r(['SET','gl:pairUsed:'+hash,'1','NX','PX',300000]))"),'single-use burn must remain');

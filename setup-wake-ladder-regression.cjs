@@ -38,8 +38,8 @@ assert(!g.url.includes('poll='),'grok link declares no console cadence');
 
 // Muse: rung 3 only - no cadence, no routine; still one paste with the code in the fragment
 const m=forP('muse');
-assert(!m.url.includes('poll='),'muse link declares no cadence');
-assert(!m.msg.includes('5-minute')&&!m.mcp.includes('add a Routine'),'muse stays acts-when-messaged');
+assert(m.url.includes('poll=300'),'muse link declares its five-minute check cadence');
+assert(m.msg.includes('recurring five-minute check')&&m.msg.includes('if your client supports'),'Muse asks its client to set up and verify a schedule, without inventing support');
 assert(m.msg.includes('every time I message you'),'muse keeps the on-message standing rule');
 assert(!m.msg.includes('&wake='),'muse paste declares no wake target');
 
@@ -69,4 +69,4 @@ const api=fs.readFileSync('api/index.js','utf8');
 assert(api.includes('if(_ps)await notePollCadence(agent,_ps)'),'server records declared cadence');
 assert(api.includes('if(_wt)await noteWakeTarget(agent,_wt)'),'server records declared wake targets from gateway calls');
 assert(api.includes('wakeChannel'),'MCP foreman_presence schema accepts wake declarations');
-console.log('PASS setup wake ladder: grok routine + instinct declared cadence in one paste each, muse stays on-message, console stamps pollSec honestly. No network.');
+console.log('PASS setup wake ladder: grok routine + instinct declared cadence in one paste each, muse verified client cadence with honest capability fallback, console stamps pollSec honestly. No network.');
