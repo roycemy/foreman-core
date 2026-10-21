@@ -50,4 +50,4 @@
 /* Give the island the viewport. The compact prompt stays in the bottom dock. */
 @media(min-width:941px){.hero{bottom:88px}.hero h2{font-size:16px}.hero .chips{display:none}}
 @media(min-width:761px){.dark-bar{top:calc(var(--h-top) + 6px);padding:6px 10px;font-size:11px;line-height:15px}}
-.stage::after{height:80px;background:linear-gradient(to bottom,transparent,var(--a-floor) 90%)}
+@media(min-width:761px){.stage::after{height:80px;background:linear-gradient(to bottom,transparent,var(--a-floor) 90%)}}
