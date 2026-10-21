@@ -37,3 +37,5 @@
 @media(max-width:760px){.floor-bot-label{font-size:9px;line-height:11px;min-width:48px;padding:2px 4px;max-width:84px}.floor-bot-label small{font-size:8px;line-height:10px}}
 
 .menu .site-return{display:block;padding:10px 14px;font-size:13px;color:var(--ink)}
+
+.floor-bot-label{width:max-content}.floor-bot-label small{max-width:116px;overflow:hidden;text-overflow:ellipsis}
