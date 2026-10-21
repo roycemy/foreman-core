@@ -54,3 +54,4 @@ body:has(.tour) .a-corner .rcf-slot{visibility:hidden;height:0;overflow:hidden}
  .rcf-act{padding:0 9px}
  .rcf-why{margin-bottom:7px}
 }
+@media(min-width:761px){.dark-bar{max-width:min(560px,calc(100% - 48px));padding:6px 10px;border-radius:10px;gap:7px;font-size:11px;line-height:15px;box-shadow:var(--sh1)}}
