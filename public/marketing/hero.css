@@ -39,3 +39,5 @@
 .hv>img.fl,.cv .flw img{mix-blend-mode:normal;-webkit-mask-image:none;mask-image:none}.hv{max-width:680px}
 .hv{aspect-ratio:1600/879;max-width:720px;margin-right:calc(-1*var(--g)/2)}
 @media (max-width:640px){.hv{margin:0}.hv .ask{left:62%!important;top:78%!important}.hv .toast{display:none}.cv .ask{left:60%!important;top:46%!important}}
+.dsec{padding-top:48px}.dhead{text-align:center;margin-bottom:32px}.dhead .eyebrow{margin-bottom:8px}.dhead h2{font-size:clamp(26px,2.8vw,36px)}.dhead .lead{margin:8px auto 0}
+@media (max-width:640px){.dsec{padding-top:32px}.dhead{margin-bottom:24px}}
