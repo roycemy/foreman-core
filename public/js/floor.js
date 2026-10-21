@@ -175,9 +175,9 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const top = BB.phone() ? 32 : 36, bottom = Math.max(top + 100, Math.min(dockTop, heroTop) - 4);
     fw = Math.max(100, Math.min(W + (BB.phone() ? -8 : 16), (bottom - top) * ASPECT));
     f.style.setProperty('--fw', fw + 'px');
-    f.style.setProperty('--figw', (fw * (BB.phone() ? .062 : .070)) + 'px');
+    f.style.setProperty('--figw', (fw * (BB.phone() ? .062 : .054)) + 'px');
     f.style.setProperty('--floor-y', ((top + bottom) / 2) + 'px');
-    BB.$$('.ch', f).forEach(e => e.style.setProperty('--fig', (fw * (BB.phone() ? .062 : .070)) + 'px'));
+    BB.$$('.ch', f).forEach(e => e.style.setProperty('--fig', (fw * (BB.phone() ? .062 : .054)) + 'px'));
   }
   BB.floorFit = fit;
   BB.floorReset = fit;
@@ -260,7 +260,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   function ensure(a, i) {
     let r = F[a.id]; if (r) return r;
     const el = document.createElement('div'); el.className = 'ch'; el.tabIndex = 0; el.setAttribute('role', 'button'); el.dataset.id = a.id;
-    el.innerHTML = '<div class="body"><div class="avs"></div></div><span class="floor-bot-label"><b></b><small></small></span>'; el.style.setProperty('--bd', (-(BB.hash(a.id) % 32) / 10) + 's'); el.style.setProperty('--fig', (fw * (BB.phone() ? .062 : .070)) + 'px');
+    el.innerHTML = '<div class="body"><div class="avs"></div></div><span class="floor-bot-label"><b></b><small></small></span>'; el.style.setProperty('--bd', (-(BB.hash(a.id) % 32) / 10) + 's'); el.style.setProperty('--fig', (fw * (BB.phone() ? .062 : .054)) + 'px');
     el.addEventListener('click', () => { if (BB.sleeping && BB.sleeping(BB.agent(a.id)) && BB.reconnect) BB.reconnect(a.id); else if(BB.openInspector) BB.openInspector(a.id); });
     el.addEventListener('mouseenter', () => liveTip(a.id, true)); el.addEventListener('mouseleave', () => liveTip(a.id, false));
     el.addEventListener('focus', () => liveTip(a.id, true)); el.addEventListener('blur', () => liveTip(a.id, false));
