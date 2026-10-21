@@ -155,3 +155,47 @@ body{background:var(--paper)}
 
 /* Production port: no film or fake charge captures. */
 .sample-note{text-align:center;color:var(--stone);font-size:13px;padding-bottom:48px}.sandbox-note{background:#fff;border:1px solid var(--line);border-radius:20px;padding:32px}.sandbox-note p{color:var(--stone);margin-top:14px}.sandbox-note a{margin-top:18px}figcaption{font-size:12px;color:var(--stone);padding:14px 18px;background:#fff}a:focus-visible{outline:3px solid #2f5da8;outline-offset:4px}.hero .copy{opacity:1!important;transform:none!important}
+
+/* Compact marketing pass: show the product without long empty bands. */
+.compact{--s-sec:64px;--t-hero:clamp(40px,3.8vw,54px);--t-h2:clamp(30px,3vw,42px)}
+.compact .hero{padding-top:108px;padding-bottom:24px}
+.compact .hero-grid{display:grid;grid-template-columns:1.04fr 1fr;align-items:center;max-width:1320px;margin:auto;padding:0 48px;gap:24px}
+.compact .hero .copy{text-align:left;padding:0;max-width:600px}
+.compact .hero .copy .lead{margin:18px 0 0;max-width:30ch}
+.compact .hero .ctas{justify-content:flex-start;margin-top:24px;gap:16px}
+.compact .hero .floor{width:100%;left:auto;transform:none;margin:0}
+.compact .hero .floor img{width:100%;aspect-ratio:3219/2012;height:auto}
+.compact .sample-note{padding-bottom:8px;margin-top:12px;font-size:12px}
+.compact .split{gap:48px}.compact .split h2{font-size:clamp(30px,3vw,42px)}
+.compact .k{margin-bottom:10px}.compact .lead{margin-top:14px;max-width:40ch}
+.compact .addr{margin-top:20px}.compact .bots{margin-top:16px}
+.compact .wide{margin:28px auto 0;max-width:900px}.compact .hqshot img{width:100%;aspect-ratio:1.72;object-fit:cover;object-position:50% 38%}
+.compact .never{margin-top:24px}.compact .never div{padding:16px 0}
+.compact .sandbox-note{padding:24px}.compact .sandbox-note p{margin-top:10px}
+.compact #pricing .wrap{display:grid;grid-template-columns:1fr 1fr;gap:8px 40px;align-items:start}
+.compact #pricing .k{grid-column:1/-1}.compact #pricing .lead{margin:0}.compact #pricing p:last-child{grid-column:2;margin-top:4px!important}
+.compact .final{padding:48px 0 56px}.compact .final .lead{margin:14px auto 24px}
+.compact .foot{padding:24px 0}.phero{padding:120px 0 48px}.phero .lead{margin-top:16px}
+@media(max-width:820px){
+.compact{--s-sec:44px;--t-h2:32px}.compact .hero{padding-top:96px;padding-bottom:16px}
+.compact .hero-grid{grid-template-columns:1fr;padding:0 20px;gap:12px}
+.compact .hero .copy{max-width:none;text-align:center}.compact .hero h1{font-size:34px}
+.compact .hero .copy .lead{margin:16px auto 0;font-size:17px;max-width:30ch}
+.compact .hero .ctas{justify-content:center;margin-top:20px;gap:12px}
+.compact .hero .floor{width:calc(100% + 40px);margin-left:-20px;margin-top:0}
+.compact .sample-note{margin-top:0;padding-bottom:0;font-size:11px}
+.compact .split{gap:24px}.compact .lead{font-size:17px}.compact .shot{border-radius:14px}
+.compact .wide{margin-top:24px}.compact .hqshot img{aspect-ratio:1.4;object-position:50% 40%}
+.compact .never div{gap:4px}.compact .never b{font-size:16px}.compact .never span{font-size:15px}
+.compact #pricing .wrap{display:block}.compact #pricing .lead{margin-top:14px}.compact #pricing p:last-child{margin-top:12px!important}
+.compact .final{padding:40px 0}.compact .foot .wrap{gap:12px}.compact .foot small{font-size:12px}.phero{padding:104px 0 40px}
+}
+
+.compact .hero-demo{position:relative;aspect-ratio:16/10;overflow:hidden;border-radius:18px;background:#eeeeea;border:1px solid var(--line)}
+.compact .demo-poster{height:100%;display:grid;align-items:center;position:relative}.compact .demo-poster img{width:100%}
+.compact .demo-label{position:absolute;bottom:16px;left:0;width:100%;font-size:12px;color:var(--stone);text-align:center}
+.compact .hero-demo video{width:100%;height:100%;object-fit:contain;background:#111}
+.compact .hero-demo [hidden]{display:none}
+.compact #hq{padding:36px 0}.compact #hq h2{font-size:clamp(28px,3vw,40px)}
+.compact #hq .lead{max-width:54ch;margin-top:12px}
+@media(max-width:820px){.compact .hero-demo{aspect-ratio:16/10;margin-top:12px}.compact .demo-label{bottom:10px;font-size:11px}.compact #hq{padding:32px 0}.compact .hero h1{font-size:34px}}
