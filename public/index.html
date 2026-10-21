@@ -1,270 +1,34 @@
-<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title data-brand-title="{brand} · Your AI employees, on one floor">Your AI employees, on one floor</title>
-<meta name="description" content="Every AI employee. One workplace. Connect the bots you already run, set what they may do, and approve anything risky.">
-<meta name="theme-color" content="#F4F4F1">
-<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml"><link rel="icon" href="/brand/favicon-32.png" sizes="32x32" type="image/png"><link rel="icon" href="/brand/favicon-16.png" sizes="16x16" type="image/png"><link rel="apple-touch-icon" href="/brand/alter-icon-light-180.png">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
-<!-- Shared design system and brand token (served from the app's public/ folder). -->
-<link rel="stylesheet" href="/styles/tokens.css">
-<script src="/brand.js"></script>
-<style>
-/* Marketing surface only: public, signed-out. The app shell never loads this. */
-.nav{display:flex;align-items:center;gap:var(--s-8);height:72px;padding:0 var(--s-8);border-bottom:1px solid var(--c-border)}
-.nav nav{display:flex;gap:var(--s-6);font-size:var(--fs-14);color:var(--c-text-2)}
-.nav nav a{text-decoration:none}
-.sp{flex:1}
-.hero{display:grid;grid-template-columns:540px 1fr;gap:var(--s-6);align-items:center;padding:var(--s-16) var(--s-8) var(--s-12);max-width:1440px;margin:0 auto}
-.hero h1{font-size:96px;margin:var(--s-4) 0 var(--s-6)}
-.hero .sub{font-size:var(--fs-18);color:var(--c-text-2);max-width:440px;margin-bottom:var(--s-8)}
-.ctas{display:flex;align-items:center;gap:var(--s-6)}
-.tlink{font-weight:600;text-decoration:none;border-bottom:1.5px solid var(--c-text);padding-bottom:2px}
-.trust{margin-top:var(--s-10);font-size:var(--fs-12);color:var(--c-text-2);display:flex;gap:var(--s-2);align-items:center}
-.trust i{width:6px;height:6px;border-radius:50%;background:var(--c-live)}
-.stage{position:relative;margin-right:-32px}
-.stage svg{display:block;width:100%}
-.minicard{position:absolute;right:2%;bottom:8%;width:250px;background:var(--c-surface);border:1px solid var(--c-border);box-shadow:var(--sh-3);padding:var(--s-3) var(--s-3) var(--s-3);font-size:var(--fs-13)}
-.minicard .row{display:flex;gap:6px;align-items:center;margin-top:var(--s-2);flex-wrap:wrap}
-.minicard .cost{margin-right:auto;font-size:var(--fs-12);color:var(--c-text-2)}
-.pill{display:inline-flex;gap:5px;align-items:center;font-size:var(--fs-12);font-weight:600;padding:3px 8px 3px 4px;border-radius:var(--r-pill);border:1px solid var(--c-text)}
-.pill.acc{background:var(--c-accent-fill);color:var(--c-on-accent);border-color:var(--c-accent-fill)}
-.figcap{font-size:var(--fs-12);color:var(--c-text-2);padding:var(--s-2) 0 0 var(--s-6)}
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Alter · Your AI employees, in one HQ</title><meta name="description" content="A shared workspace for your AI bots, with jobs, decisions and receipts."><meta property="og:title" content="Alter · Your AI employees, in one HQ"><meta property="og:description" content="A shared workspace for your AI bots, with jobs, decisions and receipts."><meta name="theme-color" content="#F4F4F1"><link rel="stylesheet" href="/marketing/tokens.css"><link rel="stylesheet" href="/marketing/site.css"><link rel="icon" href="/brand/favicon.svg" type="image/svg+xml"></head><body><header class="nav light"><div class="wrap"><a class="wm" href="/"><img src="/marketing/assets/H1-mark.svg" alt=""><span>Alter</span></a>
+<nav aria-label="Main"><a href="/#connect">Product</a><a href="/security.html">Security</a><a href="/pricing.html">Pricing</a></nav><div class="sp"></div>
+<a class="si" href="/hq">Sign in</a><a class="btn sm" href="#join">Get started</a></div></header>
+<section class="hero " id="top"><div class="wrap copy rv"><h1>Let your bots work.<br>You stay in control.</h1>
+<p class="lead">Connect your bots. Keep decisions on your desk.</p>
+<div class="ctas"><a class="btn" href="#join">Open your HQ</a><a class="tl" href="#connect">See how it works</a></div></div>
+<div class="floor"><img src="/marketing/assets/floor-light-web.jpg" alt="The Alter HQ floor, lit on warm paper, with bots at their desks and one open seat"></div>
+<div class="wrap sample-note"><p>Example workspace with sample data. Your HQ starts empty.</p></div></section>
 
-.band{padding:var(--s-24) var(--s-8)}
-.band h2{font-size:var(--fs-60);max-width:16ch;margin:var(--s-3) 0 var(--s-4)}
-.how{display:grid;grid-template-columns:160px 1fr;border-top:1px solid var(--c-border)}
-.step{display:contents}
-.step .n{padding:var(--s-8) 0;border-bottom:1px solid var(--c-border);font-family:var(--f-display);font-size:var(--fs-44)}
-.step .body{padding:var(--s-8) 0 var(--s-8) var(--s-10);border-bottom:1px solid var(--c-border);display:grid;grid-template-columns:1.1fr .9fr;gap:var(--s-8);align-items:center}
-.step h3{font-family:var(--f-display);font-size:var(--fs-32);font-weight:400;margin-bottom:var(--s-3)}
-.step p{color:var(--c-text-2);max-width:46ch}
-.addrline{margin-top:var(--s-4);padding:var(--s-3) var(--s-4);background:var(--c-sunken);font-size:var(--fs-13);display:flex;justify-content:space-between;gap:var(--s-3);align-items:center}
-.traydemo{background:var(--c-surface);border:1px solid var(--c-border);box-shadow:var(--sh-2)}
-.traydemo .hd{display:flex;justify-content:space-between;padding:var(--s-2) var(--s-4);background:var(--c-inverse);color:var(--c-on-inverse);font:500 var(--fs-11) var(--f-mono);letter-spacing:var(--tr-caps);text-transform:none}
-.traydemo .hd i{width:7px;height:7px;border-radius:50%;background:var(--c-accent);display:inline-block;margin-right:6px}
-.traydemo .bd{padding:var(--s-4)}
-.traydemo .who{display:flex;gap:var(--s-3);align-items:center}
-.traydemo .who small{display:block;color:var(--c-text-2);font-size:var(--fs-12)}
-.traydemo .ask{font-size:var(--fs-16);margin:var(--s-3) 0}
-.traydemo .acts{display:grid;grid-template-columns:1.3fr 1fr;gap:var(--s-2)}
+<section class="sec" id="connect"><div class="wrap split"><div class="txt"><div class="k">Connect</div><h2>One setup message. Your bot checks in.</h2>
+<p class="lead">Copy a setup message into a bot that supports the connection. Review its access. Nothing shows as connected until it reports back.</p>
+<div class="addr"><span class="code">foreman-core.vercel.app/api/mcp</span><small>Connector address</small></div>
+<div class="bots"><span><i style="background:#2F6B55">IN</i>Instinct</span><span><i style="background:#121212">GB</i>Grok Bot</span><span><i style="background:#5A4A8A">MU</i>Muse</span></div></div>
+<div class="shot"><img src="/marketing/assets/connect-modal.jpg" alt="The Copy setup message step in Alter"></div></div></section>
 
-.sec{background:var(--c-inverse);color:var(--c-on-inverse);padding:var(--s-24) var(--s-8)}
-.sec .eyebrow{color:#B8B8B1}
-.secgrid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-16);align-items:start;max-width:1200px}
-.sec h2{font-size:var(--fs-60);margin:var(--s-3) 0 var(--s-6)}
-.never{display:grid;gap:0;border-top:1px solid #3A3A38}
-.never>div{display:grid;grid-template-columns:28px 1fr;gap:var(--s-4);padding:var(--s-5) 0;border-bottom:1px solid #3A3A38;font-size:var(--fs-18)}
-.never b{font-family:var(--f-display);font-size:var(--fs-24);font-weight:400}
-.never span{color:#B8B8B1;font-size:var(--fs-14);display:block;margin-top:4px}
-.x{color:var(--c-accent);font-family:var(--f-mono)}
+<section class="sec tint" id="hq"><div class="wrap center"><div class="k">HQ</div><h2>Every bot you run. One HQ.</h2>
+<p class="lead">Each bot gets a desk, a color and a room. Give the team a job and see accepted reports and handoffs.</p>
+<figure class="shot wide hqshot"><img src="/marketing/assets/hq-desktop.jpg" alt="Example HQ with sample bots and a team message box"><figcaption>Example workspace with sample data, not live activity.</figcaption></figure>
+<div class="facts" style="text-align:left"><div><h3>Real presence</h3><p>A bot that has never reported is a ghost, not a worker.</p></div><div><h3>One ask</h3><p>Type a job once. Supported bots claim work and report real handoffs.</p></div><div><h3>Calm by default</h3><p>Reduced motion skips the walk and puts the bot at its desk.</p></div></div></div></section>
 
-.bots{max-width:1200px;margin:0 auto}
-.botrow{display:grid;grid-template-columns:220px 1fr auto;gap:var(--s-6);align-items:center;padding:var(--s-6) 0;border-bottom:1px solid var(--c-border)}
-.botrow h3{font-size:var(--fs-24);font-family:var(--f-display);font-weight:400}
-.botrow p{color:var(--c-text-2);font-size:var(--fs-15)}
+<section class="sec" id="approve"><div class="wrap split"><div class="txt"><div class="k"><span class="needs">Needs you</span></div><h2>Your decisions.<br>Your call.</h2><p class="lead">Supported gateway actions can wait for your review. Approve or deny in your HQ.</p><p class="note">Native provider tools and billing are outside Alter. No push notifications yet.</p></div><div class="sandbox-note"><h3>A sandbox, not a bank card.</h3><p>Explore per-bot limits and simulated card requests. No real card is issued and no real money moves.</p><a class="tl" href="/authorization.html">See the authorization sandbox →</a></div></div></section><section class="sec" id="receipts"><div class="wrap"><div class="k">Receipts</div><h2>Every decision has a reason.</h2>
+<p class="lead">Sandbox requests check the job budget, reported merchant category and frequency. Real provider spending is not intercepted.</p>
+<div class="facts"><div><h3>Receipts</h3><p>Finished jobs and supported decisions land in Receipts. Cost figures are shown only where reported.</p></div><div><h3>Bot trust</h3><p>A descriptive sandbox signal. It never changes what a bot is allowed to do.</p></div><div><h3>Model costs</h3><p>Model costs stay with the providers you already pay. Alter doesn't bill them.</p></div></div></div></section>
 
-.sand{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1.4fr .8fr;gap:var(--s-10);align-items:center;border:1.5px solid var(--c-text);padding:var(--s-8)}
-.sand .tag{font:600 var(--fs-11) var(--f-mono);letter-spacing:var(--tr-caps);text-transform:none;background:var(--c-inverse);color:var(--c-on-inverse);padding:4px 8px}
-.cta{background:var(--c-inverse);color:var(--c-on-inverse);padding:var(--s-20) var(--s-8);display:flex;justify-content:space-between;align-items:end;gap:var(--s-8)}
-.cta h2{font-size:var(--fs-60);color:var(--c-on-inverse)}
-.cta p{color:#B8B8B1;max-width:36ch}
-.foot{display:flex;justify-content:space-between;gap:var(--s-6);padding:var(--s-6) var(--s-8);border-top:1px solid var(--c-border);font-size:var(--fs-13);color:var(--c-text-2)}
-.foot a{text-decoration:none}
-.wrap{max-width:1200px;margin:0 auto}
-@media (max-width:760px){
-  .nav{padding:0 var(--s-4);gap:var(--s-4);height:auto;flex-wrap:wrap;padding-top:var(--s-4);padding-bottom:var(--s-3)}
-  .nav nav{order:3;width:100%;overflow:auto;gap:var(--s-4);padding-bottom:var(--s-2)}
-  .hero{grid-template-columns:1fr;padding:var(--s-8) var(--s-4)}
-  .hero h1{font-size:56px}
-  .stage{margin:0}
-  .minicard{position:static;width:auto;margin-top:var(--s-3)}
-  .how,.step .body,.secgrid,.botrow,.sand,.cta{grid-template-columns:1fr}
-  .band,.sec{padding:var(--s-12) var(--s-4)}
-  .band h2,.sec h2,.cta h2{font-size:40px}
-  .step .n{padding-bottom:0;border:0}
-  .step .body{padding-left:0}
-  .botrow{grid-template-columns:1fr}
-  .cta{flex-direction:column;align-items:start}
-  .foot{flex-direction:column;padding:var(--s-6) var(--s-4)}
-}
+<section class="sec " id="security"><div class="wrap"><div class="k">Security</div><h2>A narrow door,<br>not a key to the building.</h2>
+<p class="lead">OAuth 2.1 with PKCE. Per-bot permissions: Auto, Ask or Never. The kill switch blocks actions through Alter.</p>
+<div class="never"><div><b>A bot never takes your login.</b><span>It stays signed into its own provider.</span></div><div><b>A connection is scoped.</b><span>Tools expose the selected bot and any explicit teammate or job data supported by the workflow.</span></div><div><b>No live card issuing.</b><span>The card flow is a sandbox. Native provider bills stay outside Alter.</span></div></div>
+<p style="margin-top:32px"><a class="tl" href="/security.html">How security works</a></p></div></section>
 
-svg text.sg{font-family:var(--f-mono);font-weight:500;letter-spacing:.06em;text-transform:none}
-svg text.sgc,svg text.ini{font-family:var(--f-mono);font-weight:600}
-svg text.cn{font-family:var(--f-ui);font-weight:600} svg text.cs{font-family:var(--f-ui)}
-.emp.walking .fig{animation:bob .6s ease-in-out infinite alternate}
-@keyframes bob{to{transform:translateY(-2px)}}
-.walkpath{animation:march 1.6s linear infinite} @keyframes march{to{stroke-dashoffset:-16}}
-@media (prefers-reduced-motion:reduce){.emp.walking .fig,.walkpath{animation:none}}
-.states{display:grid;border-top:1px solid var(--c-border)}
-.states>div{display:grid;grid-template-columns:28px 1fr auto;gap:var(--s-3);align-items:center;padding:var(--s-3) 0;border-bottom:1px solid var(--c-border)}
-.states b{display:block;font-size:var(--fs-15)} .states small{color:var(--c-text-2);font-size:var(--fs-13)}
-.ind{width:14px;height:14px;border-radius:50%;display:inline-block}
-.ind.prep{border:2px solid var(--c-text-2)} .ind.wait{border:2px dashed var(--c-text-2)} .ind.live{background:var(--c-live);box-shadow:0 0 0 4px var(--bb-live-wash)}
-@media (max-width:760px){.ctas{flex-direction:column;align-items:flex-start;gap:var(--s-4)} .hero h1{font-size:56px} .pricegrid{grid-template-columns:1fr!important}}
-
-
-/* Alter: wordmark, hero art, rounded ink buttons */
-#hero-floor{aspect-ratio:1230/680;background:url(/brand/hero-floor.png) center/contain no-repeat}
-.hero .disp em{font-style:normal;color:var(--vermilion-press)}
-.btn{border-radius:12px}.btn.pri,.btn.red{background:var(--ink);border-color:var(--ink);color:#fff}
-.minicard{border-radius:14px}
-.wm{font-size:17px}
-</style></head>
-<body>
-<div class="bb" id="app">
-
-<header class="nav">
-  <a class="wm" id="mk-home" href="#top"><span class="mark" aria-hidden="true"></span><span data-brand="upper">alter</span></a>
-  <nav aria-label="Marketing">
-    <a id="mk-product" href="#product">Product</a>
-    <a id="mk-hq" href="#hq">HQ</a>
-    <a id="mk-security" href="#security">Security</a>
-    <a id="mk-pricing" href="#pricing">Pricing</a><a href="/waitlist">Join the waitlist</a>
-  </nav>
-  <div class="sp"></div>
-  <a id="mk-signin" href="/hq" data-brand-href="appUrl" data-goto="signin" style="text-decoration:none;font-weight:500">Sign in</a>
-  <a id="mk-open" class="btn pri" href="/hq" data-brand-href="appUrl" data-goto="signin">Open your HQ</a>
-</header>
-
-<section class="hero" id="top">
-  <div>
-    <div class="eyebrow">Control plane for AI employees</div>
-    <h1 class="disp">Your AI staff,<br><em>in plain sight.</em></h1>
-    <p class="sub">Connect the bots you already use. Watch them work on one floor. Every request lands on your desk.</p>
-    <div class="ctas">
-      <a id="mk-open-2" class="btn pri lg" href="/hq" data-brand-href="appUrl" data-goto="signin">Open your HQ</a>
-      <a id="mk-connect" class="tlink" href="#connect">Connect an existing bot →</a>
-    </div>
-    <div class="trust mono"><i></i>OAuth 2.1 + PKCE · per-bot permissions · kill switch</div>
-  </div>
-  <div class="stage" aria-hidden="false">
-    <div id="hero-floor" role="img" aria-label="The Alter floor: bots at their desks and one approval waiting at the tray"></div>
-    <div class="minicard" role="group" aria-label="Approval tray, preview">
-      <div class="who" style="display:flex;gap:8px;align-items:center"><span class="av muse">MU</span><div><b>Muse</b> wants to <b>Publish a post</b><div class="muted" style="font-size:12px">from Creative / Marketing · waiting 1m</div></div></div>
-      <div class="row"><span class="mono cost">costs 4¢</span><span class="pill acc"><kbd>A</kbd> Approve</span><span class="pill"><kbd>D</kbd> Deny</span></div>
-    </div>
-    <div class="figcap mono">Live floor · Muse is walking a request to the tray</div>
-  </div>
-</section>
-
-<section class="band" id="product">
-  <div class="wrap">
-    <div class="eyebrow">How it works</div>
-    <h2 class="disp">Three moves. No dashboard to learn.</h2>
-    <div class="how">
-      <div class="step">
-        <div class="n">01</div>
-        <div class="body">
-          <div>
-            <h3>Connect a bot you already run.</h3>
-            <p>Pick Muse, Grok Bot or Instinct. <span data-brand>The app</span> gives you one address and a setup message. Paste it into the bot. Nothing is connected until that bot reports back.</p>
-            <div class="addrline"><span class="mono">https://www.alterhq.app/api/mcp</span><span class="chip">Copy setup message</span></div>
-          </div>
-          <div class="states" aria-label="Connection states">
-            <div><span class="av muse">MU</span><div><b>Muse</b><small>Prepared · not connected yet</small></div><span class="ind prep" aria-hidden="true"></span></div>
-            <div><span class="av grok">GB</span><div><b>Grok Bot</b><small>Waiting for your bot. No live connection yet.</small></div><span class="ind wait" aria-hidden="true"></span></div>
-            <div><span class="av instinct">IN</span><div><b>Instinct</b><small style="color:var(--c-live);font-weight:600">Connected: Instinct · 14:02</small></div><span class="ind live" aria-hidden="true"></span></div>
-          </div>
-        </div>
-      </div>
-      <div class="step">
-        <div class="n">02</div>
-        <div class="body">
-          <div>
-            <h3>Watch it take a desk.</h3>
-            <p>Each bot is a person on the HQ floor: its own color, its own room, a name you can read. It walks between Research, Creative, Outreach and Execution. A bot that has never reported is a ghost, not a worker.</p>
-          </div>
-          <p class="muted">Rooms stay labeled. Movement follows the corridors. Reduced motion skips the walk and jumps the bot to its desk.</p>
-        </div>
-      </div>
-      <div class="step" id="hq">
-        <div class="n">03</div>
-        <div class="body">
-          <div>
-            <h3>Decide from the tray.</h3>
-            <p>When a bot needs you, it walks to the approval island and the request lands as a card. One click, or the A and D keys. Approve once is the only vermilion button on the floor.</p>
-          </div>
-          <div class="traydemo">
-            <div class="hd"><span><i></i>In the tray · 1 waiting</span><span>Needs Approval</span></div>
-            <div class="bd">
-              <div class="who"><span class="av grok">GB</span><div><b>Grok Bot</b><small>Research · from Research Center · 3m</small></div></div>
-              <div class="ask"><b>Grok Bot</b> wants to <b>Save a note</b> · Q4 campaign brief</div>
-              <div class="muted mono" style="font-size:12px;margin-bottom:12px">costs 2¢ · notes.write · once</div>
-              <div class="acts"><span class="btn pri sm">Approve once <kbd>A</kbd></span><span class="btn red sm">Deny <kbd>D</kbd></span></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="sec" id="security">
-  <div class="secgrid">
-    <div>
-      <div class="eyebrow">Security</div>
-      <h2 class="disp">A connection is a narrow door, not a key to the building.</h2>
-      <p style="color:#B8B8B1;max-width:46ch">OAuth 2.1 with PKCE. Each bot has its own permissions: Auto, Ask or Never, per action. The kill switch stops every bot at once. Access tokens renew automatically in clients that support OAuth refresh. Authorization stays available until you revoke the bot.</p>
-    </div>
-    <div>
-      <div class="eyebrow" style="margin-bottom:8px">A bot can never</div>
-      <div class="never">
-        <div><span class="x">×</span><div><b>Import your provider account.</b><span>Your bot stays signed into its own provider. <span data-brand>It</span> never takes that login.</span></div></div>
-        <div><span class="x">×</span><div><b>Read your other bots.</b><span>A connection sees only the one bot you selected.</span></div></div>
-        <div><span class="x">×</span><div><b>Move money.</b><span>It cannot charge a card. The card sandbox is synthetic, and every real charge stays $0.</span></div></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="band" id="connect">
-  <div class="bots">
-    <div class="eyebrow">Bots you can connect</div>
-    <h2 class="disp" style="font-size:var(--fs-44);margin:12px 0 8px">Bring the ones you already pay for.</h2>
-    <div class="botrow"><span class="av instinct" style="width:40px;height:40px">IN</span><div><h3>Instinct</h3><p>Ops and execution. Connects as a remote MCP client and reports presence back to the floor.</p></div><a class="tlink" id="mk-instinct" href="/hq" data-brand-href="appUrl">Connect Instinct →</a></div>
-    <div class="botrow"><span class="av grok" style="width:40px;height:40px">GB</span><div><h3>Grok Bot</h3><p>Research. In Grok, add a custom MCP server, choose Remote HTTPS, and paste the connector address.</p></div><a class="tlink" id="mk-grok" href="/hq" data-brand-href="appUrl">Connect Grok Bot →</a></div>
-    <div class="botrow"><span class="av muse" style="width:40px;height:40px">MU</span><div><h3>Muse</h3><p>Writing and creative. Add <span data-brand>the app</span> as a custom connector; OAuth brings you back to approve the one bot.</p></div><a class="tlink" id="mk-muse" href="/hq" data-brand-href="appUrl">Connect Muse →</a></div>
-  </div>
-</section>
-
-<section class="band" id="sandbox" style="padding-top:0">
-  <div class="sand hatch">
-    <div>
-      <span class="tag">Card sandbox</span>
-      <h2 class="disp" style="font-size:var(--fs-32);margin:12px 0">Sandbox. No real money moves.</h2>
-      <p class="muted">Practice a spend proposal, a per-bot cap and an approval. The provider is fake. Mercury and JPMorgan are not connected. Every real charge remains $0.</p>
-    </div>
-    <div class="mono muted" style="font-size:13px">pending · sandbox · $0 charged<br>approved · sandbox · $0 charged</div>
-  </div>
-</section>
-
-<section class="band" id="pricing" style="padding-top:0">
-  <div class="wrap pricegrid" style="display:grid;grid-template-columns:200px 1fr;gap:32px;border-top:1px solid var(--c-border);padding-top:48px">
-    <div class="eyebrow">Pricing</div>
-    <div>
-      <h2 class="disp" style="font-size:var(--fs-44)">You already pay your bots.<br>Watching them is the job.</h2>
-      <p class="muted" style="margin-top:16px;max-width:62ch"><span data-brand>The app</span> does not issue cards and does not sit in the payment path. Limits you set here are proposals and permissions, not charges. The sandbox ledger is synthetic on purpose.</p>
-    </div>
-  </div>
-</section>
-
-<section class="cta">
-  <div>
-    <div class="eyebrow">Open the floor</div>
-    <h2 class="disp">Put your staff where you can see them.</h2>
-  </div>
-  <div>
-    <p style="margin-bottom:16px">Sign in, connect one bot, and wait until it reports. Only then does it look live.</p>
-    <a id="mk-open-3" class="btn pri lg" href="/hq" data-brand-href="appUrl" data-goto="signin">Open your HQ</a>
-  </div>
-</section>
-<footer class="foot">
-  <span class="wm"><span class="mark"></span><span data-brand="upper">alter</span></span>
-  <span data-brand-attr="aria-label:{brand}">&nbsp;</span>
-  <span><a id="mk-foot-sec" href="#security">Security</a> · <a id="mk-foot-price" href="#pricing">Pricing</a> · <a id="mk-foot-in" href="/hq" data-brand-href="appUrl" data-goto="signin">Sign in</a></span>
-</footer>
-
-</div>
-</body></html>
+<section class="sec" id="pricing"><div class="wrap"><div class="k">Pricing</div><h2>You already pay your bots.</h2>
+<p class="lead">Alter doesn't issue cards or sit in the payment path. Limits here are permissions, not charges.</p><p style="margin-top:24px"><a class="tl" href="/pricing.html">See pricing</a></p></div></section>
+<section class="sec final" id="join"><div class="glow"></div><div class="wrap"><h2>Open your HQ.</h2>
+<p class="lead">Connect the assistants you already use. Start with one real job.</p><a class="btn" href="/hq">Open your HQ</a></div></section><footer class="foot "><div class="wrap"><a class="wm" href="/"><img src="/marketing/assets/H1-mark.svg" alt=""><span>Alter</span></a><small>Your AI team. Jobs, decisions and receipts.</small>
+<div class="links"><a href="/security.html">Security</a><a href="/pricing.html">Pricing</a><a href="/hq">Sign in</a><a href="/#join">Get started</a></div></div></footer></body></html>
