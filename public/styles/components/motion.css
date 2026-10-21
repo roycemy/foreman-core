@@ -39,3 +39,4 @@
 .menu .site-return{display:block;padding:10px 14px;font-size:13px;color:var(--ink)}
 
 .floor-bot-label{width:max-content}.floor-bot-label small{max-width:116px;overflow:hidden;text-overflow:ellipsis}
+@media(min-width:761px) and (max-width:940px){.rcf{max-width:300px!important;width:300px!important}.rcf-row{gap:10px}.rcf-row>span{min-width:0;flex:1}}
