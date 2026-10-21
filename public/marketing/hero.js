@@ -1,6 +1,6 @@
 (function(){var rm=matchMedia('(prefers-reduced-motion: reduce)').matches;var $=function(s){return document.querySelector(s)};
 function loop(steps,T){if(rm){steps.forEach(function(s){s[2]&&s[2]()});return;}function run(){steps.forEach(function(s){setTimeout(s[1],s[0])});setTimeout(run,T)}run();}
-var A=$('#hvA');if(A){var f=$('.fold'),h=$('.hand'),k=$('.ask'),t=$('.toast'),reqs=[['Send email','To 3 investors · Weekly update'],['Publish post','LinkedIn · Launch announcement'],['Charge $49.00','Analytics tool · Monthly']],n=0;
+var A=$('#hvA');if(A){var f=$('.fold'),h=$('.hand'),k=$('.ask'),t=$('.toast'),reqs=[['Approve $49 for Meta ads today','Launch campaign · Daily budget'],['Publish post','LinkedIn · Launch announcement'],['Delete 120 old files','Shared drive · Cleanup']],n=0;
 function mv(x,y){f.style.left=x+'%';f.style.top=y+'%'}
 f.style.transition='left 2.4s cubic-bezier(.4,0,.2,1),top 2.4s cubic-bezier(.4,0,.2,1),opacity .4s';
 loop([[0,function(){k.className='ask';h.className='hand';mv(30.4,23.4);f.style.opacity=0;t.textContent='Claude is drafting the weekly update'}],
