@@ -168,11 +168,11 @@
     if (BB.onYou().some(i => i.a && i.a.id === a.id && ['approval', 'spend', 'card'].includes(i.type))) return { kind: 'needs', text: 'Waiting for you' };
     if (recentBlocked(a)) return { kind: 'blocked', text: 'Blocked' };
     const t = BB.runningTask(a);
-    /* presence model: Muse is message-mode (no verified push or poll hook) and never reads Live; it is honestly Dark until real work activity arrives. Poll-cadence bots are never Live: on time until they miss two beats, then Late. */
+    /* presence model: Muse with no declared cadence is message-mode (no verified push or poll hook) and never reads Live; it is honestly Dark until real work activity arrives. A Muse that declares a cadence is held to it like any poller. Poll-cadence bots are never Live: on time until they miss two beats, then Late. */
     const liveNow = p === 'connected' && !!a.lastSeen && (BB.now() - Date.parse(a.lastSeen)) < 60000;
     const poll = BB.pollSec(a);
     const last = a.lastSeen ? BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago') : 'never';
-    if (a.providerId === 'muse' && !(t && liveNow)) return { kind: 'msg', text: 'Dark · acts when messaged', task: t };
+    if (a.providerId === 'muse' && !poll && !(t && liveNow)) return { kind: 'msg', text: 'Dark · acts when messaged', task: t };
     /* PR #28: authorization is not activity. No accepted activity means quiet, whatever the job list says. */
     if (BB.wentDark(a)) {
       if (poll) return { kind: 'late', text: 'Late · checks in every ' + Math.round(poll / 60) + ' min · last check ' + last, task: t };
@@ -233,6 +233,13 @@
     const n = BB.tasks().filter(t => t.assignee === a.id && t.status === 'queued').length;
     const base = (typeof location !== 'undefined' && location.origin ? location.origin : 'https://www.alterhq.app') + '/hq';
     return a.name + ' - check Alter: ' + (n ? n + (n === 1 ? ' job is' : ' jobs are') + ' waiting for you.' : 'the owner wants a check-in.') + ' ' + base;
+  };
+  /* the visible note when Alter moved a job off a sleeping bot onto an awake one */
+  BB.fallbackNote = t => {
+    const fb = ((t && t.reassignments) || []).filter(x => x.by === 'auto-asleep').pop();
+    if (!fb) return '';
+    const from = BB.agent(fb.from), to = BB.agent(fb.to);
+    return (from ? from.name : 'First bot') + ' was asleep - handed to ' + (to ? to.name : 'another bot');
   };
   BB.byLabel = t => {
     if (!t || !['done', 'failed'].includes(t.status)) return '';
@@ -305,9 +312,14 @@
     BB.agents().filter(a => BB.presence(a) === 'reconnect').forEach(a => items.push({ type: 'reconnect', id: 'rec:' + a.id, at: (a.connection && a.connection.failedAt) || a.lastSeen, a }));
     /* the same 60-second rule as the went-dark banner: a dark bot is something the owner should know about */
     BB.agents().filter(a => BB.goneDark(a)).forEach(a => items.push({ type: 'dark', id: 'dark:' + a.id, at: a.lastSeen, a }));
+    /* a queued job waiting on a poller or Muse that missed two of its own check-in beats: name the job, offer the wake path */
+    BB.tasks().filter(t => t.status === 'queued' && t.assignee).forEach(t => {
+      const a = BB.agent(t.assignee);
+      if (a && !a.hosted && BB.wentDark(a) && !BB.goneDark(a)) items.push({ type: 'asleep', id: 'asleep:' + t.id, at: t.assignedAt || t.createdAt, a, t });
+    });
     BB.tasks().forEach(t => { const b = BB.budgetBlock(t); if (b) items.push({ type: 'budget', id: 'budget:' + t.id + ':' + b.id, at: b.at, a: BB.agent(t.assignee), t, r: b }); });
     BB.tasks().filter(t => t.status === 'queued' && !t.assignee).forEach(t => items.push({ type: 'unassigned', id: 'task:' + t.id, at: t.createdAt, t }));
-    const rank = { approval: 0, spend: 0, card: 0, budget: 0, reconnect: 1, dark: 1, unassigned: 2 };
+    const rank = { approval: 0, spend: 0, card: 0, budget: 0, reconnect: 1, dark: 1, asleep: 1, unassigned: 2 };
     return items.sort((x, y) => rank[x.type] - rank[y.type] || String(y.at || '').localeCompare(String(x.at || '')));
   };
   /* One summary for the crew pill, the pop-down, the rail and the phone Inbox, all on the 60-second activity rule.

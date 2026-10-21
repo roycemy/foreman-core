@@ -51,7 +51,8 @@
     if (i.type === 'reconnect') { if (!i.a) { title = 'Reconnect unavailable'; line = 'This bot was removed. Its jobs stay paused.'; acts = `<button class="b ghost" type="button" data-later="${esc(i.id)}">Later</button>`; } else { title = 'Reconnect needed'; line = esc(i.a.name) + ' lost access. Reconnect to resume its jobs.'; acts = `<button class="b ink" type="button" data-rec="${i.a.id}">Reconnect</button><button class="b ghost" type="button" data-later="${esc(i.id)}">Later</button>`; } }
     if (i.type === 'dark') { title = (i.a ? i.a.name : 'A removed bot') + ' went dark'; line = 'No accepted activity for ' + esc(BB.dur(Date.now() - Date.parse(i.at))) + '. Authorization may still be saved.'; acts = `<button class="b out" type="button" data-bot="${i.a.id}">Check on it</button>`; }
     if (i.type === 'budget') { title = 'Blocked: action budget'; line = esc((i.a ? i.a.name : 'A bot') + ' hit a budget limit on \u201c' + i.t.title + '\u201d. ' + String(i.r.summary || '').replace(/^BLOCKED:\s*/, '') + ' Raise the budget in the bot\u2019s profile, or stop the job.'); acts = (i.a ? `<button class="b ink" type="button" data-budgetbot="${esc(i.a.id)}">Review budget</button>` : '') + `<button class="b ghost" type="button" data-stop="${esc(i.t.id)}">Stop job</button>`; }
-    if (i.type === 'unassigned') { line = i.t.unrouted ? 'Alter could not route this - no bot matched with scored history. Pick one.' : 'Waiting for someone to take it'; acts = `<span class="assign"><button class="b out" type="button" data-assign="${i.t.id}" aria-haspopup="menu">Assign ▾</button></span><button class="b ghost" type="button" data-dismiss="${i.t.id}">Dismiss</button>`; }
+    if (i.type === 'asleep') { title = esc(i.a.name) + ' is asleep'; line = '"' + esc(i.t.title) + '" has been waiting ' + esc(BB.durWords(Math.max(0, Date.now() - Date.parse(i.at)))) + '. ' + esc(i.a.name) + ' missed two check-ins - reconnect it to wake it.'; acts = `<button class="b ink" type="button" data-bot="${i.a.id}">Check on it</button>`; }
+    if (i.type === 'unassigned') { line = i.t.allAsleep ? 'Every bot is asleep right now - the first to check in takes it. Or pick one.' : i.t.unrouted ? 'Alter could not route this - no bot matched with scored history. Pick one.' : 'Waiting for someone to take it'; acts = `<span class="assign"><button class="b out" type="button" data-assign="${i.t.id}" aria-haspopup="menu">Assign ▾</button></span><button class="b ghost" type="button" data-dismiss="${i.t.id}">Dismiss</button>`; }
     return `<div class="appr" data-item="${esc(i.id)}"><div class="who">${who}</div><h4>${title}</h4><p>${line}</p><div class="btns">${acts}</div></div>`;
   };
   /* one handler for every Approve / Deny / Reconnect / Later / Assign button, wherever it is rendered */
@@ -90,7 +91,7 @@
   function row(t) {
     const s = BB.jobStatus(t), un = t.status === 'queued' && !t.assignee;
     const right = un ? `<span class="assign act"><button class="b out sm" type="button" data-assign="${t.id}" aria-haspopup="menu">Assign ▾</button></span>` : `<span class="st ${s.cls}"><i></i>${s.word}</span>`;
-    return `<div class="row" role="button" tabindex="0" data-job="${t.id}">${BB.jobAv(t)}<span class="t"><b>${esc(t.title)}</b><small>${esc(BB.jobMeta(t))}${t.unrouted ? ' · unrouted' : ''}${t.handoffPlan && t.handoffPlan.length ? ' · then ' + t.handoffPlan.map(h => esc(h.botName)).join(' \u2192 ') + ' (planned)' : ''}${t.parentId ? ' · a handed-off part' : ''}</small></span>${right}</div>`;
+    return `<div class="row" role="button" tabindex="0" data-job="${t.id}">${BB.jobAv(t)}<span class="t"><b>${esc(t.title)}</b><small>${esc(BB.jobMeta(t))}${BB.fallbackNote(t) ? ' · ' + esc(BB.fallbackNote(t)) : ''}${t.unrouted ? ' · unrouted' : ''}${t.handoffPlan && t.handoffPlan.length ? ' · then ' + t.handoffPlan.map(h => esc(h.botName)).join(' \u2192 ') + ' (planned)' : ''}${t.parentId ? ' · a handed-off part' : ''}</small></span>${right}</div>`;
   }
   function paintRail() {
     if (!rail.classList.contains('on')) return;
@@ -134,13 +135,14 @@
         return `<div class="swipe" data-item="${esc(i.id)}"><div class="under" aria-hidden="true">Approve</div><div class="kr">${kav}<div class="t"><b>${t}</b><small>${l}</small>${b}</div></div></div>`;
       }
       if (i.type === 'dark') return `<div class="kr" data-item="${esc(i.id)}">${kav}<div class="t"><b>${esc(i.a.name)} went dark</b><small>No accepted activity for ${esc(BB.dur(Date.now() - Date.parse(i.at)))}</small></div><button class="b out" type="button" style="height:36px;border-radius:11px" data-bot="${i.a.id}">Check</button></div>`;
+      if (i.type === 'asleep') return `<div class="kr" data-item="${esc(i.id)}">${kav}<div class="t"><b>${esc(i.a.name)} is asleep</b><small>"${esc(BB.shortTitle(i.t.title))}" is waiting - reconnect to wake it</small></div><button class="b out" type="button" style="height:36px;border-radius:11px" data-bot="${i.a.id}">Check</button></div>`;
       l = esc(i.a.name) + ' lost access' + (i.at ? ' ' + esc(BB.ago(i.at)) + (BB.ago(i.at) === 'just now' ? '' : ' ago') : '');
       return `<div class="kr" data-item="${esc(i.id)}">${kav}<div class="t"><b>Reconnect ${esc(i.a.name)}</b><small>${l}</small></div><button class="b out" type="button" style="height:36px;border-radius:11px" data-rec="${i.a.id}">Reconnect</button></div>`;
     };
     const jrow = t => {
       const who = BB.jobWho(t), s = BB.jobStatus(t), a = who[0];
       const kav = who.length > 1 ? BB.duo(who, 's28') : a ? `<span class="kav" style="--av:${BB.avColor(a)}">${esc(BB.initials(a.name))}${t.status === 'running' ? BB.glyph(a) : ''}</span>` : '<span class="kav merch">?</span>';
-      const meta = (who.length ? who.map(x => x.name).join(' + ') : 'Unassigned') + ' · ' + (t.status === 'running' && t.startedAt ? 'started ' + BB.ago(t.startedAt) + (BB.ago(t.startedAt) === 'just now' ? '' : ' ago') : BB.ago(jobAt(t)) + (/min|h$/.test(BB.ago(jobAt(t))) ? ' ago' : ''));
+      const meta = (who.length ? who.map(x => x.name).join(' + ') : 'Unassigned') + ' · ' + (t.status === 'running' && t.startedAt ? 'started ' + BB.ago(t.startedAt) + (BB.ago(t.startedAt) === 'just now' ? '' : ' ago') : BB.ago(jobAt(t)) + (/min|h$/.test(BB.ago(jobAt(t))) ? ' ago' : '')) + (BB.fallbackNote(t) ? ' · ' + BB.fallbackNote(t) : '');
       const right = s.word === 'Unassigned' ? `<span class="assign"><button class="b out sm" type="button" data-assign="${t.id}">Assign ▾</button></span>` : `<span class="r">${s.word}</span>`;
       return `<div class="kr" role="button" tabindex="0" data-job="${t.id}">${kav}<div class="t"><b>${esc(t.title)}</b><small>${esc(meta)}</small></div>${right}</div>`;
     };

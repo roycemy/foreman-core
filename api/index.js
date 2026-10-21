@@ -307,7 +307,7 @@ async function taskForAgent(agent,id) {
   return null;
 }
 
-async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}) };
+async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.allAsleep ? { allAsleep: true } : {}), ...(o.assignee ? { assignedAt: now() } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}) };
   bust(); await setJ('fm:task:' + t.id, t); await r(['LPUSH', 'fm:tasklist', t.id]); await r(['LTRIM', 'fm:tasklist', 0, 59]);
   if (t.assignee) { const ag = await getJ('fm:agent:' + t.assignee); if (ag && ag.hosted && ag.status === 'active' && !ag.paused) await runHosted(ag, t); else if (ag) await maybeWakeBot(ag, t.id); }
   return t; }
@@ -345,6 +345,75 @@ async function routingOrDeclared(cat) {
   const ds = (await listAgents()).filter(a => a.status === 'active' && !a.harness && !a.hosted && !a.paused && effStrengths(a).includes(cat));
   if (ds.length !== 1) return adv;
   return { ...adv, suggested: { id: ds[0].id, name: ds[0].name, category: cat, declared: true, reason: 'Declared strength: ' + ds[0].name + ' lists ' + cat + ' and is the only bot that does. No scored history yet, so this is a declaration, not a track record.' } };
+}
+// Fallback pick for one category: the usual routingOrDeclared answer while its bot is awake; when that
+// bot misses two of its own check-in beats the job goes to the next best awake bot instead - scored
+// category history, then a declared strength, then any awake external bot - and says who was skipped.
+function botFreshnessWindowMs(a) {
+  const ps = Number(a && a.pollSec);
+  return (Number.isFinite(ps) && ps >= 60 && ps <= 3600) ? 2 * ps * 1000 : 150000;
+}
+function botAwake(a, atMs) {
+  if (!a || a.status !== 'active' || a.paused || a.harness) return false;
+  if (a.hosted) return true;                        // hosted workers run on the server the moment a job lands
+  if (a.connectionMode === 'botlink') return true;  // botlink has no heartbeat expectation: never called asleep
+  const seen = Date.parse(a.lastSeen || '');
+  return Number.isFinite(seen) && ((atMs || Date.now()) - seen) < botFreshnessWindowMs(a);
+}
+async function freshRoutingPick(cat, excludeIds) {
+  const nowMs = Date.now(), skip = new Set(excludeIds || []);
+  const eligible = a => a && a.status === 'active' && !a.harness && !a.hosted && !a.paused && !skip.has(a.id);
+  const adv = await routingOrDeclared(cat);
+  const agents = await listAgents(), pickable = agents.filter(eligible);
+  const primary = adv.suggested ? pickable.find(a => a.id === adv.suggested.id) : null;
+  if (primary && botAwake(primary, nowMs)) return { advice: adv, picked: primary, pickedTier: 0, fellBackFrom: null, fellBackWhy: null, nobodyAwake: false };
+  if (!adv.suggested && !skip.size) return { advice: adv, picked: null, pickedTier: -1, fellBackFrom: null, fellBackWhy: null, nobodyAwake: false }; // routing ambiguity still stays unrouted - the fallback only rescues real picks
+  const profs = (adv.bots && adv.bots.length) ? adv.bots : await capabilityProfiles();
+  const cap = id => { const b = profs.find(x => x.id === id); return (b && b.capabilities && b.capabilities[cat]) || null; };
+  const tier = a => cap(a.id) ? 0 : (effStrengths(a).includes(cat) ? 1 : 2);
+  const awake = pickable.filter(a => a !== primary && botAwake(a, nowMs)).sort((x, y) => tier(x) - tier(y) || (((cap(y.id) || {}).successRate || 0) - ((cap(x.id) || {}).successRate || 0)) || (((cap(y.id) || {}).samples || 0) - ((cap(x.id) || {}).samples || 0)) || String(x.createdAt).localeCompare(String(y.createdAt)));
+  const skipped = primary ? { id: primary.id, name: primary.name } : (adv.suggested ? { id: adv.suggested.id, name: adv.suggested.name } : null);
+  const why = primary ? 'asleep' : (adv.suggested ? 'unavailable' : 'asleep');
+  if (awake.length) return { advice: adv, picked: awake[0], pickedTier: tier(awake[0]), fellBackFrom: skipped, fellBackWhy: why, nobodyAwake: false };
+  return { advice: adv, picked: null, pickedTier: -1, fellBackFrom: skipped, fellBackWhy: why, nobodyAwake: true };
+}
+const ASLEEP_FALLBACK_MAX = 3;
+/* Queued-job fallback sweep: an auto-routed queued job whose bot missed two of its own check-in beats -
+   or keeps checking in without ever claiming it, with nothing running - moves to the next best awake bot
+   under the task lock. Owner-assigned jobs are never moved, running jobs are never stolen, and with nobody
+   awake the job stays queued (HQ shows the asleep card). Capped so two flaky bots cannot ping-pong a job. */
+async function reassignAsleepQueuedTasks(claimantId) {
+  const nowMs = Date.now(); let changed = false;
+  const tasks = await listTasks();
+  for (const t0 of tasks) {
+    if (t0.status !== 'queued' || !t0.assignee || t0.assignedBy === 'owner' || t0.assignee === claimantId) continue;
+    const a = await getJ('fm:agent:' + t0.assignee);
+    if (!a || a.status !== 'active' || a.paused || a.hosted || a.harness) continue;
+    if ((t0.reassignments || []).filter(x => x.by === 'auto-asleep').length >= ASLEEP_FALLBACK_MAX) continue;
+    const win = botFreshnessWindowMs(a), age = nowMs - Date.parse(t0.assignedAt || t0.createdAt || 0);
+    if (age < win) continue; // grace: the bot gets one full cadence window to claim a fresh job
+    const busy = tasks.some(t => t !== t0 && t.assignee === a.id && t.status === 'running');
+    if (botAwake(a, nowMs) && busy) continue; // alive and working: the queue waits its turn
+    await withJobLock(t0.id, async () => {
+      const key = 'fm:task:' + t0.id, raw = await r(['GET', key]), t = raw && JSON.parse(raw);
+      if (!t || t.status !== 'queued' || t.assignee !== t0.assignee) return;
+      const from = await getJ('fm:agent:' + t.assignee);
+      if (!from || from.status !== 'active' || from.paused) return;
+      const stillBusy = tasks.some(x => x.assignee === from.id && x.status === 'running');
+      if (botAwake(from, Date.now()) && stillBusy) return;
+      const pick = await freshRoutingPick(t.category || '', [t.assignee]);
+      if (!pick.picked) return; // nobody awake: stays queued, the owner sees the asleep card
+      const at = now(), why = botAwake(from, Date.now()) ? from.name + ' checked in but never claimed it' : from.name + ' is asleep (missed two check-ins)';
+      await closeJobGrant(t, 'Job moved off ' + from.name + ': ' + why + '; old grant expired');
+      const next = { ...t, assignee: pick.picked.id, assignedAt: at, reassignedAt: at, reassignments: [...(t.reassignments || []), { from: from.id, to: pick.picked.id, at, previousStatus: 'queued', previousStartedAt: null, by: 'auto-asleep', reason: why }] };
+      if (await r(['EVAL', AGENT_CAS, 1, key, raw, JSON.stringify(next)]) !== 1) return;
+      changed = true;
+      await event(from.id, 'handoff', '"' + t.title + '" moved to ' + pick.picked.name + ': ' + why + '. Stop reporting this job under the old identity.', { kind: 'HANDOFF', taskId: t.id, toAgentId: pick.picked.id });
+      await event(pick.picked.id, 'handoff', '"' + t.title + '" is yours: ' + why + ', so Alter handed it to you. Claim this existing job before reporting or completing it.', { kind: 'HANDOFF', taskId: t.id, fromAgentId: from.id });
+      await maybeWakeBot(pick.picked, t.id);
+    });
+  }
+  if (changed) bust();
 }
 function categorizeText(s) {
   const text = ' ' + String(s || '').toLowerCase() + ' ';
@@ -587,7 +656,7 @@ async function grantJob(id,body){return withJobLock(id,async()=>{const t=await g
 async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return {code:'unknown_action',reason:'Action is not in the catalog'};if(agent.permissionScope!=='job')return null;if(!taskId)return {code:'job_required',reason:'Register or claim the real job first; gated actions require an owner job grant'};const t=await getJ('fm:task:'+taskId),g=t?.jobGrant;if(!t||t.assignee!==agent.id||t.status!=='running')return {code:'job_inactive',reason:'Job is not running under this worker'};if(!g||g.status!=='active'||g.agentId!==agent.id||grantId&&g.id!==grantId)return {code:'job_grant_required',reason:'Owner must grant actions and a ledger budget for this job'};if(!g.actions[action])return {code:'job_action',reason:'Action is outside the job grant'};if(Number(g.spentCents||0)+ACTIONS[action].costCents>g.budgetCents)return {code:'limit_job',reason:'Job ledger budget would be exceeded'};return null;}
 async function closeJobGrant(t,reason){if(t.jobGrant){t.jobGrant={...t.jobGrant,status:'closed',closedAt:now(),closeReason:reason};}await cancelJobRequests(t.id,reason);}
 
-async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;await r(['SET','fm:claimSeen:'+agent.id,now(),'EX','604800']);await expireStalledTasks();const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
+async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;await r(['SET','fm:claimSeen:'+agent.id,now(),'EX','604800']);await expireStalledTasks();await reassignAsleepQueuedTasks(agent.id);const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
   const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); t.progressAt = t.startedAt;if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
 async function completeTask(agent,id,body){return withJobLock(id,()=>completeTaskUnlocked(agent,id,body));}
 async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
@@ -912,6 +981,7 @@ function taskRoom(agent,tasks){const t=tasks.filter(t=>t.assignee===agent.id&&t.
 async function fullState() {
   { const c = CACHES.get(wsId()); if (c && Date.now() - c.t < 30000) return {...c.v,now:now()}; }
   await expireStalledTasks();
+  await reassignAsleepQueuedTasks();
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
@@ -1431,7 +1501,7 @@ async function routes(req, res, path, body, agentPre) {
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
     if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started');
-      let routed = null, category = null, routingReason = null, unrouted = false, assignee = body.assignee || null, handoffPlan = null, brief = body.brief;
+      let routed = null, category = null, routingReason = null, unrouted = false, allAsleep = false, assignee = body.assignee || null, handoffPlan = null, brief = body.brief;
       if (body.route === true && !assignee) {
         // One message can span categories: a lead bot takes the strongest one, further matched
         // categories become a planned handoff chain. A hop happens only when a bot actually hands
@@ -1462,9 +1532,13 @@ async function routes(req, res, path, body, agentPre) {
           routed = { botId: lead.id, botName: lead.name, category: category || 'named', reason: routingReason, chain: handoffPlan || [], unstaffed: [], named: true };
         }
         if (!assignee && leadCat) {
-          const advice = await routingOrDeclared(leadCat);
-          if (advice.suggested) {
-            assignee = advice.suggested.id; category = leadCat; routingReason = tieNote + advice.suggested.reason;
+          const pick = await freshRoutingPick(leadCat);
+          const advice = pick.advice;
+          if (pick.picked) {
+            assignee = pick.picked.id; category = leadCat;
+            routingReason = tieNote + (pick.fellBackFrom
+              ? pick.fellBackFrom.name + (pick.fellBackWhy === 'unavailable' ? ' can\'t take it right now' : ' is asleep (missed two check-ins)') + ', so ' + pick.picked.name + ' takes it' + (pick.pickedTier === 0 ? ' - scored ' + leadCat + ' history' : pick.pickedTier === 1 ? ' - declared ' + leadCat + ' strength' : ' - nearest awake bot') + '. First choice: ' + pick.fellBackFrom.name + '.'
+              : advice.suggested.reason);
             const chain = [], unstaffed = [], used = new Set([assignee]);
             for (const m of matches) {
               if (m.category === leadCat) continue;
@@ -1478,17 +1552,20 @@ async function routes(req, res, path, body, agentPre) {
               brief = String(brief || '') + '\n\nRouting plan: your part is ' + leadCat + '. When your part is done, hand the next part on with work.handoff: ' + chain.map(h => h.botName + ' takes ' + h.category).join(', then ') + '.';
             }
             if (unstaffed.length) routingReason += ' No scored bot for ' + unstaffed.join(', ') + ' yet; that part is not auto-planned.';
-            routed = { botId: advice.suggested.id, botName: advice.suggested.name, category: leadCat, reason: routingReason, chain, unstaffed };
+            routed = { botId: pick.picked.id, botName: pick.picked.name, category: leadCat, reason: routingReason, chain, unstaffed, ...(pick.fellBackFrom ? { fallbackFrom: pick.fellBackFrom } : {}) };
+          } else if (advice.suggested || pick.fellBackFrom) {
+            unrouted = true; allAsleep = true;
+            routingReason = 'Every bot that could take ' + leadCat + ' is asleep right now' + (advice.suggested ? ' (' + advice.suggested.name + ' would be first)' : '') + '. Left queued - the first bot to check in claims it.';
           }
         }
-        if (!assignee) {
+        if (!assignee && !allAsleep) {
           unrouted = true;
           if (!matches.length) routingReason = 'No category matched this message. Left unassigned rather than guessed.';
           else if (tieUnresolved) routingReason = 'Categories ' + top.map(m => m.category).join(' and ') + ' matched equally with no stronger scored history to pick a lead. Left unassigned rather than guessed.';
           else routingReason = 'No bot has scored history or a single declared strength in ' + (leadCat || top[0].category) + ' yet. Left unassigned rather than guessed.';
         }
       }
-      return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, handoffPlan }), routed, unrouted }); }
+      return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, allAsleep, handoffPlan }), routed, unrouted, ...(allAsleep ? { allAsleep: true } : {}) }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}

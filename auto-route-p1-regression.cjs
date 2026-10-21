@@ -12,6 +12,7 @@ const f=srv.slice(srv.indexOf('async function routingOrDeclared'),srv.indexOf('a
 assert(/const adv = await routing\(cat\); if \(adv\.suggested\) return adv;/.test(f),'scored history is checked first and wins');
 assert(/if \(ds\.length !== 1\) return adv;/.test(f),'two or zero declared bots stay unrouted');
 assert(/!a\.paused/.test(f)&&/a\.status === 'active'/.test(f),'paused or inactive bots are never picked');
-assert(/routingOrDeclared\(leadCat\)/.test(srv)&&/routingOrDeclared\(m\.category\)/.test(srv),'both routing paths use it');
+assert(/freshRoutingPick\(leadCat\)/.test(srv)&&/routingOrDeclared\(m\.category\)/.test(srv),'lead goes through the awake-aware pick; planned hops use the same advice');
+assert(/const adv = await routingOrDeclared\(cat\)/.test(srv),'the awake-aware pick still defers to scored history and the single-declared rule first');
 assert(/strengths\)\|\|body\.strengths\.length>8|body\.strengths\.length>8/.test(srv)&&/hasOwnProperty\.call\(CATEGORY_KEYWORDS,k\)/.test(srv),'strengths endpoint validates the list');
 console.log('PASS auto-route-p1: declared strengths only as a single-bot fallback');
