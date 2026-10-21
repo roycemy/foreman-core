@@ -1215,6 +1215,7 @@ async function oauthRoutes(req,res,path,body){
  return send(404,{error:'not found'});
 }
 
+const foundingSeats=(()=>{try{return require('../lib/founding-seats.cjs')}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;return require('./lib/founding-seats.cjs')}})()({r,getJ});
 // Public waitlist: explicit request only, no auto-mail or third-party sharing.
 async function joinWaitlist(req,res,body){
  res.setHeader('Cache-Control','no-store');
@@ -1226,13 +1227,14 @@ async function joinWaitlist(req,res,body){
  const ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();
  const rate='gl:waitlistRate:'+sha(ip)+':'+Math.floor(Date.now()/3600000),n=await r(['INCRBY',rate,1]);await r(['EXPIRE',rate,3600]);
  if(n>10)return res.status(429).json({error:'Too many attempts. Try again later.'});
+ await foundingSeats.reconcile();
  const key='gl:waitlist:'+sha(email),entry={email,requestedAt:now(),consent:'Access availability email only',source:'alter-site'};
  const added=await r(['SET',key,JSON.stringify(entry),'NX']);
- if(added)await r(['SADD','gl:waitlist',sha(email)]);
- return res.json({ok:true});
+ await r(['SADD','gl:waitlist',sha(email)]);
+ return res.json({ok:true,...await foundingSeats.receipt(sha(email),!!added,body.receipt)});
 }
 
-const inviteFlow=(()=>{try{return require('../lib/invite-flow.cjs')}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;return require('./lib/invite-flow.cjs')}})()({r,getJ,origin:PUBLIC_ORIGIN,joinWaitlist,getSession});
+const inviteFlow=(()=>{try{return require('../lib/invite-flow.cjs')}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;return require('./lib/invite-flow.cjs')}})()({r,getJ,origin:PUBLIC_ORIGIN,joinWaitlist,getSession,foundingSeats});
 
 // Runner sessions: scoped HttpOnly cookie; bearer stored encrypted server-side only.
 // Rolling 30-day idle lifetime. Only an authenticated session restore renews it.
@@ -1334,6 +1336,8 @@ module.exports = async (req, res) => {
   let body = req.body; if (typeof body === 'string') { try { body = /application\/x-www-form-urlencoded/.test(req.headers['content-type']||'') ? Object.fromEntries(new URLSearchParams(body)) : JSON.parse(body); } catch { body = {}; } } body = body || {};
   try {
     if(path==='/authorization/demo'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return res.json(AUTHZ.demo());}
+    if(path==='/founding/count'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');await foundingSeats.reconcile();return res.json({taken:await foundingSeats.total(),limit:1000});}
+    if(path==='/founding/receipt'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});const found=await foundingSeats.readReceipt(body.receipt);return found?res.json(found):res.status(404).json({error:'Receipt unavailable'});}
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
     if(path.startsWith('/invite/')||path.startsWith('/invites/'))return await inviteFlow(req,res,path,body);
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
