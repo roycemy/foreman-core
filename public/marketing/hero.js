@@ -15,5 +15,5 @@ loop([[0,function(){kb.className='ask'}],[4000,function(){kb.className='ask on'}
 var C=$('#hvC');if(C){var ac=C.querySelector('.ask');
 loop([[0,function(){C.classList.remove('in');ac.className='ask'}],[4500,function(){C.classList.add('in')}],[7000,function(){ac.className='ask on'}],[12000,function(){ac.className='ask on ap'}],[15500,function(){ac.className='ask'}]],17500);if(rm){C.classList.add('in');ac.className='ask on'}}
 if(document.body.classList.contains('pa')){var rs=document.querySelectorAll('.rv');if(rm||!('IntersectionObserver' in window)){rs.forEach(function(e){e.classList.add('in')})}else{var io=new IntersectionObserver(function(es){es.forEach(function(x){if(x.isIntersecting){x.target.classList.add('in');io.unobserve(x.target)}})},{rootMargin:'0px 0px -10% 0px'});rs.forEach(function(e){io.observe(e)})}}
-var v=$('.vid video');if(v&&v.play){var p=v.play();p&&p.catch&&p.catch(function(){})}
+
 })();
