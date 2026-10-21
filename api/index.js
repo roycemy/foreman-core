@@ -71,6 +71,7 @@ function memCmd(c) {
     case 'LPUSH': { const l = L(); l.unshift(a[0]); mem.lists.set(k, l); return l.length; }
     case 'LRANGE': return L().slice(parseInt(a[0], 10), parseInt(a[1], 10) + 1);
     case 'LTRIM': mem.lists.set(k, L().slice(parseInt(a[0], 10), parseInt(a[1], 10) + 1)); return 'OK';
+    case 'SCARD': return (mem.kv.get(k)||[]).length;
     case 'SADD': { const s = new Set(mem.kv.get(k) || []); s.add(a[0]); mem.kv.set(k, [...s]); return 1; }
     case 'SREM': { const x=(mem.kv.get(k)||[]).filter(v=>v!==a[0]); mem.kv.set(k,x); return 1; }
     case 'SMEMBERS': return mem.kv.get(k) || [];
@@ -748,7 +749,7 @@ async function resetOwnerWorkspace(req,res,body){
   if(!await r(['SET','fm:ownerResetLock','1','NX','EX',120]))return res.status(409).json({error:'Reset busy'});
   try{
    const oldWs=sess.ws,newWs='ws'+crypto.randomBytes(6).toString('hex');
-   for(const a of agents){await updateAgent(a.id,x=>{x.status='revoked';x.revokedBy='owner';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await r(['DEL','fm:secret:'+a.id]);const kh=await r(['GET','fm:gatewayKeyHash:'+a.id]);if(kh){await r(['DEL','fm:key:'+kh]);await r(['DEL','gl:key:'+kh]);}
+   for(const a of agents){await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await r(['DEL','fm:secret:'+a.id]);const kh=await r(['GET','fm:gatewayKeyHash:'+a.id]);if(kh){await r(['DEL','fm:key:'+kh]);await r(['DEL','gl:key:'+kh]);}
     for(const gid of await r(['SMEMBERS','fm:oauth:grants:'+a.id])){const g=await getJ('gl:oauth:grant:'+gid);if(g&&g.ws===oldWs&&g.agentId===a.id)await setJ('gl:oauth:grant:'+gid,{...g,revoked:true,revokedAt:now(),failureReason:'owner_workspace_reset'});}}
    for(const token of await r(['SMEMBERS','fm:publicReceipts'])){const p=await getJ('gl:publicReceipt:'+token);if(p&&p.ownerWs===oldWs)await setJ('gl:publicReceipt:'+token,{...p,revoked:true,revokedAt:now()});}
    for(const t of await listTasks())for(const token of await r(['SMEMBERS','fm:shares:'+t.id])){const p=await getJ('gl:share:'+token);if(p&&p.ws===oldWs)await setJ('gl:share:'+token,{...p,revoked:true,revokedAt:now()});}
@@ -1231,6 +1232,8 @@ async function joinWaitlist(req,res,body){
  return res.json({ok:true});
 }
 
+const inviteFlow=(()=>{try{return require('../lib/invite-flow.cjs')}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;return require('./lib/invite-flow.cjs')}})()({r,getJ,origin:PUBLIC_ORIGIN,joinWaitlist,getSession});
+
 // Runner sessions: scoped HttpOnly cookie; bearer stored encrypted server-side only.
 // Rolling 30-day idle lifetime. Only an authenticated session restore renews it.
 // Saved authorization never manufactures executor presence or work.
@@ -1295,7 +1298,7 @@ const botLink=new BL.BotLink({store:blStore,
  // An accepted link call (echo included) is real accepted activity: stamp the agent's last-seen so HQ shows the connection honestly.
  onRealCall:(b,{op})=>b.agentId?als.run({ws:b.ws},async()=>{const a=await getJ('fm:agent:'+b.agentId);if(a)await touchAgent(a);}):null,
  // Runs BEFORE the bot record is revoked: the agent is blocked first, so an in-flight act fails policy.
- onRevoke:b=>b.agentId?als.run({ws:b.ws},async()=>{await updateAgent(b.agentId,x=>{x.status='revoked';x.revokedBy='unknown';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await rejectPendingBrokerFor(b.agentId);}):null,
+ onRevoke:b=>b.agentId?als.run({ws:b.ws},async()=>{await updateAgent(b.agentId,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;});await rejectPendingBrokerFor(b.agentId);}):null,
  onAlert:a=>als.run({ws:a.ws},()=>event(null,'alert',a.kind==='pairing_second_caller'?'A second caller used a pairing link. Pairing cancelled.':'A bot key was used twice. That bot needs a re-paste.',{kind:'ALERT',code:a.kind}))});
 const blCaller=req=>({userAgent:String(req.headers['user-agent']||''),ipRegion:String(req.headers['x-vercel-ip-country']||'unknown'),appId:String(req.headers['x-alter-app-id']||'')});
 // Bot side. /pair needs a live single-use pairing ID (plus the caller secret to collect); /link/call needs a link key.
@@ -1332,6 +1335,7 @@ module.exports = async (req, res) => {
   try {
     if(path==='/authorization/demo'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return res.json(AUTHZ.demo());}
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
+    if(path.startsWith('/invite/')||path.startsWith('/invites/'))return await inviteFlow(req,res,path,body);
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path.startsWith('/runner/'))return await runnerRoutes(req,res,path,body);
     if(path.startsWith('/pair/')||path==='/link/call')return await botLinkBotRoutes(req,res,path,body);
@@ -1512,7 +1516,7 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='permissions' && (!ACTIONS[body.action] || !['AUTO','ASK','NEVER'].includes(body.mode)))return res.status(400).json({error:'bad input'});
       const a=await updateAgent(m[1],a=>{
         if(op==='room'){a.room=body.room;}
-        if(op==='revoke'){a.status='revoked';a.revokedBy='owner';a.revokedAt=now();a.oauthEpoch=(a.oauthEpoch||0)+1;}
+        if(op==='revoke'){a.status='revoked';a.revokedAt=now();a.oauthEpoch=(a.oauthEpoch||0)+1;}
         if(op==='restore'){a.status='active';delete a.revokedAt;}
         if(op==='strengths'){a.strengths=[...new Set(body.strengths)];}
         if(op==='permissions'){a.permissions={...(a.permissions||{}),[body.action]:body.mode};}
@@ -1530,7 +1534,7 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='pause')await event(a.id,body.on?'paused':'resumed',body.on?'Owner paused '+a.name:'Owner resumed '+a.name,{source:'owner'});
       return res.json({ agent: a });
     }
-    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedBy='owner';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
+    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
     if (path === '/kill' && req.method === 'POST') { bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
     // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
     if (path === '/connect' && req.method === 'POST') {
