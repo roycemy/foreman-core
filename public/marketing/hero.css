@@ -41,3 +41,14 @@
 @media (max-width:640px){.hv{margin:0}.hv .ask{left:62%!important;top:78%!important}.hv .toast{display:none}.cv .ask{left:60%!important;top:46%!important}}
 .dsec{padding-top:48px}.dhead{text-align:center;margin-bottom:32px}.dhead .eyebrow{margin-bottom:8px}.dhead h2{font-size:clamp(26px,2.8vw,36px)}.dhead .lead{margin:8px auto 0}
 @media (max-width:640px){.dsec{padding-top:32px}.dhead{margin-bottom:24px}}
+/* page A seamless polish */
+.pa .hv>img.fl{-webkit-mask-image:radial-gradient(ellipse 50% 50% at 50% 50%,#000 62%,transparent 100%);mask-image:radial-gradient(ellipse 50% 50% at 50% 50%,#000 62%,transparent 100%)}
+.pa .hv{margin-right:0}
+.pa .nav{border-bottom-color:transparent;transition:border-color .3s}.pa .foot{border-top:0}.pa .foot .wrap{border-top:1px solid var(--line)}
+.pa .hero{padding:48px 0 0}.pa .dsec{padding-top:72px}.pa .sec{padding-top:80px}.pa .final{padding:80px 0}
+.pa .cap{margin-top:12px}.pa .vid{box-shadow:0 0 0 1px var(--line),0 24px 48px -28px rgba(18,18,18,.16)}
+.pa .grid3{gap:32px}.pa .grid3>div{padding-top:24px;border-top:1px solid var(--line)}
+.pa .rv{opacity:0;transform:translateY(12px);transition:opacity .7s var(--ease),transform .7s var(--ease)}.pa .rv.in{opacity:1;transform:none}
+@media (max-width:640px){.pa .hero{padding-top:32px}.pa .dsec{padding-top:48px}.pa .sec{padding-top:56px}.pa .final{padding:56px 0}
+.pa .hv{margin-bottom:96px}.pa .hv .ask{left:50%!important;top:100%!important;transform:translate(-50%,8px)!important;width:240px}.pa .hv .ask.on{transform:translate(-50%,0)!important}}
+@media (prefers-reduced-motion:reduce){.pa .rv{opacity:1;transform:none}}
