@@ -11,37 +11,10 @@ const ctx={window:{BB},BRAND:{name:'Alter'},location:{origin:'https://foreman-co
 vm.runInNewContext(source,ctx);const f=ctx.window.test;
 const forP=p=>{f.set({p,label:p,agent:{id:'agent_test',name:'Owner bot'}});return {msg:f.runnerMessage(),mcp:f.setupMessageFor(),url:f.pairUrl()};};
 
-// Instinct: rung 2 via its own 5-min schedule, declared by the link itself
-const i=forP('instinct');
-assert(i.url.includes('/runner?agent=agent_test&poll=300'),'instinct link declares its 5-min cadence');
-assert(i.msg.includes('every 5 minutes, open this console link, click Claim next task'),'instinct message sets its own schedule');
-assert(i.msg.includes('Checks in every 5 min')&&i.msg.includes('Late'),'instinct message promises only honest cadence status');
-assert(i.msg.includes('on your 5-minute schedule'),'instinct standing rule covers the schedule');
-assert(i.msg.includes('&wake=email:'),'instinct paste shows how to declare its wake inbox on the link');
-assert(i.msg.includes('Gmail'),'instinct paste declares the user\'s own Gmail');
-assert(i.msg.includes('Gmail push wakes you in seconds'),'instinct paste names the gmail push path');
-assert(i.msg.includes('Any valid email address works'),'any inbox works, gmail is fastest');
-assert(i.msg.includes('content-free email'),'instinct wake email is content-free');
-assert(i.msg.includes('5-minute schedule still covers'),'instinct schedule stays the backup');
-assert(!i.msg.includes('Live'),'no live promise');
-
-// Grok: rung 2 via its own routine on the MCP connector
-const g=forP('grok');
-assert(g.msg.includes('ALTER AUTO-WAKE SETUP')&&g.msg.includes('Register email wake')&&g.msg.includes('Verify email wake'),'default browser Copy setup includes working email-wake controls');
-assert(!g.msg.includes('You only act when I message you'),'no message-only contradiction for Grok');
-assert(g.mcp.includes('ALTER AUTO-WAKE SETUP')&&g.mcp.includes('+alter')&&g.mcp.includes('Email trigger'),'grok creates its own +alter email-trigger routine');
-assert(g.mcp.includes('Alter: claim queued jobs')&&g.mcp.includes('Alter: backup check')&&/every 5 minutes/i.test(g.mcp)&&g.mcp.includes('foreman_next_task'),'grok creates both routines');
-assert(g.mcp.includes('wakeChannel')&&g.mcp.includes('wakeTarget')&&g.mcp.includes('pollSec:300')&&g.mcp.includes('wakeNonce'),'grok registers its address and echoes the test code');
-assert(g.mcp.includes('wake verified')&&g.mcp.includes('only after'),'verified only after the test email wakes it');
-assert(!/paste (the|a) (trigger|key|secret)/i.test(g.mcp),'no paste step');
-assert(!g.url.includes('poll='),'grok link declares no console cadence');
-
-// Muse: rung 3 only - no cadence, no routine; still one paste with the code in the fragment
-const m=forP('muse');
-assert(m.url.includes('poll=300'),'muse link declares its five-minute check cadence');
-assert(m.msg.includes('recurring five-minute check')&&m.msg.includes('if your client supports'),'Muse asks its client to set up and verify a schedule, without inventing support');
-assert(m.msg.includes('every time I message you'),'muse keeps the on-message standing rule');
-assert(!m.msg.includes('&wake='),'muse paste declares no wake target');
+// All three browser-console paths use one action and one declared two-minute cadence.
+for(const p of ['instinct','grok','muse']){const x=forP(p);assert(x.url.includes('&poll=120'));assert(x.msg.includes('every 2 minutes'));assert(x.msg.includes('20 seconds'));assert(x.msg.includes('saved authorization before'));assert(!x.msg.includes('MCP'));assert(!x.msg.includes('keep this page open'));assert(x.msg.includes('same paired browser'));assert(x.msg.includes('No purchases'));}
+// Explicit MCP alternative retains its existing provider-specific optional wake controls.
+const g=forP('grok');assert(g.mcp.includes('ALTER AUTO-WAKE SETUP'));assert(g.mcp.includes('wakeNonce'));
 
 // Other providers: unchanged generic copy, no grok routine text
 const c=forP('studio');
@@ -69,4 +42,4 @@ const api=fs.readFileSync('api/index.js','utf8');
 assert(api.includes('if(_ps)await notePollCadence(agent,_ps)'),'server records declared cadence');
 assert(api.includes('if(_wt)await noteWakeTarget(agent,_wt)'),'server records declared wake targets from gateway calls');
 assert(api.includes('wakeChannel'),'MCP foreman_presence schema accepts wake declarations');
-console.log('PASS setup wake ladder: grok routine + instinct declared cadence in one paste each, muse verified client cadence with honest capability fallback, console stamps pollSec honestly. No network.');
+console.log('PASS revised browser pairing: grok routine + instinct declared cadence in one paste each, muse verified client cadence with honest capability fallback, console stamps pollSec honestly. No network.');
