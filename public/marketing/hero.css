@@ -52,3 +52,6 @@
 @media (max-width:640px){.pa .hero{padding-top:32px}.pa .dsec{padding-top:48px}.pa .sec{padding-top:56px}.pa .final{padding:56px 0}
 .pa .hv{margin-bottom:96px}.pa .hv .ask{left:50%!important;top:100%!important;transform:translate(-50%,8px)!important;width:240px}.pa .hv .ask.on{transform:translate(-50%,0)!important}}
 @media (prefers-reduced-motion:reduce){.pa .rv{opacity:1;transform:none}}
+.music-credit{font-size:12px;line-height:1.5;text-align:center;color:var(--mute);padding:0 var(--g) 20px}
+/* Keep the separate demo peeking into a 390px phone viewport. */
+@media(max-width:640px){.pa .hero{padding-top:24px}.pa .hero-in{gap:18px}.pa .hv{margin-bottom:88px}.pa .dsec{padding-top:20px}.pa .dhead{margin-bottom:16px}.pa .dhead .eyebrow{margin-bottom:4px}.pa .dhead .lead{margin-top:4px}}

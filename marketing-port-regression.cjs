@@ -1,3 +1,10 @@
-const fs=require('fs'),assert=require('assert');for(const f of ['index.html','pricing.html','security.html']){const s=fs.readFileSync('public/'+f,'utf8');assert(s.includes('/marketing/site.css'));assert(!s.includes('signin.html'));assert(!s.includes('Nothing spends without'));assert(!s.includes('one shared card'));assert(!s.includes('first 1,000 members'));assert(!/<video[^>]*autoplay/.test(s));for(const m of s.matchAll(/(?:src|href)="(\/marketing\/[^"#]+)"/g))assert(fs.existsSync('public'+m[1]),m[1]);}const h=fs.readFileSync('public/index.html','utf8');assert(h.includes('foreman-core.vercel.app/api/mcp'));assert(h.includes('Example workspace with sample data'));assert(h.includes('No real card is issued'));console.log('PASS marketing port: real routes, existing connector, assets present, sample labels, no live-card or founding-access promises.');
-
-assert(!h.includes('hq-desktop.jpg'));assert(!h.includes('id="receipts"'));assert(h.includes('data-video-src=""'));assert(h.includes('Product demo coming soon'));assert(!/<video[^>]*src=/.test(h));assert.equal((h.match(/<section /g)||[]).length,7);console.log('PASS compact seven-section site, no repeated HQ image, honest future demo slot.');
+const fs=require('fs'),assert=require('node:assert/strict');
+const h=fs.readFileSync('public/index.html','utf8');
+assert(h.includes('id="hvA"'));assert(h.includes('/marketing/hero.js'));assert(h.includes('/marketing/hero.css'));
+assert(!h.includes('noindex'));assert(!h.includes('hero-b'));assert(!h.includes('hero-c'));assert(!fs.existsSync('public/hero-b.html'));assert(!fs.existsSync('public/hero-c.html'));
+const nav=h.match(/<header[\s\S]*?<\/header>/)[0];assert.equal((nav.match(/<a /g)||[]).length,3);assert(!/pricing|security|Product/.test(nav));
+assert(h.includes('Claude'));assert(h.includes('Grok Bot'));assert(h.includes('Muse'));assert(h.includes('See it in action'));assert(h.includes('Watch a day on the floor.'));
+assert(h.includes('"Inspired" by Kevin MacLeod (incompetech.com), licensed under CC BY 4.0.'));
+for(const m of h.matchAll(/(?:src|href|poster)="(\/marketing\/[^"#]+)"/g))assert(fs.existsSync('public'+m[1]),m[1]);
+const js=fs.readFileSync('public/marketing/hero.js','utf8');for(const s of ['Approve Meta ads for $49','Publish post','Delete 120 old files'])assert(js.includes(s));
+assert(!/fetch\(|XMLHttpRequest/.test(js));console.log('PASS Hero A homepage, three-link nav, illustration rotation, demo assets, music credit and no rejected alternatives');
