@@ -33,6 +33,7 @@
     <div class="menu" id="acctmenu" role="menu" aria-label="Account">
       <div class="who"><b id="acctmail">Your account</b><small>Signed in</small></div>
       <button role="menuitem" data-act="connect">${plus} Connect a bot</button>
+      <button role="menuitem" data-act="invite">Invite someone ↗</button>
       <button role="menuitem" data-act="perms">${grid} All permissions</button>
       <hr>
       <button role="menuitem" data-act="emergency" class="danger">${stop} Emergency stop</button>
@@ -115,6 +116,7 @@
 <script src="/js/components/meeting.js"></script>
 <script src="/js/components/receipt-ship.js"></script>
 <script src="/js/components/reconnect-flag.js"></script>
+<script src="/js/invite-panel.js"></script>
 <script src="/js/app.js"></script>
 <script>(function(){
 /* Installed PWAs stay alive for days and keep old JS in memory. On every resume: ask for a new service worker, and compare the app files with what this page loaded. A change reloads at once, or shows an Update bar if you are typing. */
