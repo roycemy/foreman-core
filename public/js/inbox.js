@@ -122,15 +122,15 @@
     const needs = BB.needsYou(), jobs = BB.jobs(), today = new Date(); today.setHours(0, 0, 0, 0);
     const todays = jobs.filter(t => Date.parse(jobAt(t)) >= today || ['running', 'queued'].includes(t.status)).slice(0, 30);
     const sum = BB.teamSummary();
-    const sub = !sum.calm ? sum.parts.join(' · ') : sum.running ? sum.running + ' running' : 'Nothing on you';
+    const sub = BB.offline ? 'Connection unavailable. Showing the last update.' : !sum.calm ? sum.parts.join(' · ') : sum.running ? sum.running + ' running' : 'Nothing on you';
     const card = i => {
       const g = i.a ? BB.glyph(i.a) : '';
       const kav = i.a ? `<span class="kav" style="--av:${BB.avColor(i.a)}">${esc(BB.initials(i.a.name))}${g}</span>` : '<span class="kav merch">?</span>';
       let t = esc(BB.itemTitle(i)), l = '', b = '';
       if (['approval', 'spend', 'card'].includes(i.type)) {
-        l = esc((i.a ? i.a.name + ' · ' : '') + (i.type === 'approval' ? ((i.q.params && (i.q.params.title || i.q.params.url)) || BB.reqLine(i.q)) + ' · ' + i.q.costCents + '¢' : i.q.purpose));
+        l = esc((i.a ? i.a.name + ' · ' : '') + (i.type === 'approval' ? ((i.q.params && (i.q.params.title || i.q.params.url)) || BB.reqLine(i.q)) + (i.q.costCents != null ? ' · ' + i.q.costCents + '¢' : '') : i.q.purpose));
         if (i.type === 'approval') t = esc((BB.ACTION_COPY[i.q.action] || {}).ask || i.q.label || i.q.action);
-        b = `<div class="kbtns"><button class="b pri" type="button" data-d="approve">Approve</button><button class="b out" type="button" data-d="deny">Deny</button></div>`;
+        b = `<div class="kbtns"><button class="b pri" type="button" data-d="approve"${BB.offline?' disabled':''}>Approve</button><button class="b out" type="button" data-d="deny"${BB.offline?' disabled':''}>Deny</button></div>`;
         return `<div class="swipe" data-item="${esc(i.id)}"><div class="under" aria-hidden="true">Approve</div><div class="kr">${kav}<div class="t"><b>${t}</b><small>${l}</small>${b}</div></div></div>`;
       }
       if (i.type === 'dark') return `<div class="kr" data-item="${esc(i.id)}">${kav}<div class="t"><b>${esc(i.a.name)} went dark</b><small>No accepted activity for ${esc(BB.dur(Date.now() - Date.parse(i.at)))}</small></div><button class="b out" type="button" style="height:36px;border-radius:11px" data-bot="${i.a.id}">Check</button></div>`;
@@ -144,13 +144,14 @@
       const right = s.word === 'Unassigned' ? `<span class="assign"><button class="b out sm" type="button" data-assign="${t.id}">Assign ▾</button></span>` : `<span class="r">${s.word}</span>`;
       return `<div class="kr" role="button" tabindex="0" data-job="${t.id}">${kav}<div class="t"><b>${esc(t.title)}</b><small>${esc(meta)}</small></div>${right}</div>`;
     };
-    v.innerHTML = `<div class="kh"><h1>Inbox</h1><div class="end"><button class="plus" type="button" aria-label="New job" data-newjob>${BB.ICON.plus}</button>${BB.acctAv ? BB.acctAv() : ''}</div></div><div class="ks">${esc(sub)}</div>
+    v.innerHTML = `<div class="kh"><h1>Your HQ</h1><div class="end"><button class="plus" type="button" aria-label="New job" data-newjob>${BB.ICON.plus}</button>${BB.acctAv ? BB.acctAv() : ''}</div></div><div class="ks">${esc(sub)}</div>
       ${needs.length ? `<div class="kl">Needs you</div>${needs.map(card).join('')}` : ''}
-      <div class="kl" style="padding-top:${needs.length ? 28 : 8}px">Today</div>${todays.length ? todays.map(jrow).join('') : `<div class="ks" style="padding-top:4px">No jobs today. Tap + to ask the team for something.</div>`}
-      <div class="ks" style="padding-top:24px"><button class="link" type="button" data-go-floor>View floor</button></div>`;
+      <div class="kl" style="padding-top:${needs.length ? 28 : 8}px">Jobs today</div>${todays.length ? todays.map(jrow).join('') : `<div class="ks" style="padding-top:4px">${BB.offline ? (BB.S ? 'Job updates are unavailable. This is the last saved view.' : 'Jobs could not load. Workspace status is unavailable, not confirmed empty.') : 'No jobs today. Tap + to ask the team for something.'}</div>`}
+      <div class="mobile-team-head"><h2>Your team</h2><button class="link" type="button" data-go-floor>View animated floor ↗</button></div><div class="mobile-team">${BB.agents().filter(a=>!a.harness).map(a=>`<button type="button" class="mobile-bot" data-bot="${esc(a.id)}">${BB.av(a,'s28')}<span><b>${esc(a.name)}</b><small>${esc(BB.statusLine(a))}</small></span><span aria-hidden="true">↗</span></button>`).join('')||(BB.offline?'<p class="ks">Team status is unavailable. Try again when the connection returns.</p>':'<p class="ks">Connect a bot to start building your team.</p>')}</div>`;
     BB.bindItems(v, needs.concat(BB.onYou()));
     v.querySelector('[data-newjob]').onclick = () => BB.newJob();
     v.querySelector('[data-go-floor]').onclick = () => BB.go('#floor');
+    v.querySelectorAll('.mobile-bot').forEach(b=>b.onclick=()=>BB.openInspector(b.dataset.bot));
     v.querySelectorAll('[data-job]').forEach(r => r.onclick = e => { if (e.target.closest('.assign')) return; const t = BB.task(r.dataset.job), who = t && BB.jobWho(t); if (who && who.length) BB.openInspector(who[0].id, { job: t.id }); });
     v.querySelectorAll('.swipe').forEach(bindSwipe);
   }

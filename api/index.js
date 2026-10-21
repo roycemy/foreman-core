@@ -224,6 +224,7 @@ async function chatTask(agent, body) {
 }
 async function touchAgent(agent) {
   const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active')return;
+  if(!live.firstSeenAt){await updateAgent(agent.id,a=>{if(!a.firstSeenAt)a.firstSeenAt=a.lastSeen||now();});}
   await r(['SET','fm:seen:'+agent.id,now()]);
 }
 /* heartbeat economy (100-user scale): every accepted beat still stamps fm:seen - lastSeen drives all honest status - but the event feed only hears about a return after 10+ minutes away. A resume is feed-worthy; a steady pulse is not. This keeps fm:events useful and cuts each beat to a single SET. */
@@ -265,7 +266,7 @@ async function maybeWakeBot(a, jobId) {
       ok = resp.ok; status = resp.status;
       if (ok) { const issue = await resp.json(); await fetch('https://api.github.com/repos/' + process.env.WAKE_GITHUB_REPO + '/issues/' + issue.number, { method: 'PATCH', headers: hdr, body: JSON.stringify({ state: 'closed', state_reason: 'completed' }) }); }
     }
-    await event(a.id, ok ? 'wake_sent' : 'wake_failed', ok ? 'Instant wake sent (' + channel + ')' : 'Instant wake failed (' + channel + '): HTTP ' + status, { kind: 'WAKE', presenceOnly: true });
+    await event(a.id, ok ? 'wake_sent' : 'wake_failed', ok ? 'Instant wake sent (' + channel + ')' : 'Instant wake failed (' + channel + '): HTTP ' + status, { kind: 'WAKE', presenceOnly: true, taskId:jobId||null });
   } catch (e) {
     await event(a.id, 'wake_failed', 'Instant wake failed: ' + String((e && e.message) || e).slice(0, 120), { kind: 'WAKE', presenceOnly: true });
   }

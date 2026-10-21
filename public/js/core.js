@@ -85,9 +85,10 @@
     { k: 'glasses', c: '#1F6F6B', av: '#1F6F5C', body: 'coat', acc: '#2B2D31' },
     { k: 'scarf', c: '#6B4C7A', av: '#5B4470', body: 'sweater', acc: '#D9A441' },
     { k: 'cap', c: '#B9862E', av: '#9A7029', body: 'tee', acc: '#2B2D31' },
-    { k: 'bun', c: '#4C6A7F', av: '#46627A', body: 'dress', acc: '#E9C46A' }];
+    { k: 'bun', c: '#4C6A7F', av: '#46627A', body: 'dress', acc: '#E9C46A' },
+    { k:'visor', c:'#7A5C46', av:'#6E5240', body:'blazer', acc:'#2B2D31' }];
   BB.CAST = CAST;
-  const PREF = { grok: 0, muse: 1, instinct: 2 };
+  const PREF = { grok: 0, muse: 1, instinct: 2, manus:3, poke:4, chatgpt:5, devin:6 };
   const hash = s => { let h = 0; for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h; };
   BB.hash = hash;
   let castMap = {}, castSig = '';
@@ -144,7 +145,7 @@
     const c = BB.ACTION_COPY[q.action], p = q.params || {}, what = p.title || p.url || p.to || '';
     return (c ? c.ask : (q.label || q.action)) + (what ? ': “' + String(what).slice(0, 60) + '”' : '');
   };
-  BB.reqLine = q => { const c = BB.ACTION_COPY[q.action]; return (c ? c.what.replace(/^./, m => m.toUpperCase()) : (q.label || '')) + ' · ' + q.costCents + '¢'; };
+  BB.reqLine = q => { const c = BB.ACTION_COPY[q.action]; return (c ? c.what.replace(/^./, m => m.toUpperCase()) : (q.label || '')) + (q.costCents != null ? ' · ' + q.costCents + '¢' : ''); };
 
   /* status for a bot, <= 4 plain words (full detail stays in the inspector) */
   const STOP = /^(the|a|an)$/i, CUT = /^(for|to|on|with|about|from|of|in|at|into|via|using|by)$/i;

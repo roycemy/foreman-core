@@ -114,6 +114,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
  if(e.k==='glasses')s+='<path d="M-10 -60 a10 10.5 0 0 1 20 0 v6 c0 1 -1.6 1 -1.6 0 v-6 c-2 -3.6 -12 -4 -16.8 0 v6 c0 1 -1.6 1 -1.6 0z"'+F(H)+'/>'+(ghost?'':'<circle cx="-3.6" cy="-60.5" r="2.9" fill="none" stroke="#2B2D31" stroke-width="1.2"/><circle cx="3.6" cy="-60.5" r="2.9" fill="none" stroke="#2B2D31" stroke-width="1.2"/><path d="M-.7 -60.8 h1.4" stroke="#2B2D31" stroke-width="1.2"/>');
  if(e.k==='scarf')s+='<path d="M-9.6 -62 a9.8 10 0 0 1 19.4 -1 c-4 -1 -9 -2.6 -11 -5.6 c-2 3 -5 5.6 -8.4 6.6z"'+F(H)+'/><rect x="-8" y="-52" width="16" height="5" rx="2.5"'+F(A)+'/><rect x="3" y="-49" width="4.6" height="13" rx="2"'+F(A)+'/>';
  if(e.k==='cap')s+='<path d="M-9.8 -62 a9.8 9.8 0 0 1 19.6 0z"'+F(A)+'/><path d="M6 -63.4 h9.4 a1.4 1.4 0 0 1 0 2.8 h-9.4z"'+F(A)+'/><circle cx="0" cy="-71" r="1.2"'+F(dk(c))+'/>';
+ if(e.k==='visor')s+='<path d="M-10 -64 a10 10 0 0 1 20 0z"'+F(H)+'/><rect x="-11" y="-65" width="22" height="5" rx="2"'+F(A)+'/>';
  if(e.k==='bun')s+='<path d="M-9.8 -61 a9.8 10 0 0 1 19.6 0 c-4 -3 -12 -4 -19.6 0z"'+F(H)+'/><circle cx="0" cy="-73" r="4.6"'+F(H)+'/>'+(ghost?'':'<circle cx="-9.4" cy="-56.5" r="1.3" fill="'+A+'"/><circle cx="9.4" cy="-56.5" r="1.3" fill="'+A+'"/>');
  s+='</g>';
  if(sit)s+='<rect x="-11" y="-17" width="22" height="7" rx="3.5"'+F(PANTS)+'/><rect x="-9.5" y="-12" width="5" height="11" rx="2.5"'+F(PANTS)+'/><rect x="4.5" y="-12" width="5" height="11" rx="2.5"'+F(PANTS)+'/><ellipse cx="-7" cy="-1.4" rx="3.6" ry="2"'+F(SHOE)+'/><ellipse cx="7" cy="-1.4" rx="3.6" ry="2"'+F(SHOE)+'/>'+(ghost?'':'<path d="M-12 -31 L12 -31 L10 -17 L-10 -17 Z" fill="#B7BDC2"/><path d="M-12 -31 L12 -31 L11.6 -29.4 L-11.6 -29.4 Z" fill="#D7DBDF"/><circle cx="0" cy="-24" r="1.6" fill="#F4F4F1"/><circle class="arm-t l" cx="-12" cy="-18.5" r="2.6" fill="'+SKIN+'"/><circle class="arm-t r" cx="12" cy="-18.5" r="2.6" fill="'+SKIN+'"/>');
@@ -212,10 +213,12 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     return BB.onYou().filter(i => ['approval', 'spend', 'card'].includes(i.type) && i.a && !BB.isGhost(i.a)).sort((x, y) => String(x.at).localeCompare(String(y.at)));
   }
   function targetOf(a, waitList) {
+    if (BB.sleeping && BB.sleeping(a)) { const g = BB.agents().filter(BB.sleeping), i=Math.max(0,g.findIndex(b=>b.id===a.id)); return {k:'bed:'+i,p:W2P(46+(i%3)*5,108+Math.floor(i/3)*8)}; }
     if (BB.isGhost(a)) { const g = BB.agents().filter(BB.isGhost); return { k: 'arr', p: ARRIVALS[Math.max(0, g.findIndex(b => b.id === a.id)) % ARRIVALS.length] }; }
     const wi = waitList.indexOf(a.id);
     if (wi >= 0 && wi < TRAY_SLOTS.length) return { k: 'tray', p: TRAY_SLOTS[wi] };
     if (BB.withOwner(a)) { const seated = BB.agents().filter(b => BB.withOwner(b)), i = Math.max(0, seated.findIndex(b => b.id === a.id)); return { k: 'call:' + i, p: W2P(65 + (i % 2) * 5, 91 + Math.floor(i / 2) * 5) }; }
+    if (!BB.runningTask(a) && !a.paused && !BB.S.killed) { const idle=BB.agents().filter(b=>!BB.runningTask(b)&&!(BB.sleeping&&BB.sleeping(b))), i=Math.max(0,idle.findIndex(b=>b.id===a.id)); return {k:'lounge:'+i,p:W2P(94+(i%3)*6,69+Math.floor(i/3)*7)}; }
     const room = BB.roomOf(a), same = BB.agents().filter(b => !BB.isGhost(b) && (['sales', 'support'].includes(room) ? ['sales', 'support'].includes(BB.roomOf(b)) : BB.roomOf(b) === room));
     const slot = Math.max(0, same.findIndex(b => b.id === a.id)), seats = SEATW[room] || SEATW.ops, v = seats[slot % 4];
     const pt = W2P(v[0] + Math.floor(slot / 4) * 2.2, v[1] + Math.floor(slot / 4) * 1.6);
@@ -243,14 +246,16 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     r.el.dataset.idle = String(s.kind !== 'run'); r.el.dataset.activity = BB.withOwner(a) ? 'replying' : pose === 'sit' ? 'working' : 'idle';
     /* real signals only: never reconnected (key expired), went dark, or Muse with no job (acts when messaged). Static closed eyes and Zs, no loop. */
     const asleep = !ghost && !walking && ['reconnect', 'dark', 'msg'].includes(s.kind);
-    const key = [ghost, pose, a.name, BB.cast(a).k, asleep].join('|'); if (r.key === key) return; r.key = key;
-    r.el.querySelector('.avs').innerHTML = figureSVG(a, { ghost, pose, asleep });
+    const motion = r.motion || '', bed = !walking && r.tk && r.tk.startsWith('bed'), lounge = !walking && r.tk && r.tk.startsWith('lounge');
+    r.el.dataset.motion=motion; r.el.classList.toggle('bed',!!bed); r.el.classList.toggle('lounge',!!lounge);
+    const key = [ghost, pose, a.name, BB.cast(a).k, asleep, bed, lounge, motion, BB.pendingReqs().some(q=>q.agentId===a.id),BB.tasks().filter(t=>t.assignee===a.id).map(t=>[t.status,t.sandboxGrant&&t.sandboxGrant.spentCents]).join(',')].join('|'); if (r.key === key) return; r.key = key;
+    r.el.querySelector('.avs').innerHTML = bed && BB.bedSVG ? BB.bedSVG(a) : BB.poseSVG ? BB.poseSVG(a,{ghost,pose:lounge?'sit':pose,asleep:motion!=='wake'&&motion!=='stretch'&&(asleep||lounge&&(a.providerId==='muse')),motion,lounge}) : figureSVG(a, { ghost, pose, asleep });
   }
   function ensure(a, i) {
     let r = F[a.id]; if (r) return r;
     const el = document.createElement('div'); el.className = 'ch'; el.tabIndex = 0; el.setAttribute('role', 'button'); el.dataset.id = a.id;
     el.innerHTML = '<div class="body"><div class="avs"></div></div>'; el.style.setProperty('--bd', (-(BB.hash(a.id) % 32) / 10) + 's'); el.style.setProperty('--fig', (fw * .0475) + 'px');
-    el.addEventListener('click', () => BB.openInspector && BB.openInspector(a.id));
+    el.addEventListener('click', () => { if (BB.sleeping && BB.sleeping(BB.agent(a.id)) && BB.reconnect) BB.reconnect(a.id); else if(BB.openInspector) BB.openInspector(a.id); });
     el.addEventListener('mouseenter', () => liveTip(a.id, true)); el.addEventListener('mouseleave', () => liveTip(a.id, false));
     el.addEventListener('focus', () => liveTip(a.id, true)); el.addEventListener('blur', () => liveTip(a.id, false));
     el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); } });
@@ -259,19 +264,19 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   function render() {
     if (!BB.S) return; build(); fit();
     const as = BB.agents(), ids = new Set(as.map(a => a.id));
-    Object.keys(F).forEach(id => { if (!ids.has(id)) { F[id].el.remove(); delete F[id]; } });
+    Object.keys(F).forEach(id => { if (!ids.has(id)) { const r=F[id];if(!BB.reduced()&&!document.hidden){const out=r.el.cloneNode(true);out.removeAttribute('tabindex');out.removeAttribute('role');out.setAttribute('aria-hidden','true');out.style.pointerEvents='none';out.classList.add('departing');r.el.parentNode.appendChild(out);setTimeout(()=>out.remove(),600);}r.el.remove();delete F[id]; } });
     const waitList = []; waitingItems().forEach(i => { if (!waitList.includes(i.a.id)) waitList.push(i.a.id); });
     as.forEach((a, i) => {
       const r = ensure(a, i), t = targetOf(a, waitList), s = BB.botState(a);
-      r.el.classList.toggle('ghost', BB.isGhost(a)); r.el.classList.toggle('paused', s.kind === 'off'); r.el.dataset.signal = BB.signal(a); r.el.classList.toggle('dark', s.kind === 'dark' || s.kind === 'late' || s.kind === 'msg');
-      r.el.setAttribute('aria-label', a.name + ': ' + BB.statusLine(a) + '. Open details');
+      r.el.classList.toggle('owner-revoked',a.status==='revoked'&&a.revokedBy==='owner');r.el.classList.toggle('ghost', BB.isGhost(a)); r.el.classList.toggle('paused', s.kind === 'off'); r.el.dataset.signal = BB.signal(a); r.el.classList.toggle('dark', s.kind === 'dark' || s.kind === 'late' || s.kind === 'msg');
+      r.el.setAttribute('aria-label', a.name + ': ' + BB.statusLine(a) + (BB.sleeping && BB.sleeping(a) ? '. Open connection setup' : '. Open details'));
       const moved = r.tk !== t.k || !r.tp || Math.abs(r.tp[0] - t.p[0]) + Math.abs(r.tp[1] - t.p[1]) > .3;
       r.tk = t.k; r.tp = t.p;
-      if (r.x == null) setPos(r, t.p[0], t.p[1], 0); else if (moved) walkTo(r, t.p[0], t.p[1]);
+      if (r.x == null) setPos(r, t.p[0], t.p[1], 0); else if (moved && !r.away) walkTo(r, t.p[0], t.p[1]);
       draw(r);
       /* design pack v3: walk-gather-carry only on a real running job; crate leaves with the job */
       const rt = BB.runningTask(a);
-      if (rt && BB.signal(a) === 'working' && t.k.startsWith('home') && BB.workCycle) BB.workCycle(r, a, t.p);
+      if (rt) {if(!r.el.querySelector('.crate')&&BB.CRATE)r.el.querySelector('.body').insertAdjacentHTML('beforeend',BB.CRATE);r.el.classList.add('has-desk-crate');}
       else if (!rt) r.el.classList.remove('has-desk-crate', 'carry', 'gather');
     });
     handoffs(as);
