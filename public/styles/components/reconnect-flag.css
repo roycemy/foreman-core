@@ -39,3 +39,5 @@ body:has(.tour) .a-corner .rcf-slot{visibility:hidden;height:0;overflow:hidden}
 .rcf-row .rcf-act{margin-left:0}
 /* iPad / small desktop: keep the corner column clear of the centred chips and type box */
 @media (min-width:761px) and (max-width:1180px){.a-corner{width:min(var(--a-corner-w),calc(50vw - 250px))}}
+
+@media(min-width:761px) and (max-width:940px){.a-corner{width:280px}.rcf.many li b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
