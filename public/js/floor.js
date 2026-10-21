@@ -172,8 +172,8 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const sr = st.getBoundingClientRect();
     const dockTop = dock && dock.offsetParent ? dock.getBoundingClientRect().top - sr.top : H - 24;
     const heroTop = hero && hero.offsetParent ? hero.getBoundingClientRect().top - sr.top : dockTop;
-    const top = BB.phone() ? 48 : 42, bottom = Math.max(top + 100, Math.min(dockTop, heroTop) - 18);
-    fw = Math.max(100, Math.min(W - (BB.phone() ? 20 : 64), (bottom - top) * ASPECT));
+    const top = BB.phone() ? 32 : 20, bottom = Math.max(top + 100, Math.min(dockTop, heroTop) - 4);
+    fw = Math.max(100, Math.min(W - (BB.phone() ? 8 : 24), (bottom - top) * ASPECT));
     f.style.setProperty('--fw', fw + 'px');
     f.style.setProperty('--figw', (fw * .062) + 'px');
     f.style.setProperty('--floor-y', ((top + bottom) / 2) + 'px');

@@ -22,8 +22,8 @@
 .ch.dark .avs,.ch.paused .avs{opacity:1}
 .ch .avs{aspect-ratio:60/104;filter:drop-shadow(0 2px 1px #12121212)}
 .ch.lounge .avs{transform:none}
-.floor-bot-label{position:absolute;top:6px;left:50%;transform:translateX(-50%);min-width:64px;max-width:104px;padding:3px 6px;border-radius:6px;background:#fffffff2;border:1px solid #12121214;box-shadow:0 2px 5px #12121208;text-align:center;white-space:nowrap;pointer-events:none;color:#121212;font:500 11px/14px var(--font)}
-.floor-bot-label b{display:block;max-width:92px;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.floor-bot-label{position:absolute;top:6px;left:50%;transform:translateX(-50%);min-width:64px;max-width:128px;padding:3px 6px;border-radius:6px;background:#fffffff2;border:1px solid #12121214;box-shadow:0 2px 5px #12121208;text-align:center;white-space:nowrap;pointer-events:none;color:#121212;font:500 11px/14px var(--font)}
+.floor-bot-label b{display:block;max-width:116px;overflow:hidden;text-overflow:ellipsis;font-weight:600}
 .floor-bot-label small{display:block;font-size:10px;line-height:12px;color:#5c5c57}
 .ch.walk .floor-bot-label{opacity:0}.ch.resting .floor-bot-label small{color:#74634d}
 .ch.resting .figure .arm-t{display:none}
@@ -34,6 +34,6 @@
 @keyframes floor-stride{0%,100%{transform:translate(-1px,-1px) rotate(9deg)}50%{transform:translate(1px,0) rotate(-9deg)}}
 @keyframes floor-arm{0%,100%{transform:rotate(-7deg)}50%{transform:rotate(7deg)}}
 @media(prefers-reduced-motion:reduce){.figure.pose-walk .leg,.figure.pose-walk .arm{animation:none!important}}
-@media(max-width:760px){.floor-bot-label{font-size:9px;line-height:11px;min-width:48px;padding:2px 4px;max-width:72px}.floor-bot-label small{font-size:8px;line-height:10px}}
+@media(max-width:760px){.floor-bot-label{font-size:9px;line-height:11px;min-width:48px;padding:2px 4px;max-width:84px}.floor-bot-label small{font-size:8px;line-height:10px}}
 
 .menu .site-return{display:block;padding:10px 14px;font-size:13px;color:var(--ink)}
