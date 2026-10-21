@@ -205,7 +205,7 @@
     let seen = null; try { seen = localStorage.getItem('alter.tour'); } catch (e) { seen = '1'; }
     toured = true; if (!seen) setTimeout(() => tour(0), 900);
   }
-  $('#zin').onclick = () => BB.floorZoom(.15); $('#zout').onclick = () => BB.floorZoom(-.15);
+
 
   /* ---------- top bar state ---------- */
   function paintTop() {

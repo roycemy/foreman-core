@@ -144,7 +144,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
 
   /* ---------- floor controller ---------- */
   const F = {};             // figure records by bot id
-  let built = false, zoom = 1, pan = [0, 0], fw = 1260, hoverRoom = null;
+  let built = false, fw = 1260, hoverRoom = null;
   const floorEl = () => $('#floor'), stageEl = () => $('#stage');
   const sx = p => p[0] / 100 * PJ.W + PJ.X0, sy = p => p[1] / 100 * PJ.H + PJ.Y0;   // % -> floor svg units
 
@@ -162,29 +162,25 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
       const on = () => showRoom(p.dataset.room), off = () => hideRoom(p.dataset.room);
       p.addEventListener('mouseenter', on); p.addEventListener('mouseleave', off); p.addEventListener('focus', on); p.addEventListener('blur', off);
     });
-    /* pan by dragging the floor, zoom with the buttons */
-    const st = stageEl(); let drag = null;
-    st.addEventListener('pointerdown', e => { if (e.button !== 0 || e.target.closest('.ch,.collab,.isl-card,.crew,.ask,.zoom,.roster,.floor-empty,button,input')) return; drag = { x: e.clientX, y: e.clientY, p: pan.slice(), moved: false }; });
-    addEventListener('pointermove', e => { if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (!drag.moved && Math.hypot(dx, dy) < 4) return; drag.moved = true; st.classList.add('panning'); pan = [drag.p[0] + dx, drag.p[1] + dy]; fit(); });
-    addEventListener('pointerup', () => { if (drag) { drag = null; st.classList.remove('panning'); } });
     addEventListener('resize', () => { fit(); place(); });
   }
   function fit() {
     const st = stageEl(), f = floorEl(); if (!st || !f) return;
     const W = st.clientWidth, H = st.clientHeight; if (!W) return;
-    const phone = BB.phone();
-    const hero = document.getElementById('hero'), hh = !phone && hero && hero.offsetParent ? 120 : 0;   // round M: leave room for the first-action line
-    const base = phone ? W - 16 : Math.min(W * .875, (H - 40 - hh) * .9 * ASPECT);
-    fw = Math.max(320, base * zoom);
-    const shift = !phone && BB.panelOpen && BB.panelOpen() && W > 1100 ? -200 : 0;
-    f.style.setProperty('--fw', fw + 'px'); f.style.setProperty('--figw', (fw * .0475) + 'px');
-    if (BB.clampPan) pan = BB.clampPan(pan, fw, W, H);
-    f.style.setProperty('--px', (pan[0] + shift) + 'px'); f.style.setProperty('--py', (pan[1] - hh / 2) + 'px');
-    BB.$$('.ch', f).forEach(e => e.style.setProperty('--fig', (fw * .0475) + 'px'));
+    // Fit the complete island into the space above the dock. No user pan or zoom.
+    const dock = document.getElementById('ask'), hero = document.getElementById('hero');
+    const sr = st.getBoundingClientRect();
+    const dockTop = dock && dock.offsetParent ? dock.getBoundingClientRect().top - sr.top : H - 24;
+    const heroTop = hero && hero.offsetParent ? hero.getBoundingClientRect().top - sr.top : dockTop;
+    const top = BB.phone() ? 32 : 36, bottom = Math.max(top + 100, Math.min(dockTop, heroTop) - 4);
+    fw = Math.max(100, Math.min(W + (BB.phone() ? -8 : 16), (bottom - top) * ASPECT));
+    f.style.setProperty('--fw', fw + 'px');
+    f.style.setProperty('--figw', (fw * (BB.phone() ? .062 : .054)) + 'px');
+    f.style.setProperty('--floor-y', ((top + bottom) / 2) + 'px');
+    BB.$$('.ch', f).forEach(e => e.style.setProperty('--fig', (fw * (BB.phone() ? .062 : .054)) + 'px'));
   }
-  BB.floorZoom = d => { zoom = Math.max(.8, Math.min(1.8, zoom + d)); fit(); };
   BB.floorFit = fit;
-  BB.floorReset = () => { zoom = 1; pan = [0, 0]; fit(); };
+  BB.floorReset = fit;
 
   function roomInfo(k) {
     if (k === 'call') { const w = BB.agents().filter(a => BB.withOwner(a)); return { line: w.length ? (w.length === 1 ? w[0].name + ' is with you' : w.length + ' bots are with you') + ' · ' + w.length + ' here' : 'Nobody is with you right now', n: w.length }; }
@@ -213,31 +209,41 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     return BB.onYou().filter(i => ['approval', 'spend', 'card'].includes(i.type) && i.a && !BB.isGhost(i.a)).sort((x, y) => String(x.at).localeCompare(String(y.at)));
   }
   function targetOf(a, waitList) {
-    if (BB.sleeping && BB.sleeping(a)) { const g = BB.agents().filter(BB.sleeping), i=Math.max(0,g.findIndex(b=>b.id===a.id)); return {k:'bed:'+i,p:W2P(46+(i%3)*5,108+Math.floor(i/3)*8)}; }
-    if (BB.isGhost(a)) { const g = BB.agents().filter(BB.isGhost); return { k: 'arr', p: ARRIVALS[Math.max(0, g.findIndex(b => b.id === a.id)) % ARRIVALS.length] }; }
     const wi = waitList.indexOf(a.id);
     if (wi >= 0 && wi < TRAY_SLOTS.length) return { k: 'tray', p: TRAY_SLOTS[wi] };
     if (BB.withOwner(a)) { const seated = BB.agents().filter(b => BB.withOwner(b)), i = Math.max(0, seated.findIndex(b => b.id === a.id)); return { k: 'call:' + i, p: W2P(65 + (i % 2) * 5, 91 + Math.floor(i / 2) * 5) }; }
-    if (!BB.runningTask(a) && !a.paused && !BB.S.killed) { const idle=BB.agents().filter(b=>!BB.runningTask(b)&&!(BB.sleeping&&BB.sleeping(b))), i=Math.max(0,idle.findIndex(b=>b.id===a.id)); return {k:'lounge:'+i,p:W2P(94+(i%3)*6,69+Math.floor(i/3)*7)}; }
-    const room = BB.roomOf(a), same = BB.agents().filter(b => !BB.isGhost(b) && (['sales', 'support'].includes(room) ? ['sales', 'support'].includes(BB.roomOf(b)) : BB.roomOf(b) === room));
+    const room = BB.roomOf(a), same = BB.agents().filter(b => (['sales', 'support'].includes(room) ? ['sales', 'support'].includes(BB.roomOf(b)) : BB.roomOf(b) === room));
     const slot = Math.max(0, same.findIndex(b => b.id === a.id)), seats = SEATW[room] || SEATW.ops, v = seats[slot % 4];
     const pt = W2P(v[0] + Math.floor(slot / 4) * 2.2, v[1] + Math.floor(slot / 4) * 1.6);
     return { k: 'home:' + room + ':' + slot, p: pt };
   }
-  function setPos(r, x, y, ms) { r.x = x; r.y = y; const e = r.el; e.style.transitionDuration = ms + 'ms'; e.style.left = x + '%'; e.style.top = y + '%'; e.style.zIndex = Math.round(y * 10); }
+  function setPos(r, x, y, ms) { r.x = x; r.y = y; const e = r.el; e.style.transitionDuration = ms + 'ms'; e.style.left = x + '%'; e.style.top = y + '%'; e.style.zIndex = "auto"; e.querySelector(".body").style.zIndex = Math.round(y * 10); }
   async function walkTo(r, x, y) {
     const token = r.walk = (r.walk || 0) + 1;
-    if (BB.reduced() || document.hidden || r.x == null) { setPos(r, x, y, 0); return; }
-    if (Math.abs(r.x - x) + Math.abs(r.y - y) < .6) { setPos(r, x, y, 0); return; }
-    r.el.classList.add('walk'); draw(r);
-    const pts = route(P2W(r.x, r.y), P2W(x, y)).map(p => W2P(...p)); pts[pts.length - 1] = [x, y];
-    for (let k = 0; k < pts.length; k++) {
-      if (r.walk !== token) return;
-      const n = pts.length, [px, py] = pts[k], d = Math.hypot((r.x - px) * 1.6, r.y - py), ms = Math.max(320, Math.min(1900, d * 42));
-      r.el.style.transitionTimingFunction = n === 1 ? 'cubic-bezier(.45,.05,.3,1)' : k === 0 ? 'cubic-bezier(.42,0,1,1)' : k === n - 1 ? 'cubic-bezier(0,0,.3,1)' : 'linear';
-      setPos(r, px, py, ms); await BB.sleep(ms + 40);
+    if (BB.reduced() || document.hidden || r.x == null || Math.hypot(r.x-x,r.y-y)<.6) {
+      setPos(r,x,y,0); r.el.classList.remove('walk'); draw(r); return;
     }
-    if (r.walk === token) { r.el.style.transitionTimingFunction = ''; r.el.classList.remove('walk'); draw(r); place(); }
+    const points = [[r.x,r.y], ...route(P2W(r.x,r.y),P2W(x,y)).map(p=>W2P(...p))];
+    points[points.length-1]=[x,y];
+    const lengths=points.slice(1).map((p,i)=>Math.hypot((p[0]-points[i][0])*fw/100,(p[1]-points[i][1])*fw/100/ASPECT));
+    const total=lengths.reduce((a,b)=>a+b,0), duration=Math.max(400,total/90*1000);
+    r.el.classList.add('walk'); draw(r);
+    await new Promise(resolve=>{
+      let start;
+      function step(now){
+        if(r.walk!==token){resolve();return}
+        if(document.hidden||BB.reduced()){setPos(r,x,y,0);resolve();return}
+        if(start==null)start=now;
+        const t=Math.min(1,(now-start)/duration), eased=t*t*(3-2*t);
+        let distance=eased*total, i=0;
+        while(i<lengths.length-1&&distance>lengths[i])distance-=lengths[i++];
+        const mix=lengths[i]?Math.min(1,distance/lengths[i]):1, p=points[i], q=points[i+1];
+        setPos(r,p[0]+(q[0]-p[0])*mix,p[1]+(q[1]-p[1])*mix,0);
+        if(t<1)requestAnimationFrame(step);else resolve();
+      }
+      requestAnimationFrame(step);
+    });
+    if(r.walk===token){r.el.classList.remove('walk');draw(r);place()}
   }
   function draw(r) {
     const a = BB.agent(r.id); if (!a) return;
@@ -245,16 +251,16 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const pose = BB.withOwner(a) && !walking && r.tk && r.tk.startsWith('call') ? 'sit' : walking ? 'walk' : (!r.away && r.tk && r.tk.startsWith('home') && !ghost && s.kind !== 'reconnect' ? 'sit' : 'stand');
     r.el.dataset.idle = String(s.kind !== 'run'); r.el.dataset.activity = BB.withOwner(a) ? 'replying' : pose === 'sit' ? 'working' : 'idle';
     /* real signals only: never reconnected (key expired), went dark, or Muse with no job (acts when messaged). Static closed eyes and Zs, no loop. */
-    const asleep = !ghost && !walking && ['reconnect', 'dark', 'msg'].includes(s.kind);
+    const asleep = !ghost && !walking && ['reconnect', 'dark', 'msg', 'late'].includes(s.kind);
     const motion = r.motion || '', bed = !walking && r.tk && r.tk.startsWith('bed'), lounge = !walking && r.tk && r.tk.startsWith('lounge');
-    r.el.dataset.motion=motion; r.el.classList.toggle('bed',!!bed); r.el.classList.toggle('lounge',!!lounge);
+    r.el.classList.toggle('resting',asleep); r.el.dataset.motion=motion; r.el.classList.toggle('bed',!!bed); r.el.classList.toggle('lounge',!!lounge);
     const key = [ghost, pose, a.name, BB.cast(a).k, asleep, bed, lounge, motion, BB.pendingReqs().some(q=>q.agentId===a.id),BB.tasks().filter(t=>t.assignee===a.id).map(t=>[t.status,t.sandboxGrant&&t.sandboxGrant.spentCents]).join(',')].join('|'); if (r.key === key) return; r.key = key;
-    r.el.querySelector('.avs').innerHTML = bed && BB.bedSVG ? BB.bedSVG(a) : BB.poseSVG ? BB.poseSVG(a,{ghost,pose:lounge?'sit':pose,asleep:motion!=='wake'&&motion!=='stretch'&&(asleep||lounge&&(a.providerId==='muse')),motion,lounge}) : figureSVG(a, { ghost, pose, asleep });
+    r.el.querySelector('.avs').innerHTML = bed && BB.bedSVG ? BB.bedSVG(a) : BB.poseSVG ? BB.poseSVG(a,{ghost,pose:lounge?'sit':pose,asleep:motion!=='wake'&&motion!=='stretch'&&(asleep||lounge&&(a.providerId==='muse')),motion,lounge,resting:asleep,idle:s.kind!=='run'&&s.kind!=='talk'}) : figureSVG(a, { ghost, pose, asleep });
   }
   function ensure(a, i) {
     let r = F[a.id]; if (r) return r;
     const el = document.createElement('div'); el.className = 'ch'; el.tabIndex = 0; el.setAttribute('role', 'button'); el.dataset.id = a.id;
-    el.innerHTML = '<div class="body"><div class="avs"></div></div>'; el.style.setProperty('--bd', (-(BB.hash(a.id) % 32) / 10) + 's'); el.style.setProperty('--fig', (fw * .0475) + 'px');
+    el.innerHTML = '<div class="body"><div class="avs"></div></div><span class="floor-bot-label"><b></b><small></small></span>'; el.style.setProperty('--bd', (-(BB.hash(a.id) % 32) / 10) + 's'); el.style.setProperty('--fig', (fw * (BB.phone() ? .062 : .054)) + 'px');
     el.addEventListener('click', () => { if (BB.sleeping && BB.sleeping(BB.agent(a.id)) && BB.reconnect) BB.reconnect(a.id); else if(BB.openInspector) BB.openInspector(a.id); });
     el.addEventListener('mouseenter', () => liveTip(a.id, true)); el.addEventListener('mouseleave', () => liveTip(a.id, false));
     el.addEventListener('focus', () => liveTip(a.id, true)); el.addEventListener('blur', () => liveTip(a.id, false));
@@ -269,6 +275,10 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     as.forEach((a, i) => {
       const r = ensure(a, i), t = targetOf(a, waitList), s = BB.botState(a);
       r.el.classList.toggle('owner-revoked',a.status==='revoked'&&a.revokedBy==='owner');r.el.classList.toggle('ghost', BB.isGhost(a)); r.el.classList.toggle('paused', s.kind === 'off'); r.el.dataset.signal = BB.signal(a); r.el.classList.toggle('dark', s.kind === 'dark' || s.kind === 'late' || s.kind === 'msg');
+      const sameRoom=as.filter(b=>BB.roomOf(b)===BB.roomOf(a)), labelShift=sameRoom.length>1?(sameRoom.indexOf(a)%2?28:-28):0;
+      r.el.style.setProperty('--label-shift',labelShift+'px');
+      r.el.querySelector('.floor-bot-label b').textContent=a.name;
+      r.el.querySelector('.floor-bot-label small').textContent=BB.isGhost(a)?'Not connected':a.status==='revoked'?'Access revoked':BB.presence(a)==='reconnect'?'Reconnect':['dark','late'].includes(s.kind)?'No recent activity':s.kind==='msg'?'Acts when messaged':BB.signal(a)==='working'&&BB.runningTask(a)?'Working':a.paused||BB.S.killed?'Paused':'Idle';
       r.el.setAttribute('aria-label', a.name + ': ' + BB.statusLine(a) + (BB.sleeping && BB.sleeping(a) ? '. Open connection setup' : '. Open details'));
       const moved = r.tk !== t.k || !r.tp || Math.abs(r.tp[0] - t.p[0]) + Math.abs(r.tp[1] - t.p[1]) > .3;
       r.tk = t.k; r.tp = t.p;

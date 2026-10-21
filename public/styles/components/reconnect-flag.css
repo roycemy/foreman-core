@@ -39,3 +39,20 @@ body:has(.tour) .a-corner .rcf-slot{visibility:hidden;height:0;overflow:hidden}
 .rcf-row .rcf-act{margin-left:0}
 /* iPad / small desktop: keep the corner column clear of the centred chips and type box */
 @media (min-width:761px) and (max-width:1180px){.a-corner{width:min(var(--a-corner-w),calc(50vw - 250px))}}
+
+@media(min-width:761px) and (max-width:940px){.a-corner{width:280px}.rcf.many li b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+/* One compact shared width keeps the reconnect card aligned to the crew pill. */
+@media(min-width:761px){
+ .a-corner{width:300px;gap:6px}
+ .a-corner .crew{width:100%;gap:8px;padding:7px 10px 7px 8px}
+ .rcf{padding:9px 10px}
+ .rcf-h{font-size:12px;line-height:16px;gap:6px}
+ .rcf.many .rcf-list{margin-top:4px}
+ .rcf.many li{padding:6px 0 6px 14px;gap:8px}
+ .rcf.many li b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .rcf.many li .rcf-act,.rcf.many li .rcf-ok{height:26px}
+ .rcf-act{padding:0 9px}
+ .rcf-why{margin-bottom:7px}
+}
+/* Reconnect card and Inbox already own this status; avoid a duplicate top banner. */
+.dark-bar{display:none!important}
