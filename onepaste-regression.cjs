@@ -10,7 +10,7 @@ assert(!cj.includes("'/runner?agent='+encodeURIComponent(W.agent.id)+'&pair="),'
 assert(!cj.includes('I will take control to type'),'prompt must not ask the owner to type a code');
 assert(!cj.includes('I will take control once to type'),'prompt must not ask the owner to type a code');
 // both prompt variants tell the bot the console pairs itself
-assert(cj.includes('the console pairs itself when the page opens'),'runner prompt must promise auto-pair');
+assert(cj.includes('The console pairs itself when the page opens'),'runner prompt must promise auto-pair');
 // sheet auto-issues and gates copy on a live code
 assert(cj.includes("BB.api('/api/agents/' + W.agent.id + '/pairing', 'POST', {})"),'sheet must auto-issue the code');
 // runner reads the code from the fragment, with a scrubbed ?pair= query fallback for browsers that drop fragments, and auto-pairs only when no saved session
@@ -23,5 +23,6 @@ assert(api.includes("if(!await r(['SET','gl:pairUsed:'+hash,'1','NX','PX',300000
 assert(api.includes("await r(['GET','fm:pairLatest:'+a.id])!==hash"),'latest-code-only check must remain');
 // retry-safe: same browser/IP may replay a just-redeemed code within its window; note carries the code as plain text fallback
 assert(api.includes("gl:pairReplay:"),'redeem must allow same-IP replay within the code window');
-assert(cj.includes('type this one-time code into the Pairing code field'),'prompt must carry the code as plain text fallback');
 console.log('ONE-PASTE REGRESSION: ALL PASS');
+
+assert(cj.includes('use the code from the link fragment'),'code appears only in link; fallback reads that fragment');

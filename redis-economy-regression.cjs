@@ -1,7 +1,7 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const src=fs.readFileSync('api/index.js','utf8'),core=fs.readFileSync('public/js/core.js','utf8'),runner=fs.readFileSync('public/runner.html','utf8');
 assert(core.includes('}, 30000);'),'HQ polls every 30 seconds');assert(core.includes('lastSide > 300000'),'side panels at most every five minutes');assert(core.includes('e.quota ? 900000'),'quota gets 15-minute UI backoff');assert(core.includes('throw e; }'),'bad state is not marked synced');
-assert(runner.includes('setInterval(presence,300000)')&&runner.includes('if(quotaPaused)throw Error'),'runner heartbeat reduced, stops on quota');
+assert(runner.includes('setInterval(presence,120000)')&&runner.includes('if(quotaPaused)throw Error'),'runner heartbeat reduced, stops on quota');
 assert(src.includes('Date.now() - c.t < 30000'),'30-second per-workspace snapshot cache');
 let calls=0;const ctx={require,module:{exports:{}},global:{},process:{env:{KV_REST_API_URL:'https://store.invalid',KV_REST_API_TOKEN:'fixture'}},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,fetch:async()=>{calls++;return {json:async()=>({error:'ERR max requests limit exceeded'})}}};
 vm.runInNewContext(src+'\nmodule.exports.t={r,sendStoreError};',ctx);const f=ctx.module.exports.t;
