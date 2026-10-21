@@ -71,6 +71,7 @@ function memCmd(c) {
     case 'LPUSH': { const l = L(); l.unshift(a[0]); mem.lists.set(k, l); return l.length; }
     case 'LRANGE': return L().slice(parseInt(a[0], 10), parseInt(a[1], 10) + 1);
     case 'LTRIM': mem.lists.set(k, L().slice(parseInt(a[0], 10), parseInt(a[1], 10) + 1)); return 'OK';
+    case 'SCARD': return (mem.kv.get(k)||[]).length;
     case 'SADD': { const s = new Set(mem.kv.get(k) || []); s.add(a[0]); mem.kv.set(k, [...s]); return 1; }
     case 'SREM': { const x=(mem.kv.get(k)||[]).filter(v=>v!==a[0]); mem.kv.set(k,x); return 1; }
     case 'SMEMBERS': return mem.kv.get(k) || [];
@@ -1230,6 +1231,8 @@ async function joinWaitlist(req,res,body){
  return res.json({ok:true});
 }
 
+const inviteFlow=(()=>{try{return require('../lib/invite-flow.cjs')}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;return require('./lib/invite-flow.cjs')}})()({r,getJ,origin:PUBLIC_ORIGIN,joinWaitlist,getSession});
+
 // Runner sessions: scoped HttpOnly cookie; bearer stored encrypted server-side only.
 // Rolling 30-day idle lifetime. Only an authenticated session restore renews it.
 // Saved authorization never manufactures executor presence or work.
@@ -1331,6 +1334,7 @@ module.exports = async (req, res) => {
   try {
     if(path==='/authorization/demo'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return res.json(AUTHZ.demo());}
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
+    if(path.startsWith('/invite/')||path.startsWith('/invites/'))return await inviteFlow(req,res,path,body);
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path.startsWith('/runner/'))return await runnerRoutes(req,res,path,body);
     if(path.startsWith('/pair/')||path==='/link/call')return await botLinkBotRoutes(req,res,path,body);
