@@ -47,8 +47,8 @@
         b.disabled = true; W.auto = true;
         const j = await BB.api('/api/connect', 'POST', { provider: W.p, name: W.label, role: AUTO[W.p], preset: 'balanced', connectionMode: 'existing' });
         if (j.error) { b.disabled = false; W.auto = false; toast(j.error); return; }
-        /* one tap lands on the new bot card - no naming or task step; authorize later from the card */
-        stop(); BB.closeModal(); await BB.sync(true); BB.openInspector(j.agent.id); return;
+        /* Start setup immediately; a prepared bot is not yet a connected bot. */
+        W.agent = j.agent; W.step = 2; await BB.sync(true); draw(); return;
       });
       return;
     }

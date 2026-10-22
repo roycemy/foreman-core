@@ -5,6 +5,7 @@
   const BB = window.BB, $ = BB.$, esc = BB.esc;
   const P = $('#insp');
   let cur = null, tab = 'activity', openJob = null, jobCache = {}, lastFocus = null;
+  const removeState = new Map(); // Confirmation must survive the inspector's one-second redraw.
   BB.inspected = null;
 
   BB.openInspector = function (id, o) {
@@ -12,14 +13,14 @@
     if (!P.classList.contains('on')) lastFocus = document.activeElement;
     BB.closeRail && BB.closeRail(); BB.closePop && BB.closePop();
     if (BB.route().v !== 'floor' && !BB.phone()) BB.go('#floor');
-    if (cur !== id) { tab = 'activity'; openJob = null; }
+    if (cur !== id) { if (cur && removeState.get(cur) !== 'pending') removeState.delete(cur); tab = 'activity'; openJob = null; }
     cur = id; BB.inspected = id; if (o.tab) tab = o.tab; if (o.job) { tab = 'activity'; openJob = o.job; }
     P.classList.add('on'); $('#stage') && $('#stage').classList.add('dim'); P.setAttribute('aria-label', a.name); if (BB.phone()) $('#scrim').classList.add('on');
     paint(true); BB.floorFit && BB.floorFit(); BB.floorPlace && BB.floorPlace();
     if (openJob) loadJob(openJob);
   };
   BB.closeInspector = function (keepFocus) {
-    if (!P.classList.contains('on')) return; P.classList.remove('on'); cur = null; BB.inspected = null; if (!$('#sheet').classList.contains('on')) $('#scrim').classList.remove('on');
+    if (!P.classList.contains('on')) return; P.classList.remove('on'); if (cur && removeState.get(cur) !== 'pending') removeState.delete(cur); cur = null; BB.inspected = null; if (!$('#sheet').classList.contains('on')) $('#scrim').classList.remove('on');
     if (!BB.panelOpen()) $('#stage') && $('#stage').classList.remove('dim');
     BB.floorFit && BB.floorFit(); BB.floorPlace && BB.floorPlace();
     if (!keepFocus && lastFocus && lastFocus.focus) lastFocus.focus();
@@ -136,10 +137,25 @@
     const ng = P.querySelector('[data-nudge]'); if (ng) ng.onclick = async () => { const msg = BB.nudgeText(a); try { await navigator.clipboard.writeText(msg); } catch (e) { window.prompt('Copy this nudge', msg); } BB.toast('Copied - paste it into ' + a.name); };
     const rv = P.querySelector('[data-revoke]'); if (rv) rv.onclick = async () => { if (!rv.dataset.arm) { rv.dataset.arm = 1; rv.textContent = 'Click again to revoke'; return; } await BB.api('/api/agents/' + a.id + '/revoke', 'POST'); BB.toast('Access revoked. It must reconnect after you restore it.'); BB.sync(true); };
     const rs = P.querySelector('[data-restore]'); if (rs) rs.onclick = async () => { await BB.api('/api/agents/' + a.id + '/restore', 'POST'); BB.toast('Access restored.'); BB.sync(true); };
-    const rmv = P.querySelector('[data-remove]'); if (rmv) rmv.onclick = async () => {
-      if (!rmv.dataset.arm) { rmv.dataset.arm = 1; rmv.textContent = 'Click again to remove ' + a.name; return; }
-      const j = await BB.api('/api/agents/' + a.id + '/remove', 'POST'); if (!j.removed) return BB.toast(j.error || 'Could not remove.'); BB.closeInspector(); BB.toast(a.name + ' removed. Its receipts stay.'); BB.sync(true);
-    };
+    const rmv = P.querySelector('[data-remove]'); if (rmv) {
+      const removing = removeState.get(a.id) === 'pending';
+      rmv.disabled = removing;
+      if (removeState.has(a.id)) rmv.textContent = removing ? 'Removing ' + a.name + '...' : 'Click again to remove ' + a.name;
+      rmv.onclick = async () => {
+        if (removeState.get(a.id) === 'pending') return;
+        if (!removeState.has(a.id)) { removeState.set(a.id, 'armed'); rmv.textContent = 'Click again to remove ' + a.name; return; }
+        removeState.set(a.id, 'pending'); rmv.disabled = true; rmv.textContent = 'Removing ' + a.name + '...';
+        try {
+          const j = await BB.api('/api/agents/' + a.id + '/remove', 'POST');
+          if (!j.removed) throw Error(j.error || 'Could not remove.');
+          removeState.delete(a.id); if (cur === a.id) BB.closeInspector();
+          BB.toast(a.name + ' removed. Its receipts stay.'); await BB.sync(true);
+        } catch (e) {
+          removeState.set(a.id, 'armed'); BB.toast(e.message || 'Could not remove. Try again.');
+          if (cur === a.id) paint();
+        }
+      };
+    }
   }
   /* per-job grant for bots that only act inside granted jobs */
   function grantModal(t, a) {
