@@ -58,7 +58,6 @@
       <button class="uchip" id="uchip" type="button" hidden></button>
       <div class="hero" id="hero"><h2>Tell your team what to do</h2><div class="chips" id="chips"></div></div>
       <form class="ask" id="ask" autocomplete="off"><label class="sr" for="askin">Type a message for the team</label><input id="askin" placeholder="Type a message for the team…" maxlength="120"><button type="submit" aria-label="Send to the team" disabled>${up}</button></form>
-      <div class="teampick" id="teampick" data-teampick></div>
 
     </div>
   </section>
@@ -122,7 +121,6 @@
 <script src="/js/components/motion.js"></script>
 <script src="/js/invite-panel.js"></script>
 <script src="/js/app.js"></script>
-<script src="/js/team.js"></script>
 <script>(function(){
 /* Installed PWAs stay alive for days and keep old JS in memory. On every resume: ask for a new service worker, and compare the app files with what this page loaded. A change reloads at once, or shows an Update bar if you are typing. */
 var reloaded=false,base=null,files=['/js/components/motion.js','/styles/components/motion.css','/js/floor.js','/js/inbox.js','/js/core.js','/js/connect.js','/js/inspector.js','/js/app.js','/styles/app.css'];
