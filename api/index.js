@@ -446,6 +446,21 @@ async function planTeamTask(body){
  plan=ai.ok?{parts:ai.parts,method:'ai',model:plannerModel(),note:'AI plan from '+members.length+' picked '+(members.length===1?'bot':'bots')+'. Parts run in order; each gets the real result of the one before. Nothing has started.'}:basicTeamPlan(title,members,ai.why);
  return {status:200,body:{...plan,summary:planSummary(plan.parts),team:members,rejected,allTeamAsleep,...(allTeamAsleep?{waitNote:'Everyone on this team is asleep. Parts wait until a teammate checks in; Alter never hands them to a bot outside the team.'}:{})}};
 }
+/* Auto plan router (owner, Oct 22): submit = plan + start in one request. Planning writes nothing but the
+   planner spend counter; the only task write is this start. Fallbacks never block the task. */
+async function autoTeamTask(body){
+ const plan=await planTeamTask(body);if(plan.status!==200)return plan;const pb=plan.body;
+ const out=await createTaskParts({title:body.title,brief:body.brief,team:pb.team.map(m=>m.id),planMethod:pb.method,planNote:pb.note,waitNote:pb.waitNote||'',parts:pb.parts});
+ if(out.status===200)out.body={...out.body,plan:{method:pb.method,note:pb.note,summary:pb.summary,allTeamAsleep:pb.allTeamAsleep,waitNote:pb.waitNote||null,basicReason:pb.basicReason||null,model:pb.model||null}};
+ return out;
+}
+/* Cancel the parts that have not started. A part already running finishes (or the owner stops it); nothing is invented. */
+async function cancelPendingParts(id){
+ const res=await withJobLock(id,async()=>{const p=await getJ('fm:task:'+id);if(!p||!p.orchestration)return {status:404,body:{error:'Plan not found'}};if(p.status!=='running')return {status:409,body:{error:'This plan already finished'}};let n=0;
+  for(const cid of p.partIds){const ck='fm:task:'+cid,cr=await r(['GET',ck]),c=cr&&JSON.parse(cr);if(c&&['waiting','queued'].includes(c.status)){const next={...c,status:'failed',result:'Cancelled by owner before it started.',finishedAt:now(),cancelled:true};if(await r(['EVAL',AGENT_CAS,1,ck,cr,JSON.stringify(next)])===1){n++;if(c.status==='queued'&&c.assignee)await event(c.assignee,'blocked','Owner cancelled a part before it started: '+c.title,{kind:'BLOCKED',taskId:cid});}}}
+  return {status:200,body:{cancelled:n}};});
+ if(res.status===200){await refreshTaskParent(id);bust();res.body.task=await getJ('fm:task:'+id);}return res;
+}
 async function teamPartsError(body){
  const parts=body.parts;if(!Array.isArray(parts)||parts.length<1||parts.length>PLANNER_MAX_PARTS)return 'Start 1 to 4 parts';
  const {members,rejected}=await teamState(body.team);if(!members.length)return 'Pick at least one active bot for the team';if(rejected.length)return 'A picked bot is no longer active. Review the team';
@@ -453,7 +468,7 @@ async function teamPartsError(body){
  return null;
 }
 async function createTaskParts(body){const parts=body.parts,teamMode=Array.isArray(body.team);if(teamMode){const err=await teamPartsError(body);if(err)return {status:400,body:{error:err}};}const team=teamMode?(await teamState(body.team)).members.map(m=>m.id):null;if(!teamMode&&(!Array.isArray(parts)||parts.length<2||parts.length>4||parts.some(p=>!p||!String(p.title||'').trim()||String(p.title).length>120)))return {status:400,body:{error:'Review 2 to 4 titled parts'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}};for(const p of parts)if(p.assignee){const a=await getJ('fm:agent:'+p.assignee);if(!a||a.status!=='active'||a.paused||a.hosted||a.harness)return {status:400,body:{error:'Choose active external bots only'}};}
- const parent=await newTask({title:body.title,brief:body.brief,hold:true});parent.orchestration=true;parent.status='waiting';parent.startedAt=now();parent.partIds=[];if(team){parent.team=team;parent.planMethod=body.planMethod==='ai'?'ai':'basic';if(body.planNote)parent.planNote=String(body.planNote).slice(0,400);}await setJ('fm:task:'+parent.id,parent);
+ const parent=await newTask({title:body.title,brief:body.brief,hold:true});parent.orchestration=true;parent.status='waiting';parent.startedAt=now();parent.partIds=[];if(team){parent.team=team;parent.planMethod=body.planMethod==='ai'?'ai':'basic';if(body.planNote)parent.planNote=String(body.planNote).slice(0,400);if(body.waitNote)parent.waitNote=String(body.waitNote).slice(0,300);}await setJ('fm:task:'+parent.id,parent);
  for(let i=0;i<parts.length;i++){const p=parts[i],t=await newTask({title:p.title,brief:'Part '+(i+1)+' of '+parts.length+'. Only do this part.'+(p.instruction?' Instruction: '+String(p.instruction).slice(0,1000)+(i&&p.needs?' Needs from the previous part: '+String(p.needs).slice(0,300)+'.':''):'')+' Original request: '+String(body.title||'')+'\n'+String(body.brief||''),parentId:parent.id,assignee:p.assignee||null,category:p.category,context:'Part of: '+body.title,hold:true});t.partIndex=i;t.dependsOn=i?parent.partIds[i-1]:null;t.status='waiting';t.assignedBy=team?'team-plan':'owner';if(team){t.team=team;if(p.reason)t.routingReason=String(p.reason).slice(0,300);}await setJ('fm:task:'+t.id,t);parent.partIds.push(t.id);}
  parent.status='running';await setJ('fm:task:'+parent.id,parent);await r(['SADD','fm:activePlans',parent.id]);bust();const first=await getJ('fm:task:'+parent.partIds[0]);first.status='queued';if(first.team)first.assignedAt=now();await setJ('fm:task:'+first.id,first);if(first.assignee){const a=await getJ('fm:agent:'+first.assignee);if(a)await maybeWakeBot(a,first.id);}return {status:200,body:{task:parent,parts:await Promise.all(parent.partIds.map(id=>getJ('fm:task:'+id)))}};}
 async function refreshTaskParent(id){return withJobLock(id,async()=>{const p=await getJ('fm:task:'+id);if(!p?.orchestration||p.status!=='running')return;const parts=await Promise.all(p.partIds.map(id=>getJ('fm:task:'+id)));if(parts.some(t=>!t))return;for(let i=1;i<parts.length;i++)if(!parts.some(x=>['failed','dismissed'].includes(x.status))&&parts[i].status==='waiting'&&parts[i-1].status==='done'){const t=parts[i],raw=JSON.stringify(t);t.status='queued';if(t.team)t.assignedAt=now();t.context=('Previous completed part: '+parts[i-1].title+'\n'+parts[i-1].result).slice(0,4000);if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+t.id,raw,JSON.stringify(t)])!==1)return;if(t.assignee){const a=await getJ('fm:agent:'+t.assignee);if(a)await maybeWakeBot(a,t.id);}}
@@ -1577,6 +1592,7 @@ async function routes(req, res, path, body, agentPre) {
 
     {const am=path.match(/^\/tasks\/(\w+)\/assign$/);if(am&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await assignTask(am[1],body));}}
     {const dm=path.match(/^\/tasks\/(\w+)\/dismiss$/);if(dm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await dismissTask(dm[1]));}}
+    {const cm=path.match(/^\/tasks\/(\w+)\/cancel-pending$/);if(cm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await cancelPendingParts(cm[1]));}}
     {const sm=path.match(/^\/tasks\/(\w+)\/stop$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await stopTask(sm[1]));}}
     if(path.startsWith('/public-receipts'))res.setHeader('Cache-Control','no-store');
     if(path==='/public-receipts'&&req.method==='GET')return res.json(await publicReceiptList(new URL(req.url,'https://local.invalid').searchParams.get('taskId')));
@@ -1589,7 +1605,7 @@ async function routes(req, res, path, body, agentPre) {
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
     if(path==='/tasks/plan'&&req.method==='POST'){if(Array.isArray(body.team)){const out=await planTeamTask(body);return res.status(out.status).json(out.body);}return res.json(await planTaskParts(body));}
-    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started');if(body.orchestrate===true){const out=await createTaskParts(body);return res.status(out.status).json(out.body);}
+    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started');if(body.orchestrate===true&&body.auto===true&&Array.isArray(body.team)){const out=await autoTeamTask(body);return res.status(out.status).json(out.body);}if(body.orchestrate===true){const out=await createTaskParts(body);return res.status(out.status).json(out.body);}
       let routed = null, category = null, routingReason = null, unrouted = false, allAsleep = false, assignee = body.assignee || null, handoffPlan = null, brief = body.brief;
       if (body.route === true && !assignee) {
         // One message can span categories: a lead bot takes the strongest one, further matched

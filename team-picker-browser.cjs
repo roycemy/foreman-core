@@ -1,41 +1,45 @@
-// Browser check + screenshots for the team picker and plan flow (mocked API, no network, no server state).
+// Browser check + screenshots: team picker and the auto plan router (submit = plan + start). Mocked API only.
 // Run: PLAYWRIGHT_MODULE=/path/to/playwright-core ARTIFACT_DIR=/tmp node team-picker-browser.cjs
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright-core'),fs=require('fs'),http=require('http'),path=require('path'),assert=require('assert');
 const root=path.join(__dirname,'public'),out=process.env.ARTIFACT_DIR||'/tmp';const now=new Date().toISOString(),old=new Date(Date.now()-3600e3).toISOString();
 const bots=[{id:'i',name:'Instinct',status:'active',providerId:'instinct',lastSeen:now,pollSec:300,connection:{status:'active'}},{id:'g',name:'Grok Bot',status:'active',providerId:'grok',lastSeen:now,pollSec:300,connection:{status:'active'}},{id:'m',name:'Muse',status:'active',providerId:'muse',lastSeen:old,pollSec:300,connection:{status:'active'}}];
+const BASIC='Basic split: No planner key is set. Alter split on explicit steps only and assigned by availability, not AI reasoning.';
+function planFor(team,title,n){const id='p'+n,mk=(i,t,a,st,why)=>({id:id+'c'+i,parentId:id,partIndex:i,title:t,assignee:a,status:st,routingReason:why,team,createdAt:now});
+ if(team.join()==='m'){const parts=[mk(0,'Draft a launch post','m','queued','Muse is asleep; the part waits for its next check-in. Rule-based, not AI.'),mk(1,'Review the post','m','waiting','Muse is asleep; the part waits for its next check-in. Rule-based, not AI.')];return {plan:{method:'basic',allTeamAsleep:true,summary:'Muse drafts, then Muse reviews'},task:{id,title,orchestration:true,team,planMethod:'basic',planNote:BASIC,waitNote:'Everyone on this team is asleep. Parts wait until a teammate checks in; Alter never hands them to a bot outside the team.',status:'running',createdAt:now,startedAt:now,partIds:parts.map(p=>p.id)},parts};}
+ if(team.join()==='i'){const parts=[mk(0,'Summarize the support tickets','i','queued','Instinct is awake with 0 queued or running, declared support strength. Rule-based, not AI.')];return {plan:{method:'basic',summary:'Instinct summarizes'},task:{id,title,orchestration:true,team,planMethod:'basic',planNote:BASIC,status:'running',createdAt:now,startedAt:now,partIds:parts.map(p=>p.id)},parts};}
+ const parts=[mk(0,'Research three competitors','g','queued','Awake with the lightest load; research strength.'),mk(1,'Write a one-page memo','i','waiting','Awake and free; writes from part 1\u2019s real list.')];return {plan:{method:'ai',summary:'Grok Bot researches, then Instinct writes'},task:{id,title,orchestration:true,team,planMethod:'ai',planNote:'AI plan from 2 picked bots.',status:'running',createdAt:now,startedAt:now,partIds:parts.map(p=>p.id)},parts};}
 const server=http.createServer((q,r)=>{const f=path.join(root,q.url.split('?')[0]);if(!fs.existsSync(f)||fs.statSync(f).isDirectory()){r.statusCode=404;return r.end()}r.setHeader('Content-Type',({'.html':'text/html','.css':'text/css','.js':'text/javascript','.svg':'image/svg+xml','.png':'image/png'})[path.extname(f)]||'application/octet-stream');r.end(fs.readFileSync(f))});
 (async()=>{await new Promise(r=>server.listen(0,r));const b=await chromium.launch({executablePath:'/usr/bin/google-chrome',args:['--no-sandbox']});
 for(const width of [1440,390]){const phone=width===390,p=await b.newPage({viewport:{width,height:phone?844:1000}});const errors=[];p.on('pageerror',e=>errors.push(e.message));
- let started=null,writes=0,plans=[];await p.addInitScript(()=>{localStorage.setItem('alter.tour','1')});
- await p.route('**/api/**',route=>{const u=new URL(route.request().url()),body=route.request().postDataJSON&&route.request().method()==='POST'?route.request().postDataJSON():null;let j={};
+ const plans=[];let writes=0,planCalls=0;await p.addInitScript(()=>{localStorage.setItem('alter.tour','1')});
+ await p.route('**/api/**',route=>{const u=new URL(route.request().url()),post=route.request().method()==='POST',body=post?route.request().postDataJSON():null;let j={};
   if(u.pathname==='/api/me')j={email:'owner@example.test'};
-  if(u.pathname==='/api/state'){const tasks=started?[started.parent,...started.parts]:[];j={agents:bots,tasks,requests:[],events:[],receipts:[],notes:[],kinds:[]};}
-  if(u.pathname==='/api/tasks/plan'){plans.push(body.team);const team=bots.filter(a=>body.team.includes(a.id)).map(a=>({id:a.id,name:a.name,awake:a.id!=='m',load:0,strengths:[]}));j={method:'basic',basicReason:'No planner key is set.',note:'Basic split: No planner key is set. Alter split on explicit steps only and assigned by availability, not AI reasoning.',team,allTeamAsleep:false,summary:'',parts:[{title:'Research three competitors',instruction:'Find three competitors with pricing',needs:'Nothing',assignee:'g',reason:'Grok Bot is awake with 0 queued or running. Rule-based, not AI.'},{title:'Write a one-page memo',instruction:'Write a one-page memo from the research',needs:'The result of part 1',assignee:'i',reason:'Instinct is awake with 0 queued or running. Rule-based, not AI.'}]};}
-  if(u.pathname==='/api/tasks'&&route.request().method()==='POST'){writes++;assert.deepEqual(body.team.slice().sort(),['g','i']);assert.equal(body.orchestrate,true);const parent={id:'parent',title:body.title,orchestration:true,team:body.team,planMethod:body.planMethod,status:'running',createdAt:now,startedAt:now,partIds:['c1','c2'],result:'Part 1: Research three competitors [done]\nAcme ($20), Beta ($35), Gamma ($12)'};const parts=[{id:'c1',parentId:'parent',partIndex:0,title:body.parts[0].title,assignee:'g',status:'done',result:'Acme ($20), Beta ($35), Gamma ($12)',createdAt:now,finishedAt:now},{id:'c2',parentId:'parent',partIndex:1,title:body.parts[1].title,assignee:'i',status:'running',createdAt:now,startedAt:now}];started={parent,parts};j={task:parent,parts};}
-  if(u.pathname==='/api/jobs/parent')j={task:started.parent,children:started.parts,timeline:[],receipts:[],events:[],requests:[]};
+  if(u.pathname==='/api/state')j={agents:bots,tasks:plans.flatMap(x=>[x.task,...x.parts]),requests:[],events:[],receipts:[],notes:[],kinds:[]};
+  if(u.pathname==='/api/tasks/plan')planCalls++;
+  if(u.pathname==='/api/tasks'&&post){writes++;assert.equal(body.orchestrate,true);assert.equal(body.auto,true);assert(body.team.length);const x=planFor(body.team.slice().sort(),body.title,plans.length);plans.push(x);j={task:x.task,parts:x.parts,plan:x.plan};}
+  const cm=u.pathname.match(/^\/api\/tasks\/(\w+)\/cancel-pending$/);if(cm){const x=plans.find(y=>y.task.id===cm[1]);let n=0;x.parts.forEach(c=>{if(['waiting','queued'].includes(c.status)){c.status='failed';c.cancelled=true;c.result='Cancelled by owner before it started.';n++;}});x.task.status='failed';j={cancelled:n,task:x.task};}
+  const jm=u.pathname.match(/^\/api\/jobs\/(\w+)$/);if(jm){const x=plans.find(y=>y.task.id===jm[1]);j=x?{task:x.task,children:x.parts,timeline:[],receipts:[],events:[],requests:[]}:{};}
   route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(j)})});
- await p.goto('http://localhost:'+server.address().port+'/app.html#floor');await p.waitForFunction(()=>BB.who&&BB.S&&BB.S.agents.length);
- const scope=phone?'#modal':'#teampick';
- if(phone){await p.evaluate(()=>BB.go('#inbox'));await p.locator('[data-newjob]').first().click();await p.locator('#nj-t').fill('Research three competitors then write a memo');assert(await p.locator('#nj-go').isDisabled(),'Plan disabled with no team');}
- else{await p.locator('#askin').fill('Research three competitors then write a memo');assert(await p.locator('#ask button').isDisabled(),'send disabled with no team picked');}
- assert.equal(await p.locator(scope+' [data-team][aria-pressed=true]').count(),0,'no bot selected by default');
- assert((await p.locator(scope+' [data-team="m"]').innerText()).includes('asleep'),'asleep tag');
- const h=await p.locator(scope+' [data-team="i"]').boundingBox();assert(h.height>=44,'tap target >=44px');
- await p.locator(scope+' [data-team="g"]').click();await Promise.all([1,2,3].map(()=>p.locator(scope+' [data-team="i"]').click({force:true}).catch(()=>{})));// racing taps
- const iOn=await p.locator(scope+' [data-team="i"]').getAttribute('aria-pressed');if(iOn!=='true')await p.locator(scope+' [data-team="i"]').click();
- assert.deepEqual((await p.evaluate(()=>BB.teamPicked())).sort(),['g','i'],'chip state = what the screen shows');
- assert(!(await p.locator(phone?'#nj-go':'#ask button').isDisabled()),'enabled once a bot is picked');
- await p.waitForTimeout(250);await p.screenshot({path:out+'/'+width+'-1-picker.png'});
- await p.locator(phone?'#nj-go':'#ask button').click();await p.locator('#plan-sum').waitFor();
- assert.equal(writes,0,'no task before Start');assert.equal(await p.locator('#plan-sum').innerText(),'Grok Bot researches, then Instinct writes');assert(/basic split/i.test(await p.locator('#plan-basic').innerText()));
- await p.waitForTimeout(250);await p.screenshot({path:out+'/'+width+'-2-plan-summary.png'});
- await p.locator('#plan-adjust').click();await p.locator('[data-i="1"] [data-k=title]').fill('Write a one-page memo for the board');await p.locator('[data-i="0"] [data-k=assignee]').selectOption('i');
- await p.waitForTimeout(250);await p.screenshot({path:out+'/'+width+'-3-adjust.png'});
- await p.keyboard.press('Escape');await p.locator('#plan-sum').waitFor();assert.equal(writes,0);assert.equal(await p.locator('#plan-sum').innerText(),'Instinct researches, then Instinct writes','edits survive closing Adjust');
- await p.locator('#plan-adjust').click();assert.equal(await p.locator('[data-i="1"] [data-k=title]').inputValue(),'Write a one-page memo for the board','edits survive reopening');await p.locator('[data-i="0"] [data-k=assignee]').selectOption('g');await p.locator('#adj-done').click();await p.locator('#plan-sum').waitFor();
- await p.locator('#plan-start').click();await p.locator('.parts-progress').waitFor({state:'visible'});assert.equal(writes,1,'exactly one write, on Start');
- const pp=await p.locator('.parts-progress').innerText();assert(pp.includes('Grok Bot')&&pp.includes('Instinct'));
- await p.waitForTimeout(400);await p.screenshot({path:out+'/'+width+'-4-running-parent.png',fullPage:false});
- assert.equal(errors.length,0,errors.join('\n'));assert(await p.evaluate(()=>document.documentElement.scrollWidth)<=width,'no horizontal overflow');
- console.log('PASS team picker UI',width,': none preselected, asleep tag, 44px chips, racing taps, no write before Start, adjust keeps edits, one write on Start');await p.close();}
+ const base='http://localhost:'+server.address().port+'/app.html';
+ async function open(){await p.goto(base+'#floor');await p.reload();await p.waitForFunction(()=>BB.who&&BB.S&&BB.S.agents.length);if(phone){await p.evaluate(()=>BB.go('#inbox'));await p.locator('[data-newjob]').first().click();}}
+ const scope=phone?'#modal':'#teampick',input=phone?'#nj-t':'#askin',send=phone?'#nj-go':'#ask button';
+ async function pick(ids){for(const id of ['i','g','m']){const on=(await p.locator(scope+' [data-team="'+id+'"]').getAttribute('aria-pressed'))==='true';if(on!==ids.includes(id))await p.locator(scope+' [data-team="'+id+'"]').click();}}
+ async function submit(title,ids,shot){await open();await p.locator(input).fill(title);await pick(ids);const w0=writes;await p.locator(send).click();await p.locator('.parts-progress').waitFor({state:'visible'});assert.equal(writes,w0+1,'exactly one write per submit');await p.waitForTimeout(350);await p.evaluate(()=>{const t=document.querySelector('#toast');t&&t.classList.remove('on')});await p.waitForTimeout(300);await p.screenshot({path:out+'/'+width+'-'+shot+'.png'});return p.locator('.parts-progress').innerText();}
+ // 1. picker: nothing preselected, disabled, asleep tag, 44px, racing taps
+ await open();await p.locator(input).fill('Research three competitors then write a memo');
+ assert(await p.locator(send).isDisabled(),'submit disabled with no team');assert.equal(await p.locator(scope+' [data-team][aria-pressed=true]').count(),0,'no default selection');
+ assert((await p.locator(scope+' [data-team="m"]').innerText()).includes('asleep'));assert((await p.locator(scope+' [data-team="i"]').boundingBox()).height>=44);
+ await p.locator(scope+' [data-team="g"]').click();await Promise.all([1,2,3].map(()=>p.locator(scope+' [data-team="i"]').click({force:true}).catch(()=>{})));
+ assert.equal(await p.locator(scope+' [data-team][aria-pressed=true]').count(),await p.evaluate(()=>BB.teamPicked().length),'chip state = picked state after racing taps');
+ await pick(['g','i']);assert(!(await p.locator(send).isDisabled()));await p.waitForTimeout(250);await p.screenshot({path:out+'/'+width+'-1-picker.png'});
+ // 2. AI plan starts immediately: parent shows parts, bots, reasons, Cancel
+ let txt=await submit('Research three competitors then write a memo',['g','i'],'2-running-parent');
+ assert(txt.includes('Grok Bot')&&txt.includes('Instinct')&&txt.includes('lightest load'),'parts, owners, reasons');assert(!/basic split/i.test(txt));assert.equal(await p.locator('#plan-sum,#plan-start,#plan-adjust').count(),0,'no summary/Start/Adjust step');
+ await p.locator('[data-cancel-pending]').click();await p.waitForFunction(()=>!document.querySelector('[data-cancel-pending]')&&document.querySelector('.parts-progress')&&/cancelled/.test(document.querySelector('.parts-progress').innerText));
+ // 3. all asleep: queued and waiting, clear note
+ txt=await submit('Draft a launch post then review it',['m'],'3-all-asleep-waiting');assert(/everyone on this team is asleep/i.test(txt));assert(/waiting for Muse to wake/i.test(txt));
+ // 4. basic split note
+ txt=await submit('Summarize the support tickets',['i'],'4-basic-split');assert(/basic split/i.test(txt));
+ assert.equal(planCalls,0,'client never calls a separate plan step');assert.equal(errors.length,0,errors.join('\n'));assert(await p.evaluate(()=>document.documentElement.scrollWidth)<=width,'no horizontal overflow');
+ console.log('PASS auto router UI',width,': no default team, gated submit, racing taps, one write per submit, starts immediately, reasons + cancel, all-asleep note, basic split note');await p.close();}
 await b.close();server.close();})().catch(e=>{console.error(e);process.exit(1)});

@@ -632,15 +632,9 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .tz{font-style:normal;font-size:11px;font-weight:600;padding:2px 7px;border-radius:9px;background:var(--line);color:var(--stone)}
 .tchip[aria-pressed=true] .tz{background:rgba(255,255,255,.18);color:#fff}
 .team-empty{font-size:13px;color:var(--stone)}
-.plan-sum{font-size:18px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
 .plan-basic,.plan-wait{font-size:13px;padding:10px 12px;border-radius:10px;background:var(--line);color:var(--ink);margin-top:10px}
 .plan-basic b{display:inline-block;margin-right:6px;padding:1px 7px;border-radius:8px;background:var(--ink);color:#fff;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
 .plan-wait{background:#fff4e5}
-.plan-parts{margin:14px 0 6px 20px;display:grid;gap:8px}.plan-parts li span{display:block;font-size:13px;color:var(--stone)}
-.plan-acts{align-items:center}.plan-acts>span{flex:1}
-.b.link{background:none;border:0;padding:0 4px;min-height:44px;text-decoration:underline;color:var(--stone);font-weight:500}
-.plan-acts .b{min-height:44px}
-fieldset.adj{border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:8px;margin-bottom:10px}
-fieldset.adj legend{font-weight:600;font-size:13px;padding:0 4px}
-fieldset.adj textarea{min-height:64px}
+.parts-progress small.why{display:block;color:var(--mute);font-size:12px;margin-top:2px}
+.parts-progress [data-cancel-pending]{margin-top:12px;min-height:44px}
 @media(max-width:760px){.stage .teampick#teampick,#v-floor .teampick#teampick{display:none}}

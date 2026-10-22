@@ -34,54 +34,27 @@
   if (askin) { askin.addEventListener('input', gate); listeners.add(gate); }
   BB.on(() => { BB.teamRepaint(); gate(); });
 
-  /* ---------- plan, summary, adjust, start ---------- */
-  let seq = 0;
-  BB.planTeamTask = async function (title, brief, done) {
-    const ids = BB.teamPicked(); if (!ids.length) { BB.toast('Pick at least one bot for this task.'); return; }
-    const my = ++seq, plan = await BB.api('/api/tasks/plan', 'POST', { title, brief, team: ids });
-    if (my !== seq) return; /* a newer plan request superseded this one */
-    if (plan.error) { BB.toast(plan.error); return; }
-    const draft = { title, brief, team: plan.team.map(m => m.id), members: plan.team, method: plan.method, note: plan.note, waitNote: plan.waitNote || '', allTeamAsleep: !!plan.allTeamAsleep, edited: false,
-      parts: plan.parts.map(p => ({ title: p.title, instruction: p.instruction || p.title, needs: p.needs || '', assignee: p.assignee, reason: p.reason || '', category: p.category || null })) };
-    showSummary(draft, done);
+  /* ---------- auto plan router: submit = plan + start in one request (owner, Oct 22) ---------- */
+  let busy = false;
+  BB.startTeamTask = async function (title, brief, done) {
+    const ids = BB.teamPicked(); if (!ids.length) { BB.toast('Pick at least one bot for this task.'); return false; }
+    if (busy) return false; busy = true;
+    try {
+      const j = await BB.api('/api/tasks', 'POST', { title, brief, orchestrate: true, auto: true, team: ids });
+      if (j.error) { BB.toast(j.error); return false; }
+      done && done(); const pl = j.plan || {};
+      BB.toast(pl.allTeamAsleep ? 'Queued. Everyone on this team is asleep; part 1 waits for a check-in.' : (pl.summary ? pl.summary.replace(/^./, c => c.toUpperCase()) + '.' : 'Started.') + (pl.method === 'basic' ? ' (basic split)' : ''));
+      await BB.sync(true); BB.go('#receipts/' + j.task.id); return true;
+    } finally { busy = false; }
   };
-  const nameOf = (d, id) => (d.members.find(m => m.id === id) || {}).name || 'A team bot';
-  const VERB = /^(research|write|draft|review|check|compare|summarize|summarise|design|build|make|find|edit|plan|test|fix|send|analyze|analyse|read|collect|list|outline|translate|proofread|create|update|prepare|search)$/i;
-  const verb = t => { const w = String(t || '').trim().split(/\s+/)[0] || '', l = w.toLowerCase(); if (!VERB.test(l)) return null; return /(s|sh|ch|x|z)$/.test(l) ? l + 'es' : /[^aeiou]y$/.test(l) ? l.slice(0, -1) + 'ies' : l + 's'; };
-  BB.planSummaryText = d => d.parts.map((p, i) => (i ? 'then ' : '') + nameOf(d, p.assignee) + ' ' + (verb(p.title) || (d.parts.length > 1 ? 'does part ' + (i + 1) : 'does it'))).join(', ').replace(/^./, c => c.toUpperCase());
-  function showSummary(d, done) {
-    const asleep = id => (d.members.find(m => m.id === id) || {}).awake === false;
-    const box = BB.modal(`<h3>Plan</h3><p class="plan-sum" id="plan-sum">${esc(BB.planSummaryText(d))}</p>
-      ${d.method === 'basic' ? `<p class="plan-basic" id="plan-basic"><b>Basic split</b> ${esc(d.note.replace(/^Basic split:\s*/, ''))}</p>` : `<p class="meta">${esc(d.note)}</p>`}
-      ${d.allTeamAsleep ? `<p class="plan-wait" id="plan-wait">${esc(d.waitNote)}</p>` : ''}
-      <ol class="plan-parts">${d.parts.map(p => `<li><b>${esc(p.title)}</b><span>${esc(nameOf(d, p.assignee))}${asleep(p.assignee) ? ' <em class="tz">asleep</em>' : ''}</span></li>`).join('')}</ol>
-      ${d.edited ? '<p class="meta">Includes your edits.</p>' : ''}
-      <p class="meta">Parts run one after another; each gets the real result of the one before. Bots do not message each other. Nothing has started yet.</p>
-      <div class="acts plan-acts"><button class="b link" type="button" id="plan-adjust">Adjust</button><span></span><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="button" id="plan-start">Start</button></div>`, { label: 'Plan for this task', focus: '#plan-start' });
-    box.querySelector('#plan-adjust').onclick = () => showAdjust(d, done);
-    const st = box.querySelector('#plan-start'); st.disabled = !d.team.length || d.parts.some(p => !p.assignee);
-    st.onclick = async () => {
-      if (st.disabled) return; st.disabled = true; st.textContent = 'Starting…';
-      const j = await BB.api('/api/tasks', 'POST', { title: d.title, brief: d.brief, orchestrate: true, team: d.team, planMethod: d.method, planNote: d.note, parts: d.parts });
-      if (j.error) { st.disabled = false; st.textContent = 'Start'; return BB.toast(j.error); }
-      BB.closeModal(); done && done(); BB.toast(d.allTeamAsleep ? 'Started. Your team is asleep, so part 1 waits for a check-in.' : 'Started. Each part begins after the previous real result.');
-      await BB.sync(true); BB.go('#receipts/' + j.task.id);
-    };
-  }
-  /* edits are written into the draft on every keystroke, so closing Adjust any way (Done, X, Escape, backdrop) keeps them */
-  function showAdjust(d, done) {
-    let back = true;
-    const box = BB.modal(`<h3>Adjust the parts</h3><p>Edit any part or who does it. Only bots on this task's team are listed.</p><div class="parts-plan">${d.parts.map((p, i) => `<fieldset class="fld adj" data-i="${i}"><legend>Part ${i + 1}</legend>
-      <input class="in" data-k="title" value="${esc(p.title)}" maxlength="120" aria-label="Part ${i + 1} title">
-      <textarea class="in" data-k="instruction" maxlength="1000" aria-label="Part ${i + 1} instruction">${esc(p.instruction)}</textarea>
-      ${i ? `<small>Needs: ${esc(p.needs || 'the result of part ' + i)}</small>` : ''}
-      <select class="in" data-k="assignee" aria-label="Part ${i + 1} bot">${d.members.map(m => `<option value="${esc(m.id)}" ${m.id === p.assignee ? 'selected' : ''}>${esc(m.name)}${m.awake ? '' : ' (asleep)'}</option>`).join('')}</select>
-      <small>${esc(p.reason)}</small></fieldset>`).join('')}</div>
-      <div class="acts"><button class="b ink" type="button" id="adj-done">Done</button></div>`, { label: 'Adjust task parts', wide: true, onClose: () => { if (back) setTimeout(() => showSummary(d, done), 0); } });
-    box.addEventListener('input', e => { const f = e.target.closest('[data-k]'), fs = e.target.closest('[data-i]'); if (!f || !fs) return; const p = d.parts[+fs.dataset.i], k = f.dataset.k, v = k === 'title' ? f.value.slice(0, 120) : f.value; if (k === 'title' && !v.trim()) return; p[k] = v; d.edited = true; });
-    box.querySelectorAll('select[data-k]').forEach(s => s.onchange = () => { d.parts[+s.closest('[data-i]').dataset.i].assignee = s.value; d.edited = true; });
-    box.querySelector('#adj-done').onclick = () => BB.closeModal();
-  }
+  /* Cancel on the running parent: stops parts that have not started; a running part is left to finish */
+  document.addEventListener('click', async e => {
+    const b = e.target.closest('[data-cancel-pending]'); if (!b) return; b.disabled = true;
+    const j = await BB.api('/api/tasks/' + b.dataset.cancelPending + '/cancel-pending', 'POST', {});
+    if (j.error) { b.disabled = false; return BB.toast(j.error); }
+    BB.toast(j.cancelled ? 'Cancelled ' + j.cancelled + (j.cancelled === 1 ? ' part' : ' parts') + ' that had not started.' : 'Nothing left to cancel.'); await BB.sync(true);
+    BB.go(location.hash);
+  });
 
   /* ---------- wire the type box and the phone New job sheet to the team flow ---------- */
   if (ask) {
@@ -89,18 +62,18 @@
     ask.onsubmit = async e => {
       e.preventDefault(); const raw = askin.value.trim(); if (!raw) return;
       if (/^@\S+\s+/.test(raw)) return legacy.call(ask, e); /* "@Name do this" keeps its direct assignment */
-      go.disabled = true; try { await BB.planTeamTask(raw, '', () => { askin.value = ''; }); } finally { gate(); }
+      go.disabled = true; try { await BB.startTeamTask(raw, '', () => { askin.value = ''; }); } finally { gate(); }
     };
   }
   BB.newJob = function () {
-    const box = BB.modal(`<h3>New job</h3><p>Describe what you want done and tap who is on the team. Alter plans the parts; nothing starts until you tap Start.</p>
+    const box = BB.modal(`<h3>New job</h3><p>Describe what you want done and tap who is on the team. Alter plans the parts and starts right away.</p>
       <form class="stackf" id="nj"><label class="fld">What should happen?<input class="in" id="nj-t" maxlength="120" required placeholder="Summarize this week's support tickets"></label>
       <label class="fld">Details <small>optional</small><textarea class="in" id="nj-b" maxlength="1500" style="min-height:90px"></textarea></label>
       <div class="fld"><span>Team for this task</span>${BB.teamPicker()}</div>
-      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit" id="nj-go" disabled>Plan it</button></div></form>`, { label: 'New job' });
+      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit" id="nj-go" disabled>Start</button></div></form>`, { label: 'New job' });
     const t = box.querySelector('#nj-t'), b = box.querySelector('#nj-go'), g2 = () => { b.disabled = !t.value.trim() || !BB.teamPicked().length; };
     t.addEventListener('input', g2); listeners.add(g2); BB.teamRepaint(); g2();
-    box.querySelector('#nj').onsubmit = async e => { e.preventDefault(); if (b.disabled) return; listeners.delete(g2); b.disabled = true; await BB.planTeamTask(t.value.trim(), box.querySelector('#nj-b').value.trim()); };
+    box.querySelector('#nj').onsubmit = async e => { e.preventDefault(); if (b.disabled) return; b.disabled = true; const ok = await BB.startTeamTask(t.value.trim(), box.querySelector('#nj-b').value.trim(), () => { listeners.delete(g2); BB.closeModal(); }); if (!ok) g2(); };
   };
   BB.teamRepaint(); gate();
 })();

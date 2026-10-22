@@ -2,7 +2,7 @@
 // any other network call throws. Covers the planner, every fallback, server-side team enforcement,
 // the all-asleep wait, the spend cap and "no task writes before Start".
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={planTeamTask,createTaskParts,refreshTaskParent,claimTask,completeTask,reassignTask,listTasks,setJ,getJ,r,plannerSpendKey,plannerCapMicro};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={planTeamTask,autoTeamTask,cancelPendingParts,createTaskParts,refreshTaskParent,claimTask,completeTask,reassignTask,listTasks,setJ,getJ,r,plannerSpendKey,plannerCapMicro};';
 let llm=null,calls=0,lastReq=null;const env={};
 const fetchMock=async(url,opts)=>{if(!String(url).startsWith('https://api.x.ai/'))throw Error('NO NETWORK: '+url);calls++;lastReq=JSON.parse(opts.body);assert(!opts.body.includes('fixture-not-a-real-key'),'key never sent in body');return llm(lastReq,opts);};
 const reply=(obj,usage)=>({ok:true,status:200,json:async()=>({choices:[{message:{content:typeof obj==='string'?obj:JSON.stringify(obj)}}],usage:usage||{prompt_tokens:300,completion_tokens:120}})});
@@ -65,6 +65,20 @@ const ok=(m,...a)=>{console.log('PASS',m)};
  const n0=await taskKeys();const rs=await Promise.all([['i'],['i','g'],['g'],['g','o'].slice(0,1)].map(team=>f.planTeamTask({title:'Write a memo',team})));
  rs.forEach((x,k)=>assert(x.body.parts.every(p=>[['i'],['i','g'],['g'],['g']][k].includes(p.assignee))));assert.equal(await taskKeys(),n0,'racing plans write nothing');
  assert.equal((await f.planTeamTask({title:'x',team:[]})).status,400,'empty team cannot plan');ok('racing plans isolated, no writes; empty team refused');
+// 11. auto plan router: submit = plan + start in one request
+ llm=()=>reply({parts:[{title:'Research rivals',instruction:'List 3 rivals',needs:'Nothing',bot:'i',reason:'Awake, least load'},{title:'Write memo',instruction:'Write it',needs:'Rival list',bot:'g',reason:'Writer'}]});
+ let n1=await taskKeys();let au=await f.autoTeamTask({title:'Research rivals then write memo',team:['i','g']});assert.equal(au.status,200);assert.equal(au.body.plan.method,'ai');assert.equal(au.body.parts.length,2);assert.equal(au.body.parts[0].status,'queued');assert.equal(au.body.parts[0].routingReason,'Awake, least load');assert.equal(await taskKeys(),n1+3,'one submit = one plan write (parent + parts), started');
+ // cancel not-yet-started parts while part 1 runs: running part untouched, waiting part cancelled
+ cl=await f.claimTask({...bots.i,status:'active'});assert.equal(cl.id,au.body.parts[0].id);let cx=await f.cancelPendingParts(au.body.task.id);assert.equal(cx.status,200);assert.equal(cx.body.cancelled,1);
+ assert.equal((await f.getJ('fm:task:'+au.body.parts[0].id)).status,'running');assert.equal((await f.getJ('fm:task:'+au.body.parts[1].id)).result,'Cancelled by owner before it started.');
+ await f.completeTask({...bots.i,status:'active'},cl.id,{result:'REAL rivals'});assert.equal((await f.getJ('fm:task:'+au.body.task.id)).status,'failed','plan ends honestly as not fully done');
+ // cancel with nothing running: queued part 1 cancelled, plan ends, nobody can claim it
+ au=await f.autoTeamTask({title:'Write a memo',team:['i']});cx=await f.cancelPendingParts(au.body.task.id);assert.equal(cx.body.cancelled,1);assert.equal(cx.body.task.status,'failed');assert.equal(await f.claimTask({...bots.i,status:'active'}),null);
+ // basic split + all asleep through the auto router: queued on the team, waiting, visible notes
+ delete env.ALTER_PLANNER_XAI_KEY;au=await f.autoTeamTask({title:'Draft a post then review it',team:['m']});assert.equal(au.status,200);assert.equal(au.body.plan.method,'basic');assert(/Basic split/.test(au.body.task.planNote));assert(/wait until a teammate/.test(au.body.task.waitNote));assert(au.body.parts.every(x=>x.assignee==='m'));assert.equal(au.body.parts[0].status,'queued');
+ assert.equal(await f.claimTask({...bots.o,status:'active'}),null,'outsider never takes the waiting team part');
+ assert.equal((await f.autoTeamTask({title:'x',team:[]})).status,400,'no team, no task');assert.equal((await f.autoTeamTask({title:'x',team:['o2']})).status,400);
+ ok('auto router: one-request start, reasons stored, cancel not-started parts, basic split + all-asleep waiting');
  assert(!logs.join('\n').includes('fixture-not-a-real-key'),'key never logged');
- console.log('PASS team delegation: planner, fallbacks, team enforcement, asleep wait, spend cap, no writes before Start; mocked LLM, no network.');
+ console.log('PASS team delegation: planner, fallbacks, team enforcement, asleep wait, spend cap, no writes from planning, auto router; mocked LLM, no network.');
 })().catch(e=>{console.error(e);process.exit(1)});
