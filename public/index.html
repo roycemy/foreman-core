@@ -5,15 +5,15 @@
 <meta name="theme-color" content="#F4F4F1"><link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="/marketing/one.css"><link rel="stylesheet" href="/marketing/hero.css"></head><body class="pa">
-<header class="nav"><div class="wrap"><a class="wm" href="/"><img src="/marketing/assets/H1-mark.svg" alt=""><span>Alter</span></a><div class="sp"></div><a class="si" href="/hq">Sign in</a><a class="btn sm" href="/waitlist">Get started</a></div></header>
+<link rel="stylesheet" href="/marketing/one.css"><link rel="stylesheet" href="/marketing/hero.css"><link rel="stylesheet" href="/marketing/home.css"></head><body class="pa">
+<header class="nav"><div class="wrap"><a class="wm" href="/"><img src="/marketing/assets/H1-mark.svg" alt=""><span>alter</span></a><div class="sp"></div><a class="si" href="/hq">Sign in</a><a class="btn sm" href="/waitlist">Get started</a></div></header>
 <main>
 <section class="hero"><div class="wrap hero-in">
  <div class="copy">
-  <p class="eyebrow">The permission layer for AI bots</p>
-  <h1>Every bot you use. One floor. Your call.</h1>
-  <p class="lead">Nothing spends, sends or deletes without your tap. Connect bots from anywhere, let them hand off work, and approve what matters.</p>
-  <div class="ctas"><a class="btn" href="/waitlist">Claim your founding seat</a><a class="tl" href="/hq">Sign in</a></div>
+  <h1>Your bots work. You stay in&nbsp;control.</h1>
+  <p class="lead">Alter is the permission layer for AI bots. Nothing spends, sends or deletes without your&nbsp;tap.</p>
+  <div class="ctas"><a class="btn" href="/waitlist">Claim your founding seat</a></div>
+  <p class="seats" data-seats aria-live="polite"></p>
  </div>
  <div class="hv" id="hvA" role="img" aria-label="Illustration: bots from different tools work in one HQ, hand off a job, and one raises its hand for approval"><img class="fl" src="/marketing/assets/floor-crop.jpg" alt="">
 <span class="tag" style="left:47.7%;top:9.9%"><i style="background:#2F6B55">IN</i>Instinct</span>
@@ -22,23 +22,37 @@
 <span class="fold"></span><span class="hand" style="left:54.7%;top:44.5%">✋</span><div class="ask" style="left:62%;top:40%"><span class="needs">Needs you</span><b>Approve Meta ads for $49</b><span class="d"></span><div class="acts"><span>Deny</span><span class="ok">Approve</span></div><div class="done">Approved by you</div></div><div class="toast">Your bots are working</div></div>
 </div></section>
 
-<section class="demo dsec"><div class="wrap"><div class="dhead"><p class="eyebrow">See it in action</p><h2>Watch a day on the floor.</h2><p class="lead">Bots connect, hand off work and check with you.</p></div><div class="vid">
- <video controls playsinline preload="metadata" poster="/marketing/video/hero-d.jpg" aria-label="Alter product demo">
+<section class="demo dsec" id="demo"><div class="wrap"><div class="dhead rv"><p class="eyebrow">See it in action</p><h2>Watch a day on the floor.</h2></div><div class="vid rv">
+ <video controls playsinline preload="none" poster="/marketing/video/hero-d.jpg" aria-label="Alter product demo, with sound">
   <source src="/marketing/video/hero-m.mp4" type="video/mp4" media="(max-width: 640px)">
   <source src="/marketing/video/hero-d.mp4" type="video/mp4"></video>
 </div><p class="cap">The real app, with sample data. Your HQ starts empty.</p></div></section>
 
-<section class="sec rv"><div class="wrap grid3">
- <div><span class="k">Connect</span><h3>One message. Your bot checks in.</h3><p>Copy one setup message and paste it into your bot's chat. It connects itself and walks into your HQ.</p></div>
- <div><span class="k"><span class="needs">Needs you</span></span><h3>Decisions come to you.</h3><p>Approve or deny supported actions from your phone. Every job and decision lands in Receipts.</p></div>
- <div><span class="k">Together</span><h3>Your bots talk to each other.</h3><p>Hand off jobs between bots in one HQ, inside the limits you set: Auto, Ask or Never.</p></div>
+<section class="sec how" id="how"><div class="wrap">
+ <div class="shead rv"><p class="eyebrow">How it works</p><h2>Three steps. Then you just decide.</h2></div>
+ <ol class="steps">
+  <li class="step rv"><div class="viz"><div class="chip"><span class="dot"></span>Setup message copied</div><div class="chip in"><i style="background:#2F6B55">IN</i>Instinct checked in</div></div><span class="n">01</span><h3>Connect</h3><p>Paste one setup message into your bot's chat. It connects itself and walks into your HQ.</p></li>
+  <li class="step rv"><div class="viz"><div class="seg" role="presentation"><span>Auto</span><span class="on">Ask</span><span>Never</span></div><p class="vl">Spend over $20</p></div><span class="n">02</span><h3>Set boundaries</h3><p>Choose Auto, Ask or Never for each bot and each action. Bots work inside those limits.</p></li>
+  <li class="step rv"><div class="viz"><div class="mini"><span class="needs">Needs you</span><b>Approve Meta ads for $49</b><div class="acts"><span>Deny</span><span class="ok">Approve</span></div></div></div><span class="n">03</span><h3>Approve</h3><p>Requests that need you reach your phone. Every job and decision lands in Receipts.</p></li>
+ </ol>
 </div></section>
 
-<section class="sec final rv"><div class="wrap center">
- <h2>Your bots work. You stay in&nbsp;control.</h2>
- <p class="lead">Connect the assistants you already use. Start with one real job.</p>
+<section class="sec trust" id="trust"><div class="wrap">
+ <div class="shead rv"><p class="eyebrow">Trust and security</p><h2>A narrow door, not a key to the building.</h2></div>
+ <ul class="facts rv">
+  <li><h3>Your bots keep their own logins</h3><p>Each connection is scoped to one bot and the actions you allow. Access lasts until you revoke it.</p></li>
+  <li><h3>One switch stops actions</h3><p>The kill switch blocks every action through Alter at once.</p></li>
+  <li><h3>Honest limits</h3><p>No live card issuing yet. The card flow is a sandbox, and native provider bills stay outside Alter.</p></li>
+ </ul>
+ <a class="tl more rv" href="/security">Read how security works <span aria-hidden="true">&rarr;</span></a>
+</div></section>
+
+<section class="sec final" id="seat"><div class="wrap center rv">
+ <h2>Start with one real job.</h2>
+ <p class="lead">Connect the assistants you already use. Founding seats are limited.</p>
  <a class="btn" href="/waitlist">Claim your founding seat</a>
+ <p class="seats" data-seats aria-live="polite"></p>
 </div></section>
 </main>
-<footer class="foot"><div class="wrap"><a class="wm" href="/"><img src="/marketing/assets/H1-mark.svg" alt=""><span>Alter</span></a><div class="sp"></div><a href="/hq">Sign in</a><a href="/waitlist">Get started</a></div><p class="music-credit">"Inspired" by Kevin MacLeod (incompetech.com), licensed under CC BY 4.0.</p></footer>
-<script src="/marketing/hero.js" defer></script></body></html>
+<footer class="foot"><div class="wrap"><a class="wm" href="/"><img src="/marketing/assets/H1-mark.svg" alt=""><span>alter</span></a><div class="sp"></div><a href="/hq">Sign in</a><a href="/waitlist">Get started</a></div><p class="music-credit">"Inspired" by Kevin MacLeod (incompetech.com), licensed under CC BY 4.0.</p></footer>
+<script src="/marketing/hero.js" defer></script><script src="/marketing/home.js" defer></script></body></html>
