@@ -377,6 +377,14 @@ async function freshRoutingPick(cat, excludeIds) {
   if (awake.length) return { advice: adv, picked: awake[0], pickedTier: tier(awake[0]), fellBackFrom: skipped, fellBackWhy: why, nobodyAwake: false };
   return { advice: adv, picked: null, pickedTier: -1, fellBackFrom: skipped, fellBackWhy: why, nobodyAwake: true };
 }
+/* Plain requests have no category score. Prefer the least-loaded awake external bot,
+   then recent accepted presence, then stable ID. Never activate a paid hosted worker. */
+async function generalRoutingPick(){
+ const agents=(await listAgents()).filter(a=>a.status==='active'&&!a.harness&&!a.hosted&&!a.paused),tasks=await listTasks(),awake=agents.filter(a=>botAwake(a));
+ const load=a=>tasks.filter(t=>t.assignee===a.id&&['running','queued'].includes(t.status)).length;
+ awake.sort((a,b)=>load(a)-load(b)||Date.parse(b.lastSeen||0)-Date.parse(a.lastSeen||0)||String(a.id).localeCompare(String(b.id)));
+ return {picked:awake[0]||null,eligible:agents.length,reason:awake.length?'No category match needed: '+awake[0].name+' is awake with '+load(awake[0])+' queued or running jobs. This is availability-based, not a skill claim.':agents.length?'No bot is awake right now. Queued for the first eligible bot to check in.':'No eligible bot connected. Connect a bot to claim this queued task.'};
+}
 const ASLEEP_FALLBACK_MAX = 3;
 /* Queued-job fallback sweep: an auto-routed queued job whose bot missed two of its own check-in beats -
    or keeps checking in without ever claiming it, with nothing running - moves to the next best awake bot
@@ -1559,10 +1567,9 @@ async function routes(req, res, path, body, agentPre) {
           }
         }
         if (!assignee && !allAsleep) {
-          unrouted = true;
-          if (!matches.length) routingReason = 'No category matched this message. Left unassigned rather than guessed.';
-          else if (tieUnresolved) routingReason = 'Categories ' + top.map(m => m.category).join(' and ') + ' matched equally with no stronger scored history to pick a lead. Left unassigned rather than guessed.';
-          else routingReason = 'No bot has scored history or a single declared strength in ' + (leadCat || top[0].category) + ' yet. Left unassigned rather than guessed.';
+          const fallback=await generalRoutingPick();
+          if(fallback.picked){assignee=fallback.picked.id;category=leadCat||null;unrouted=false;routingReason=fallback.reason;routed={botId:assignee,botName:fallback.picked.name,category:category||'general',reason:routingReason,chain:[],unstaffed:[]};}
+          else{unrouted=true;allAsleep=fallback.eligible>0;routingReason=fallback.reason;}
         }
       }
       return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, allAsleep, handoffPlan }), routed, unrouted, ...(allAsleep ? { allAsleep: true } : {}) }); }
