@@ -51,3 +51,8 @@
 @media(min-width:941px){.hero{bottom:88px}.hero h2{font-size:16px}.hero .chips{display:none}}
 @media(min-width:761px){.dark-bar{top:calc(var(--h-top) + 6px);padding:6px 10px;font-size:11px;line-height:15px}}
 @media(min-width:761px){.stage::after{height:80px;background:linear-gradient(to bottom,transparent,var(--a-floor) 90%)}}
+
+/* Presentation of a server-reported running task, never progress or dialogue. */
+.ch.live-busy:not(.walk):not(.resting) .arm-t{animation:live-work-hands .7s steps(2,end) infinite;transform-box:fill-box;transform-origin:center}
+@keyframes live-work-hands{50%{transform:translateY(-1.5px)}}
+@media(prefers-reduced-motion:reduce){.ch.live-busy .arm-t{animation:none!important}}
