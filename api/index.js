@@ -63,7 +63,7 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'EVAL': { const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
+    case 'EVAL': { const [script,n,key,expected,replacement]=[k,...a]; if(script===PLANNER_RESERVE){const v=parseInt(mem.kv.get(key)||'0',10)+parseInt(expected,10);if(v>Number(replacement))return -1;mem.kv.set(key,String(v));return v;} if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'SET': if(a.includes('NX')&&mem.kv.has(k))return null;mem.kv.set(k, a[0]); return 'OK';
@@ -148,8 +148,9 @@ async function execute(agent, action, params) {
    const title=String(params.title||'').trim(),source=String(params.source_id||'').trim();if(!title||title.length>120||!source||source.length>200)throw Error('Title and stable source ID required');
    const id='task_'+sha(agent.id+':'+source).slice(0,24),old=await getJ('fm:task:'+id);if(old){if(old.assignee!==to.id)throw Error('Source ID already belongs to a different assignment');return {summary:'Assignment already registered: '+old.title,data:{task_id:id,status:old.status,assignee:old.assignee,duplicate:true}};}
    const parent=params.parent_id?await getJ('fm:task:'+params.parent_id):null;if(params.parent_id&&(!parent||(parent.assignee!==agent.id&&parent.createdBy!==agent.id)))throw Error('Parent job not yours');
+   if(parent&&parent.team&&!parent.team.includes(to.id))throw Error('That job is limited to the owner-picked team; '+to.name+' is not on it');
    const advice=await routing(String(params.category||'').toLowerCase());
-   const t={id,title,parentId:parent?.id||null,context:parent?String(parent.result||parent.brief||'').slice(0,4000):'',routingReason:advice.suggested?advice.suggested.reason:'No scored category history. Explicit bot choice.',suggestedBotId:advice.suggested?.id||null,brief:String(params.brief||'').slice(0,1500),category:String(params.category||'').toLowerCase(),assignee:to.id,status:'queued',createdBy:agent.id,createdAt:now(),result:null,origin:'chat',sourceId:source};
+   const t={...(parent&&parent.team?{team:parent.team.slice()}:{}),id,title,parentId:parent?.id||null,context:parent?String(parent.result||parent.brief||'').slice(0,4000):'',routingReason:advice.suggested?advice.suggested.reason:'No scored category history. Explicit bot choice.',suggestedBotId:advice.suggested?.id||null,brief:String(params.brief||'').slice(0,1500),category:String(params.category||'').toLowerCase(),assignee:to.id,status:'queued',createdBy:agent.id,createdAt:now(),result:null,origin:'chat',sourceId:source};
    if(!await r(['SET','fm:task:'+id,JSON.stringify(t),'NX']))throw Error('Assignment registered concurrently; read the task before retrying');await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);
    await event(agent.id,'handoff','Assigned "'+title+'" to '+to.name,{kind:'HANDOFF',taskId:id,toAgentId:to.id});await event(to.id,'assigned',agent.name+' assigned "'+title+'"',{kind:'WAITING',taskId:id,fromAgentId:agent.id});
    return {summary:'Assigned "'+title+'" to '+to.name,data:{task_id:id,status:'queued',assignee:to.id}};
@@ -167,7 +168,8 @@ async function execute(agent, action, params) {
     const t = await getJ('fm:task:' + params.task_id); if (!t || t.orchestration || t.assignee !== agent.id) throw new Error('task not found or not yours');
     const to = (await listAgents()).find(x => x.id === params.to || x.name.toLowerCase() === String(params.to || '').toLowerCase());
     if (!to || to.id === agent.id) throw new Error('unknown target agent'); if (to.status !== 'active') throw new Error('target agent is not active');
-    const child = await newTask({ title: String(params.title || t.title).slice(0, 120), brief: String(params.brief || '').slice(0, 1500), assignee: to.id, parentId: t.id, context: t.result || '', createdBy: agent.id });
+    if (t.team && !t.team.includes(to.id)) throw new Error('This job is limited to the owner-picked team; ' + to.name + ' is not on it');
+    const child = await newTask({ title: String(params.title || t.title).slice(0, 120), brief: String(params.brief || '').slice(0, 1500), assignee: to.id, parentId: t.id, context: t.result || '', createdBy: agent.id, team: t.team });
     t.handedTo = to.id; t.childId = child.id; await setJ('fm:task:' + t.id, t);
     await event(agent.id, 'handoff', `Handed "${t.title}" to ${to.name}`, { kind: 'HANDOFF', toAgentId: to.id, taskId: t.id, childTaskId: child.id });
     return { summary: `Handed task "${t.title}" to ${to.name} (new task ${child.id}) with context from ${agent.name}`, data: { child_task_id: child.id, to: to.name } };
@@ -307,7 +309,7 @@ async function taskForAgent(agent,id) {
   return null;
 }
 
-async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: o.hold ? 'waiting' : 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.allAsleep ? { allAsleep: true } : {}), ...(o.assignee ? { assignedAt: now() } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}) };
+async function newTask(o) { const t = { id: rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: o.hold ? 'waiting' : 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.allAsleep ? { allAsleep: true } : {}), ...(o.assignee ? { assignedAt: now() } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}), ...(Array.isArray(o.team) && o.team.length ? { team: o.team.slice() } : {}) };
   bust(); await setJ('fm:task:' + t.id, t); await r(['LPUSH', 'fm:tasklist', t.id]); await r(['LTRIM', 'fm:tasklist', 0, 59]);
   if (t.assignee && !o.hold) { const ag = await getJ('fm:agent:' + t.assignee); if (ag && ag.hosted && ag.status === 'active' && !ag.paused) await runHosted(ag, t); else if (ag) await maybeWakeBot(ag, t.id); }
   return t; }
@@ -395,11 +397,15 @@ async function planTaskParts(body){const text=String(body.title||'').trim(),part
    store, key read from ALTER_PLANNER_XAI_KEY at call time and never logged. Any failure falls back to
    the rule-based split, restricted to the same team, with a visible "basic split" note. */
 const PLANNER_MAX_IN_CHARS=4000,PLANNER_MAX_OUT_TOKENS=450,PLANNER_TIMEOUT_MS=8000,PLANNER_MAX_PARTS=4;
-const PLANNER_IN_MICRO_PER_TOK=1.25,PLANNER_OUT_MICRO_PER_TOK=2.5; // USD per 1M tokens == micro-USD per token (grok-4.20-0309-non-reasoning list price)
-function plannerModel(){return String(process.env.ALTER_PLANNER_MODEL||'grok-4.20-0309-non-reasoning').slice(0,64);}
+/* Allowlist with list prices (USD per 1M tokens == micro-USD per token, xAI docs Oct 2026). Unknown model -> basic split, never a call. */
+const PLANNER_MODELS={'grok-4.20-0309-non-reasoning':{in:1.25,out:2.5},'grok-4.3':{in:1.25,out:2.5}};
+function plannerModel(){return String(process.env.ALTER_PLANNER_MODEL||'grok-4.20-0309-non-reasoning');}
+function plannerPrice(){return Object.prototype.hasOwnProperty.call(PLANNER_MODELS,plannerModel())?PLANNER_MODELS[plannerModel()]:null;}
+/* Account-wide (gl: keys are never workspace-namespaced) and atomic: reserve only if it fits under the cap. */
+const PLANNER_RESERVE="local v=redis.call('INCRBY',KEYS[1],ARGV[1]); if v>tonumber(ARGV[2]) then redis.call('DECRBY',KEYS[1],ARGV[1]); return -1 end; return v";
 function plannerCapMicro(){const n=parseInt(process.env.ALTER_PLANNER_MONTHLY_CAP_CENTS||'200',10);return (Number.isFinite(n)&&n>=0?Math.min(n,5000):200)*10000;}
-function plannerWorstMicro(promptChars){return Math.ceil(Math.ceil(promptChars/2)*PLANNER_IN_MICRO_PER_TOK+PLANNER_MAX_OUT_TOKENS*PLANNER_OUT_MICRO_PER_TOK);} // chars/2 overestimates tokens on purpose
-const plannerSpendKey=()=>'fm:planner:spendMicro:'+now().slice(0,7);
+function plannerWorstMicro(promptChars,pr){return Math.ceil(Math.ceil(promptChars/2)*pr.in+PLANNER_MAX_OUT_TOKENS*pr.out);} // chars/2 overestimates tokens on purpose
+const plannerSpendKey=()=>'gl:planner:spendMicro:'+now().slice(0,7);
 async function teamState(ids){
  const want=[...new Set((Array.isArray(ids)?ids:[]).map(x=>String(x)))].slice(0,12),agents=await listAgents(),tasks=await listTasks();
  const ok=a=>a&&a.status==='active'&&!a.harness&&!a.hosted&&!a.paused;
@@ -417,16 +423,17 @@ function basicTeamPlan(title,members,why){
  return {parts,method:'basic',basicReason:why,overflow:overflow||null,note};
 }
 async function aiTeamPlan(title,brief,members){
- const key=process.env.ALTER_PLANNER_XAI_KEY;if(!key)return {ok:false,why:'No planner key is set.'};
+ const key=process.env.ALTER_PLANNER_XAI_KEY;if(!key)return {ok:false,why:'No planner key is set.'};const pr=plannerPrice();if(!pr)return {ok:false,why:'The configured planner model is not on the allowlist.'};
  const roster=members.map(m=>({id:m.id,name:m.name,awake:m.awake,load:m.load,strengths:m.strengths}));
  const sys='You split an owner request into 1 to 4 sequential parts for bots. Use as few parts as the work needs; a simple request is exactly 1 part. Assign each part only to a bot id from the roster. The same bot may do several parts. Prefer awake bots with the lowest load, then matching strengths. Reply with JSON only: {"parts":[{"title":"<=80 chars","instruction":"exact instruction for the bot","needs":"what it needs from the previous part, or Nothing","bot":"<roster id>","reason":"one line"}]}';
  const user=JSON.stringify({request:title,details:brief,roster}).slice(0,PLANNER_MAX_IN_CHARS);
- const reserve=plannerWorstMicro(sys.length+user.length),sk=plannerSpendKey(),after=await r(['INCRBY',sk,reserve]);
- if(after>plannerCapMicro()){await r(['INCRBY',sk,-reserve]);return {ok:false,why:'The monthly planner spend cap is reached.'};}
+ const reserve=plannerWorstMicro(sys.length+user.length,pr),sk=plannerSpendKey();
+ if(await r(['EVAL',PLANNER_RESERVE,1,sk,reserve,plannerCapMicro()])<0)return {ok:false,why:'The monthly planner spend cap is reached.'};
  let j;try{const resp=await fetch('https://api.x.ai/v1/chat/completions',{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({model:plannerModel(),max_tokens:PLANNER_MAX_OUT_TOKENS,temperature:0,response_format:{type:'json_object'},messages:[{role:'system',content:sys},{role:'user',content:user}]}),signal:AbortSignal.timeout(PLANNER_TIMEOUT_MS)});
   if(!resp.ok)return {ok:false,why:'The AI planner returned HTTP '+resp.status+'.'};j=await resp.json();}
  catch(e){return {ok:false,why:e&&e.name==='TimeoutError'?'The AI planner timed out.':'The AI planner could not be reached.'};}
- const u=j&&j.usage;if(u&&Number.isFinite(u.prompt_tokens)&&Number.isFinite(u.completion_tokens)){const actual=Math.ceil(u.prompt_tokens*PLANNER_IN_MICRO_PER_TOK+u.completion_tokens*PLANNER_OUT_MICRO_PER_TOK);if(actual<reserve)await r(['INCRBY',sk,actual-reserve]);}
+ /* reconcile: release the unused reservation using the API's reported usage; without usage the full reservation stays (conservative) */
+ const u=j&&j.usage;if(u&&Number.isFinite(u.prompt_tokens)&&Number.isFinite(u.completion_tokens)&&u.prompt_tokens>=0&&u.completion_tokens>=0){const actual=Math.ceil(u.prompt_tokens*pr.in+u.completion_tokens*pr.out);if(actual!==reserve)await r(['INCRBY',sk,actual-reserve]);}
  let out;try{out=JSON.parse(String(j.choices[0].message.content||'').replace(/^```(?:json)?\s*|\s*```$/g,''));}catch(e){return {ok:false,why:'The AI planner returned unreadable output.'};}
  const ps=out&&out.parts;if(!Array.isArray(ps)||!ps.length)return {ok:false,why:'The AI planner returned no parts.'};
  if(ps.length>PLANNER_MAX_PARTS)return {ok:false,why:'The AI planner returned '+ps.length+' parts; Alter allows at most 4 and never drops parts silently.'};
@@ -439,6 +446,7 @@ async function aiTeamPlan(title,brief,members){
 async function planTeamTask(body){
  const title=String(body.title||'').trim(),brief=String(body.brief||'').trim().slice(0,1500);
  if(!title||title.length>120)return {status:400,body:{error:'Write a task of 1 to 120 characters'}};
+ if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}}; // checked before any paid planner call
  const {members,rejected}=await teamState(body.team);
  if(!members.length)return {status:400,body:{error:'Pick at least one active bot for the team',rejected}};
  const allTeamAsleep=!members.some(m=>m.awake);let plan;
@@ -448,11 +456,20 @@ async function planTeamTask(body){
 }
 /* Auto plan router (owner, Oct 22): submit = plan + start in one request. Planning writes nothing but the
    planner spend counter; the only task write is this start. Fallbacks never block the task. */
+/* Idempotent: the client sends one requestId per submit and reuses it on retry. The first request claims
+   the ID (SET NX) before planning; a repeat returns the same plan, or 409 while the first is still starting. */
 async function autoTeamTask(body){
- const plan=await planTeamTask(body);if(plan.status!==200)return plan;const pb=plan.body;
- const out=await createTaskParts({title:body.title,brief:body.brief,team:pb.team.map(m=>m.id),planMethod:pb.method,planNote:pb.note,waitNote:pb.waitNote||'',parts:pb.parts});
- if(out.status===200)out.body={...out.body,plan:{method:pb.method,note:pb.note,summary:pb.summary,allTeamAsleep:pb.allTeamAsleep,waitNote:pb.waitNote||null,basicReason:pb.basicReason||null,model:pb.model||null}};
- return out;
+ const rq=String(body.requestId||'');if(!/^[A-Za-z0-9_-]{8,80}$/.test(rq))return {status:400,body:{error:'requestId required'}};
+ const rk='fm:autoreq:'+sha(rq).slice(0,32);
+ if(!await r(['SET',rk,'pending','NX','EX',86400])){const v=await r(['GET',rk]);if(v&&v!=='pending'){const t=await getJ('fm:task:'+v);if(t)return {status:200,body:{task:t,parts:await Promise.all((t.partIds||[]).map(id=>getJ('fm:task:'+id))),plan:t.planSummary||null,duplicate:true}};}return {status:409,body:{error:'This request is already being started. Refresh in a moment.'}};}
+ let out;try{
+  const plan=await planTeamTask(body);if(plan.status!==200){await r(['DEL',rk]);return plan;}const pb=plan.body;
+  out=await createTaskParts({title:body.title,brief:body.brief,team:pb.team.map(m=>m.id),planMethod:pb.method,planNote:pb.note,waitNote:pb.waitNote||'',parts:pb.parts,requestId:rq});
+  if(out.status!==200){await r(['DEL',rk]);return out;}
+  const ps={method:pb.method,note:pb.note,summary:pb.summary,allTeamAsleep:pb.allTeamAsleep,waitNote:pb.waitNote||null,basicReason:pb.basicReason||null,model:pb.model||null};
+  const par=await getJ('fm:task:'+out.body.task.id);par.planSummary=ps;await setJ('fm:task:'+par.id,par);await r(['SET',rk,par.id,'EX',86400]);
+  out.body={...out.body,task:par,plan:ps};return out;
+ }catch(e){await r(['DEL',rk]);throw e;}
 }
 /* Cancel the parts that have not started. A part already running finishes (or the owner stops it); nothing is invented. */
 async function cancelPendingParts(id){
@@ -469,7 +486,7 @@ async function teamPartsError(body){
 }
 async function createTaskParts(body){const parts=body.parts,teamMode=Array.isArray(body.team);if(teamMode){const err=await teamPartsError(body);if(err)return {status:400,body:{error:err}};}const team=teamMode?(await teamState(body.team)).members.map(m=>m.id):null;if(!teamMode&&(!Array.isArray(parts)||parts.length<2||parts.length>4||parts.some(p=>!p||!String(p.title||'').trim()||String(p.title).length>120)))return {status:400,body:{error:'Review 2 to 4 titled parts'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}};for(const p of parts)if(p.assignee){const a=await getJ('fm:agent:'+p.assignee);if(!a||a.status!=='active'||a.paused||a.hosted||a.harness)return {status:400,body:{error:'Choose active external bots only'}};}
  const parent=await newTask({title:body.title,brief:body.brief,hold:true});parent.orchestration=true;parent.status='waiting';parent.startedAt=now();parent.partIds=[];if(team){parent.team=team;parent.planMethod=body.planMethod==='ai'?'ai':'basic';if(body.planNote)parent.planNote=String(body.planNote).slice(0,400);if(body.waitNote)parent.waitNote=String(body.waitNote).slice(0,300);}await setJ('fm:task:'+parent.id,parent);
- for(let i=0;i<parts.length;i++){const p=parts[i],t=await newTask({title:p.title,brief:'Part '+(i+1)+' of '+parts.length+'. Only do this part.'+(p.instruction?' Instruction: '+String(p.instruction).slice(0,1000)+(i&&p.needs?' Needs from the previous part: '+String(p.needs).slice(0,300)+'.':''):'')+' Original request: '+String(body.title||'')+'\n'+String(body.brief||''),parentId:parent.id,assignee:p.assignee||null,category:p.category,context:'Part of: '+body.title,hold:true});t.partIndex=i;t.dependsOn=i?parent.partIds[i-1]:null;t.status='waiting';t.assignedBy=team?'team-plan':'owner';if(team){t.team=team;if(p.reason)t.routingReason=String(p.reason).slice(0,300);}await setJ('fm:task:'+t.id,t);parent.partIds.push(t.id);}
+ for(let i=0;i<parts.length;i++){const p=parts[i],t=await newTask({title:p.title,brief:'Part '+(i+1)+' of '+parts.length+'. Only do this part.'+(p.instruction?(team&&body.planMethod==='ai'?' Instruction written by the AI planner (not the owner\'s words): ':team?' Rule-based split of the owner\'s request: ':' Instruction: ')+String(p.instruction).slice(0,1000)+(i&&p.needs?' Needs from the previous part: '+String(p.needs).slice(0,300)+'.':''):'')+' Owner\'s original request: '+String(body.title||'')+'\n'+String(body.brief||''),parentId:parent.id,assignee:p.assignee||null,category:p.category,context:'Part of: '+body.title,hold:true});t.partIndex=i;t.dependsOn=i?parent.partIds[i-1]:null;t.status='waiting';t.assignedBy=team?'team-plan':'owner';if(team){t.team=team;if(p.reason)t.routingReason=String(p.reason).slice(0,300);t.instructionSource=body.planMethod==='ai'?'ai-planner':'basic-split';if(p.instruction)t.plannerInstruction=String(p.instruction).slice(0,1000);}await setJ('fm:task:'+t.id,t);parent.partIds.push(t.id);}
  parent.status='running';await setJ('fm:task:'+parent.id,parent);await r(['SADD','fm:activePlans',parent.id]);bust();const first=await getJ('fm:task:'+parent.partIds[0]);first.status='queued';if(first.team)first.assignedAt=now();await setJ('fm:task:'+first.id,first);if(first.assignee){const a=await getJ('fm:agent:'+first.assignee);if(a)await maybeWakeBot(a,first.id);}return {status:200,body:{task:parent,parts:await Promise.all(parent.partIds.map(id=>getJ('fm:task:'+id)))}};}
 async function refreshTaskParent(id){return withJobLock(id,async()=>{const p=await getJ('fm:task:'+id);if(!p?.orchestration||p.status!=='running')return;const parts=await Promise.all(p.partIds.map(id=>getJ('fm:task:'+id)));if(parts.some(t=>!t))return;for(let i=1;i<parts.length;i++)if(!parts.some(x=>['failed','dismissed'].includes(x.status))&&parts[i].status==='waiting'&&parts[i-1].status==='done'){const t=parts[i],raw=JSON.stringify(t);t.status='queued';if(t.team)t.assignedAt=now();t.context=('Previous completed part: '+parts[i-1].title+'\n'+parts[i-1].result).slice(0,4000);if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+t.id,raw,JSON.stringify(t)])!==1)return;if(t.assignee){const a=await getJ('fm:agent:'+t.assignee);if(a)await maybeWakeBot(a,t.id);}}
  const failed=parts.some(t=>['failed','dismissed'].includes(t.status));if(failed){for(const t of parts)if(t.status==='waiting'){t.status='failed';t.result='Not run: an earlier part stopped.';t.finishedAt=now();await setJ('fm:task:'+t.id,t);}}
@@ -588,7 +605,7 @@ async function assignTask(id,body){return withJobLock(id,async()=>{
  if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}};
  const key='fm:task:'+id,raw=await r(['GET',key]),t=raw&&JSON.parse(raw);if(!t)return {status:404,body:{error:'Job not found'}};
  if(t.status!=='queued'||t.assignee)return {status:409,body:{error:'This job already has a bot. Refresh.'}};
- const a=await getJ('fm:agent:'+body.assignee);if(!a||a.status!=='active'||a.harness)return {status:400,body:{error:'Choose an active bot'}};if(a.paused)return {status:409,body:{error:a.name+' is paused'}};if(t.partIndex!=null&&a.hosted)return {status:400,body:{error:'Parts use external bots only'}};
+ const a=await getJ('fm:agent:'+body.assignee);if(!a||a.status!=='active'||a.harness)return {status:400,body:{error:'Choose an active bot'}};if(a.paused)return {status:409,body:{error:a.name+' is paused'}};if(t.partIndex!=null&&a.hosted)return {status:400,body:{error:'Parts use external bots only'}};if(t.team&&!t.team.includes(a.id))return {status:400,body:{error:'This part is limited to the team picked at start; '+a.name+' is not on it'}};
  const next={...t,assignee:a.id,assignedAt:now(),assignedBy:'owner'};
  if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return {status:409,body:{error:'Job changed. Refresh.'}};
  bust();await event(a.id,'assigned','Owner assigned "'+t.title+'"',{kind:'WAITING',taskId:id});
@@ -761,6 +778,7 @@ async function claimTask(agent) { if(agent.status!=='active'||agent.paused||awai
   const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id)||(live.team&&!live.team.includes(agent.id)))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); t.progressAt = t.startedAt;if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
 async function completeTask(agent,id,body){return withJobLock(id,()=>completeTaskUnlocked(agent,id,body));}
 async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.orchestration || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
+  if (t.team && !t.team.includes(agent.id)) return { status: 403, body: { error: 'This job is limited to the owner-picked team' } };
   if(t.status==='queued'&&(t.reassignedAt||(t.origin==='chat'&&t.createdBy!==agent.id)))return {status:409,body:{error:'Claim the assigned job before completing it'}};
   if (!['running','queued'].includes(t.status)) return {status:409,body:{error:'Task is already terminal',task:t}};
   const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(body&&body.runByAlter===true)t.runByAlter=true; /* hosted worker self-labels: rendered as Run by Alter on <bot>'s account */

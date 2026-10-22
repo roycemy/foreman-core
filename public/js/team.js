@@ -35,13 +35,17 @@
   BB.on(() => { BB.teamRepaint(); gate(); });
 
   /* ---------- auto plan router: submit = plan + start in one request (owner, Oct 22) ---------- */
-  let busy = false;
+  let busy = false, pendingReq = null;
   BB.startTeamTask = async function (title, brief, done) {
     const ids = BB.teamPicked(); if (!ids.length) { BB.toast('Pick at least one bot for this task.'); return false; }
     if (busy) return false; busy = true;
+    /* one stable requestId per submit; a retry of the same submit (same text + team) reuses it, so the server never starts it twice */
+    const sig = JSON.stringify([title, brief || '', ids.slice().sort()]);
+    if (!pendingReq || pendingReq.sig !== sig) pendingReq = { sig, id: (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9_-]/g, '') };
     try {
-      const j = await BB.api('/api/tasks', 'POST', { title, brief, orchestrate: true, auto: true, team: ids });
+      const j = await BB.api('/api/tasks', 'POST', { title, brief, orchestrate: true, auto: true, team: ids, requestId: pendingReq.id });
       if (j.error) { BB.toast(j.error); return false; }
+      pendingReq = null;
       done && done(); const pl = j.plan || {};
       BB.toast(pl.allTeamAsleep ? 'Queued. Everyone on this team is asleep; part 1 waits for a check-in.' : (pl.summary ? pl.summary.replace(/^./, c => c.toUpperCase()) + '.' : 'Started.') + (pl.method === 'basic' ? ' (basic split)' : ''));
       await BB.sync(true); BB.go('#receipts/' + j.task.id); return true;
