@@ -395,3 +395,5 @@
     room: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M8 2l6 3.2v5.6L8 14l-6-3.2V5.2z"/></svg>'
   };
 })();
+
+(function(){const B=window.BB;B.partsHTML=function(t,children){if(!t.orchestration)return '';return '<section class="parts-progress"><h2>Parts and owners</h2><p>Sequential tasks in Alter, not a live bot-to-bot call.</p>'+t.partIds.map((id,i)=>{const c=B.task(id)||(children||[]).find(x=>x.id===id);if(!c)return '<p>Part '+(i+1)+' unavailable</p>';const a=B.agent(c.assignee);return '<a href="#receipts/'+B.esc(c.id)+'"><span>'+(i+1)+'</span><div><b>'+B.esc(c.title)+'</b><small>'+B.esc(a?a.name:'First available bot')+' · '+B.esc(c.status==='waiting'?'Waiting for previous part':c.status)+'</small></div><span>↗</span></a>'}).join('')+'</section>';};})();

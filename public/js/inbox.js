@@ -17,6 +17,7 @@
   BB.jobStatus = t => {
     if (t.status === 'queued' && !t.assignee) return { cls: 'q', word: t.unrouted ? 'Unrouted' : 'Unassigned' };
     if (t.status === 'queued') return { cls: 'q', word: 'Queued' };
+    if(t.status==='waiting')return {cls:'q',word:'Waiting for previous part'};
     if (t.status === 'running') { if (BB.budgetBlock(t)) return { cls: 'need', word: 'Blocked: budget' }; return BB.pendingReqs().some(q => q.taskId === t.id) ? { cls: 'need', word: 'Waiting for you' } : { cls: 'run', word: 'Running' }; }
     if (t.status === 'dismissed') return { cls: 'q', word: 'Dismissed' };
     if (t.status === 'done') return { cls: 'done', word: 'Done' };
@@ -24,7 +25,7 @@
     return { cls: 'q', word: BB.sentenceCase(t.status) };
   };
   BB.jobs = () => BB.tasks().slice().sort((x, y) => String(jobAt(y)).localeCompare(String(jobAt(x))));
-  BB.jobWho = t => { const shared = BB.sharedJobFor(t); if (shared) return shared.bots; const a = t.assignee && BB.agent(t.assignee); return a ? [a] : []; };
+  BB.jobWho = t => { if(t.orchestration)return [...new Set(t.partIds.map(id=>BB.task(id)?.assignee).filter(Boolean))].map(id=>BB.agent(id)).filter(Boolean);const shared = BB.sharedJobFor(t); if (shared) return shared.bots; const a = t.assignee && BB.agent(t.assignee); return a ? [a] : []; };
   BB.jobMeta = t => { const who = BB.jobWho(t); return (who.length ? who.map(a => a.name).join(' + ') : 'Unassigned') + ' · ' + BB.ago(jobAt(t)); };
   BB.jobAv = (t, size) => { const who = BB.jobWho(t); if (who.length > 1) return BB.duo(who, size || ''); return who.length ? BB.av(who[0], size) : `<span class="av ghost ${size || ''}" aria-hidden="true">?</span>`; };
 
@@ -91,7 +92,7 @@
   function row(t) {
     const s = BB.jobStatus(t), un = t.status === 'queued' && !t.assignee;
     const right = un ? `<span class="assign act"><button class="b out sm" type="button" data-assign="${t.id}" aria-haspopup="menu">Assign ▾</button></span>` : `<span class="st ${s.cls}"><i></i>${s.word}</span>`;
-    return `<div class="row" role="button" tabindex="0" data-job="${t.id}">${BB.jobAv(t)}<span class="t"><b>${esc(t.title)}</b><small>${esc(BB.jobMeta(t))}${BB.fallbackNote(t) ? ' · ' + esc(BB.fallbackNote(t)) : ''}${t.unrouted ? ' · unrouted' : ''}${t.handoffPlan && t.handoffPlan.length ? ' · then ' + t.handoffPlan.map(h => esc(h.botName)).join(' \u2192 ') + ' (planned)' : ''}${t.parentId ? ' · a handed-off part' : ''}</small></span>${right}</div>`;
+    return `<div class="row" role="button" tabindex="0" data-job="${t.id}">${BB.jobAv(t)}<span class="t"><b>${esc(t.title)}</b><small>${esc(BB.jobMeta(t))}${BB.fallbackNote(t) ? ' · ' + esc(BB.fallbackNote(t)) : ''}${t.unrouted ? ' · unrouted' : ''}${t.handoffPlan && t.handoffPlan.length ? ' · then ' + t.handoffPlan.map(h => esc(h.botName)).join(' \u2192 ') + ' (planned)' : ''}${t.partIndex!=null ? ' · part '+(t.partIndex+1) : t.parentId ? ' · a handed-off part' : ''}</small></span>${right}</div>`;
   }
   function paintRail() {
     if (!rail.classList.contains('on')) return;
@@ -102,7 +103,7 @@
     const s2 = rail.querySelector('.scroll'); if (s2) s2.scrollTop = top;
     rail.querySelector('[data-close-rail]').onclick = () => BB.closeRail();
     BB.bindItems(rail, needs.concat(BB.onYou()));
-    rail.querySelectorAll('[data-job]').forEach(r => { const open = e => { if (e.target.closest('.assign')) return; const t = BB.task(r.dataset.job); if (!t) return; const who = BB.jobWho(t); if (who.length) BB.openInspector(who[0].id, { job: t.id }); }; r.onclick = open; r.onkeydown = e => { if (e.key === 'Enter') open(e); }; });
+    rail.querySelectorAll('[data-job]').forEach(r => { const open = e => { if (e.target.closest('.assign')) return; const t = BB.task(r.dataset.job); if (!t) return; if(t.orchestration)return BB.go('#receipts/'+t.id);const who = BB.jobWho(t); if (who.length) BB.openInspector(who[0].id, { job: t.id }); }; r.onclick = open; r.onkeydown = e => { if (e.key === 'Enter') open(e); }; });
   }
   BB.openRail = function () {
     BB.closePop && BB.closePop(); BB.closeInspector && BB.closeInspector(true);
@@ -143,7 +144,7 @@
       const who = BB.jobWho(t), s = BB.jobStatus(t), a = who[0];
       const kav = who.length > 1 ? BB.duo(who, 's28') : a ? `<span class="kav" style="--av:${BB.avColor(a)}">${esc(BB.initials(a.name))}${t.status === 'running' ? BB.glyph(a) : ''}</span>` : '<span class="kav merch">?</span>';
       const meta = (who.length ? who.map(x => x.name).join(' + ') : 'Unassigned') + ' · ' + (t.status === 'running' && t.startedAt ? 'started ' + BB.ago(t.startedAt) + (BB.ago(t.startedAt) === 'just now' ? '' : ' ago') : BB.ago(jobAt(t)) + (/min|h$/.test(BB.ago(jobAt(t))) ? ' ago' : '')) + (BB.fallbackNote(t) ? ' · ' + BB.fallbackNote(t) : '');
-      const right = s.word === 'Unassigned' ? `<span class="assign"><button class="b out sm" type="button" data-assign="${t.id}">Assign ▾</button></span>` : `<span class="r">${s.word}</span>`;
+      const right = t.orchestration ? '<span class="r">'+t.partIds.filter(id=>BB.task(id)&&BB.task(id).status==='done').length+'/'+t.partIds.length+' parts</span>' : s.word === 'Unassigned' ? `<span class="assign"><button class="b out sm" type="button" data-assign="${t.id}">Assign ▾</button></span>` : `<span class="r">${s.word}</span>`;
       return `<div class="kr" role="button" tabindex="0" data-job="${t.id}">${kav}<div class="t"><b>${esc(t.title)}</b><small>${esc(meta)}</small></div>${right}</div>`;
     };
     v.innerHTML = `<div class="kh"><h1>Your HQ</h1><div class="end"><button class="plus" type="button" aria-label="New job" data-newjob>${BB.ICON.plus}</button>${BB.acctAv ? BB.acctAv() : ''}</div></div><div class="ks">${esc(sub)}</div>
@@ -154,7 +155,7 @@
     v.querySelector('[data-newjob]').onclick = () => BB.newJob();
     v.querySelector('[data-go-floor]').onclick = () => BB.go('#floor');
     v.querySelectorAll('.mobile-bot').forEach(b=>b.onclick=()=>BB.openInspector(b.dataset.bot));
-    v.querySelectorAll('[data-job]').forEach(r => r.onclick = e => { if (e.target.closest('.assign')) return; const t = BB.task(r.dataset.job), who = t && BB.jobWho(t); if (who && who.length) BB.openInspector(who[0].id, { job: t.id }); });
+    v.querySelectorAll('[data-job]').forEach(r => r.onclick = e => { if (e.target.closest('.assign')) return; const t = BB.task(r.dataset.job), who = t && BB.jobWho(t);if(t&&t.orchestration)return BB.go('#receipts/'+t.id); if (who && who.length) BB.openInspector(who[0].id, { job: t.id }); });
     v.querySelectorAll('.swipe').forEach(bindSwipe);
   }
   /* swipe left to approve: an 8px threshold arms it, past 96px it approves; the buttons are always there */
