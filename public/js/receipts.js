@@ -42,7 +42,7 @@
     if (!cache[id]) { V.innerHTML = `<div class="rc"><a class="back" href="#receipts">‹ Receipts</a><p class="meta" style="margin-top:24px">Loading…</p></div>`; }
     const j = await BB.api('/api/jobs/' + id); if (openId !== id) return;
     if (j.error) { V.innerHTML = `<div class="rc"><a class="back" href="#receipts">‹ Receipts</a><div class="list-empty" style="margin-top:24px"><b>Receipt not found</b>It may be older than the retained history.</div></div>`; return; }
-    cache[id] = j; painted = id + ':' + BB.agents().length; paintDetail(j);
+    j.syncAt = BB.lastSync; cache[id] = j; painted = id + ':' + BB.agents().length; paintDetail(j);
   }
   function paintDetail(j) {
     const t = j.task, d = BB.receiptData(j), done = ['done', 'failed'].includes(t.status);
@@ -61,6 +61,8 @@
   let painted = '';
   BB.on(() => {
     if (!V.classList.contains('on')) return; const id = BB.route().arg;
+    /* lead jobs: refetch the detail on every state sync (the app's live-update tick) while any part is open or new parts may appear, so child create/update/complete shows without a reload */
+    if (id && cache[id] && cache[id].task.lead && BB.lastSync && cache[id].syncAt !== BB.lastSync) { const c = cache[id], open = !['done', 'failed'].includes(c.task.status) || (c.children || []).some(k => !['done', 'failed'].includes(k.status)); c.syncAt = BB.lastSync; if (open) return detail(id); }
     if (id) { const t = BB.task(id), c = cache[id]; if (t && c && (c.task.status !== t.status || t.orchestration && c.task.progressAt!==t.progressAt)) return detail(id); if (t?.orchestration&&c){c.task=t;paintDetail(c);return;} if (c && painted !== id + ':' + BB.agents().length) { painted = id + ':' + BB.agents().length; paintDetail(c); } return; }
     list();
   });

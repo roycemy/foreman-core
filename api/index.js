@@ -148,10 +148,10 @@ async function execute(agent, action, params) {
    const title=String(params.title||'').trim(),source=String(params.source_id||'').trim();if(!title||title.length>120||!source||source.length>200)throw Error('Title and stable source ID required');
    const id='task_'+sha(agent.id+':'+source).slice(0,24),old=await getJ('fm:task:'+id);if(old){if(old.assignee!==to.id)throw Error('Source ID already belongs to a different assignment');return {summary:'Assignment already registered: '+old.title,data:{task_id:id,status:old.status,assignee:old.assignee,duplicate:true}};}
    const parent=params.parent_id?await getJ('fm:task:'+params.parent_id):null;if(params.parent_id&&(!parent||(parent.assignee!==agent.id&&parent.createdBy!==agent.id)))throw Error('Parent job not yours');
-   if(parent&&parent.team&&!parent.team.includes(to.id))throw Error('That job is limited to the owner-picked team; '+to.name+' is not on it');
+   if(parent&&parent.team&&!parent.team.includes(to.id))throw Error('That job is limited to the owner-picked team; '+to.name+' is not on it');if(parent&&await treeStopped(parent))throw Error('The owner stopped this task; no new parts');
    const advice=await routing(String(params.category||'').toLowerCase());
-   const t={...(parent&&parent.team?{team:parent.team.slice()}:{}),id,title,parentId:parent?.id||null,context:parent?String(parent.result||parent.brief||'').slice(0,4000):'',routingReason:advice.suggested?advice.suggested.reason:'No scored category history. Explicit bot choice.',suggestedBotId:advice.suggested?.id||null,brief:String(params.brief||'').slice(0,1500),category:String(params.category||'').toLowerCase(),assignee:to.id,status:'queued',createdBy:agent.id,createdAt:now(),result:null,origin:'chat',sourceId:source};
-   if(!await r(['SET','fm:task:'+id,JSON.stringify(t),'NX']))throw Error('Assignment registered concurrently; read the task before retrying');await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);
+   const t={...inheritFrom(parent),id,title,parentId:parent?.id||null,context:parent?String(parent.result||parent.brief||'').slice(0,4000):'',routingReason:advice.suggested?advice.suggested.reason:'No scored category history. Explicit bot choice.',suggestedBotId:advice.suggested?.id||null,brief:(parent&&parent.owner?ownerBlock(parent.owner)+'\n\nINSTRUCTION FROM '+agent.name+' (bot-written, not the owner\'s words): ':'')+String(params.brief||'').slice(0,1500),botInstruction:String(params.brief||'').slice(0,1500),category:String(params.category||'').toLowerCase(),assignee:to.id,status:'queued',createdBy:agent.id,createdAt:now(),result:null,origin:'chat',sourceId:source};
+   if(!await r(['SET','fm:task:'+id,JSON.stringify(t),'NX']))throw Error('Assignment registered concurrently; read the task before retrying');if(parent)await r(['SADD','fm:children:'+parent.id,id]);await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);
    await event(agent.id,'handoff','Assigned "'+title+'" to '+to.name,{kind:'HANDOFF',taskId:id,toAgentId:to.id});await event(to.id,'assigned',agent.name+' assigned "'+title+'"',{kind:'WAITING',taskId:id,fromAgentId:agent.id});
    return {summary:'Assigned "'+title+'" to '+to.name,data:{task_id:id,status:'queued',assignee:to.id}};
   }
@@ -166,13 +166,29 @@ async function execute(agent, action, params) {
   }
   if (action === 'work.handoff') {
     const t = await getJ('fm:task:' + params.task_id); if (!t || t.orchestration || t.assignee !== agent.id) throw new Error('task not found or not yours');
+    if (await treeStopped(t)) throw new Error('The owner stopped this task; no new parts');
     const to = (await listAgents()).find(x => x.id === params.to || x.name.toLowerCase() === String(params.to || '').toLowerCase());
     if (!to || to.id === agent.id) throw new Error('unknown target agent'); if (to.status !== 'active') throw new Error('target agent is not active');
     if (t.team && !t.team.includes(to.id)) throw new Error('This job is limited to the owner-picked team; ' + to.name + ' is not on it');
-    const child = await newTask({ title: String(params.title || t.title).slice(0, 120), brief: String(params.brief || '').slice(0, 1500), assignee: to.id, parentId: t.id, context: t.result || '', createdBy: agent.id, team: t.team });
-    t.handedTo = to.id; t.childId = child.id; await setJ('fm:task:' + t.id, t);
-    await event(agent.id, 'handoff', `Handed "${t.title}" to ${to.name}`, { kind: 'HANDOFF', toAgentId: to.id, taskId: t.id, childTaskId: child.id });
-    return { summary: `Handed task "${t.title}" to ${to.name} (new task ${child.id}) with context from ${agent.name}`, data: { child_task_id: child.id, to: to.name } };
+    /* stable child ID: parent + handoff key (or a hash of normalized target + instruction); SET NX is the commit point */
+    const title = String(params.title || t.title).slice(0, 120), botText = String(params.brief || '').slice(0, 1500), norm = v => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const hk = String(params.handoff_key || '').trim(); if (hk && !/^[A-Za-z0-9_.:-]{4,120}$/.test(hk)) throw new Error('handoff_key must be 4-120 characters [A-Za-z0-9_.:-]');
+    const keyBasis = hk || sha(norm(to.id) + '|' + norm(title) + '|' + norm(botText)), cid = 'task_' + sha('handoff:' + t.id + ':' + keyBasis).slice(0, 20), payload = sha(JSON.stringify([to.id, norm(title), norm(botText)]));
+    let child = await getJ('fm:task:' + cid), dup = !!child;
+    if (child && child.handoffHash !== payload) throw new Error('handoff key already used for a different part (409)');
+    if (!child) {
+      const inh = inheritFrom(t), at = now();
+      const brief = (t.owner ? ownerBlock(t.owner) + '\n\nINSTRUCTION FROM ' + agent.name + ' (bot-written, not the owner\'s words): ' : '') + (botText || title);
+      child = { id: cid, title, brief: brief.slice(0, 2400), botInstruction: botText, assignee: to.id, assignedAt: at, status: 'queued', parentId: t.id, context: String(t.result || '').slice(0, 4000), createdBy: agent.id, createdAt: at, result: null, handoffHash: payload, ...inh };
+      if (!await r(['SET', 'fm:task:' + cid, JSON.stringify(child), 'NX'])) { child = await getJ('fm:task:' + cid); dup = true; if (!child || child.handoffHash !== payload) throw new Error('handoff key already used for a different part (409)'); }
+    }
+    /* idempotent follow-ups: parent index, recent list, parent pointer, events (first time only) */
+    await r(['SADD', 'fm:children:' + t.id, cid]);
+    if (!(await r(['LRANGE', 'fm:tasklist', 0, 59])).includes(cid)) { await r(['LPUSH', 'fm:tasklist', cid]); await r(['LTRIM', 'fm:tasklist', 0, 59]); }
+    if (t.childId !== cid) { const raw = await r(['GET', 'fm:task:' + t.id]), cur = raw && JSON.parse(raw); if (cur) { cur.handedTo = to.id; cur.childId = cid; await r(['EVAL', AGENT_CAS, 1, 'fm:task:' + t.id, raw, JSON.stringify(cur)]); } }
+    if (!dup) { await event(agent.id, 'handoff', `Handed "${t.title}" to ${to.name}`, { kind: 'HANDOFF', toAgentId: to.id, taskId: t.id, childTaskId: cid }); await maybeWakeBot(to, cid); }
+    bust();
+    return { summary: dup ? `Handoff already registered: ${title} (${cid})` : `Handed task "${t.title}" to ${to.name} (new task ${cid}) with context from ${agent.name}`, data: { child_task_id: cid, to: to.name, duplicate: dup } };
   }
   throw new Error('unknown action');
 }
@@ -397,9 +413,36 @@ async function planTaskParts(body){const text=String(body.title||'').trim(),part
    plans and hands parts to the owner's other connected bots with work.handoff / work.assign, which run through
    Alter's queue (no direct bot-to-bot messaging). The implicit team is every connected external bot; hosted
    (paid) workers are never on it. No Alter-side AI planner and no Alter AI spend. */
+/* Owner limits: the verbatim request is always carried; explicit phrases become structured flags. Children inherit
+   both. Sends, spend and purchases are forbidden in a child unless the root request explicitly allowed them. */
+function parseLimits(text){const x=String(text||''),t=x.toLowerCase(),has=re=>re.test(t);
+ const draftOnly=has(/\b(draft only|only (a )?drafts?|just (a )?drafts?)\b/),noSend=draftOnly||has(/\b(don'?t|do not|never|no)\s+(send|email|post|publish)\b/),noSpend=has(/\b(don'?t|do not|never)\s+(spend|pay)\b|\bno spend(ing)?\b/),noPurchase=has(/\b(don'?t|do not|never)\s+(buy|purchase|order)\b|\bno purchases?\b/);
+ const allowSend=!noSend&&has(/\b(you can|ok to|okay to|allowed to|go ahead and|please)\s+(send|email|post|publish)\b/),allowPurchase=!noPurchase&&!noSpend&&has(/\b(you can|ok to|okay to|allowed to|go ahead and|please)\s+(buy|purchase|order)\b/),allowSpend=!noSpend&&(allowPurchase||has(/\b(you can|ok to|okay to|allowed to)\s+(spend|pay)\b|\bspend up to\b/));
+ return {draftOnly,noSend,noSpend,noPurchase,allowSend,allowSpend,allowPurchase};}
+function limitsText(l){const o=[];if(l.draftOnly)o.push('draft only');if(l.noSend)o.push('do not send');if(l.noSpend)o.push('do not spend');if(l.noPurchase)o.push('do not buy');if(l.allowSend)o.push('sending allowed');if(l.allowSpend)o.push('spending allowed (still needs owner approval)');if(l.allowPurchase)o.push('purchases allowed (still need owner approval)');return o.length?o.join('; '):'none stated';}
+/* capability tags on catalog actions; an action without a tag is not a send/spend/purchase */
+const ACTION_CAPS={};
+function forbiddenCaps(t){const l=(t.owner&&t.owner.limits)||{},child=!!(t.rootId&&t.rootId!==t.id),f=new Set();
+ if(l.noSend||l.draftOnly||(child&&!l.allowSend))f.add('send');if(l.noSpend||(child&&!l.allowSpend))f.add('spend');if(l.noPurchase||l.noSpend||(child&&!l.allowPurchase))f.add('purchase');return f;}
+/* server-side gate: allowed-actions ceiling and owner limits of the job's tree */
+async function ownerLimitBlock(action,taskId){if(!taskId)return null;const t=await getJ('fm:task:'+taskId);if(!t||!t.owner)return null;
+ if(await treeStopped(t))return {code:'tree_stopped',reason:'The owner stopped this task and all its parts'};
+ if(Array.isArray(t.allowedActions)&&!t.allowedActions.includes(action))return {code:'owner_limit',reason:'Not allowed in this job: the owner\'s request ('+limitsText(t.owner.limits)+') does not cover '+action};
+ const cap=ACTION_CAPS[action]||(ACTIONS[action]&&ACTIONS[action].cap);if(cap&&forbiddenCaps(t).has(cap))return {code:'owner_limit',reason:'The owner\'s request does not allow '+cap+' in this job ('+limitsText(t.owner.limits)+')'};return null;}
+function rootAllowedActions(l){return Object.keys(ACTIONS).filter(k=>{const c=ACTIONS[k].cap;return !(c==='send'&&(l.noSend||l.draftOnly))&&!(c==='spend'&&l.noSpend)&&!(c==='purchase'&&(l.noPurchase||l.noSpend));});}
+/* fields every descendant inherits from its parent: owner request + limits verbatim, root, team, allowed actions as a ceiling */
+function inheritFrom(parent){if(!parent||!parent.owner)return parent&&parent.team?{team:parent.team.slice()}:{};return {owner:parent.owner,rootId:parent.rootId||parent.id,ancestors:[...(parent.ancestors||[]),parent.id],depth:(parent.depth||0)+1,...(parent.team?{team:parent.team.slice()}:{}),...(Array.isArray(parent.allowedActions)?{allowedActions:parent.allowedActions.slice()}:{})};}
+function ownerBlock(owner){return 'OWNER\'S ORIGINAL REQUEST (verbatim): '+owner.request+'\nOWNER LIMITS: '+limitsText(owner.limits)+'. These bind every part, at any depth.';}
+/* a task is stopped when it or any ancestor was stopped by the owner (subtree flag, set before the cascade) */
+async function treeStopped(t){if(!t||!t.rootId)return false;const ids=[...(t.ancestors||[t.rootId]),t.id];return (await r(['MGET',...ids.map(x=>'fm:stopped:'+x)])).some(Boolean);}
+function canHandOff(a){const ty=BL.BOT_TYPES[a&&a.providerId];return !(ty&&ty.canHandOff===false);}
 function teamEligible(a){return a&&a.status==='active'&&!a.harness&&!a.hosted&&!a.paused;}
-function pickLead(agents){const seen=a=>Date.parse(a.lastSeen||'')||0,byRecent=(x,y)=>seen(y)-seen(x)||String(x.id).localeCompare(String(y.id));const awake=agents.filter(a=>botAwake(a)).sort(byRecent);if(awake.length)return {lead:awake[0],waiting:false};const all=agents.slice().sort(byRecent);return {lead:all[0]||null,waiting:true};}
-function leadBrief(lead,team,ownerBrief){const others=team.filter(a=>a.id!==lead.id);return ('You are the lead for this owner task. Plan it, do your share, and hand parts to other connected bots when that helps.'+(others.length?' Bots you can hand parts to (and only these): '+others.map(a=>a.name+' (id '+a.id+')').join(', ')+'. Use work.handoff with this job, or work.assign with parent_id set to this job; each part goes through Alter\'s queue and the other bot claims it there. There is no direct bot-to-bot messaging.':' No other bot is connected right now, so do the whole task yourself.')+' Report only real results. When handed-off parts finish, include their real results in your final result; never invent or summarize work that did not happen.'+(ownerBrief?'\n\nOwner details: '+ownerBrief:'')).slice(0,1500);}
+/* Lead = most recently active awake bot that can hand off; a bot that cannot hand off (by adapter capability) leads only if it is the only awake bot, and is labeled. */
+function pickLead(agents){const seen=a=>Date.parse(a.lastSeen||'')||0,byRecent=(x,y)=>seen(y)-seen(x)||String(x.id).localeCompare(String(y.id));const awake=agents.filter(a=>botAwake(a)).sort(byRecent);
+ const able=awake.filter(canHandOff);if(able.length)return {lead:able[0],waiting:false,alone:false};
+ if(awake.length)return {lead:awake[0],waiting:false,alone:true};
+ const all=agents.slice().sort((x,y)=>(canHandOff(y)-canHandOff(x))||byRecent(x,y));return {lead:all[0]||null,waiting:true,alone:!!all[0]&&!canHandOff(all[0])};}
+function leadBrief(lead,team,ownerBrief,owner,alone){const others=team.filter(a=>a.id!==lead.id);if(alone)return (ownerBlock(owner)+'\n\nYou are doing this task alone: your connection cannot hand parts to other bots. Report only real results; never invent work that did not happen.').slice(0,1500);return (ownerBlock(owner)+'\n\nYou are the lead for this owner task. Plan it, do your share, and hand parts to other connected bots when that helps.'+(others.length?' Bots you can hand parts to (and only these): '+others.map(a=>a.name+' (id '+a.id+')').join(', ')+'. Use work.handoff with this job, or work.assign with parent_id set to this job; each part goes through Alter\'s queue and the other bot claims it there. There is no direct bot-to-bot messaging.':' No other bot is connected right now, so do the whole task yourself.')+' Report only real results. When handed-off parts finish, include their real results in your final result; never invent or summarize work that did not happen.'+' Every part you hand off carries the owner\'s request and limits above; bots you hand to get no more permissions than this job has.').slice(0,1500);}
 /* Crash-safe idempotent submit: the job ID is derived from the client's requestId and the job record is written
    with SET NX as the single commit point. A retry after a crash at any step resolves to the same job: before the
    commit nothing exists (so it is created once); after it, the retry finishes the remaining idempotent steps. */
@@ -413,14 +456,14 @@ async function leadTask(body){
  if(t){if(t.requestHash!==payload)return {status:409,body:{error:'This request ID was already used for a different task.'}};}
  else{
   const team=(await listAgents()).filter(teamEligible);if(!team.length)return {status:400,body:{error:'Connect a bot first. Paid hosted workers are never used automatically.'}};
-  const {lead,waiting}=pickLead(team);const at=now();
-  t={id,title,brief:leadBrief(lead,team,brief),ownerBrief:brief,assignee:lead.id,assignedAt:at,assignedBy:'lead-route',status:'queued',parentId:null,context:'',createdBy:'owner',createdAt:at,result:null,lead:true,team:team.map(a=>a.id),requestHash:payload,routingReason:waiting?'Nobody is awake. '+lead.name+' checked in most recently, so the task waits for it to wake.':lead.name+' is awake and checked in most recently, so it leads.',...(waiting?{waitNote:'Waiting for '+lead.name+' to wake. Alter never hands this to a paid hosted worker.'}:{})};
+  const {lead,waiting,alone}=pickLead(team);const at=now(),owner={request:(title+(brief?'\n'+brief:'')).slice(0,1700),limits:parseLimits(title+'\n'+brief)};
+  t={id,title,brief:leadBrief(lead,team,brief,owner,alone),ownerBrief:brief,owner,rootId:id,depth:0,allowedActions:rootAllowedActions(owner.limits),...(alone?{leadAlone:true}:{}),assignee:lead.id,assignedAt:at,assignedBy:'lead-route',status:'queued',parentId:null,context:'',createdBy:'owner',createdAt:at,result:null,lead:true,team:team.map(a=>a.id),requestHash:payload,routingReason:(waiting?'Nobody is awake. '+lead.name+' checked in most recently, so the task waits for it to wake.':lead.name+' is awake and checked in most recently, so it leads.')+(alone?' '+lead.name+' will do this alone: it can\'t hand off.':''),...(waiting?{waitNote:'Waiting for '+lead.name+' to wake. Alter never hands this to a paid hosted worker.'}:{})};
   if(!await r(['SET',key,JSON.stringify(t),'NX'])){t=await getJ(key);if(!t||t.requestHash!==payload)return {status:409,body:{error:'This request ID was already used for a different task.'}};}
  }
  /* idempotent follow-ups: list membership, then a wake */
  if(!(await r(['LRANGE','fm:tasklist',0,59])).includes(id)){await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);}
  bust();const la=await getJ('fm:agent:'+t.assignee);if(la&&t.status==='queued')await maybeWakeBot(la,id);
- return {status:200,body:{task:t,lead:{id:t.assignee,name:la?la.name:null},waiting:!!t.waitNote}};
+ return {status:200,body:{task:t,lead:{id:t.assignee,name:la?la.name:null,alone:!!t.leadAlone},waiting:!!t.waitNote}};
 }
 async function createTaskParts(body){const parts=body.parts;if(!Array.isArray(parts)||parts.length<2||parts.length>4||parts.some(p=>!p||!String(p.title||'').trim()||String(p.title).length>120))return {status:400,body:{error:'Review 2 to 4 titled parts'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}};for(const p of parts)if(p.assignee){const a=await getJ('fm:agent:'+p.assignee);if(!a||a.status!=='active'||a.paused||a.hosted||a.harness)return {status:400,body:{error:'Choose active external bots only'}};}
  const parent=await newTask({title:body.title,brief:body.brief,hold:true});parent.orchestration=true;parent.status='waiting';parent.startedAt=now();parent.partIds=[];await setJ('fm:task:'+parent.id,parent);
@@ -565,8 +608,16 @@ async function expireStalledTasks(){const stale=(await listTasks()).filter(t=>!t
   if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(next)])!==1)return;changed=true;
   if(next.assignee)await event(next.assignee,'blocked','Job auto-stopped after 30 minutes without progress: '+next.title,{kind:'BLOCKED',taskId:next.id});});}
  if(changed)bust();}
+/* All descendants via the parent index (never the recent-30 list), breadth-first, depth-capped. */
+async function descendants(id,max){const out=[],seen=new Set([id]);let frontier=[id];for(let d=0;d<8&&frontier.length;d++){const next=[];for(const pid of frontier){const ids=(await r(['SMEMBERS','fm:children:'+pid])).filter(x=>!seen.has(x));ids.forEach(x=>seen.add(x));if(!ids.length)continue;for(const v of await r(['MGET',...ids.map(x=>'fm:task:'+x)]))if(v){const c=JSON.parse(v);c.depth=c.depth||d+1;out.push(c);next.push(c.id);}}frontier=next;if(max&&out.length>=max)break;}return out;}
+/* Stop on a lead tree: set the tree-stopped flag first (every claim/complete/handoff/action in the tree checks it),
+   then fail every non-finished descendant by compare-and-set and send running bots the existing halt signal. */
+async function stopTree(t){await r(['SET','fm:stopped:'+t.id,now()]);let n=0;
+ for(const c of await descendants(t.id)){const ck='fm:task:'+c.id;for(let i=0;i<4;i++){const cr=await r(['GET',ck]),cur=cr&&JSON.parse(cr);if(!cur||!['queued','running','waiting'].includes(cur.status))break;const next={...cur,status:'failed',result:'Stopped by owner (the whole task was stopped).',finishedAt:now(),stoppedByOwner:true};await closeJobGrant(next,'Task stopped by owner');if(await r(['EVAL',AGENT_CAS,1,ck,cr,JSON.stringify(next)])===1){n++;if(cur.status==='running'&&cur.assignee)await event(cur.assignee,'blocked','Owner stopped job: '+cur.title,{kind:'BLOCKED',taskId:cur.id});break;}}}
+ return n;}
 async function stopTask(id){return withJobLock(id,async()=>{
  const key='fm:task:'+id,raw=await r(['GET',key]),t=raw&&JSON.parse(raw);if(!t)return {status:404,body:{error:'Job not found'}};
+ if(t.owner&&!t.orchestration)await stopTree(t);
  if(t.orchestration&&t.status==='running'){for(const cid of t.partIds){const ck='fm:task:'+cid,cr=await r(['GET',ck]),child=cr&&JSON.parse(cr);if(child&&['waiting','queued','running'].includes(child.status)){child.status='failed';child.result='Stopped by owner';child.finishedAt=now();await closeJobGrant(child,'Plan stopped by owner');await r(['EVAL',AGENT_CAS,1,ck,cr,JSON.stringify(child)]);}}await r(['SREM','fm:activePlans',id]);} if(!['running','queued'].includes(t.status)||(t.status==='queued'&&!t.assignee))return {status:409,body:{error:'Only a queued or running job with a bot can be stopped. Refresh.'}};
  const next={...t,status:'failed',result:'Stopped by owner',finishedAt:now()};
  await closeJobGrant(next,'Job stopped by owner; action grant expired');
@@ -577,7 +628,7 @@ async function stopTask(id){return withJobLock(id,async()=>{
 async function jobDetail(id){
  const t=await getJ('fm:task:'+id);if(!t)return null;
  const parse=a=>(a||[]).filter(Boolean).map(x=>JSON.parse(x));
- const kids=t.orchestration?(await Promise.all(t.partIds.map(id=>getJ('fm:task:'+id)))).filter(Boolean):(await listTasks()).filter(x=>x.parentId===id);
+ let kids=t.orchestration?(await Promise.all(t.partIds.map(id=>getJ('fm:task:'+id)))).filter(Boolean):await descendants(id,200);if(!t.orchestration){const known=new Set(kids.map(k=>k.id));for(const x of (await listTasks()).filter(x=>x.parentId===id&&!known.has(x.id)))kids.push(x);} /* parent index first; recent list only for legacy children */
  const ids=new Set([id,...kids.map(k=>k.id)]);
  const events=parse(await r(['LRANGE','fm:events',0,299])).filter(e=>ids.has(e.taskId)||ids.has(e.childTaskId)).reverse();
  const reqIds=await r(['SMEMBERS','fm:taskreqs:'+id]);const requests=reqIds.length?parse(await r(['MGET',...reqIds.map(x=>'fm:req:'+x)])).map(pub):[];
@@ -712,11 +763,13 @@ async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return
 async function closeJobGrant(t,reason){if(t.jobGrant){t.jobGrant={...t.jobGrant,status:'closed',closedAt:now(),closeReason:reason};}await cancelJobRequests(t.id,reason);}
 
 async function reconcileTaskParents(){for(const p of (await listTasks()).filter(t=>t.orchestration&&t.status==='running'))await refreshTaskParent(p.id);}
-async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;await r(['SET','fm:claimSeen:'+agent.id,now(),'EX','604800']);await expireStalledTasks();await reconcileTaskParents();await reassignAsleepQueuedTasks(agent.id);const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => !t.orchestration && t.status === 'queued' && (t.assignee === agent.id || (!t.assignee && (!t.team || t.team.includes(agent.id))))).reverse(); const t = ts[0]; if (!t) return null;
-  const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id)||(live.team&&!live.team.includes(agent.id)))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); t.progressAt = t.startedAt;if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
+async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;await r(['SET','fm:claimSeen:'+agent.id,now(),'EX','604800']);await expireStalledTasks();await reconcileTaskParents();await reassignAsleepQueuedTasks(agent.id);const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => !t.orchestration && t.status === 'queued' && (t.assignee === agent.id || (!t.assignee && (!t.team || t.team.includes(agent.id))))).reverse(); const ts2 = []; for (const x of ts) { if (await treeStopped(x)) continue; ts2.push(x); } const t = ts2[0]; if (!t) return null;
+  const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id)||(live.team&&!live.team.includes(agent.id))||(await treeStopped(live)))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); t.progressAt = t.startedAt;if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
 async function completeTask(agent,id,body){return withJobLock(id,()=>completeTaskUnlocked(agent,id,body));}
 async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.orchestration || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
   if (t.team && !t.team.includes(agent.id)) return { status: 403, body: { error: 'This job is limited to the owner-picked team' } };
+  if (await treeStopped(t)) return { status: 409, body: { error: 'The owner stopped this task and its parts' } };
+  if (t.owner && (body.status || 'done') === 'done') { const open = (await descendants(t.id)).filter(x => ['queued', 'running', 'waiting'].includes(x.status)); if (open.length) return { status: 409, body: { error: 'Waiting on parts: ' + open.length + ' handed-off ' + (open.length === 1 ? 'part is' : 'parts are') + ' still open (' + open.map(x => x.title).slice(0, 3).join('; ') + '). Finish when they are done, or report failed.', waitingOnParts: open.map(x => x.id) } }; }
   if(t.status==='queued'&&(t.reassignedAt||(t.origin==='chat'&&t.createdBy!==agent.id)))return {status:409,body:{error:'Claim the assigned job before completing it'}};
   if (!['running','queued'].includes(t.status)) return {status:409,body:{error:'Task is already terminal',task:t}};
   const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(body&&body.runByAlter===true)t.runByAlter=true; /* hosted worker self-labels: rendered as Run by Alter on <bot>'s account */
@@ -983,7 +1036,7 @@ async function gatewayActUnlocked(agent, body) {
   const task=taskId?await getJ('fm:task:'+taskId):null;
   const mode = (agent.permissions||{})[action]==='NEVER'?'NEVER':agent.permissionScope==='job'?(task?.jobGrant?.actions?.[action]||'NEVER'):((agent.permissions||{})[action]||DEFAULT_PERMS[action]||'NEVER');
   await event(agent.id, 'attempt', `Attempted ${action} (${mode})`, { action });
-  const blocked = await jobPolicy(agent,action,taskId) || await policy(agent, action, mode);
+  const blocked = await ownerLimitBlock(action,taskId) || await jobPolicy(agent,action,taskId) || await policy(agent, action, mode);
   if (blocked) {
     const rec = await receipt(agent, action, params, 'blocked', 0, `BLOCKED: ${blocked.reason}`, null, { code: blocked.code, taskId: taskId || null });
     await event(agent.id, 'blocked', `Blocked ${action}: ${blocked.reason}`, { receiptId: rec.id, code: blocked.code });
@@ -1020,7 +1073,7 @@ async function decideUnlocked(reqId, decision) {
     return { status: 200, body: { request: pub(q) } };
   }
   // approval: re-check policy NOW (agent may have been revoked / budget changed while paused). Mode treated as AUTO for this one action.
-  const blocked = await jobPolicy(agent,q.action,q.taskId,q.grantId) || await policy(agent, q.action, (agent.permissions||{})[q.action]==='NEVER'?'NEVER':'AUTO');
+  const blocked = await ownerLimitBlock(q.action,q.taskId) || await jobPolicy(agent,q.action,q.taskId,q.grantId) || await policy(agent, q.action, (agent.permissions||{})[q.action]==='NEVER'?'NEVER':'AUTO');
   if (blocked) {
     q.status = 'blocked'; q.decidedAt = now(); q.reason = blocked.reason; await finishReq(q);
     const rec = await receipt(agent, q.action, q.params, 'blocked', 0, `BLOCKED at approval: ${blocked.reason}`, q.id, { code: blocked.code });
@@ -1159,7 +1212,7 @@ async function newSpendRequest(agent,body){
  const a=await getJ('fm:agent:'+agent.id);if(!a||a.status!=='active'||await r(['GET','fm:kill']))return {status:403,body:{error:'Worker is off; no spend request accepted'}};
  const text=(v,n)=>typeof v==='string'&&v.trim().length>0&&v.trim().length<=n;
  if(!Number.isSafeInteger(body.amountCents)||body.amountCents<=0||body.amountCents>100000000||body.currency!=='USD'||!text(body.merchant,120)||!text(body.accountLabel,120)||!text(body.purpose,500)||!text(body.undoTerms,500)||!text(body.sourceId,120))return {status:400,body:{error:'USD amountCents (positive integer), merchant, accountLabel, purpose, undoTerms and sourceId are required'}};
- if(body.taskId){const t=await getJ('fm:task:'+body.taskId);if(!t||t.assignee!==a.id)return {status:400,body:{error:'Task must belong to this worker'}};}
+ if(body.taskId){const t=await getJ('fm:task:'+body.taskId);if(!t||t.assignee!==a.id)return {status:400,body:{error:'Task must belong to this worker'}};const f=t.owner?forbiddenCaps(t):new Set();if(await treeStopped(t))return {status:403,body:{error:'The owner stopped this task'}};if(f.has('spend')||f.has('purchase'))return {status:403,body:{error:'The owner\'s request does not allow spending or purchases in this job ('+limitsText(t.owner.limits)+')',code:'owner_limit'}};}
  const details={taskId:body.taskId||null,amountCents:body.amountCents,currency:'USD',merchant:body.merchant.trim(),accountLabel:body.accountLabel.trim(),purpose:body.purpose.trim(),undoTerms:body.undoTerms.trim()};
  const id='spend_'+sha(a.id+':'+body.sourceId).slice(0,24),key='fm:spendRequest:'+id,existing=await getJ(key);
  if(existing)return {status:sha(JSON.stringify(existing.details))===sha(JSON.stringify(details))?200:409,body:sha(JSON.stringify(existing.details))===sha(JSON.stringify(details))?{request:existing}:{error:'sourceId already has different spend details'}};
@@ -1171,7 +1224,8 @@ async function reviewSpend(id,decision,detailsHash){const key='fm:spendRequest:'
  for(let attempt=0;attempt<8;attempt++){const raw=await r(['GET',key]);if(!raw)return {status:404,body:{error:'not found'}};const q=JSON.parse(raw);
  if(q.detailsHash!==detailsHash)return {status:409,body:{error:'Spend details changed; review this request again'}};
  if(q.status!=='pending_review')return {status:200,body:{request:q}};
- const a=await getJ('fm:agent:'+q.agentId),blocked=!a||a.status!=='active'||await r(['GET','fm:kill']);
+ const qt=q.taskId?await getJ('fm:task:'+q.taskId):null,ownerBlocked=!!(qt&&qt.owner&&((f=>f.has('spend')||f.has('purchase'))(forbiddenCaps(qt))||(await treeStopped(qt))));
+ const a=await getJ('fm:agent:'+q.agentId),blocked=!a||a.status!=='active'||await r(['GET','fm:kill'])||ownerBlocked;
  q.status=decision==='deny'?'denied':Date.parse(q.expiresAt)<=Date.now()?'expired':blocked?'blocked':'approved_not_connected';q.decidedAt=now();q.decisionReceipt={id:'review_'+id,at:q.decidedAt,requestId:id,agentId:q.agentId,agentName:q.agentName,merchant:q.merchant,amountCents:q.amountCents,currency:q.currency,outcome:q.status,chargedCents:0,kind:'decision_record',detailsHash:q.detailsHash,note:'Decision record only. No payment connection, no charge and no vendor receipt.'};
  const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(q)]);if(won===1){bust();return {status:200,body:{request:q,receipt:q.decisionReceipt}};}}
  return {status:409,body:{error:'Another decision is being saved; refresh'}};

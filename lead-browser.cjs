@@ -12,7 +12,7 @@ for(const [width,asleep] of [[1440,false],[390,false],[1440,true],[390,true]]){c
   if(u.pathname==='/api/state')j={agents:[g,i,m],tasks:lead?[lead,...kids]:[],requests:[],events:[],receipts:[],notes:[],kinds:[]};
   if(u.pathname==='/api/tasks/plan')throw Error('no plan step');
   if(u.pathname==='/api/tasks'&&post){const body=route.request().postDataJSON();bodies.push(body);writes++;assert.equal(body.lead,true);assert(/^[A-Za-z0-9_-]{8,80}$/.test(body.requestId));assert(!('team' in body)&&!('mode' in body)&&!('roles' in body));
-   lead={id:'L1',title:body.title,lead:true,assignee:'g',team:['g','i','m'],status:asleep?'queued':'running',createdAt:now,startedAt:asleep?null:now,routingReason:asleep?'Nobody is awake. Grok Bot checked in most recently, so the task waits for it to wake.':'Grok Bot is awake and checked in most recently, so it leads.'};
+   lead={id:'L1',title:body.title,lead:true,owner:{request:body.title,limits:{draftOnly:true,noSend:true}},assignee:'g',team:['g','i','m'],status:asleep?'queued':'running',createdAt:now,startedAt:asleep?null:now,routingReason:asleep?'Nobody is awake. Grok Bot checked in most recently, so the task waits for it to wake.':'Grok Bot is awake and checked in most recently, so it leads.'};
    kids=asleep?[]:[{id:'K1',parentId:'L1',title:'Find three competitors with pricing',assignee:'i',status:'done',result:'Acme $20/mo, Beta $35/mo, Gamma $12/mo',createdAt:now,finishedAt:now},{id:'K2',parentId:'L1',title:'Fact-check the price list',assignee:'m',status:'queued',createdAt:now}];
    j={task:lead,lead:{id:'g',name:'Grok Bot'},waiting:asleep};}
   if(u.pathname==='/api/jobs/L1')j={task:lead,children:kids,timeline:[],receipts:[],events:[],requests:[]};
@@ -27,7 +27,16 @@ for(const [width,asleep] of [[1440,false],[390,false],[1440,true],[390,true]]){c
  await p.evaluate(()=>{const t=document.querySelector('#toast');t&&t.classList.remove('on')});await p.waitForTimeout(400);
  const txt=await p.locator('.lead-view').innerText();assert(/Lead: Grok Bot/.test(txt));assert(/don\u2019t message each other directly/.test(txt));
  if(asleep){assert(/Waiting for Grok Bot to wake/.test(txt));await p.screenshot({path:out+'/'+width+'-3-waiting-for-wake.png'});}
- else{assert(/Handed to Instinct/.test(txt)&&/Acme \$20\/mo/.test(txt)&&/Handed to Muse/.test(txt));await p.screenshot({path:out+'/'+width+'-2-running-lead.png'});}
+ else{assert(/Handed to Instinct/.test(txt)&&/Acme \$20\/mo/.test(txt)&&/Handed to Muse/.test(txt));await p.screenshot({path:out+'/'+width+'-2-running-lead.png'});
+  assert(/Your limits apply to every part: draft only, don't send/i.test(txt));
+  // a child updates and a sub-part appears; the page refreshes on the app's live state tick (no reload, no click)
+  const fetchesBefore=await p.evaluate(()=>performance.getEntriesByType('resource').filter(e=>/api\/jobs\/L1/.test(e.name)).length);
+  kids=[kids[0],{...kids[1],status:'running'},{id:'K3',parentId:'K2',title:'Check Beta pricing page',assignee:'g',status:'done',result:'Beta is $35/mo (confirmed)',createdAt:now}];
+  await p.evaluate(()=>BB.sync(true));await p.waitForFunction(()=>/Beta is \$35\/mo \(confirmed\)/.test(document.querySelector('.lead-view').innerText),null,{timeout:5000});
+  const t2=await p.locator('.lead-view').innerText();assert(/Handed to Muse \u00b7 working/i.test(t2),'child status updated');assert.equal(await p.locator('.lead-view [data-depth="1"]').count(),1,'nested sub-part rendered');
+  assert(await p.evaluate(()=>performance.getEntriesByType('resource').filter(e=>/api\/jobs\/L1/.test(e.name)).length)>fetchesBefore);
+  await p.waitForTimeout(300);const pop=await p.evaluate(()=>{const e=[...document.querySelectorAll('body *')].find(x=>/^Check Beta pricing page/.test(x.innerText||'')&&!x.closest('.lead-view')&&getComputedStyle(x).position!=='static');return e?e.className+'|'+e.id:null});console.log('  overlay:',pop);
+  await p.screenshot({path:out+'/'+width+'-4-child-updated-nested.png'});}
  assert.equal(errors.length,0,errors.join('\n'));assert(await p.evaluate(()=>document.documentElement.scrollWidth)<=width);
- console.log('PASS lead UI',width,asleep?'waiting-for-wake':'running','- type box only, one write, lead + handed-off parts with real results');await p.close();}
+ console.log('PASS lead UI',width,asleep?'waiting-for-wake':'running','- type box only, one write, lead + handed-off parts with real results'+(asleep?'':', limits shown, refresh on child update, nested sub-part'));await p.close();}
 await b.close();server.close();})().catch(e=>{console.error(e);process.exit(1)});

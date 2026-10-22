@@ -33,13 +33,14 @@ const TRANSPORTS = {
   http_key: { id: 'http_key', label: 'HTTP link key', acceptsLinkKey: true, note: 'Link key accepted on POST ' + LINK_ENDPOINT + '.' },
   runner: { id: 'runner', label: 'Paired runner', acceptsLinkKey: false, note: 'Link keys are not bridged to the runner session. Instinct uses the link key over HTTP from its pairing page.' },
 };
+// canHandOff: whether the bot can call Alter actions (work.handoff / work.assign) on its own. Lead routing reads it.
 // Adding a bot type = one entry here. The onboarding UI renders from this list only.
 const BOT_TYPES = {
-  instinct: { id: 'instinct', name: 'Instinct', transport: 'runner', live: { possible: false, why: 'Instinct does not send real typing or presence events today, so Alter shows no Live tier.' },
+  instinct: { id: 'instinct', name: 'Instinct', transport: 'runner', canHandOff: true, live: { possible: false, why: 'Instinct does not send real typing or presence events today, so Alter shows no Live tier.' },
     message: (page, steps) => `Connect to Alter. Open ${page} in your browser worker and keep that tab open until it says Connected. This link contains no secret.` },
-  grok: { id: 'grok', name: 'Grok', transport: 'mcp', live: { possible: false, why: 'Live needs real foreman_owner_conversation events. A link key cannot send them yet, so bot link never shows Live.' },
+  grok: { id: 'grok', name: 'Grok', transport: 'mcp', canHandOff: true, live: { possible: false, why: 'Live needs real foreman_owner_conversation events. A link key cannot send them yet, so bot link never shows Live.' },
     message: (page, steps) => `Connect to Alter. GET ${steps} and follow the JSON steps it returns (hello, wait for owner approval, collect your key once, run the echo). This link contains no secret.` },
-  muse: { id: 'muse', name: 'Muse', transport: 'http_key', live: { possible: false, why: 'Meta does not give Alter real typing or presence events for Muse, so there is no Live tier. Alter will not fake one.' },
+  muse: { id: 'muse', name: 'Muse', transport: 'http_key', canHandOff: false, noHandOffWhy: 'Muse runs inside Meta with no custom tool connectors, so it cannot call work.handoff on its own.', live: { possible: false, why: 'Meta does not give Alter real typing or presence events for Muse, so there is no Live tier. Alter will not fake one.' },
     message: (page, steps) => `Connect to Alter over plain HTTP. GET ${steps} for the exact steps: POST a fresh nonce and a secret you keep, poll until the owner approves, collect your key once, then POST {"op":"echo"} to ${LINK_ENDPOINT}. This link contains no secret.` },
 };
 const REVOKE_COPY = 'Alter blocks new requests from this bot that go through Alter. It cannot stop calls the bot makes outside Alter.';
