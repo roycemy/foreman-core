@@ -3,9 +3,11 @@
 // Only the owner-reviewed public snapshot is read (no bot or owner identity), so the image never shows more than the public page.
 const fs = require('fs'), path = require('path');
 const { Resvg } = require('@resvg/resvg-js');
-const { publicReceiptRead } = require('./index.js');
+const { publicReceiptRead, invitePreview } = require('./index.js');
+const invitePage = (() => { try { return require('../lib/invite-page.cjs'); } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; return require('./lib/invite-page.cjs'); } })();
 const FONT_DIR = path.join(__dirname, 'fonts');
 const FONTS = { 400: 'Geist-Regular.ttf', 500: 'Geist-Medium.ttf', 600: 'Geist-SemiBold.ttf' };
+const MONO = 'GeistMono-Variable.ttf'; // SIL OFL, same family as Geist
 const BRAND = process.env.BRAND_NAME || 'alter';
 
 /* --- advance widths straight from the font (cmap format 4 + hmtx), for line breaking --- */
@@ -71,11 +73,47 @@ function card(snap) {
     ${head}${factSvg}
     ${mark(W - 72 - measure(BRAND, 20, 600, -.045) - 34, H - 56 - 21, 22, '#121212')}<text x="${W - 72}" y="${H - 58}" text-anchor="end" ${T} font-size="20" font-weight="600" letter-spacing="-.9" fill="#121212">${esc(BRAND)}</text></svg>`;
 }
+
+/* --- invite card (direction B, og-b3): the HQ floor on the right, nameplate on the floor, text bottom-left. Static. --- */
+let FLOOR = null;
+const floorUri = () => FLOOR || (FLOOR = 'data:image/jpeg;base64,' + fs.readFileSync(path.join(FONT_DIR, 'invite-floor.jpg')).toString('base64'));
+const LOCKUP = (x, y, h) => { const k = h / 48; return `<g transform="translate(${x} ${y}) scale(${k})"><g transform="translate(0 6) scale(.72) translate(-4 -17)"><path d="M8 33 V37 L32 49 L56 37 V33" fill="#111" stroke="#111" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="#F4F3EF" stroke="#111" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E8452C"/></g><text x="52" y="34" font-family="Geist" font-weight="600" font-size="30" letter-spacing="-1.2" fill="#111">alter</text></g>`; };
+function inviteCard(v) {
+  const name = v && v.name ? invitePage.cleanName(v.name) : '', seat = v ? invitePage.nextSeat(v.taken) : null, personal = !!(name && seat);
+  const W = 1200, H = 630, T = 'font-family="Geist"', M = 'font-family="Geist Mono"';
+  const hs = 74, nameW = measure(name + ' saved', hs, 600, -3 / hs);
+  const size = personal && nameW > 560 ? Math.max(48, Math.floor(hs * 560 / nameW)) : hs;
+  const l1 = personal ? (measure(name + ' saved', size, 600, -3 / hs) <= 600 ? name + ' saved' : clip(name, size, 600, 600 - measure(' saved', size, 600)) + ' saved') : 'A seat is';
+  const l2 = personal ? 'you a seat.' : 'saved for you.';
+  const eb = personal ? `from ${name}, at alter hq` : 'an invite to alter hq';
+  const plateTxt = personal ? `seat ${String(seat).padStart(3, '0')} / 1,000` : 'founding seat / 1,000';
+  const pw = Math.max(measure('Reserved for you', 24, 600) , 26 + 17 * .6 * plateTxt.length) + 44, px = 760, py = 250, ph = 78;
+  const ty = H - 70, tagY = ty - 6, h2 = tagY - 26 - 20 - 4, h1y = h2 - size * 1.02, eY = h1y - size * .78 - 18;
+  const tx = px + pw / 2, dotX = tx - (17 * .6 * plateTxt.length + 17) / 2;
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <defs><linearGradient id="fx" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#F4F4F1"/><stop offset=".34" stop-color="#F4F4F1"/><stop offset=".44" stop-color="#F4F4F1" stop-opacity=".85"/><stop offset=".6" stop-color="#F4F4F1" stop-opacity="0"/></linearGradient>
+  <linearGradient id="fy" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#F4F4F1" stop-opacity=".9"/><stop offset=".22" stop-color="#F4F4F1" stop-opacity="0"/></linearGradient>
+  <radialGradient id="gl"><stop offset="0" stop-color="#FFE2AA" stop-opacity=".55"/><stop offset="1" stop-color="#FFE2AA" stop-opacity="0"/></radialGradient>
+  <filter id="ps" x="-30%" y="-30%" width="160%" height="190%"><feDropShadow dx="0" dy="22" stdDeviation="20" flood-color="#000" flood-opacity=".22"/></filter></defs>
+  <rect width="${W}" height="${H}" fill="#F4F4F1"/>
+  <image x="320" y="-34" width="1180" height="652" preserveAspectRatio="none" xlink:href="${floorUri()}" href="${floorUri()}"/>
+  <ellipse cx="${tx}" cy="${py + 40}" rx="200" ry="150" fill="url(#gl)"/>
+  <rect width="${W}" height="${H}" fill="url(#fx)"/><rect width="${W}" height="${H}" fill="url(#fy)"/>
+  <g filter="url(#ps)"><rect x="${px}" y="${py + 8}" width="${pw}" height="${ph}" rx="9" fill="#2A2A27"/><rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="9" fill="#111"/></g>
+  <text x="${tx}" y="${py + 34}" text-anchor="middle" ${T} font-weight="600" font-size="24" letter-spacing="-.3" fill="#F4F4F1">Reserved for you</text>
+  <circle cx="${dotX + 4.5}" cy="${py + 58}" r="4.5" fill="#E8452C"/>
+  <text x="${dotX + 17}" y="${py + 64}" ${M} font-size="17" fill="#F4F4F1" fill-opacity=".78">${esc(plateTxt)}</text>
+  ${LOCKUP(80, 68, 42)}
+  <text x="80" y="${eY.toFixed(1)}" ${M} font-size="19" fill="#6B6A64">${esc(eb)}</text>
+  <text x="77" y="${h1y.toFixed(1)}" ${T} font-weight="600" font-size="${size}" letter-spacing="-3" fill="#111">${esc(l1)}</text>
+  <text x="77" y="${h2.toFixed(1)}" ${T} font-weight="600" font-size="${size}" letter-spacing="-3" fill="#111">${esc(l2)}</text>
+  <text x="80" y="${tagY}" ${T} font-size="26" fill="#3A3935">Your bots work. You stay in control.</text></svg>`;
+}
 function missing() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630"><rect width="1200" height="630" fill="#F4F4F1"/>${mark(72, 72, 28, '#121212')}<text x="116" y="94" font-family="Geist" font-size="22" font-weight="600" letter-spacing="-1" fill="#121212">${esc(BRAND)}</text><text x="72" y="330" font-family="Geist" font-size="64" font-weight="600" letter-spacing="-2.8" fill="#121212">Receipt not available</text></svg>`;
 }
 function render(svg) {
-  const r = new Resvg(svg, { fitTo: { mode: 'width', value: 1200 }, font: { fontFiles: Object.values(FONTS).map(f => path.join(FONT_DIR, f)), loadSystemFonts: false, defaultFontFamily: 'Geist' } });
+  const r = new Resvg(svg, { fitTo: { mode: 'width', value: 1200 }, font: { fontFiles: [...Object.values(FONTS), MONO].map(f => path.join(FONT_DIR, f)), loadSystemFonts: false, defaultFontFamily: 'Geist' } });
   return r.render().asPng();
 }
 module.exports = async (req, res) => {
@@ -83,6 +121,13 @@ module.exports = async (req, res) => {
   try {
     const q = req.query || Object.fromEntries(new URL(req.url || '/', 'http://x').searchParams);
     const m = String(req.url || '').split('?')[0].match(/\/og\/([A-Za-z0-9_-]+)(?:\.png)?$/) || [null, String(q.file || q.token || '').replace(/\.png$/, '')];
+    const inv = String(m[1] || '').match(/^invite-([a-f0-9]{32}|generic)$/);
+    if (inv) { // per-invite link card: seat + name come from the database via the invite code, never from the query string
+      let v = null; if (inv[1] !== 'generic') { try { v = await invitePreview(inv[1]); } catch { v = null; } }
+      const png = render(inviteCard(v));
+      res.setHeader('Content-Type', 'image/png'); res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300, stale-while-revalidate=86400');
+      res.statusCode = 200; return res.end(png);
+    }
     const x = m[1] && m[1] !== 'missing' ? await publicReceiptRead(m[1]) : null;
     const png = render(x ? card(x.snapshot) : missing());
     res.setHeader('Content-Type', 'image/png');
@@ -90,4 +135,4 @@ module.exports = async (req, res) => {
     res.statusCode = x || m[1] === 'missing' ? 200 : 404; res.end(png);
   } catch (e) { res.statusCode = 500; res.setHeader('Content-Type', 'text/plain'); res.end('og error'); }
 };
-module.exports.card = card; module.exports.render = render;
+module.exports.card = card; module.exports.inviteCard = inviteCard; module.exports.render = render;
