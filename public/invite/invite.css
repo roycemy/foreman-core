@@ -42,3 +42,6 @@ a:focus-visible,input:focus-visible,button:focus-visible,summary:focus-visible{o
 .unavailable .plate,.unavailable #join{display:none}
 /* very short phones: keep the action above the fold */
 @media(max-height:700px){.plate{margin-top:110px}.stage{top:30px}h1{font-size:33px}.tag{margin-bottom:16px}}
+
+/* Phone invite: keep the invitation and signup, without decorative labels. */
+@media(max-width:600px){.eyebrow,.tagd,.stage .bot{display:none}}
