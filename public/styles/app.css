@@ -618,3 +618,29 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 @media (max-width:940px){.hero{display:none}}
 
 .parts-plan{display:grid;gap:18px;margin:22px 0}.parts-plan .fld small{line-height:1.4;margin:7px 0;display:block}.parts-progress{margin-top:26px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px}.parts-progress h2{font-size:18px;margin:0}.parts-progress>p{font-size:12px;color:var(--stone);margin:8px 0 16px}.parts-progress>a{display:flex;gap:12px;align-items:center;padding:14px 0;border-top:1px solid var(--line);text-decoration:none;color:inherit}.parts-progress>a>span:first-child{font-size:12px;color:var(--stone)}.parts-progress a div{flex:1;min-width:0}.parts-progress b{display:block;font-size:13px}.parts-progress small{display:block;margin-top:6px;font-size:11px;color:var(--stone)}
+
+/* ---------- Team picker + plan summary (smart delegation) ---------- */
+.teampick{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.stage .teampick#teampick,#v-floor .teampick#teampick{position:absolute;left:50%;transform:translateX(-50%);bottom:18px;z-index:21;justify-content:center;max-width:min(640px,calc(100% - 32px))}
+#v-floor:has(#teampick .tchip) .ask{bottom:78px}
+#v-floor:has(#teampick .tchip) .hero{bottom:150px}
+.team-l{font-size:12px;font-weight:600;color:var(--stone);text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
+.tchip{min-height:44px;min-width:44px;padding:0 14px 0 8px;border-radius:22px;border:1px solid var(--line-2);background:var(--surface);display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:var(--ink);box-shadow:var(--sh1);touch-action:manipulation}
+.tchip .av{width:26px;height:26px;font-size:11px}
+.tchip[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:#fff}
+.tchip.zz{color:var(--stone)}.tchip.zz[aria-pressed=true]{color:#fff}
+.tz{font-style:normal;font-size:11px;font-weight:600;padding:2px 7px;border-radius:9px;background:var(--line);color:var(--stone)}
+.tchip[aria-pressed=true] .tz{background:rgba(255,255,255,.18);color:#fff}
+.team-empty{font-size:13px;color:var(--stone)}
+.plan-sum{font-size:18px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
+.plan-basic,.plan-wait{font-size:13px;padding:10px 12px;border-radius:10px;background:var(--line);color:var(--ink);margin-top:10px}
+.plan-basic b{display:inline-block;margin-right:6px;padding:1px 7px;border-radius:8px;background:var(--ink);color:#fff;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.plan-wait{background:#fff4e5}
+.plan-parts{margin:14px 0 6px 20px;display:grid;gap:8px}.plan-parts li span{display:block;font-size:13px;color:var(--stone)}
+.plan-acts{align-items:center}.plan-acts>span{flex:1}
+.b.link{background:none;border:0;padding:0 4px;min-height:44px;text-decoration:underline;color:var(--stone);font-weight:500}
+.plan-acts .b{min-height:44px}
+fieldset.adj{border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:8px;margin-bottom:10px}
+fieldset.adj legend{font-weight:600;font-size:13px;padding:0 4px}
+fieldset.adj textarea{min-height:64px}
+@media(max-width:760px){.stage .teampick#teampick,#v-floor .teampick#teampick{display:none}}
