@@ -1431,6 +1431,9 @@ module.exports = async (req, res) => {
     if(path==='/founding/count'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');await foundingSeats.reconcile();return res.json({taken:await foundingSeats.total(),limit:1000});}
     if(path==='/founding/receipt'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});const found=await foundingSeats.readReceipt(body.receipt);return found?res.json(found):res.status(404).json({error:'Receipt unavailable'});}
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
+    if(path.startsWith('/invite-page/')&&req.method==='GET')return await invitePage(req,res,path);
+    // Vercel routing middleware may retain the original incoming URL on the rewritten request.
+    if((path==='/i.html'||path==='/i')&&req.method==='GET'){const code=new URL(req.url,'https://invite.invalid').searchParams.get('code');return await invitePage(req,res,'/invite-page/'+(code||''));}
     if(path.startsWith('/invite/')||path.startsWith('/invites/'))return await inviteFlow(req,res,path,body);
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path.startsWith('/runner/'))return await runnerRoutes(req,res,path,body);
@@ -1680,6 +1683,15 @@ async function routes(req, res, path, body, agentPre) {
 };
 
 // For api/og.js: read a public share without a session.
+// Server-rendered invite page (middleware.js rewrites /i.html?code= here) so link previews carry per-invite meta tags.
+const invitePageTpl=(()=>{try{return require('../lib/invite-page.cjs')}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;return require('./lib/invite-page.cjs')}})();
+async function invitePage(req,res,path){
+ const code=(path.match(/^\/invite-page\/([a-f0-9]{32})$/)||[])[1];let v=null;
+ if(code){try{v=await inviteFlow.preview(code)}catch{v=null}}
+ res.setHeader('Content-Type','text/html; charset=utf-8');res.setHeader('Cache-Control','public, max-age=0, s-maxage=60');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Robots-Tag','noindex, nofollow');
+ res.statusCode=200;return res.end(invitePageTpl.render(v?{code,name:v.name,seat:invitePageTpl.nextSeat(v.taken)}:{code}));
+}
+module.exports.invitePreview = code => als.run({ ws: 'legacy' }, () => inviteFlow.preview(code));
 module.exports.publicReceiptRead = token => als.run({ ws: 'legacy' }, () => publicReceiptRead(token));
 
 // Issuer-test mandate: one owner card, one exact pending spend at a time.
