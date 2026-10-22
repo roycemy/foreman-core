@@ -126,7 +126,7 @@ const ago = s => new Date(Date.now() - s * 1000).toISOString();
   // 12. fullState runs the same sweep for the owner view
   const api = read('api/index.js');
   assert(/await expireStalledTasks\(\);\s*\n\s*await reassignAsleepQueuedTasks\(\);/.test(api), 'fullState sweeps stale queued jobs');
-  assert(/expireStalledTasks\(\);await reassignAsleepQueuedTasks\(agent\.id\)/.test(api), 'claimTask sweeps with the claimant excluded');
+  assert(/expireStalledTasks\(\);await reconcileTaskParents\(\);await reassignAsleepQueuedTasks\(agent\.id\)/.test(api), 'claimTask sweeps with the claimant excluded');
   assert(/const pick = await freshRoutingPick\(leadCat\)/.test(api), 'type-box routing goes through the awake-aware pick');
   assert(/allAsleep \? \{ allAsleep: true \}/.test(api), 'the all-asleep state reaches the client');
   assert(/t0\.assignedBy === 'owner'/.test(api), 'owner-assigned jobs are excluded');
