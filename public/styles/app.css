@@ -621,9 +621,9 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 
 /* ---------- Team picker + plan summary (smart delegation) ---------- */
 .teampick{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.stage .teampick#teampick,#v-floor .teampick#teampick{position:absolute;left:50%;transform:translateX(-50%);bottom:18px;z-index:21;justify-content:center;max-width:min(640px,calc(100% - 32px))}
-#v-floor:has(#teampick .tchip) .ask{bottom:78px}
-#v-floor:has(#teampick .tchip) .hero{bottom:150px}
+.stage .teampick#teampick,#v-floor .teampick#teampick{position:absolute;left:50%;transform:translateX(-50%);bottom:18px;z-index:21;justify-content:center;width:max-content;max-width:min(760px,calc(100% - 560px))}
+#v-floor:has(#teampick .tchip) .ask{bottom:calc(32px + var(--tp-h,44px))}
+#v-floor:has(#teampick .tchip) .hero{bottom:calc(104px + var(--tp-h,44px))}
 .team-l{font-size:12px;font-weight:600;color:var(--stone);text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
 .tchip{min-height:44px;min-width:44px;padding:0 14px 0 8px;border-radius:22px;border:1px solid var(--line-2);background:var(--surface);display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:var(--ink);box-shadow:var(--sh1);touch-action:manipulation}
 .tchip .av{width:26px;height:26px;font-size:11px}
@@ -638,3 +638,11 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .parts-progress small.why{display:block;color:var(--mute);font-size:12px;margin-top:2px}
 .parts-progress [data-cancel-pending]{margin-top:12px;min-height:44px}
 @media(max-width:760px){.stage .teampick#teampick,#v-floor .teampick#teampick{display:none}}
+
+.modesw{display:inline-flex;border:1px solid var(--line-2);border-radius:22px;background:var(--surface);padding:2px;box-shadow:var(--sh1)}
+.modesw button{min-height:40px;min-width:56px;padding:0 14px;border-radius:20px;font-size:13.5px;font-weight:600;color:var(--stone)}
+.modesw button[aria-checked=true]{background:var(--ink);color:#fff}
+.tgrp{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap}
+.trole{height:44px;width:150px;border:1px solid var(--line-2);border-radius:12px;padding:0 10px;font-size:13.5px;background:var(--surface)}
+.teampick.in-modal .tgrp{width:100%}.teampick.in-modal .trole{flex:1;min-width:0}
+.parts-progress small.role{display:inline-block;margin-top:3px;font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:9px;background:var(--line);color:var(--ink)}
