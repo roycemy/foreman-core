@@ -3,7 +3,7 @@ const h=fs.readFileSync('public/index.html','utf8');
 assert(h.includes('id="hvA"'));assert(h.includes('/marketing/hero.js'));assert(h.includes('/marketing/hero.css'));
 assert(!h.includes('noindex'));assert(!h.includes('hero-b'));assert(!h.includes('hero-c'));assert(!fs.existsSync('public/hero-b.html'));assert(!fs.existsSync('public/hero-c.html'));
 const nav=h.match(/<header[\s\S]*?<\/header>/)[0];assert.equal((nav.match(/<a /g)||[]).length,3);assert(!/pricing|security|Product/.test(nav));
-assert(h.includes('Claude'));assert(h.includes('Grok Bot'));assert(h.includes('Muse'));assert(h.includes('See it in action'));assert(h.includes('Watch a day on the floor.'));
+assert(h.includes('Instinct')); assert(!h.includes('>Claude</span>')); assert(!h.includes('>Your bot</span>')); assert.strictEqual((h.match(/class="tag"/g)||[]).length,3);assert(h.includes('Grok Bot'));assert(h.includes('Muse'));assert(h.includes('See it in action'));assert(h.includes('Watch a day on the floor.'));
 assert(h.includes('"Inspired" by Kevin MacLeod (incompetech.com), licensed under CC BY 4.0.'));
 for(const m of h.matchAll(/(?:src|href|poster)="(\/marketing\/[^"#]+)"/g))assert(fs.existsSync('public'+m[1]),m[1]);
 const js=fs.readFileSync('public/marketing/hero.js','utf8');for(const s of ['Approve Meta ads for $49','Publish post','Delete 120 old files'])assert(js.includes(s));
