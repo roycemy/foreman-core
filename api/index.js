@@ -1432,6 +1432,8 @@ module.exports = async (req, res) => {
     if(path==='/founding/receipt'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});const found=await foundingSeats.readReceipt(body.receipt);return found?res.json(found):res.status(404).json({error:'Receipt unavailable'});}
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
     if(path.startsWith('/invite-page/')&&req.method==='GET')return await invitePage(req,res,path);
+    // Vercel routing middleware may retain the original incoming URL on the rewritten request.
+    if((path==='/i.html'||path==='/i')&&req.method==='GET'){const code=new URL(req.url,'https://invite.invalid').searchParams.get('code');return await invitePage(req,res,'/invite-page/'+(code||''));}
     if(path.startsWith('/invite/')||path.startsWith('/invites/'))return await inviteFlow(req,res,path,body);
     if(path.startsWith('/oauth/')||path.startsWith('/.well-known/'))return await oauthRoutes(req,res,path,body);
     if(path.startsWith('/runner/'))return await runnerRoutes(req,res,path,body);
