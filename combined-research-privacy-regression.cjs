@@ -10,6 +10,8 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),net=require('ne
 const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizRunKeysAll,setJ,getJ,r,als};';
 const HOSTS={'good.example':['93.184.216.34']};
 const PAGES={'good.example/':{status:200,headers:{'content-type':'text/plain'},body:'Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter. '.repeat(10)}};
+const LONGURL='https://good.example/'+'p'.repeat(560)+'?token=secretLONG'; // 600+ chars: candidate-valid (<=2048) but over the citation cap (500)
+const HUGEURL='https://good.example/'+'q'.repeat(2200); // over the 2048 extraction/fetch ceiling
 const requests=[];
 const dnsStub={lookup:(h,o,cb)=>{const ips=HOSTS[h]; if(!ips)return cb(new Error('ENOTFOUND')); cb(null,ips.map(a=>({address:a,family:4})));}};
 function fakeLib(){return {request:(opts,cb)=>{
@@ -30,6 +32,9 @@ const c={require:(m)=>m==='dns'?dnsStub:m==='https'?fakeLib():m==='http'?fakeLib
   if(/propose areas of responsibility/i.test(sys)) return reply(JSON.stringify({proposals:[{title:'Prospect desk',summary:'Research prospects and draft outreach.',evidence:[{sourceId:c.process.env.__sid,excerpt:'we want more mid-size manufacturing clients'}],unknowns:[],systems:[],boundary:'Drafts only.'}]}));
   const nFetch=body.messages.filter(m=>/<fetched_page url=/.test(m.content)).length, item=body.messages[1].content;
   if(/fetch_requests/.test(sys)&&/invoicing note/.test(item)) return reply(JSON.stringify({draft:'Invoice summary draft.',blocked_step:null,sources_used:[c.process.env.__sid],citations:[],next_steps:[]})); // immediate final: the race run
+  if(/fetch_requests/.test(sys)&&/long link/.test(item)) return reply(JSON.stringify({draft:'Long-link draft.',blocked_step:null,sources_used:[c.process.env.__sid],citations:[{url:c.process.env.__longurl,quote:'quote echoing token=secretLONG tail'},{url:'https://good.example/page2',quote:'never fetched either'}],next_steps:[]})); // over-cap + unlocated citations
+  if(/fetch_requests/.test(sys)&&/huge link/.test(item)&&nFetch===0) return reply(JSON.stringify({fetch_requests:[{url:c.process.env.__hugeurl,purpose:'over-long address'}]}));
+  if(/fetch_requests/.test(sys)&&/huge link/.test(item)) return reply(JSON.stringify({draft:'Huge-link draft.',blocked_step:null,sources_used:[],citations:[],next_steps:[]}));
   if(/fetch_requests/.test(sys)&&nFetch===0) return reply(JSON.stringify({fetch_requests:[{url:'https://good.example/',purpose:'company page'}]}));
   if(/fetch_requests/.test(sys)) return reply(JSON.stringify({draft:'Acme Manufacturing looks like a fit; draft outreach inside.',blocked_step:'Sending the outreach email',sources_used:[c.process.env.__sid],citations:[{url:'https://good.example/',quote:'Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter.'},{url:'https://good.example/page2',quote:'never fetched, can echo anything'}],next_steps:['Review the draft']}));
   return reply(JSON.stringify({draft:'plain draft',blocked_step:null,sources_used:[]}));};
@@ -74,6 +79,42 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  assert(runAfter.sourceVersions[sid]!=null,'source version pointer kept for honest history');
  const sdLog=(await f.bizState()).log.find(l=>l.kind==='source_deleted');
  assert(sdLog&&sdLog.researchUrlsScrubbed===1,'activity entry records the research scrub');
+
+ // --- round-3 repro: a >500-char source URL must not dodge the scrub through a TRUNCATED
+ // persisted citation. Ingestion rejects over-cap citation URLs whole; after the source is
+ // deleted, no run field may carry the URL, its prefix or its token.
+ const sLong=await f.bizSourceAdd({kind:'note',title:'Long link',text:'Reference: '+LONGURL});
+ c.process.env.__sid=sLong.body.source.id;c.process.env.__longurl=LONGURL;
+ const pL=(await f.bizDiscover()).body.proposals[0];
+ const respL=(await f.bizProposalAct(pL.id,'activate',{research:true})).body.responsibility.id;
+ const inputL='long link run';
+ const RVL=(await f.bizRespAct(respL,'candidates',{input:inputL})).body.sourceVersions;
+ assert(RVL[sLong.body.source.id]!=null,'the long URL is a real candidate from the source');
+ const resL=await f.bizRespAct(respL,'run',{input:inputL,approvedUrls:[LONGURL],reviewedVersions:RVL});
+ assert.equal(resL.status,200,'long-link run completes');
+ const runL=resL.body.run;
+ assert.equal(runL.citations.length,1,'over-cap citation rejected whole at ingestion, not truncated');
+ assert.equal(runL.citations[0].url,'https://good.example/page2');
+ assert(!JSON.stringify(runL.citations).includes('secretLONG'),'no token or URL prefix persisted from the rejected citation');
+ assert.deepEqual(runL.approvedUrls,[LONGURL],'the approved destination itself is kept verbatim until the source is deleted');
+ const delL=await f.bizSourceDel(sLong.body.source.id,{});
+ assert.equal(delL.status,200);
+ const runLAfter=JSON.stringify(await f.getJ('fm:biz:run:'+runL.id));
+ assert(!runLAfter.includes('secretLONG'),'after source delete: no token, no full URL, no truncated prefix anywhere in the run record');
+ assert(!runLAfter.includes(LONGURL.slice(0,500)),'not even the 500-char prefix survives');
+
+ // --- same class in fetch recording: an over-2048 requested address is rejected whole,
+ // never silently sliced into a persistable prefix
+ c.process.env.__hugeurl=HUGEURL;
+ const RVH=(await f.bizRespAct(respL,'candidates',{input:'huge link run'})).body.sourceVersions;
+ const resH=await f.bizRespAct(respL,'run',{input:'huge link run',approvedUrls:[],reviewedVersions:RVH});
+ assert.equal(resH.status,200);
+ const runH=resH.body.run;
+ assert.equal(runH.fetchedPages.length,1);
+ assert.equal(runH.fetchedPages[0].url,null,'over-ceiling address recorded as no-address');
+ assert.equal(runH.fetchedPages[0].error,'url_too_long');
+ assert(!JSON.stringify(runH).includes(HUGEURL.slice(0,2000)),'no sliced prefix of the over-ceiling address persisted');
+ assert(!requests.some(k=>k.includes('qqqq')),'over-ceiling address never contacted');
 
  // --- purge while a research run is parked inside the provider call: nothing recreated
  const s2=await f.bizSourceAdd({kind:'note',title:'Ops',text:'Fridays are for invoicing. See https://good.example/'});

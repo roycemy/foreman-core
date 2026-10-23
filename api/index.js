@@ -2373,7 +2373,13 @@ async function bizRunResearch(resp, srcs, input, approvedUrls, deadline, f0) {
     const blocks = [];
     for (const q of reqs.slice(0, 3)) {
       if (attempts >= BIZ.MAX_FETCHES_PER_RUN || Date.now() >= finalizeAt - 1000) break;
-      const url = String(q.url || '').slice(0, 2048), safe = url.replace(/[<>"']/g, '');
+      const urlRaw = String(q.url || '');
+      if (urlRaw.length > 2048) { // reject whole, never a silently truncated address: extraction drops over-long URLs, so a persisted prefix could never be scrubbed and can carry credentials
+        fetchedPages.push({ url: null, ok: false, error: 'url_too_long' });
+        blocks.push('<fetched_page url="" status="error" reason="url_too_long"/>');
+        continue;
+      }
+      const url = urlRaw, safe = url.replace(/[<>"']/g, '');
       if (!allowedSet.has(url)) { // exact owner-approved destinations only: no model-chosen URL is ever contacted
         fetchedPages.push({ url, ok: false, error: 'url_not_approved' });
         blocks.push('<fetched_page url="' + safe + '" status="error" reason="url_not_approved"/>');
@@ -2401,8 +2407,12 @@ async function bizRunResearch(resp, srcs, input, approvedUrls, deadline, f0) {
     return { status: 504, body: { error: 'Research used its whole time budget before drafting. Try a narrower request.', code: 'run_budget' } };
   }
   const draftOk = typeof parsed.draft === 'string' && parsed.draft.trim();
+  // Over-long citation URLs are rejected whole, never truncated: a persisted PREFIX would not
+  // match the verbatim source URL at scrub time, so it (and a quote echoing the source) would
+  // survive the source's deletion, and the prefix itself can carry credentials.
   const citationsRaw = (Array.isArray(parsed.citations) ? parsed.citations : []).slice(0, BIZ.MAX_CITES_PER_RUN)
-    .map(c => ({ url: String((c && c.url) || '').slice(0, 500), quote: String((c && c.quote) || '') }));
+    .map(c => ({ url: String((c && c.url) || ''), quote: String((c && c.quote) || '') }))
+    .filter(c => c.url.length <= 500);
   const srcIds = new Set(srcs.map(s => s.id));
   const run = { id: rid('run'), respId: resp.id, kind: 'manual', at: now(),
     input: String(input).slice(0, 4000),

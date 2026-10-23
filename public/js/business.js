@@ -23,14 +23,18 @@
     const stamp = identity(); inflightId = stamp; loading = true;
     let j = null; try { j = await api('/state'); } catch (e) { j = null; }
     loading = false;
-    if (stamp && stamp !== identity()) return; // late response from before the change: discard - the sync/route handler already cleared the DOM and started the reload
+    if (stamp !== identity()) return; // ownership changed mid-flight (including unknown -> known at first auth): discard - the sync/route handler already cleared the DOM and will reload under the resolved identity
     inflightId = null;
     if (j && !j.error) { B = j; loadedId = stamp; loadErr = null; } else if (!B) loadErr = (j && j.error) || 'Could not load the Business view. Try again.';
     paint();
   }
   function dropIfStaleTenant() {
     identity(); // bumps the generation when the account or workspace changed
-    const stale = (loadedId && loadedId !== curId) || (inflightId && inflightId !== curId);
+    // The shell routes before /api/me lands, so an early load runs under an UNKNOWN identity
+    // (stamp and loadedId stay null). Such state has no verified owner: once the identity is
+    // known, loadedId !== curId marks it stale exactly like a cross-account residue.
+    const known = !!(curId && (curId.e || curId.w));
+    const stale = (B && known && loadedId !== curId) || (inflightId && inflightId !== curId);
     if (stale) {
       B = null; loadErr = null; editingSrc = null; editingProp = null; openResp = {}; loadedId = null;
       pendingApproval = null; // A's reviewed pages and work text never survive into another identity
@@ -96,7 +100,7 @@
       ${run.input ? `<p class="bz-run-in">${esc(run.input.length > 240 ? run.input.slice(0, 240) + '…' : run.input)}</p>` : ''}
       ${run.status === 'failed' ? `<div class="bz-draft"><span class="bzc warn">Run failed</span><p>${esc(run.failureReason === 'engine_malformed_output' ? 'The engine replied in a format Alter could not use, so nothing was drafted.' : 'The engine did not produce a draft this run.')}</p></div>` : `<div class="bz-draft"><span class="bzc">Draft · nothing was sent</span><p>${esc(run.output)}</p></div>`}
       ${run.blockedStep ? `<p class="bz-blocked">Did not do: ${esc(run.blockedStep)}</p>` : ''}
-      ${run.fetchedPages && run.fetchedPages.length ? `<p class="meta">Pages read this run: ${run.fetchedPages.filter(x => x.ok).length}${run.fetchedPages.some(x => !x.ok) ? ' · ' + run.fetchedPages.filter(x => !x.ok).length + ' not read (' + run.fetchedPages.filter(x => !x.ok).map(x => x.error === 'url_not_approved' ? 'not an approved page' : x.error === 'ssrf_blocked' ? 'not a public page' : 'could not be read').join(', ') + ')' : ''}</p>` : ''}
+      ${run.fetchedPages && run.fetchedPages.length ? `<p class="meta">Pages read this run: ${run.fetchedPages.filter(x => x.ok).length}${run.fetchedPages.some(x => !x.ok) ? ' · ' + run.fetchedPages.filter(x => !x.ok).length + ' not read (' + run.fetchedPages.filter(x => !x.ok).map(x => x.scrubbedWithSource ? 'removed with its source' : x.error === 'url_not_approved' ? 'not an approved page' : x.error === 'url_too_long' ? 'address too long to use' : x.error === 'ssrf_blocked' ? 'not a public page' : 'could not be read').join(', ') + ')' : ''}</p>` : ''}
       ${run.citations && run.citations.length ? `<div class="bz-cites">${run.citations.map(c => { const u = c.finalUrl || c.url; let h = u, safe = ''; try { const pu = new URL(u); if (pu.protocol === 'http:' || pu.protocol === 'https:') { safe = u; h = pu.host; } } catch (e) {} const label = c.located ? 'Quote found on page' : c.reason === 'page_not_fetched' ? 'Page not read this run' : c.reason === 'excerpt_too_short' || c.reason === 'excerpt_too_long' ? 'Quote not usable' : 'Quote not found on page'; return `<div class="bz-cite">${chip(label, c.located ? 'ok' : 'warn')}<p>${esc(c.quote)}</p>${c.located && safe ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer nofollow">${esc(h)}</a>` : `<small>${esc(u)}</small>`}</div>`; }).join('')}</div>` : ''}
       ${run.nextSteps && run.nextSteps.length ? `<div class="bz-next"><div class="bz-sech">Suggested next steps</div><ul>${run.nextSteps.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
     </div>`;
