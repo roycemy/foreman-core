@@ -83,5 +83,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  assert.equal(respDaily.runs.find(x=>x.kind==='daily').input,null,'daily runs have no pasted input');
  // 8) stale flags surface in state
  const st3=await f.bizState();assert(st3.proposals.every(x=>Array.isArray(x.stale)));
- console.log('PASS business workspace: honest engine-off 503, source CRUD+versioning, verbatim evidence verification (2 dropped), discover prompt fences hostile text as data, edit/reject/activate lifecycle, stale-evidence block + confirm, runs with boundary + filtered sourcesUsed + audit, pause/kill blocking, daily tick with gap, state shape.');
+ // 9) route wiring: bizState returns a bare body, so the route must wrap it in {status,body} (production 500 'Invalid status code: undefined' regression)
+ assert(src.includes("send({ status: 200, body: await bizState() })"),'route wraps bizState body in a status');
+ console.log('PASS business workspace: honest engine-off 503, source CRUD+versioning, verbatim evidence verification (2 dropped), discover prompt fences hostile text as data, edit/reject/activate lifecycle, stale-evidence block + confirm, runs with boundary + filtered sourcesUsed + audit, pause/kill blocking, daily tick with gap, state shape, state-route wiring.');
 })().catch(e=>{console.error(e);process.exit(1)});

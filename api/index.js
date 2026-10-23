@@ -1600,7 +1600,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/routing'&&req.method==='GET')return res.json(await routing(new URL(req.url,'https://local.invalid').searchParams.get('category')||''));
     if (path === '/state') return res.json(await fullState());
     // --- business workspace: owner sources -> evidence-checked proposals -> owner-bounded responsibilities ---
-    if (path === '/business/state' && req.method === 'GET') return send(await bizState());
+    if (path === '/business/state' && req.method === 'GET') return send({ status: 200, body: await bizState() });
     if (path === '/business/sources' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizSourceAdd(body)); }
     { const bm = path.match(/^\/business\/sources\/(src_\w+)$/); if (bm && (req.method === 'PATCH' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(req.method === 'PATCH' ? await bizSourceEdit(bm[1], body) : await bizSourceDel(bm[1])); } }
     if (path === '/business/discover' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscover()); }
