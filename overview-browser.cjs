@@ -10,10 +10,12 @@ function biz(ws, o) {
   o = o || {};
   return { engine: { configured: !o.off, enabled: !o.off },
     sources: o.empty ? [] : [{ id: 's_' + ws, kind: 'note', title: 'About ' + (ws === 'wsB' ? 'Bravo Bakery' : 'Acme Plumbing'), text: 'x', version: 2, updatedAt: ago(90) }],
-    proposals: o.empty ? [] : [{ id: 'prop_' + ws + '1', title: 'Quote follow-ups', summary: 'Draft a follow-up for every open quote older than 3 days.', status: 'draft', createdAt: ago(300), stale: [] }],
-    responsibilities: o.empty ? [] : [{ id: 'resp_' + ws + '1', title: 'Missed-call desk', status: 'active', runs: [
-      { id: 'run1', respId: 'resp_' + ws + '1', kind: 'manual', at: ago(2000), input: 'call', output: 'Hi Lee, sorry we missed you. We can come Thursday 9-11.', blockedStep: 'Sending the reply' },
-      { id: 'run2', respId: 'resp_' + ws + '1', kind: 'manual', at: ago(60), input: 'call', output: 'Hi Sam, thanks for calling. A plumber can visit tomorrow morning.', blockedStep: 'Sending the reply' }] }],
+    proposals: o.empty ? [] : [{ id: 'prop_' + ws + '1', title: 'Quote follow-ups', summary: 'Draft a follow-up for every open quote older than 3 days.', status: 'draft', createdAt: ago(300), stale: [], boundary: 'Drafts only; nothing is sent.', evidence: [], unknowns: [], systems: [] }],
+    responsibilities: o.empty ? [] : [{ id: 'resp_' + ws + '1', title: 'Missed-call desk', summary: 'Answer missed calls.', boundary: 'Drafts only.', createdAt: ago(5000), runsCount: 2, status: 'active', runs: [
+      { id: 'run1', respId: 'resp_' + ws + '1', kind: 'manual', at: ago(2000), input: 'call', output: 'Hi Lee, sorry we missed you. We can come Thursday 9-11.', status: 'done', jsonOk: true, blockedStep: 'Sending the reply' },
+      { id: 'run2', respId: 'resp_' + ws + '1', kind: 'manual', at: ago(60), input: 'call', output: 'Hi Sam, thanks for calling. A plumber can visit tomorrow morning.', status: 'done', jsonOk: true, blockedStep: 'Sending the reply' }] },
+      { id: 'resp_' + ws + '2', title: 'Quote chaser', summary: 'Chase open quotes.', boundary: 'Drafts only.', status: 'active', createdAt: ago(4000), runsCount: 1, runs: [
+      { id: 'run3', respId: 'resp_' + ws + '2', kind: 'manual', at: ago(20), input: 'chase', output: '', status: 'failed', failureReason: 'engine_malformed_output' }] }],
     log: [] };
 }
 (async () => {
@@ -52,6 +54,10 @@ function biz(ws, o) {
     assert(await p.locator('#v-overview [data-sec="needs"] [data-ov-inbox]').count() === 1, 'inbox link');
     assert(await p.locator('#v-overview [data-sec="needs"] button', { hasText: /Approve|Allow/ }).count() >= 1, 'approve action on card');
     assert((await p.locator('#v-overview [data-sec="exceptions"]').innerText()).match(/Sending the reply/g).length === 1, 'only latest blocked run is an exception');
+    // failed run is shown as a failure, never "Draft ready"
+    const res = await p.locator('#v-overview [data-sec="results"]').innerText();
+    assert(/Run failed: the engine reply was unusable/.test(res) && !/Draft ready/.test(res), 'failed run labelled honestly: ' + res);
+    assert(/Run failed/.test(await p.locator('#v-overview [data-sec="exceptions"]').innerText()), 'failed run is an exception');
     assert(!(await smallTargets()).length, 'touch targets < 44px: ' + (await smallTargets()).join(' | '));
     await noOverflow('normal'); await shot('overview-normal');
     // 2) refresh error with stale data + Retry recovers
@@ -65,6 +71,22 @@ function biz(ws, o) {
     // refresh on focus / visibility / after action
     let n = F.bizCalls; await p.evaluate(() => dispatchEvent(new Event('focus'))); await p.waitForFunction(() => !BB.overviewCtl.loading); assert(F.bizCalls > n, 'focus refreshes');
     n = F.bizCalls; await p.click('#v-overview [data-ov-pause]'); await p.waitForTimeout(300); assert(F.posts.some(x => /\/pause$/.test(x)) && F.bizCalls > n, 'action posts then refreshes');
+    // Start opens the Business review; activation only after confirming there
+    await p.evaluate(() => BB.overviewCtl.load()); await p.waitForSelector('#v-overview [data-ov-review-prop]');
+    const before = F.posts.length;
+    await p.click('#v-overview [data-ov-review-prop]'); await p.waitForFunction(() => location.hash === '#business');
+    await p.waitForSelector('#v-business [data-prop="prop_wsA1"].ov-focus'); assert(await p.locator('#v-business [data-prop="prop_wsA1"] .bz-bound').isVisible(), 'boundary visible in review');
+    assert(!F.posts.slice(before).some(x => /activate/.test(x)), 'no activate before confirming');
+    await shot('start-review');
+    await p.click('#v-business [data-p-activate="prop_wsA1"]'); await p.waitForSelector('[data-yes]'); assert(!F.posts.some(x => /activate/.test(x)), 'no activate before modal confirm');
+    await p.click('[data-yes]'); await p.waitForTimeout(400); assert(F.posts.some(x => /\/proposals\/prop_wsA1\/activate$/.test(x)), 'activate after confirm in Business');
+    // Run routes to the Business run/approval flow; nothing runs from Overview
+    await p.evaluate(() => BB.go('#overview')); await p.waitForSelector('#v-overview [data-ov-review-resp]');
+    await p.click('#v-overview [data-ov-review-resp="resp_wsA1"]'); await p.waitForFunction(() => location.hash === '#business');
+    await p.waitForFunction(() => document.activeElement && document.activeElement.matches('[data-run-input="resp_wsA1"]'));
+    assert(!F.posts.some(x => /\/run$/.test(x)), 'no run call from Overview');
+    await shot('run-review');
+    await p.evaluate(() => BB.go('#overview')); await p.waitForSelector('#v-overview [data-sec="results"]');
     // 3) workspace switch: slow A response must not paint over B
     F.delayA = 1500; const late = p.evaluate(() => BB.overviewCtl.load()); await p.waitForTimeout(100);
     F.ws = 'wsB'; await p.evaluate(() => BB.boot());
@@ -75,8 +97,8 @@ function biz(ws, o) {
     assert(/Nothing needs you/.test(await p.locator('#v-overview [data-sec="needs"]').innerText()), 'B has nothing pending');
     // 4) engine off: saved proposals visible and actionable; run disabled with reason
     F.off = true; await p.evaluate(() => BB.overviewCtl.load()); await p.waitForSelector('#v-overview [data-engine-off]');
-    assert(await p.locator('#v-overview [data-gen-off]').count() === 1 && await p.locator('#v-overview [data-ov-activate]').isEnabled() && await p.locator('#v-overview [data-ov-reject]').isEnabled(), 'saved proposals actionable');
-    assert(await p.locator('#v-overview .ov-run button').isDisabled() && (await p.locator('#v-overview .ov-why').innerText()).includes('reasoning engine'), 'run disabled with reason');
+    assert(await p.locator('#v-overview [data-gen-off]').count() === 1 && await p.locator('#v-overview [data-ov-review-prop]').isEnabled() && await p.locator('#v-overview [data-ov-reject]').isEnabled(), 'saved proposals actionable');
+    assert(await p.locator('#v-overview .ov-run button').first().isDisabled() && (await p.locator('#v-overview .ov-why').first().innerText()).includes('reasoning engine'), 'run disabled with reason');
     await noOverflow('engine-off'); await shot('engine-off');
     await p.click('#v-overview [data-ov-reject]'); await p.waitForTimeout(300); assert(F.posts.some(x => /\/reject$/.test(x)), 'reject works with engine off');
     // 5) onboarding
@@ -87,7 +109,7 @@ function biz(ws, o) {
     await p.fill('#ob-title', 'Cora Cleaning'); await p.fill('#ob-text', 'We clean offices at night.'); await p.click('#ob-save');
     await p.waitForSelector('#v-overview [data-sec="context"]'); assert(F.posts.includes('POST /api/business/sources'), 'onboarding saved');
     assert(!errors.length, 'page errors: ' + errors.join(','));
-    console.log('PASS', width, 'overview: approvals linked, error/stale + Retry, focus/action refresh, workspace race dropped, engine-off saved proposals actionable, onboarding saves, no overflow, 44px targets');
+    console.log('PASS', width, 'overview: approvals linked, Start opens Business review (activate only after confirm), Run routes to Business, failed run shown as failure, error/stale + Retry, focus/action refresh, workspace race dropped, engine-off saved proposals actionable, onboarding saves, no overflow, 44px targets');
     await ctx.close();
   }
   await b.close(); server.close();

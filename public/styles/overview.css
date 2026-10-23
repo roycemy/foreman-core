@@ -15,10 +15,9 @@
 .ov summary{cursor:pointer;min-height:44px;list-style:none}
 .ov summary::-webkit-details-marker{display:none}
 .ov .ov-out{white-space:pre-wrap;font:13px/1.5 var(--font-code);color:var(--ink);margin-top:10px;max-height:320px;overflow:auto}
-.ov .ov-run{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:12px;align-items:start}
-.ov .ov-run textarea{min-height:44px;resize:vertical;width:100%}
-.ov .ov-run .ov-why{grid-column:1/-1;margin-top:0}
-.ov .ov-run textarea:disabled,.ov .b:disabled{opacity:1;background:var(--porcelain);color:var(--stone);border-color:var(--line);cursor:not-allowed}
+.ov .ov-run{display:flex;flex-wrap:wrap;gap:8px 12px;margin-top:12px;align-items:center}
+.ov .ov-run .ov-why{margin-top:0;flex:1 1 220px}
+.ov .b:disabled{opacity:1;background:var(--porcelain);color:var(--stone);border-color:var(--line);cursor:not-allowed}
 .ov .ov-banner{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:12px 14px;margin:16px 0;border:1px solid var(--line);border-radius:var(--r-inner,12px);background:var(--surface);color:var(--ink);font-size:14px;line-height:1.45}
 .ov .ov-banner.err{border-color:var(--vermilion-press);background:var(--vermilion-tint)}
 .ov .ov-engine{margin-top:16px}
@@ -32,6 +31,8 @@
   #v-overview .ov{padding:calc(16px + env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) calc(var(--h-tabs,64px) + 24px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
   .ov .page-h h1{font-size:24px}
   .ov .ov-acts .b{flex:1 1 auto}
-  .ov .ov-run{grid-template-columns:1fr}
 }
 .ov .ov-pending>*{margin-left:0;margin-right:0}
+.ov .ov-st-failed{color:var(--vermilion-press);font-weight:600}
+.ov .ov-st-blocked,.ov .ov-st-unchecked{color:var(--ink);font-weight:600}
+#v-business .ov-focus{outline:2px solid var(--ink);outline-offset:3px;transition:outline-color .4s}

@@ -54,11 +54,18 @@ const BB = win.BB;
   const withDraft = Object.assign({}, B2, { proposals: [{ id: 'p1', title: 'Invented', status: 'draft', stale: [] }] });
   m = BB.overviewModel(withDraft, {}, []); h = BB.overviewHTML(m);
   assert.equal(m.engineOn, false); assert.equal(m.proposals.length, 1); assert(h.includes('Reasoning engine not connected') && h.includes('Saved proposals') && h.includes('New proposals unavailable'));
-  assert(h.includes('data-ov-activate="p1"') && h.includes('data-ov-reject="p1"') && h.includes('data-ov-pause="r1"'), 'saved records actionable');
-  assert(/<button class="b ink" type="submit" disabled/.test(h) && h.includes('Running needs the reasoning engine'), 'run disabled with reason');
+  assert(h.includes('data-ov-review-prop="p1"') && !h.includes('data-ov-activate') && !h.includes('/activate') && h.includes('data-ov-reject="p1"') && h.includes('data-ov-pause="r1"'), 'saved records actionable');
+  assert(/data-ov-review-resp="r1" disabled/.test(h) && h.includes('Running needs the reasoning engine') && !/<form|\/run'/.test(h), 'run routed to Business, disabled with reason');
   ['engine_not_configured', 'engine_not_enabled'].forEach(code => { const mm = BB.overviewModel({ error: 'x', code, _status: 503 }, {}, []); assert.equal(mm.engineOn, false); assert.equal(mm.engineCode, code); });
   m = BB.overviewModel(Object.assign({}, withDraft, { engine: { configured: true, enabled: true } }), {}, []); h = BB.overviewHTML(m);
   assert.equal(m.proposals.length, 1); assert(!h.includes('Reasoning engine not connected') && !h.includes('disabled') && h.includes('>Proposals<'));
+  // run outcome comes from the run record; failed/blocked/empty runs are never "Draft ready"
+  const O = x => BB.runOutcome(x).key;
+  assert.equal(O({ status: 'done', output: 'ok', jsonOk: true }), 'ready'); assert.equal(O({ status: 'failed', failureReason: 'engine_malformed_output', output: '' }), 'failed');
+  assert.equal(O({ status: 'done', output: '' }), 'failed'); assert.equal(O({ error: 'boom', output: 'x' }), 'failed'); assert.equal(O({ status: 'done', output: 'x', blockedStep: 'Send' }), 'blocked'); assert.equal(O({ status: 'done', output: 'x', jsonOk: false }), 'unchecked');
+  const Bf = Object.assign({}, B2, { engine: { configured: true, enabled: true }, responsibilities: [{ id: 'r9', title: 'Desk', status: 'active', runs: [{ id: 'rf', at: '2026-10-23T10:00:00Z', status: 'failed', failureReason: 'engine_malformed_output', output: '' }] }] });
+  m = BB.overviewModel(Bf, {}, []); h = BB.overviewHTML(m);
+  assert(h.includes('Run failed: the engine reply was unusable') && !h.includes('Draft ready') && m.exceptions.some(x => x.kind === 'runfail'), 'failed run shown honestly + is an exception');
   // stale / error states
   h = BB.overviewHTML(m, { fetchedAt: 1000, now: 1000 + 200000 }); assert(h.includes('may be out of date') && h.includes('data-ov-retry'));
   h = BB.overviewHTML(m, { fetchedAt: 1000, now: 2000, error: 'Network error' }); assert(h.includes('Couldn’t refresh: Network error') && h.includes('>Retry<'));
