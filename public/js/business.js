@@ -65,7 +65,7 @@
       <div class="bz-draft"><span class="bzc">Draft · nothing was sent</span><p>${esc(run.output)}</p></div>
       ${run.blockedStep ? `<p class="bz-blocked">Did not do: ${esc(run.blockedStep)}</p>` : ''}
       ${run.fetchedPages && run.fetchedPages.length ? `<p class="meta">Pages read this run: ${run.fetchedPages.filter(x => x.ok).length}${run.fetchedPages.some(x => !x.ok) ? ' · ' + run.fetchedPages.filter(x => !x.ok).length + ' could not be read' : ''}</p>` : ''}
-      ${run.citations && run.citations.length ? `<div class="bz-cites">${run.citations.map(c => { const u = c.finalUrl || c.url; let h = u; try { h = new URL(u).host; } catch (e) {} return `<div class="bz-cite">${chip(c.located ? 'Quote found on page' : 'Quote not found on page', c.located ? 'ok' : 'warn')}<p>${esc(c.quote)}</p><a href="${esc(u)}" target="_blank" rel="noopener noreferrer nofollow">${esc(h)}</a></div>`; }).join('')}</div>` : ''}
+      ${run.citations && run.citations.length ? `<div class="bz-cites">${run.citations.map(c => { const u = c.finalUrl || c.url; let h = u, safe = ''; try { const pu = new URL(u); if (pu.protocol === 'http:' || pu.protocol === 'https:') { safe = u; h = pu.host; } } catch (e) {} return `<div class="bz-cite">${chip(c.located ? 'Quote found on page' : 'Quote not found on page', c.located ? 'ok' : 'warn')}<p>${esc(c.quote)}</p>${safe ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer nofollow">${esc(h)}</a>` : `<small>${esc(u)}</small>`}</div>`; }).join('')}</div>` : ''}
       ${run.nextSteps && run.nextSteps.length ? `<div class="bz-next"><div class="bz-sech">Suggested next steps</div><ul>${run.nextSteps.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
     </div>`;
   }
