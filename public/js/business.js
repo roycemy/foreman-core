@@ -5,7 +5,7 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null;
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pollT = null;
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
   // Tenant identity guard: loaded state belongs to the exact identity (account + workspace)
@@ -38,6 +38,7 @@
     if (stale) {
       B = null; loadErr = null; editingSrc = null; editingProp = null; openResp = {}; loadedId = null;
       pendingApproval = null; // A's reviewed pages and work text never survive into another identity
+      pendingDelegation = null; // same for a reviewed delegation payload
       V.innerHTML = ''; // synchronous DOM clear: nothing from the previous identity stays painted
       return true;
     }
@@ -87,7 +88,7 @@
         ${un ? `<div class="bz-sech">What Alter does not know</div><ul class="bz-ul">${un}</ul>` : ''}
         ${sys ? `<div class="bz-sech">Systems this would need</div><div class="bz-chips">${sys}</div>` : ''}
         <div class="bz-bound"><b>Starting boundary</b><p>${esc(p.boundary)}</p></div>
-        <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. On each run the first 4,000 characters of every source go to the reasoning engine. Results are drafts for your review - nothing is sent, spent or connected.</p>
+        <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. On each run the first 4,000 characters of every source go to the reasoning engine. If a bot is connected, work you bring goes to it instead - you review the exact text first. Results are drafts for your review - nothing is sent, spent or connected.</p>
         <label class="fld bz-check"><input type="checkbox" data-p-research> Let it read public web pages during runs. Before each run you approve the exact pages it may read (chosen from URLs in your sources or the work you bring). It cannot search the web and it cannot visit pages you did not approve. Approved pages also go to the reasoning engine during those runs.</label>
         <div class="btns"><button class="b ink" data-p-activate="${p.id}">Approve and start</button><button class="b out" data-p-edit="${p.id}">Edit</button><button class="b out" data-p-reject="${p.id}">Reject</button></div>`}
     </div>`;
@@ -95,10 +96,34 @@
 
   /* ---------- responsibilities ---------- */
   function runItem(run) {
+    const botName = run.bot && run.bot.name ? run.bot.name : 'the connected bot';
+    const head = `<div class="bz-run-h"><small>${run.kind === 'daily' ? 'Daily check-in' : 'You brought work'} · ${BB.when(run.at)}${run.usage ? ' · ' + esc(tok(run.usage)) + ' tokens' : ''}</small></div>`;
+    const rin = run.input ? `<p class="bz-run-in">${esc(run.input.length > 240 ? run.input.slice(0, 240) + '…' : run.input)}</p>` : '';
+    if (run.status === 'delegated' || run.status === 'running') {
+      const j = run.job || null;
+      const state = !j || j.status === 'queued' ? 'Sent. Waiting for it to pick the job up.'
+        : j.status === 'running' ? 'Working on it' + (j.startedAt ? ' since ' + BB.when(j.startedAt) : '') + '.'
+        : j.status === 'missing' ? 'The job record is gone, so this run cannot finish.'
+        : 'Finishing up.';
+      return `<div class="bz-run">${head}${rin}
+        <div class="bz-draft"><span class="bzc dim">With ${esc(botName)}</span><p>${esc(state)} Its report lands here as a draft for your review.</p></div>
+        ${j && (j.status === 'queued' || j.status === 'running') && run.taskId ? `<div class="btns"><button class="b out sm" data-run-stop="${esc(run.taskId)}" type="button">Stop this job</button></div>` : ''}
+      </div>`;
+    }
+    const failedText = run.failureReason === 'engine_malformed_output' ? 'The engine replied in a format Alter could not use, so nothing was drafted.'
+      : run.failureReason === 'bot_stalled' ? botName + ' stopped making progress, so the job auto-stopped. Nothing was drafted.'
+      : run.failureReason === 'owner_stopped' ? 'You stopped the job. Nothing was drafted.'
+      : run.failureReason === 'source_deleted' ? 'A source this run sent was deleted, so the job was cancelled. Nothing was drafted.'
+      : run.failureReason === 'data_deleted' ? 'The business data was deleted, so the job was cancelled.'
+      : run.failureReason === 'bot_failed' ? botName + ' could not finish' + (run.failureDetail ? ': ' + run.failureDetail : '.')
+      : 'The engine did not produce a draft this run.';
+    const doneChip = run.backend === 'linked-bot'
+      ? `<span class="bzc">Draft from ${esc(botName)}${run.bot && run.bot.reassignedFrom ? ' (reassigned from ' + esc(run.bot.reassignedFrom) + ')' : ''} · bot-reported - Alter did not verify it · nothing was sent</span>`
+      : `<span class="bzc">Draft · nothing was sent</span>`;
     return `<div class="bz-run">
-      <div class="bz-run-h"><small>${run.kind === 'daily' ? 'Daily check-in' : 'You brought work'} · ${BB.when(run.at)}${run.usage ? ' · ' + esc(tok(run.usage)) + ' tokens' : ''}</small></div>
-      ${run.input ? `<p class="bz-run-in">${esc(run.input.length > 240 ? run.input.slice(0, 240) + '…' : run.input)}</p>` : ''}
-      ${run.status === 'failed' ? `<div class="bz-draft"><span class="bzc warn">Run failed</span><p>${esc(run.failureReason === 'engine_malformed_output' ? 'The engine replied in a format Alter could not use, so nothing was drafted.' : 'The engine did not produce a draft this run.')}</p></div>` : `<div class="bz-draft"><span class="bzc">Draft · nothing was sent</span><p>${esc(run.output)}</p></div>`}
+      ${head}
+      ${rin}
+      ${run.status === 'failed' ? `<div class="bz-draft"><span class="bzc warn">Run failed</span><p>${esc(failedText)}</p></div>` : `<div class="bz-draft">${doneChip}<p>${esc(run.output)}</p></div>`}
       ${run.blockedStep ? `<p class="bz-blocked">Did not do: ${esc(run.blockedStep)}</p>` : ''}
       ${run.fetchedPages && run.fetchedPages.length ? `<p class="meta">Pages read this run: ${run.fetchedPages.filter(x => x.ok).length}${run.fetchedPages.some(x => !x.ok) ? ' · ' + run.fetchedPages.filter(x => !x.ok).length + ' not read (' + run.fetchedPages.filter(x => !x.ok).map(x => x.scrubbedWithSource ? 'removed with its source' : x.error === 'url_not_approved' ? 'not an approved page' : x.error === 'url_too_long' ? 'address too long to use' : x.error === 'ssrf_blocked' ? 'not a public page' : 'could not be read').join(', ') + ')' : ''}</p>` : ''}
       ${run.citations && run.citations.length ? `<div class="bz-cites">${run.citations.map(c => { const u = c.finalUrl || c.url; let h = u, safe = ''; try { const pu = new URL(u); if (pu.protocol === 'http:' || pu.protocol === 'https:') { safe = u; h = pu.host; } } catch (e) {} const label = c.located ? 'Quote found on page' : c.reason === 'page_not_fetched' ? 'Page not read this run' : c.reason === 'excerpt_too_short' || c.reason === 'excerpt_too_long' ? 'Quote not usable' : 'Quote not found on page'; return `<div class="bz-cite">${chip(label, c.located ? 'ok' : 'warn')}<p>${esc(c.quote)}</p>${c.located && safe ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer nofollow">${esc(h)}</a>` : `<small>${esc(u)}</small>`}</div>`; }).join('')}</div>` : ''}
@@ -124,12 +149,22 @@
         <p class="bz-sum">${esc(rp.summary)}</p>
         <p class="meta">Boundary you approved: ${esc(rp.boundary)}</p>
         <label class="fld">Bring it work<textarea class="in" data-run-input="${rp.id}" rows="3" maxlength="4000" placeholder="Paste an email to answer, a question, a request…"></textarea></label>
+        ${B.delegate && !rp.research ? `<p class="meta">Goes to <b>${esc(B.delegate.name)}</b>${B.delegate.connection && B.delegate.connection.status !== 'active' ? ' - not connected right now; it picks work up when it connects' : ''}. You review the exact text before anything is sent.</p>` : ''}
         <div class="btns"><button class="b ink" data-run="${rp.id}">Do this work</button>${rp.status === 'active' ? `<button class="b out" data-resp-pause="${rp.id}">Pause</button>` : `<button class="b out" data-resp-resume="${rp.id}">Resume</button>`}<button class="b out" data-resp-retire="${rp.id}">Retire</button><button class="b danger" data-resp-del="${rp.id}">Delete</button></div>
         ${pendingApproval && pendingApproval.respId === rp.id ? `<div class="bz-card bz-approve"><div class="bz-sech">Approve pages for this run</div>
           <p class="meta">Work being run (exactly as reviewed):</p><p class="bz-reviewed">${esc(pendingApproval.input)}</p>
           <p class="meta">These exact URLs appear in your sources or work item. Alter can read only the ones you check, for this run only - it cannot search the web or visit anything else. Checked pages go to the reasoning engine during the run.</p>
           ${pendingApproval.urls.map(u => `<label class="bz-urlrow"><input type="checkbox" data-appr-url value="${esc(u)}"${(pendingApproval.checked || []).includes(u) ? ' checked' : ''}><span class="bz-url">${esc(u)}</span>${pendingApproval.flagged.includes(u) ? chip('Looks like a signed or private link - review carefully', 'warn') : ''}</label>`).join('')}
           <div class="btns"><button class="b ink" data-appr-run type="button">Run with checked pages</button><button class="b out" data-appr-cancel type="button">Cancel</button></div></div>` : ''}
+        ${pendingDelegation && pendingDelegation.respId === rp.id ? (() => { const d = pendingDelegation.delegation, conn = (d.bot && d.bot.connection) || {};
+          const presence = conn.status === 'active' ? 'connected now' : conn.lastRealCallAt ? 'last heard from ' + BB.when(conn.lastRealCallAt) : 'not heard from yet - it picks the job up when it connects';
+          return `<div class="bz-card bz-approve"><div class="bz-sech">Review exactly what goes to ${esc(d.bot.name)}</div>
+          <p class="meta">Destination: <b>${esc(d.bot.name)}</b>${d.bot.providerId ? ' (' + esc(d.bot.providerId) + ')' : ''} - ${esc(presence)}. This text leaves Alter to that bot through its own connection. How the bot processes or keeps it is between you and the bot's provider: Alter does not control or verify it, and a connected personal bot account is not a separate private space for this business's data.</p>
+          <p class="meta">Instructions (exact text):</p><p class="bz-reviewed">${esc(d.brief)}</p>
+          <p class="meta">Work and sources (exact text):</p><p class="bz-reviewed">${esc(d.context)}</p>
+          <p class="meta">${d.sources && d.sources.length ? 'Included sources: ' + d.sources.map(s => esc(s.title) + ' v' + s.version + (s.chars < s.totalChars ? ' (first ' + s.chars.toLocaleString() + ' of ' + s.totalChars.toLocaleString() + ' characters)' : '')).join(', ') + '.' : 'No sources are linked to this responsibility - only the work text goes.'}${d.omittedSources && d.omittedSources.length ? ' Not included (no room in one job): ' + d.omittedSources.map(s => esc(s.title)).join(', ') + '.' : ''}</p>
+          <p class="meta">The reply comes back here as a draft - nothing is sent, spent or connected.</p>
+          <div class="btns"><button class="b ink" data-dele-run type="button">Send to ${esc(d.bot.name)}</button><button class="b out" data-dele-cancel type="button">Cancel</button></div></div>`; })() : ''}
         <p class="meta">Alter also does a daily check-in on active responsibilities and leaves what it finds here. Results are drafts - they never leave Alter.${rp.research ? ' When it reads owner-approved pages during a run, those pages go to the reasoning engine too.' : ''}</p>
         ${runs ? `<div class="bz-sech">History</div>${runs}` : '<p class="meta">No work done yet.</p>'}
       </div>` : ''}
@@ -149,8 +184,9 @@
       <div class="bz-kind"><button class="b out sm" data-kind="note" type="button">Note</button><button class="b out sm" data-kind="doc" type="button">Document</button></div>
       <label class="fld">Title<input class="in" id="bz-add-title" maxlength="120" placeholder="e.g. How last week actually went"></label>
       <label class="fld">Text<textarea class="in" id="bz-add-text" rows="6" maxlength="20000" placeholder="Paste notes, a call summary, a process doc…"></textarea></label>
-      <div class="btns"><button class="b ink" id="bz-add">Add source</button></div>
-      <p class="meta">Saved to your Alter workspace. When the reasoning engine is connected, looking for work sends each source's full saved text (up to 20,000 characters per source); each responsibility run or daily check-in sends the first 4,000 characters of every source plus the work you bring. For a responsibility you allow to read public pages, the pages it reads during a run go to the engine too.</p></div>`;
+      <div class="btns"><button class="b ink" id="bz-add">Add source</button><button class="b out" id="bz-add-file" type="button">Add from file</button><input type="file" id="bz-file" accept=".txt,.md,.markdown,.csv,.json,.log,text/plain,text/markdown,text/csv,application/json" style="display:none"></div>
+      <p class="meta">Add from file reads a plain-text file (.txt, .md, .csv, .json, .log) on this device into the form for your review - the file itself is not uploaded. PDF and Word files are not readable yet.</p>
+      <p class="meta">Saved to your Alter workspace. When the reasoning engine is connected, looking for work sends each source's full saved text (up to 20,000 characters per source); each responsibility run or daily check-in sends the first 4,000 characters of every source plus the work you bring. For a responsibility you allow to read public pages, the pages it reads during a run go to the engine too. When a bot is connected, work you delegate sends it the exact text you review at run time instead.</p></div>`;
     const empty = !srcs.length ? `<div class="bz-hero"><h2>Teach Alter the business</h2>
       <p>1. Add notes or documents about how the business actually runs.<br>2. Alter proposes responsibilities it could take over, each backed by quotes from your own notes.<br>3. You approve what starts. Approved work runs as drafts you review - nothing is sent, spent or connected.</p></div>` : '';
     // Provider consent card: exact host+model, what is sent, withdraw any time. The gate is
@@ -164,6 +200,7 @@
     const dataCard = `<div class="bz-card"><div class="bz-sech">Your data</div>
       <p class="meta">Your business data is stored in Alter's hosted database. There is no app-level encryption: the workspace owner and Alter's platform operator can access stored data operationally. The activity log above records key owner actions in this workspace (adding, editing and deleting sources, proposals, runs, consent changes); it is not an audit of operator access.</p>
       <p class="meta">Deleting a source removes the source, the verbatim quotes copied from it into proposals, and page addresses copied from it into research run records: approved-page lists, fetched-page entries and citations that reference them. An address that appears in the source is removed even if you also pasted it into a work item - the work item text you pasted stays as your own record. Work derived from the source - proposal text, responsibilities, run drafts and suggested next steps, which can reflect its content - is kept as your reviewable record, and activity entries can still mention a deleted item's title; that history is intentional. Deleting a responsibility removes that responsibility and its runs only. Only deleting all business data removes sources, proposals, responsibilities, work history, provider consent and the activity log from Alter's database; one minimal receipt of the purge itself remains there (an id, the time and item counts, none of your text). Content already sent to the reasoning provider is governed by that provider's own retention, and platform infrastructure backups are outside this deletion.</p>
+      <p class="meta">Work you send to a connected bot leaves Alter through the bot's own connection; what the bot's provider processes or keeps is governed by that provider, and a connected personal bot account is not a separate private space for this business's data. Deleting a source cancels a pending delegated job that used it; deleting a responsibility cancels its pending delegated jobs; deleting all business data cancels every pending delegated job and removes every delegated job record with it.</p>
       <div class="btns"><button class="b danger sm" id="bz-purge">Delete all business data</button></div></div>`;
     const propSec = srcs.length ? `<div class="bz-sech row"><span>What Alter could take over</span><button class="b ink sm" id="bz-discover" ${eng.configured && eng.enabled && eng.consent && eng.consent.current ? '' : 'disabled'}>Look for work</button></div>
       ${engNote}
@@ -179,6 +216,10 @@
     V.innerHTML = `<div class="page-in narrow"><div class="page-h"><div><h1>Business</h1><p class="sub">Teach Alter the business. Approve what it takes over.</p></div></div>
       ${pendCard}${empty}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
     bind();
+    // A delegated run settles whenever the bot reports: refresh on a slow poll while one is
+    // in flight so the draft appears without a manual reload. Never faster - this is a view.
+    clearTimeout(pollT); pollT = null;
+    if (resps.some(rp => (rp.runs || []).some(r => r.status === 'delegated' || r.status === 'running'))) pollT = setTimeout(() => { if (!dropIfStaleTenant()) load(); }, 12000);
   }
   function logLine(l) {
     return { source_added: 'Source added: ' + (l.title || ''), source_edited: 'Source edited (v' + l.fromVersion + ' → v' + l.toVersion + ')', source_deleted: 'Source deleted: ' + (l.title || ''),
@@ -187,6 +228,8 @@
       responsibility_deleted: 'Deleted with its history: ' + (l.title || ''), provider_consent_granted: 'Provider processing allowed: ' + (l.host || '') + ' (' + (l.model || '') + ')', provider_consent_withdrawn: 'Provider processing withdrawn',
       responsibility_activated: 'Started: ' + (l.title || ''), responsibility_paused: 'Paused: ' + (l.title || ''), responsibility_resumed: 'Resumed: ' + (l.title || ''), responsibility_retired: 'Retired: ' + (l.title || ''),
       run: (l.runKind === 'daily' ? 'Daily check-in' : 'Work run') + (l.usage ? ' · ' + tok(l.usage) + ' tokens' : ''),
+      run_delegated: 'Sent to ' + (l.botName || 'the connected bot') + (l.omittedSources ? ' · ' + l.omittedSources + ' linked source(s) did not fit' : ''),
+      run_settled: l.status === 'done' ? 'Draft received from the bot' : 'Delegated run ended without a draft' + (l.failure ? ' (' + l.failure + ')' : ''),
       data_purged: 'All business data deleted. Earlier activity was deleted with it; only this minimal receipt remains.', delete_abandoned: 'A paused delete was cancelled; what remained was kept.' }[l.kind] || l.kind;
   }
 
@@ -209,6 +252,26 @@
       add.disabled = true; const j = await api('/sources', 'POST', { kind, title, text }); add.disabled = false;
       if (j.error) return BB.toast(j.error); BB.toast('Added.'); await load();
     };
+    const fileBtn = $('#bz-add-file', V), fileIn = $('#bz-file', V);
+    if (fileBtn && fileIn) {
+      fileBtn.onclick = () => fileIn.click();
+      fileIn.onchange = () => {
+        const f = fileIn.files && fileIn.files[0]; fileIn.value = '';
+        if (!f) return;
+        if (f.size > 25000) return BB.toast('That file is too large for a text source (about 20,000 characters). Paste a section instead.');
+        const rd = new FileReader();
+        rd.onerror = () => BB.toast('Could not read that file.');
+        rd.onload = () => {
+          const text = String(rd.result || '');
+          if (!text.trim()) return BB.toast('That file had no readable text.');
+          const t = $('#bz-add-title', V), x = $('#bz-add-text', V);
+          if (t) t.value = f.name.replace(/\.[^.]+$/, '').slice(0, 120);
+          if (x) x.value = text.slice(0, 20000);
+          BB.toast('File read into the form - review it, then Add source.');
+        };
+        rd.readAsText(f);
+      };
+    }
     $$('[data-toggle-src]', V).forEach(el => el.onclick = () => { editingSrc = editingSrc === el.dataset.toggleSrc ? null : el.dataset.toggleSrc; paint(); });
     $$('[data-src-save]', V).forEach(b => b.onclick = async () => {
       const card = b.closest('.bz-card'), title = $('[data-src-title]', card).value, text = $('[data-src-text]', card).value;
@@ -254,12 +317,60 @@
       const ta = $('[data-run-input="' + b.dataset.run + '"]', V), input = ta.value;
       if (!input.trim()) return BB.toast('Describe or paste the work first');
       if (rp && rp.research) return researchApprove(rp, input, b);
+      if (B.delegate) return delegateApprove(rp, input, b);
       b.disabled = true; b.textContent = 'Working…';
       const j = await api('/responsibilities/' + b.dataset.run + '/run', 'POST', { input });
       b.disabled = false; b.textContent = 'Do this work';
       if (j.error) return BB.toast(j.error);
       if (j.run && j.run.status === 'failed') { await load(); return BB.toast('The run failed: ' + (j.run.failureReason === 'engine_malformed_output' ? 'the engine reply was unusable' : 'the engine produced no draft')); }
       ta.value = ''; BB.toast('Draft ready.'); await load();
+    });
+    // Delegated runs (connected bot does the work): the owner reviews the EXACT payload -
+    // instructions, work item, whole linked sources, destination bot - and the run binds that
+    // review by hash. Same review-discard rules as research approvals across identity changes.
+    async function delegateApprove(rp, input, b) {
+      b.disabled = true; b.textContent = 'Preparing…';
+      const stamp = identity();
+      const c = await api('/responsibilities/' + rp.id + '/delegate-preview', 'POST', { input });
+      if (stamp && stamp !== identity()) return;
+      b.disabled = false; b.textContent = 'Do this work';
+      if (c.error) return BB.toast(c.error);
+      openResp[rp.id] = true;
+      pendingDelegation = { respId: rp.id, input, delegation: c.delegation };
+      paint();
+    }
+    async function runDelegated(rp, d, b) {
+      if (b) { b.disabled = true; b.textContent = 'Sending…'; }
+      const stamp = identity();
+      const j = await api('/responsibilities/' + rp.id + '/run', 'POST', { input: d.input, delegateHash: d.delegation.hash });
+      if (stamp && stamp !== identity()) return;
+      if (b) { b.disabled = false; b.textContent = 'Do this work'; }
+      if (j.error) {
+        if (j.code === 'delegation_review_required' && j.delegation) { pendingDelegation = { respId: rp.id, input: d.input, delegation: j.delegation }; paint(); return BB.toast('The payload changed - review the current version.'); }
+        pendingDelegation = null; paint();
+        return BB.toast(j.error);
+      }
+      pendingDelegation = null;
+      const ta = $('[data-run-input="' + rp.id + '"]', V); if (ta) ta.value = '';
+      BB.toast('Sent to ' + (d.delegation.bot.name || 'the bot') + '. Its draft lands in the history.');
+      await load();
+    }
+    $$('[data-dele-run]', V).forEach(b => b.onclick = () => {
+      if (!pendingDelegation) return;
+      const rp = (B.responsibilities || []).find(x => x.id === pendingDelegation.respId);
+      const d = pendingDelegation;
+      pendingDelegation = null; paint();
+      if (rp) runDelegated(rp, d, $('[data-run="' + rp.id + '"]', V));
+    });
+    $$('[data-dele-cancel]', V).forEach(b => b.onclick = () => {
+      const pd = pendingDelegation; pendingDelegation = null; paint();
+      if (pd) { const ta = $('[data-run-input="' + pd.respId + '"]', V); if (ta) ta.value = pd.input; }
+    });
+    $$('[data-run-stop]', V).forEach(b => b.onclick = async () => {
+      if (!await askConfirm('Stop this job?', 'The bot is told to stop. Anything it already did outside Alter is not undone; the run shows as stopped.', 'Stop job')) return;
+      const j = await BB.api('/api/tasks/' + b.dataset.runStop + '/stop', 'POST', {});
+      if (j.error) return BB.toast(j.error);
+      BB.toast('Stopped.'); await load();
     });
     // Research runs: the owner reviews the exact pages found in their sources/work item
     // and approves each one for THIS run. The card shows the immutable work text that was
