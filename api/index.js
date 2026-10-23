@@ -2608,14 +2608,23 @@ async function bizDelegateRun(resp, srcs, input, bot, f0, payload) {
   if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)])) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); } }
   if (!await bizLog('run_delegated', { respId: resp.id, runId: run.id, taskId: t.id, botId: bot.id, botName: run.bot.name, sources: payload.sources.map(s => s.id), omittedSources: payload.omittedSources.length || undefined }, f0)) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); }
   // Everything recorded: flip queued atomically, only then wake. A claimant always sees a
-  // fully recorded run behind its job.
+  // fully recorded run behind its job. The flip MUST land: a purge or delete can win the
+  // race between the fenced writes and this last step (the job record is then gone or
+  // already failed). Returning 200 there would show a false "sent" for a job that does not
+  // exist - refuse honestly instead, and fail the just-registered run record best-effort
+  // (a no-op when a delete already owns it).
+  if (global.__bizRaceDelete) { global.__bizRaceDelete = null; await r(['DEL', 'fm:task:' + t.id]); } // test-only interleave hook, never set in production
   const raw = await r(['GET', 'fm:task:' + t.id]), live = raw && JSON.parse(raw);
+  let flipped = false;
   if (live && live.status === 'waiting') {
     const next = { ...live, status: 'queued' };
-    if (await r(['EVAL', AGENT_CAS, 1, 'fm:task:' + t.id, raw, JSON.stringify(next)]) === 1) {
-      const ag = await getJ('fm:agent:' + bot.id);
-      if (ag) await maybeWakeBot(ag, t.id).catch(() => {});
-    }
+    flipped = await r(['EVAL', AGENT_CAS, 1, 'fm:task:' + t.id, raw, JSON.stringify(next)]) === 1;
+    if (flipped) { const ag = await getJ('fm:agent:' + bot.id); if (ag) await maybeWakeBot(ag, t.id).catch(() => {}); }
+  }
+  if (!flipped) {
+    if (!live) await r(['SREM', 'fm:biz:delegated', t.id]); // record gone: nothing left to inventory (a live failed job stays inventoried for purge)
+    await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, f0, JSON.stringify(run), JSON.stringify({ ...run, status: 'failed', output: null, failureReason: 'workspace_changed', failureDetail: 'The workspace changed while the run was being created.', settledAt: now() })]);
+    return bizFenceConflict();
   }
   return { status: 200, body: { run } };
 }

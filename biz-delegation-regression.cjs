@@ -327,7 +327,19 @@ const ISO=ms=>new Date(ms).toISOString();
   assert.equal(out.status,409,'a workspace change during creation refuses the run');
   assert.equal((await f.r(['SMEMBERS','fm:biz:delegated'])||[]).length,0,'no inventory entry survives the refused creation');
   assert(!(await f.listTasks()).some(t=>t.biz),'no orphaned job record survives the refused creation');
-  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respR,0,-1])||[]).length,0,'no phantom run history survives the refused creation');
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respR,0,99])||[]).length,0,'no phantom run history survives the refused creation');
+
+  // --- a delete winning the race AFTER the fenced writes (before the queued flip): honest
+  // 409, never a false "sent" - and the just-registered run fails honestly
+  const pvX=await f.bizRespAct(respR,'delegate-preview',{input:'Race reply 2.'});
+  c.global.__bizRaceDelete=1; // test-only: deletes the held job between the fenced writes and the flip
+  const race2=await f.bizRespAct(respR,'run',{input:'Race reply 2.',delegateHash:pvX.body.delegation.hash});
+  assert.equal(race2.status,409,'a delete winning the final-flip race refuses, no false sent');
+  assert.equal((await f.r(['SMEMBERS','fm:biz:delegated'])||[]).length,0,'no inventory entry survives the lost race');
+  const xruns=await f.r(['LRANGE','fm:biz:runs:'+respR,0,99]);
+  assert.equal(xruns.length,1,'the run was registered before the race');
+  const xr=await f.getJ('fm:biz:run:'+xruns[0]);
+  assert.equal(xr.status,'failed');assert.equal(xr.failureReason,'workspace_changed','the registered run fails honestly, never a phantom sent');
  });
 
  console.log('biz-delegation-regression: all assertions passed');
