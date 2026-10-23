@@ -1948,96 +1948,218 @@ function bizCronOk(req) {
   return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expect));
 }
 // --- research tool layer (P1, review-only): guarded fetch + citation locating ---
-// Fetched pages and search results are untrusted DATA, fenced in prompts like owner sources.
-// A located citation means the quoted text exists on the cited page - never that a claim is true.
-const BIZWEB = { MAX_BYTES: 512 * 1024, MAX_REDIRECTS: 3, HOP_MS: 8000, MAX_CITES: 5, UA: 'alter-research/1 (+https://alterhq.app)' };
+// Fetched pages and search results are untrusted DATA. Prompt fencing (treating fetched
+// content as data, never instructions) is the design intent for the future prompt path;
+// it is NOT implemented or tested here because no prompt path exists yet.
+// Error vocabulary (returned, never thrown): bad_url, credentials_in_url,
+// scheme_not_allowed, port_not_allowed, ssrf_blocked, bad_redirect, too_many_redirects,
+// timeout, time_budget, too_large, content_type_not_allowed, unsupported_charset,
+// unsupported_encoding, connect_error, read_error, request_error, http_<status>.
+const BIZWEB = {
+  MAX_BYTES: 512 * 1024, MAX_REDIRECTS: 3, HOP_MS: 8000, TOTAL_MS: 25000,
+  MAX_CITES: 5, MAX_EXCERPT: 1000, UA: 'alter-research/1 (+https://alterhq.app)',
+  // Test seams; production defaults are strict. allowPort permits only the scheme default.
+  allowPort: (port, proto) => String(port || '') === '' || Number(port) === (proto === 'https:' ? 443 : 80),
+  ipPublic: null // bound to bizIpPublic below
+};
 
-function bizIpBlocked(ip) {
-  if (net.isIPv6(ip)) {
-    const v = ip.toLowerCase();
-    if (v === '::1' || v === '::') return true;
-    if (v.startsWith('::ffff:')) return bizIpBlocked(v.slice(7)); // v4-mapped: judge the v4 part
-    return /^f[cd]/.test(v) || /^fe[89ab]/.test(v); // unique-local fc00::/7, link-local fe80::/10
-  }
-  if (!net.isIPv4(ip)) return true;
-  const p = ip.split('.').map(Number);
-  if (p.length !== 4 || p.some(n => !(n >= 0 && n <= 255))) return true;
-  const [a, b] = p;
-  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+// Global-unicast IP classifier, hand-rolled from the IANA special-purpose registries
+// (https://www.iana.org/assignments/iana-ipv4-special-registry,
+//  https://www.iana.org/assignments/iana-ipv6-special-registry). No third-party code.
+// Allowlist, not blocklist: anything not clearly global unicast is refused.
+function bizV4Public(p) {
+  if (p.length !== 4 || p.some(n => !(Number.isInteger(n) && n >= 0 && n <= 255))) return false;
+  const [a, b, c] = p;
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return false;                 // this-net, private, loopback, multicast+reserved
+  if (a === 100 && b >= 64 && b <= 127) return false;                             // CGNAT 100.64/10
+  if (a === 169 && b === 254) return false;                                       // link-local
+  if (a === 172 && b >= 16 && b <= 31) return false;                              // private
+  if (a === 192 && b === 0 && c === 0) return false;                              // IETF protocol assignments
+  if (a === 192 && b === 0 && c === 2) return false;                              // TEST-NET-1
+  if (a === 192 && b === 88 && c === 99) return false;                            // 6to4 relay anycast (deprecated)
+  if (a === 192 && b === 168) return false;                                       // private
+  if (a === 198 && (b === 18 || b === 19)) return false;                          // benchmarking
+  if (a === 198 && b === 51 && c === 100) return false;                           // TEST-NET-2
+  if (a === 203 && b === 0 && c === 113) return false;                            // TEST-NET-3
+  return true;
 }
+// Parse any IPv6 form (compressed, embedded dotted-v4) into eight 16-bit groups, or null.
+function bizV6Groups(ip) {
+  let s = String(ip || '').toLowerCase();
+  if (!s || s.includes('%')) return null; // zone ids refused
+  if (s.includes('.')) {
+    const i = s.lastIndexOf(':');
+    const v4 = s.slice(i + 1).split('.').map(Number);
+    if (i < 0 || v4.length !== 4 || v4.some(n => !(Number.isInteger(n) && n >= 0 && n <= 255))) return null;
+    s = s.slice(0, i + 1) + (((v4[0] << 8) | v4[1]).toString(16)) + ':' + (((v4[2] << 8) | v4[3]).toString(16));
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  let groups;
+  if (halves.length === 1) { groups = s.split(':'); if (groups.length !== 8) return null; }
+  else {
+    const left = halves[0] ? halves[0].split(':') : [];
+    const right = halves[1] ? halves[1].split(':') : [];
+    const missing = 8 - left.length - right.length;
+    if (missing < 1) return null;
+    groups = left.concat(Array(missing).fill('0'), right);
+  }
+  if (groups.length !== 8 || groups.some(g => !/^[0-9a-f]{1,4}$/.test(g))) return null;
+  return groups.map(g => parseInt(g, 16));
+}
+function bizV6Public(g) {
+  if (!g) return false;
+  if (g.every(x => x === 0)) return false;                                        // ::
+  if (g.slice(0, 7).every(x => x === 0) && g[7] === 1) return false;              // ::1
+  if (g.slice(0, 5).every(x => x === 0) && g[5] === 0xffff)                       // v4-mapped: judge the v4 part
+    return bizV4Public([g[6] >> 8, g[6] & 255, g[7] >> 8, g[7] & 255]);
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0)
+    return bizV4Public([g[6] >> 8, g[6] & 255, g[7] >> 8, g[7] & 255]);           // NAT64 well-known: judge embedded v4
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return false;               // NAT64 local-use 64:ff9b:1::/48
+  if (g[0] === 0x100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return false;     // discard 100::/64
+  if (g[0] === 0x2001 && (g[1] & 0xfe00) === 0) return false;                     // 2001::/23 IETF specials (Teredo, benchmarking, ORCHID)
+  if (g[0] === 0x2001 && g[1] === 0x0db8) return false;                           // documentation 2001:db8::/32
+  if (g[0] === 0x2002) return false;                                              // 6to4 2002::/16 (embedded v4; refused outright)
+  if ((g[0] & 0xfe00) === 0xfc00) return false;                                   // unique-local fc00::/7
+  if ((g[0] & 0xffc0) === 0xfe80) return false;                                   // link-local fe80::/10
+  if ((g[0] & 0xff00) === 0xff00) return false;                                   // multicast ff00::/8 (incl ff02::1)
+  if (g[0] === 0x3fff && (g[1] & 0xf000) === 0) return false;                     // documentation 3fff::/20 (RFC 9637)
+  return (g[0] & 0xe000) === 0x2000;                                              // only global unicast 2000::/3 remains
+}
+function bizIpPublic(ip) {
+  const s = String(ip || '');
+  if (net.isIPv4(s)) return bizV4Public(s.split('.').map(Number));
+  return bizV6Public(bizV6Groups(s));
+}
+BIZWEB.ipPublic = bizIpPublic;
+// Literal hosts never reach DNS (Node skips the lookup callback for them), so they are
+// validated here, before connect, on the initial URL and on every redirect hop.
+// WHATWG URL parsing has already canonicalized numeric IPv4 forms (decimal/octal/hex,
+// partial quads) and compressed IPv6 by this point.
+function bizHostLiteralBlocked(hostname) {
+  let h = String(hostname || '');
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
+  if (net.isIPv4(h)) return !BIZWEB.ipPublic(h);
+  if (h.includes(':')) return !bizV6Public(bizV6Groups(h)); // DNS names never contain ':'
+  return false;
+}
+// Connect-time DNS guard: a name that resolves to ANY non-public address is refused
+// (rebinding-safe: runs per request, per redirect hop). Honors both Node lookup callback
+// contracts: opts.all -> cb(null, [{address, family}]), else cb(null, address, family).
 function bizLookupGuarded(hostname, opts, cb) {
   dns.lookup(hostname, { all: true }, (err, addrs) => {
     if (err) return cb(err);
-    if (!addrs || !addrs.length || addrs.some(a => bizIpBlocked(a.address))) {
+    if (!addrs || !addrs.length || addrs.some(a => !BIZWEB.ipPublic(a.address))) {
       const e = new Error('Address not allowed'); e.code = 'ssrf_blocked'; return cb(e);
     }
-    cb(null, addrs[0].address, addrs[0].family);
+    if (opts && opts.all) return cb(null, addrs.map(a => ({ address: a.address, family: a.family })));
+    return cb(null, addrs[0].address, addrs[0].family);
   });
 }
-// One redirect hop. Never forwards cookies or credentials; connect-time DNS is re-validated
-// per request, so a host that re-resolves to a private address is refused at connect.
-function bizFetchHop(u, deadline) {
+// One redirect hop. Absolute deadline (hard timer across DNS + connect + body), no cookie
+// or credential forwarding, identity encoding only, size-capped body kept as a Buffer
+// until content-type and charset are validated by the caller.
+function bizFetchHop(u, hopDeadline, totalDeadline) {
   return new Promise((resolve) => {
     let parsed;
     try { parsed = new URL(u); } catch { return resolve({ error: 'bad_url' }); }
     if (parsed.username || parsed.password) return resolve({ error: 'credentials_in_url' });
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return resolve({ error: 'scheme_not_allowed' });
+    if (!BIZWEB.allowPort(parsed.port, parsed.protocol)) return resolve({ error: 'port_not_allowed' });
+    if (bizHostLiteralBlocked(parsed.hostname)) return resolve({ error: 'ssrf_blocked' });
     const lib = parsed.protocol === 'https:' ? https : http;
-    const req = lib.request({
-      hostname: parsed.hostname, port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-      path: parsed.pathname + parsed.search, method: 'GET',
-      headers: { 'User-Agent': BIZWEB.UA, Accept: 'text/html,text/plain,*/*;q=0.5' },
-      lookup: bizLookupGuarded, timeout: Math.max(1000, Math.min(BIZWEB.HOP_MS, deadline - Date.now()))
-    }, (res) => {
-      const chunks = []; let n = 0;
-      res.on('data', (c) => { n += c.length; if (n > BIZWEB.MAX_BYTES) { req.destroy(); return resolve({ error: 'too_large' }); } chunks.push(c); });
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
-      res.on('error', () => resolve({ error: 'read_error' }));
-    });
-    req.on('timeout', () => { req.destroy(); resolve({ error: 'timeout' }); });
-    req.on('error', (e) => resolve({ error: e.code === 'ssrf_blocked' ? 'ssrf_blocked' : 'connect_error' }));
+    let req = null, settled = false;
+    function done(r) {
+      if (settled) return; settled = true; clearTimeout(hard);
+      if (req) { try { req.destroy(); } catch { /* already gone */ } }
+      resolve(r);
+    }
+    const hard = setTimeout(() => done({ error: 'timeout' }), Math.max(1, Math.min(hopDeadline, totalDeadline) - Date.now()));
+    if (hard.unref) hard.unref();
+    try {
+      req = lib.request({
+        hostname: parsed.hostname, port: parsed.port || undefined,
+        path: parsed.pathname + parsed.search, method: 'GET',
+        headers: { 'User-Agent': BIZWEB.UA, Accept: 'text/html,text/plain,application/xhtml+xml;q=0.9,*/*;q=0.5', 'Accept-Encoding': 'identity' },
+        lookup: bizLookupGuarded
+      }, (res) => {
+        const chunks = []; let n = 0;
+        res.on('data', (c) => { n += c.length; if (n > BIZWEB.MAX_BYTES) return done({ error: 'too_large' }); chunks.push(c); });
+        res.on('end', () => done({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+        res.on('error', () => done({ error: 'read_error' }));
+      });
+    } catch { return done({ error: 'request_error' }); }
+    req.on('error', (e) => done({ error: e && e.code === 'ssrf_blocked' ? 'ssrf_blocked' : 'connect_error' }));
     req.end();
   });
 }
-async function bizWebFetch(u, maxRedirects) {
-  const deadline = Date.now() + (BIZWEB.HOP_MS * (1 + (maxRedirects == null ? BIZWEB.MAX_REDIRECTS : maxRedirects)));
+const BIZWEB_TEXT_MIMES = ['application/xhtml+xml', 'application/json', 'application/xml', 'application/ld+json'];
+const BIZWEB_CHARSETS = ['utf-8', 'utf8', 'us-ascii', 'iso-8859-1', 'latin1'];
+async function bizWebFetch(u, maxRedirects, maxMs) {
+  const hopsMax = maxRedirects == null ? BIZWEB.MAX_REDIRECTS : maxRedirects;
+  const totalDeadline = Date.now() + Math.max(1000, Math.min(maxMs == null ? BIZWEB.TOTAL_MS : maxMs, BIZWEB.TOTAL_MS));
   let url = u;
   for (let hop = 0; ; hop++) {
-    if (Date.now() >= deadline) return { error: 'timeout' };
-    const r = await bizFetchHop(url, deadline);
-    if (r.error) return { error: r.error };
+    if (Date.now() >= totalDeadline) return { error: 'time_budget' };
+    const r = await bizFetchHop(url, Date.now() + BIZWEB.HOP_MS, totalDeadline);
+    if (r.error) return r;
     if (r.status >= 300 && r.status < 400 && r.headers && r.headers.location) {
-      if (hop >= (maxRedirects == null ? BIZWEB.MAX_REDIRECTS : maxRedirects)) return { error: 'too_many_redirects' };
-      url = new URL(r.headers.location, url).toString();
-      continue; // next hop re-validates scheme, credentials and DNS
+      if (hop >= hopsMax) return { error: 'too_many_redirects' };
+      try { url = new URL(r.headers.location, url).toString(); } catch { return { error: 'bad_redirect' }; }
+      continue; // every hop re-validates scheme, credentials, port, literal host and DNS
     }
     if (r.status !== 200) return { error: 'http_' + r.status };
-    return { ok: true, finalUrl: url, body: r.body };
+    const headers = r.headers || {};
+    const ce = String(headers['content-encoding'] || 'identity').toLowerCase();
+    if (ce !== 'identity' && ce !== '') return { error: 'unsupported_encoding' };
+    const ct = String(headers['content-type'] || '').toLowerCase();
+    const mime = ct.split(';')[0].trim();
+    if (mime && !mime.startsWith('text/') && !BIZWEB_TEXT_MIMES.includes(mime)) return { error: 'content_type_not_allowed' };
+    const cs = (ct.match(/charset=([a-z0-9._-]+)/) || [])[1] || 'utf-8';
+    if (!BIZWEB_CHARSETS.includes(cs)) return { error: 'unsupported_charset' };
+    const body = r.body.toString(cs === 'iso-8859-1' || cs === 'latin1' ? 'latin1' : 'utf8');
+    return { ok: true, finalUrl: url, body };
   }
 }
+// Heuristic HTML-to-text. Strips comments, scripts, styles and templates, decodes common
+// named and numeric entities. Hidden markup and templates can still match; a citation
+// match means "the excerpt appears in the page's normalized SOURCE text" - not visible
+// evidence on the rendered page, and never that a claim is true.
 function bizPageText(html) {
-  return String(html || '').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&quot;/g, '"');
+  return String(html || '')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style|template)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&#(x?[0-9a-f]+);/gi, (m, n) => { const c = parseInt(n[0].toLowerCase() === 'x' ? n.slice(1) : n, n[0].toLowerCase() === 'x' ? 16 : 10); return Number.isFinite(c) && c >= 32 && c <= 0x10ffff ? String.fromCodePoint(c) : ' '; })
+    .replace(/&(amp|lt|gt|quot|apos|nbsp);/gi, (m, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }[e.toLowerCase()]));
 }
 // Citation locating: fetch the cited page and check the quoted excerpt appears in it.
 // Result vocabulary is deliberately "located" - existence of a quote on a page is not truth.
-async function bizLocateCitation(url, excerpt) {
-  const ex = String(excerpt || '').slice(0, 300);
-  if (!ex || ex.length < 10) return { located: false, reason: 'excerpt_too_short' };
-  const r = await bizWebFetch(url);
+// The excerpt is checked WHOLE and AFTER normalization: no truncation, and whitespace-only
+// excerpts are too short (bizNorm('          ').length is 0, and '' would match every page).
+async function bizLocateCitation(url, excerpt, maxMs) {
+  const raw = String(excerpt || '');
+  if (raw.length > BIZWEB.MAX_EXCERPT) return { located: false, reason: 'excerpt_too_long' };
+  const ex = bizNorm(raw);
+  if (ex.length < 10) return { located: false, reason: 'excerpt_too_short' };
+  const r = await bizWebFetch(url, null, maxMs);
   if (!r.ok) return { located: false, reason: r.error };
   const page = bizNorm(bizPageText(r.body));
-  return { located: page.includes(bizNorm(ex)), finalUrl: r.finalUrl, reason: page.includes(bizNorm(ex)) ? 'located' : 'excerpt_not_found' };
+  const found = page.includes(ex);
+  return { located: found, finalUrl: r.finalUrl, reason: found ? 'located' : 'excerpt_not_found' };
 }
-// Check the citations on one drafted dossier; at most BIZWEB.MAX_CITES fetches.
-async function bizCheckCitations(claims) {
+// Check the citations on one drafted dossier; at most BIZWEB.MAX_CITES fetches, sharing one
+// caller time budget (default and ceiling sized under a 30s serverless function limit).
+async function bizCheckCitations(claims, maxMs) {
+  const deadline = Date.now() + Math.max(1000, Math.min(maxMs == null ? BIZWEB.TOTAL_MS : maxMs, 2 * BIZWEB.TOTAL_MS));
   const out = []; let fetched = 0;
   for (const c of (Array.isArray(claims) ? claims : []).slice(0, 20)) {
     const url = String((c && c.url) || ''), quote = String((c && c.quote) || '');
     if (fetched >= BIZWEB.MAX_CITES) { out.push({ url, located: false, reason: 'citation_cap' }); continue; }
+    const remain = deadline - Date.now();
+    if (remain < 1500) { out.push({ url, located: false, reason: 'time_budget' }); continue; }
     fetched++;
-    out.push({ url, ...(await bizLocateCitation(url, quote)) });
+    out.push({ url, ...(await bizLocateCitation(url, quote, remain)) });
   }
   return out;
 }
