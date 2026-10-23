@@ -674,3 +674,4 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .bz-next ul{margin:4px 0 0;padding-left:18px;font-size:13px}
 .bz-urlrow{display:flex;align-items:flex-start;gap:8px;margin:6px 0}
 .bz-urlrow .bz-url{word-break:break-all;font-size:12.5px}
+.bz-reviewed{background:rgba(0,0,0,.04);border-radius:8px;padding:8px 10px;font-size:12.5px;white-space:pre-wrap;word-break:break-word}

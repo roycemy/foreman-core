@@ -86,8 +86,9 @@
         <label class="fld">Bring it work<textarea class="in" data-run-input="${rp.id}" rows="3" maxlength="4000" placeholder="Paste an email to answer, a question, a request…"></textarea></label>
         <div class="btns"><button class="b ink" data-run="${rp.id}">Do this work</button>${rp.status === 'active' ? `<button class="b out" data-resp-pause="${rp.id}">Pause</button>` : `<button class="b out" data-resp-resume="${rp.id}">Resume</button>`}<button class="b out" data-resp-retire="${rp.id}">Retire</button></div>
         ${pendingApproval && pendingApproval.respId === rp.id ? `<div class="bz-card bz-approve"><div class="bz-sech">Approve pages for this run</div>
+          <p class="meta">Work being run (exactly as reviewed):</p><p class="bz-reviewed">${esc(pendingApproval.input)}</p>
           <p class="meta">These exact URLs appear in your sources or work item. Alter can read only the ones you check, for this run only - it cannot search the web or visit anything else. Checked pages go to the reasoning engine during the run.</p>
-          ${pendingApproval.urls.map(u => `<label class="bz-urlrow"><input type="checkbox" data-appr-url value="${esc(u)}"><span class="bz-url">${esc(u)}</span>${pendingApproval.flagged.includes(u) ? chip('Looks like a signed or private link - review carefully', 'warn') : ''}</label>`).join('')}
+          ${pendingApproval.urls.map(u => `<label class="bz-urlrow"><input type="checkbox" data-appr-url value="${esc(u)}"${(pendingApproval.checked || []).includes(u) ? ' checked' : ''}><span class="bz-url">${esc(u)}</span>${pendingApproval.flagged.includes(u) ? chip('Looks like a signed or private link - review carefully', 'warn') : ''}</label>`).join('')}
           <div class="btns"><button class="b ink" data-appr-run type="button">Run with checked pages</button><button class="b out" data-appr-cancel type="button">Cancel</button></div></div>` : ''}
         <p class="meta">Alter also does a daily check-in on active responsibilities and leaves what it finds here. Results are drafts - they never leave Alter.${rp.research ? ' When it reads owner-approved pages during a run, those pages go to the reasoning engine too.' : ''}</p>
         ${runs ? `<div class="bz-sech">History</div>${runs}` : '<p class="meta">No work done yet.</p>'}
@@ -195,26 +196,33 @@
       const j = await api('/responsibilities/' + b.dataset.run + '/run', 'POST', { input });
       b.disabled = false; b.textContent = 'Do this work';
       if (j.error) return BB.toast(j.error);
+      if (j.run && j.run.status === 'failed') { await load(); return BB.toast('The run failed: ' + (j.run.failureReason === 'engine_malformed_output' ? 'the engine reply was unusable' : 'the engine produced no draft')); }
       ta.value = ''; BB.toast('Draft ready.'); await load();
     });
     // Research runs: the owner reviews the exact pages found in their sources/work item
-    // and approves each one for THIS run. Only approved exact URLs can ever be contacted.
+    // and approves each one for THIS run. The card shows the immutable work text that was
+    // reviewed; the run executes exactly that text and the reviewed source versions.
     async function researchApprove(rp, input, b) {
       b.disabled = true; b.textContent = 'Checking pages…';
       const c = await api('/responsibilities/' + rp.id + '/candidates', 'POST', { input });
       b.disabled = false; b.textContent = 'Do this work';
       if (c.error) return BB.toast(c.error);
       const urls = c.urls || [];
-      if (!urls.length) return runResearch(rp, input, [], b);
+      if (!urls.length) return runResearch(rp, { input, approvedUrls: [], reviewedVersions: c.sourceVersions || {} }, b);
       openResp[rp.id] = true;
-      pendingApproval = { respId: rp.id, input, urls, flagged: c.flagged || [] };
+      pendingApproval = { respId: rp.id, input, urls, flagged: c.flagged || [], reviewedVersions: c.sourceVersions || {}, checked: [] };
       paint();
     }
-    async function runResearch(rp, input, approvedUrls, b) {
+    async function runResearch(rp, review, b) {
       if (b) { b.disabled = true; b.textContent = 'Working…'; }
-      const j = await api('/responsibilities/' + rp.id + '/run', 'POST', { input, approvedUrls });
+      const j = await api('/responsibilities/' + rp.id + '/run', 'POST', { input: review.input, approvedUrls: review.approvedUrls, reviewedVersions: review.reviewedVersions });
       if (b) { b.disabled = false; b.textContent = 'Do this work'; }
-      if (j.error) return BB.toast(j.error);
+      if (j.error) {
+        // Recoverable errors keep the review intact: same input, same checks, owner decides again.
+        if (review.urls && review.urls.length) { pendingApproval = { respId: rp.id, input: review.input, urls: review.urls, flagged: review.flagged || [], reviewedVersions: review.reviewedVersions || {}, checked: review.approvedUrls || [] }; paint(); }
+        return BB.toast(j.error);
+      }
+      if (j.run && j.run.status === 'failed') { pendingApproval = null; await load(); return BB.toast('The run failed: ' + (j.run.failureReason === 'engine_malformed_output' ? 'the engine reply was unusable' : 'the engine produced no draft')); }
       pendingApproval = null;
       const ta = $('[data-run-input="' + rp.id + '"]', V); if (ta) ta.value = '';
       BB.toast('Draft ready.'); await load();
@@ -223,11 +231,15 @@
       if (!pendingApproval) return;
       const checked = $$('[data-appr-url]', V).filter(x => x.checked).map(x => x.value);
       const rp = (B.responsibilities || []).find(x => x.id === pendingApproval.respId);
-      const input = pendingApproval.input;
+      const review = { input: pendingApproval.input, approvedUrls: checked, reviewedVersions: pendingApproval.reviewedVersions, urls: pendingApproval.urls, flagged: pendingApproval.flagged };
       pendingApproval = null; paint();
-      if (rp) runResearch(rp, input, checked, $('[data-run="' + rp.id + '"]', V));
+      if (rp) runResearch(rp, review, $('[data-run="' + rp.id + '"]', V));
     });
-    $$('[data-appr-cancel]', V).forEach(b => b.onclick = () => { pendingApproval = null; paint(); });
+    $$('[data-appr-cancel]', V).forEach(b => b.onclick = () => {
+      // Cancel keeps the typed work: restore the reviewed text into the input box.
+      const pa = pendingApproval; pendingApproval = null; paint();
+      if (pa) { const ta = $('[data-run-input="' + pa.respId + '"]', V); if (ta) ta.value = pa.input; }
+    });
     $$('[data-resp-pause]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respPause + '/pause', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Paused. It does nothing while paused.'); await load(); });
     $$('[data-resp-resume]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respResume + '/resume', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Resumed.'); await load(); });
     $$('[data-resp-retire]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Retire this responsibility?', 'Its history stays visible.', 'Retire')) return; const j = await api('/responsibilities/' + b.dataset.respRetire + '/retire', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Retired.'); await load(); });

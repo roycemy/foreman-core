@@ -2019,20 +2019,31 @@ async function bizRunResearch(resp, srcs, input, approvedUrls, deadline) {
     run.citations = bizCheckLocalCitations(citationsRaw, pageTexts);
     run.nextSteps = (Array.isArray(parsed.next_steps) ? parsed.next_steps : []).map(x => String(x).slice(0, 200)).filter(Boolean).slice(0, 6);
   }
-  await setJ('fm:biz:run:' + run.id, run);
-  await r(['LPUSH', 'fm:biz:runs:' + resp.id, run.id]); await r(['LTRIM', 'fm:biz:runs:' + resp.id, 0, BIZ.RUNS_KEEP - 1]);
-  const cur = await getJ('fm:biz:resp:' + resp.id);
-  if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; await setJ('fm:biz:resp:' + resp.id, cur); }
-  await bizLog('run', { respId: resp.id, runId: run.id, runKind: 'manual', model: run.model, usage: run.usage, research: true,
-    fetches: fetchedPages.length, refused: fetchedPages.filter(p => p.error === 'url_not_approved').length,
-    citations: run.citations.filter(c => c.located).length + '/' + run.citations.length, calls, failure: run.failureReason });
+  let perr = null;
+  const persist = (async () => {
+    await setJ('fm:biz:run:' + run.id, run);
+    await r(['LPUSH', 'fm:biz:runs:' + resp.id, run.id]); await r(['LTRIM', 'fm:biz:runs:' + resp.id, 0, BIZ.RUNS_KEEP - 1]);
+    const cur = await getJ('fm:biz:resp:' + resp.id);
+    if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; await setJ('fm:biz:resp:' + resp.id, cur); }
+    await bizLog('run', { respId: resp.id, runId: run.id, runKind: 'manual', model: run.model, usage: run.usage, research: true,
+      fetches: fetchedPages.length, contacts: contacts.n, refused: fetchedPages.filter(p => p.error === 'url_not_approved').length,
+      citations: run.citations.filter(c => c.located).length + '/' + run.citations.length, calls, failure: run.failureReason });
+  })().catch(e => { perr = e; });
+  // Persistence is raced against the absolute deadline. The race bounds how long we WAIT;
+  // it cannot cancel storage writes already in flight - on a lost race the run may appear
+  // partially saved later, and the response says so instead of claiming a cancelled write.
+  const won = await Promise.race([persist.then(() => true), new Promise(res => setTimeout(() => res(false), Math.max(1, deadline - Date.now())))]);
+  if (!won) { bizLog('run_persist_overrun', { respId: resp.id, runId: run.id }).catch(() => {}); return { status: 504, body: { error: 'Saving the run exceeded the time budget. It may appear partially saved - check before retrying.', code: 'run_budget' } }; }
+  if (perr) return { status: 500, body: { error: 'The run could not be saved.', code: 'store_error' } };
   return { status: 200, body: { run } };
 }
-async function bizRun(resp, input, kind, approvedUrls, deadline) {
+async function bizRun(resp, input, kind, approvedUrls, deadline, srcsSnapshot) {
   const eng = await bizEngine(); if (!eng.ok) return { status: 503, body: { error: eng.error, code: eng.code } };
   if (await r(['GET', 'fm:kill'])) return { status: 403, body: { error: 'Workspace is paused' } };
   if (resp.status !== 'active') return { status: 409, body: { error: 'This responsibility is ' + resp.status } };
-  const srcs = await bizSources();
+  // Research manual runs execute on the caller's validated source snapshot: the content the
+  // owner reviewed is the content that runs - no re-fetch, no validation/execution gap.
+  const srcs = srcsSnapshot || await bizSources();
   if (resp.research && kind === 'manual') return bizRunResearch(resp, srcs, input, approvedUrls || [], deadline || (Date.now() + BIZ.RUN_BUDGET_MS));
   let out;
   try { out = await bizChat(bizRunPrompt(resp, srcs, input, kind), { maxTokens: 1800 }); }
@@ -2054,6 +2065,7 @@ async function bizRun(resp, input, kind, approvedUrls, deadline) {
   return { status: 200, body: { run } };
 }
 async function bizRespAct(id, op, body) {
+  const entryDeadline = Date.now() + BIZ.RUN_BUDGET_MS; // absolute, before any storage read
   const resp = await getJ('fm:biz:resp:' + id); if (!resp) return { status: 404, body: { error: 'not found' } };
   if (op === 'candidates') {
     if (!resp.research) return { status: 400, body: { error: 'This responsibility does not read public pages' } };
@@ -2062,21 +2074,26 @@ async function bizRespAct(id, op, body) {
     return { status: 200, body: bizResearchCandidates(srcs, input) };
   }
   if (op === 'run') {
-    const deadline = Date.now() + BIZ.RUN_BUDGET_MS; // absolute, from the route entry
+    const deadline = entryDeadline;
     const input = String(body.input || '').slice(0, 4000);
     if (!input.trim()) return { status: 400, body: { error: 'Describe or paste the work first' } };
-    let approvedUrls;
+    let approvedUrls, srcsSnapshot;
     if (resp.research) {
-      // Owner-reviewed destinations only: every approved URL must be an EXACT verbatim
-      // candidate re-extracted from the current input and current source versions.
+      // One snapshot, three jobs: the versions the owner reviewed must still be current
+      // (stale_candidates otherwise), the approved URLs must be EXACT verbatim candidates
+      // from THAT snapshot, and that same snapshot - not a later re-read - is what executes.
       const approved = Array.isArray(body.approvedUrls) ? body.approvedUrls : [];
       if (approved.length > 20) return { status: 400, body: { error: 'Too many approved pages' } };
-      const srcs = await bizSources();
-      const candSet = new Set(bizResearchCandidates(srcs, input).urls);
+      srcsSnapshot = await bizSources();
+      const cands = bizResearchCandidates(srcsSnapshot, input);
+      const reviewed = body.reviewedVersions && typeof body.reviewedVersions === 'object' ? body.reviewedVersions : null;
+      if (!reviewed) return { status: 409, body: { error: 'Review the pages for this run first', code: 'review_required' } };
+      for (const [sid, ver] of Object.entries(cands.sourceVersions)) { if (reviewed[sid] !== ver) return { status: 409, body: { error: 'Sources changed since you reviewed the pages. Review the new list.', code: 'stale_candidates' } }; }
+      const candSet = new Set(cands.urls);
       for (const u of approved) { if (typeof u !== 'string' || !candSet.has(u)) return { status: 400, body: { error: 'Approved page is not an exact URL from your sources or work item', code: 'url_not_candidate' } }; }
       approvedUrls = [...new Set(approved)];
     }
-    return await bizRun(resp, input, 'manual', approvedUrls, deadline);
+    return await bizRun(resp, input, 'manual', approvedUrls, deadline, srcsSnapshot);
   }
   if (op === 'pause' || op === 'resume') {
     if (resp.status !== 'active' && resp.status !== 'paused') return { status: 409, body: { error: 'This responsibility is ' + resp.status } };
