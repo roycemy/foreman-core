@@ -2032,7 +2032,7 @@ async function bizRunResearch(resp, srcs, input, approvedUrls, deadline) {
   // Persistence is raced against the absolute deadline. The race bounds how long we WAIT;
   // it cannot cancel storage writes already in flight - on a lost race the run may appear
   // partially saved later, and the response says so instead of claiming a cancelled write.
-  const won = await Promise.race([persist.then(() => true), new Promise(res => setTimeout(() => res(false), Math.max(1, deadline - Date.now())))]);
+  let lostTimer; const won = await Promise.race([persist.then(() => true), new Promise(res => { lostTimer = setTimeout(() => res(false), Math.max(1, deadline - Date.now())); })]); clearTimeout(lostTimer); // a fast winner must not leave the losing timer pending
   if (!won) { bizLog('run_persist_overrun', { respId: resp.id, runId: run.id }).catch(() => {}); return { status: 504, body: { error: 'Saving the run exceeded the time budget. It may appear partially saved - check before retrying.', code: 'run_budget' } }; }
   if (perr) return { status: 500, body: { error: 'The run could not be saved.', code: 'store_error' } };
   return { status: 200, body: { run } };
@@ -2088,6 +2088,9 @@ async function bizRespAct(id, op, body) {
       const cands = bizResearchCandidates(srcsSnapshot, input);
       const reviewed = body.reviewedVersions && typeof body.reviewedVersions === 'object' ? body.reviewedVersions : null;
       if (!reviewed) return { status: 409, body: { error: 'Review the pages for this run first', code: 'review_required' } };
+      // Bidirectional: the reviewed set must BE the current set - added, deleted and edited
+      // sources all make the review stale, not just version drift on surviving sources.
+      if (Object.keys(reviewed).sort().join('\n') !== Object.keys(cands.sourceVersions).sort().join('\n')) return { status: 409, body: { error: 'Sources changed since you reviewed the pages. Review the new list.', code: 'stale_candidates' } };
       for (const [sid, ver] of Object.entries(cands.sourceVersions)) { if (reviewed[sid] !== ver) return { status: 409, body: { error: 'Sources changed since you reviewed the pages. Review the new list.', code: 'stale_candidates' } }; }
       const candSet = new Set(cands.urls);
       for (const u of approved) { if (typeof u !== 'string' || !candSet.has(u)) return { status: 400, body: { error: 'Approved page is not an exact URL from your sources or work item', code: 'url_not_candidate' } }; }

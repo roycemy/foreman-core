@@ -10,7 +10,7 @@
 // Engine endpoint is stubbed (fetch); page fetches use the REAL SSRF-guarded helper over
 // stubbed dns/http fixtures. No real network, no external probing.
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),net=require('net'),{EventEmitter}=require('events');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizDiscover,bizProposalAct,bizRespAct,bizState,bizExtractUrls,bizResearchCandidates,setJ,getJ,r,als,BIZ};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizState,bizExtractUrls,bizResearchCandidates,setJ,getJ,r,als,BIZ};';
 
 const LONGP='Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter. '.repeat(10).trim();
 const HOSTS={'good.example':['93.184.216.34'],'bad.example':['192.168.1.10'],'slow.example':['93.184.216.34']};
@@ -166,5 +166,13 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  const bres=await f.bizRespAct(respId,'run',{input:'Read https://slow.example/ and report',approvedUrls:['https://slow.example/'],reviewedVersions:RV2});
  Object.assign(B,savedB);
  assert.equal(bres.status,504);assert.equal(bres.body.code,'run_budget');
+ // DELETED source makes the review stale too (bidirectional set comparison)
+ const extra=await f.bizSourceAdd({kind:'note',title:'Temp',text:'Temporary note https://good.example/page2'});
+ const RV3=(await f.bizRespAct(respId,'candidates',{input:'Research https://good.example/'})).body.sourceVersions;
+ await f.bizSourceDel(extra.body.source.id);
+ const nC2=calls.length,nR2=requests.length;
+ const staleDel=await f.bizRespAct(respId,'run',{input:'Research https://good.example/',approvedUrls:['https://good.example/'],reviewedVersions:RV3});
+ assert.equal(staleDel.status,409);assert.equal(staleDel.body.code,'stale_candidates','deleted source id in review: stale reject');
+ assert.equal(calls.length,nC2);assert.equal(requests.length,nR2);
  console.log('PASS research integration round 4: review_required + stale_candidates binding (no model or network on either), snapshot execution;  verbatim candidates never authorize; owner-approved exact URLs only (server-validated subset, no normalization); unapproved candidate refused pre-contact; redirect targets must be exact approved URLs; contact budget caps hops; local-only citations; failed-not-draft on malformed/never-final; engine-off 503 zero network; tenant isolation; classic path untouched; honest 504 from route-entry deadline; frontend syntax guard.');
 })().catch(e=>{console.error(e);process.exit(1)});
