@@ -102,9 +102,14 @@ function memOp(script, keys, argv) {
   if (script === BIZ_OP_BEGIN) {
     const pr = mem.kv.get(keys[2]); const p = pr ? JSON.parse(pr) : null; const fr = mem.kv.get(keys[1]);
     let opId = argv[6];
-    if (p) { const same = p.op === argv[0] && String(p.id) === argv[1];
-      if (same) { if (!argv[7] || argv[7] !== String(p.opId)) return ['stale']; if (fr != null) return ['held']; opId = p.opId; }
-      else { if (argv[5] !== '1') return ['pending']; if (fr != null) return ['held']; } }
+    if (argv[7]) { // reviewed retry: the exact instance must still be pending, atomically in BEGIN
+      if (!p) return ['completed'];
+      if (p.op !== argv[0] || String(p.id) !== argv[1] || argv[7] !== String(p.opId)) return ['stale'];
+      if (fr != null) return ['held']; opId = p.opId;
+    } else if (p) { const same = p.op === argv[0] && String(p.id) === argv[1];
+      if (same) return ['stale'];
+      if (argv[5] !== '1') return ['pending'];
+      if (fr != null) return ['held']; }
     else if (fr != null) return ['held'];
     const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
     mem.kv.set(keys[1], argv[2]);
@@ -192,7 +197,7 @@ const BIZ_FENCE_LPUSH = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1]
 // later purge; CANCEL carries the owner-reviewed op identity, rejects stale cancels, bumps the
 // fence to invalidate in-flight holder writes, and releases the lease only when the lease token
 // belongs to the pending operation.
-const BIZ_OP_BEGIN = "local p=redis.call('GET',KEYS[3]); local fr=redis.call('GET',KEYS[2]); local opid=ARGV[7]; if p then local pj=cjson.decode(p); local same=(pj.op==ARGV[1] and tostring(pj.id)==ARGV[2]); if same then if ARGV[8]=='' or ARGV[8]~=tostring(pj.opId) then return {'stale'} end; if fr then return {'held'} end; opid=pj.opId; else if ARGV[6]~='1' then return {'pending'} end; if fr then return {'held'} end; end; elseif fr then return {'held'} end; local gen=redis.call('INCRBY',KEYS[1],1); redis.call('SET',KEYS[2],ARGV[3],'PX',tonumber(ARGV[4])); redis.call('SET',KEYS[3],cjson.encode({op=ARGV[1],id=ARGV[2],token=ARGV[3],gen=gen,at=ARGV[5],opId=opid})); return {'ok',gen,opid}";
+const BIZ_OP_BEGIN = "local p=redis.call('GET',KEYS[3]); local fr=redis.call('GET',KEYS[2]); local opid=ARGV[7]; if ARGV[8]~='' then if not p then return {'completed'} end; local pj=cjson.decode(p); if pj.op~=ARGV[1] or tostring(pj.id)~=ARGV[2] or ARGV[8]~=tostring(pj.opId) then return {'stale'} end; if fr then return {'held'} end; opid=pj.opId; elseif p then local pj=cjson.decode(p); if pj.op==ARGV[1] and tostring(pj.id)==ARGV[2] then return {'stale'} end; if ARGV[6]~='1' then return {'pending'} end; if fr then return {'held'} end; elseif fr then return {'held'} end; local gen=redis.call('INCRBY',KEYS[1],1); redis.call('SET',KEYS[2],ARGV[3],'PX',tonumber(ARGV[4])); redis.call('SET',KEYS[3],cjson.encode({op=ARGV[1],id=ARGV[2],token=ARGV[3],gen=gen,at=ARGV[5],opId=opid})); return {'ok',gen,opid}";
 const BIZ_OP_GUARD = "if redis.call('GET',KEYS[2])~=ARGV[1] then return 0 end; local p=redis.call('GET',KEYS[3]); if not p then return 0 end; local pj=cjson.decode(p); if pj.token~=ARGV[1] then return 0 end; if tostring(pj.gen)~=ARGV[2] then return 0 end; local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[2] then return 0 end; ";
 const BIZ_OP_WRITE = BIZ_OP_GUARD + "if ARGV[3]=='set' then redis.call('SET',KEYS[4],ARGV[4]) elseif ARGV[3]=='del' then redis.call('DEL',KEYS[4]) elseif ARGV[3]=='srem' then redis.call('SREM',KEYS[4],ARGV[4]) elseif ARGV[3]=='sadd' then redis.call('SADD',KEYS[4],ARGV[4]) elseif ARGV[3]=='stage' then redis.call('SET',KEYS[3],cjson.encode({op=pj.op,id=pj.id,token=pj.token,gen=pj.gen,at=pj.at,opId=pj.opId,stage=ARGV[4]})) elseif ARGV[3]=='renew' then redis.call('PEXPIRE',KEYS[2],60000) else return 0 end; return 1";
 const BIZ_OP_COMMIT = BIZ_OP_GUARD + "redis.call('LPUSH',KEYS[4],ARGV[3]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[4])-1); redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[2]); return 1";
@@ -1963,6 +1968,7 @@ async function bizOpBegin(op, id, subsume, reviewedOpId) {
     return { uncertain: true };
   }
   if (!Array.isArray(res)) return null;
+  if (res[0] === 'completed') return { completed: true }; // the reviewed intent already finished elsewhere
   if (res[0] === 'stale') return { stale: true }; // the reviewed intent was replaced or already completed
   if (res[0] !== 'ok') return null;
   return { token, gen: String(res[1]), opId: String(res[2]), t0: Date.now(), n: 0 };
@@ -2111,7 +2117,7 @@ async function bizSourceDel(id, body) {
   if (!s && !retrying) return { status: 404, body: { error: 'not found' } };
   // Idempotent retry: when an earlier attempt died after removing the record, the durable intent
   // is still set and this call finishes the remaining stages (index cleanup is part of them).
-  const ctx = await bizOpBegin('source_delete', id, false, body && body.opId); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
+  const ctx = await bizOpBegin('source_delete', id, false, body && body.opId); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
   let scrubbed = 0, stage = 'start';
   try {
     bizFault('sourcedel:begin');
@@ -2308,7 +2314,7 @@ async function bizRespAct(id, op, body) {
     // Idempotent retry: the record may already be gone from an earlier partial attempt; the
     // durable intent is what must close, and index/run cleanup is part of closing it.
     if (!resp && !retrying) return { status: 404, body: { error: 'not found' } };
-    const ctx = await bizOpBegin('resp_delete', id, false, body && body.opId); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
+    const ctx = await bizOpBegin('resp_delete', id, false, body && body.opId); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
     let runsDeleted = 0, stage = 'start';
     try {
       bizFault('respdel:begin');
@@ -2596,11 +2602,14 @@ async function bizDataPurge(body) {
     const pendNow = await getJ('fm:biz:op_pending');
     if (!pendNow) return bizOpCompleted();
     if (pendNow.op !== 'purge') return { status: 409, body: { error: 'Another delete is pending in this workspace. Finish or cancel it first.', code: 'operation_pending' } };
+    // Test-only seam (global.__bizBetween is never set in production): interleavings between
+    // this review precheck and the atomic BEGIN guard below. The BEGIN guard alone must refuse.
+    if (global.__bizBetween) { const fn = global.__bizBetween; global.__bizBetween = null; await fn(); }
   } else {
     const pendNow = await getJ('fm:biz:op_pending');
     if (pendNow && pendNow.op === 'purge') return bizOpNeedsReview();
   }
-  const ctx = await bizOpBegin('purge', null, !retry, retry ? body.opId : undefined); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
+  const ctx = await bizOpBegin('purge', null, !retry, retry ? body.opId : undefined); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
   const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0 };
   let stage = 'start';
   try {

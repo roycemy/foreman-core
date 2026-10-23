@@ -253,7 +253,7 @@
     const pf = $('#bz-pend-finish', V); if (pf) pf.onclick = async () => {
       const pendNow = B && B.opPending; if (!pendNow) return;
       let j = null;
-      if (pendNow.op === 'purge') { const t = prompt('Finish deleting ALL business data in this workspace. Type DELETE to confirm.'); if (t !== 'DELETE') return; j = await api('/data/delete', 'POST', { confirm: 'DELETE', opId: pendNow.opId || '' }); }
+      if (pendNow.op === 'purge') { const t = prompt('Finish deleting ALL business data in this workspace: sources, proposals, responsibilities, work history, provider consent and the activity log. One minimal receipt of the purge itself remains: an id, the time and item counts, with none of your text. Type DELETE to confirm.'); if (t !== 'DELETE') return; j = await api('/data/delete', 'POST', { confirm: 'DELETE', opId: pendNow.opId || '' }); }
       else if (pendNow.op === 'source_delete') j = await api('/sources/' + pendNow.id, 'DELETE', { opId: pendNow.opId || '' });
       else if (pendNow.op === 'resp_delete') j = await api('/responsibilities/' + pendNow.id + '/delete', 'POST', { confirm: 'DELETE', opId: pendNow.opId || '' });
       else return;

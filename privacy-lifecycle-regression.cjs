@@ -333,5 +333,31 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  assert.equal(staleS.status,409);assert.equal(staleS.body.code,'intent_completed','stale source Finish with no pending intent is rejected');
  assert(await f.getJ('fm:biz:src:'+sNew),'source survives the stale source Finish');
 
- console.log('PASS privacy lifecycle: orphan inventory, generation bumps, freeze exclusion + ownership-token interleave (expiry/purge/third-holder), durable partial purge with quiescence + retry + CANCEL, truthful partials, keyspace-complete purge, vetted-origin allowlist + full classifier, redirect refused pre-payload, R4 atomic op protocol (pending inside fenced writes, coherent begin, idempotent gone-record retries, reviewed-identity cancel, commit-inside-ownership), stable intent instance ids across retry vs fresh operations.');
+ // --- R4-7) paused review precheck (reviewer repro on real Redis): the precheck passes while
+ // the old intent still pends, the tab pauses, the old partial purge completes ELSEWHERE and new
+ // data is added, then the resumed Finish reaches BEGIN. A precheck alone is TOCTOU here; the
+ // atomic in-script guard must refuse, never start a fresh purge over the new data.
+ c.global.__bizFault='purge:sources';
+ await f.bizDataPurge({confirm:'DELETE'});
+ const instC=(await f.getJ('fm:biz:op_pending')).opId;assert(instC,'instance id for the paused-retry repro');
+ let sPaused=null;
+ c.global.__bizBetween=async()=>{ // the pause: the purge completes elsewhere, then new work lands
+  await f.r(['DEL','fm:biz:op_pending']);
+  sPaused=(await f.bizSourceAdd({kind:'note',title:'Pause',text:'Support replies go out the same day.'})).body.source.id;
+ };
+ const pausedF=await f.bizDataPurge({confirm:'DELETE',opId:instC});
+ assert.equal(pausedF.status,409);assert.equal(pausedF.body.code,'intent_completed','resumed Finish refused atomically at BEGIN, not a fresh purge');
+ assert(sPaused&&await f.getJ('fm:biz:src:'+sPaused),'data added during the pause survives the stale Finish');
+ // variant: an intent still pends but is a DIFFERENT instance - stale, not completed
+ c.global.__bizFault='purge:sources';
+ await f.bizDataPurge({confirm:'DELETE'});
+ const instD=(await f.getJ('fm:biz:op_pending')).opId;assert(instD&&instD!==instC,'a fresh operation after the pause gets its own instance id');
+ const staleD=await f.bizDataPurge({confirm:'DELETE',opId:instC});
+ assert.equal(staleD.status,409);assert.equal(staleD.body.code,'op_stale','a different pending instance is stale, not completed');
+ assert.equal((await f.getJ('fm:biz:op_pending')).opId,instD,'the different pending instance survives the stale Finish');
+ const okD=await f.bizDataPurge({confirm:'DELETE',opId:instD});
+ assert.equal(okD.status,200,'the genuine reviewed retry passes the atomic guard and completes');
+ assert.equal((await f.bizDataPurge({confirm:'DELETE'})).status,200,'a fresh typed-DELETE after completion is a fresh purge, distinct from a retry');
+
+ console.log('PASS privacy lifecycle: orphan inventory, generation bumps, freeze exclusion + ownership-token interleave (expiry/purge/third-holder), durable partial purge with quiescence + retry + CANCEL, truthful partials, keyspace-complete purge, vetted-origin allowlist + full classifier, redirect refused pre-payload, R4 atomic op protocol (pending inside fenced writes, coherent begin, idempotent gone-record retries, reviewed-identity cancel, commit-inside-ownership), stable intent instance ids across retry vs fresh operations, atomic reviewed-retry guard under a paused precheck.');
 })().catch(e=>{console.error(e);process.exit(1)});
