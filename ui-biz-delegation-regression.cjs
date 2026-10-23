@@ -64,6 +64,22 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  const ctl=async p=>{await new Promise((res,rej)=>{http.get('http://127.0.0.1:'+port+p,r=>{r.resume();res();}).on('error',rej);});};
  const bizText=()=>ev(`(document.getElementById('v-business')||{textContent:''}).textContent`);
  const shot=async name=>{const s=await send('Page.captureScreenshot',{format:'png'},sessionId);fs.writeFileSync('/downloads/'+name,Buffer.from(s.data,'base64'));};
+ // Decisive-state evidence: scroll the element under test into view and capture BOTH
+ // the 390px mobile viewport and a 1280px desktop viewport.
+ const M390={width:390,height:844,deviceScaleFactor:2,mobile:true};
+ const M1280={width:1280,height:800,deviceScaleFactor:1,mobile:false};
+ const shot2=async(base,elExpr)=>{
+   for(const [m,tag] of [[M390,'390'],[M1280,'desktop']]){
+     await send('Emulation.setDeviceMetricsOverride',m,sessionId);
+     await new Promise(r=>setTimeout(r,200));
+     const found=await ev(`(()=>{const q=${elExpr};if(!q)return false;q.scrollIntoView({block:'center'});return true;})()`);
+     assert(found,'evidence target visible for '+base+'-'+tag);
+     await new Promise(r=>setTimeout(r,300));
+     await shot(base+'-'+tag+'.png');
+   }
+   await send('Emulation.setDeviceMetricsOverride',M390,sessionId);
+   await new Promise(r=>setTimeout(r,150));
+ };
 
  await send('Page.enable',{},sessionId);
  await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:2,mobile:true},sessionId);
@@ -84,7 +100,7 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(t.includes('We answer every customer email within a day'),'exact source text shown');
  assert(t.includes('not a separate private space'),'privacy boundary copy shown');
  assert(t.includes('Included sources: How we work v2'),'source versions named');
- await shot('delegation-review-390.png');
+ await shot2('delegation-review',`document.querySelector('[data-dele-run]')`);
 
  // Identity switch discards the reviewed payload before anything is sent
  await ctl('/__ident?to=B');
@@ -109,12 +125,12 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(t.includes('With Grokbot'),'pending chip names the bot');
  assert(t.includes('Its report lands here as a draft'),'pending sets draft expectation');
  assert(await ev(`!!document.querySelector('[data-run-stop="task_1"]')`),'stop button present while pending');
- await shot('delegation-sent-390.png');
+ await shot2('delegation-sent',`document.querySelector('[data-run-stop="task_1"]')`);
 
  // Working state (via the view's slow poll picking up new state)
  await ctl('/__phase?to=working');
  assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('Working on it')`,20000),'working state paints on refresh');
- await shot('delegation-working-390.png');
+ await shot2('delegation-working',`document.querySelector('[data-run-stop="task_1"]')`);
 
  // Done: bot-reported draft with provenance, not Alter-verified
  await ctl('/__phase?to=done');
@@ -124,7 +140,7 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(t.includes('Alter did not verify it'),'honest verification boundary');
  assert(t.includes('we can offer the $60 refund'),'draft text renders');
  assert(!(await ev(`!!document.querySelector('[data-run-stop="task_1"]')`)),'stop button gone after settle');
- await shot('delegation-done-390.png');
+ await shot2('delegation-done',`[...document.querySelectorAll('.bz-run')].pop()`);
 
  // Failed with the bot's own reason (fresh load: the view polls only while a run is in flight)
  await ctl('/__phase?to=failed');
@@ -144,8 +160,8 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
   assert(ok,'bot failure reason paints');}
  t=await bizText();
  assert(t.includes('could not finish'),'failure names the actor');
- await shot('delegation-failed-390.png');
+ await shot2('delegation-failed',`[...document.querySelectorAll('.bz-run')].pop()`);
 
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop - pixels at /downloads/delegation-{review,sent,working,done,failed}-390.png.');
+ console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop - pixels at /downloads/delegation-{review,sent,working,done,failed}-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{server.close();}catch(_){/*noop*/}process.exit(1)});
