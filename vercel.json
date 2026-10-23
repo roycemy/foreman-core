@@ -147,5 +147,11 @@
       "maxDuration": 15,
       "includeFiles": "api/fonts/**"
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/business-daily",
+      "schedule": "0 13 * * *"
+    }
+  ]
 }
