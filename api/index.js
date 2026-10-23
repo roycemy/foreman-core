@@ -1953,7 +1953,7 @@ function bizCronOk(req) {
 // it is NOT implemented or tested here because no prompt path exists yet.
 // Error vocabulary (returned, never thrown): bad_url, credentials_in_url,
 // scheme_not_allowed, port_not_allowed, ssrf_blocked, bad_redirect, too_many_redirects,
-// timeout, time_budget, too_large, content_type_not_allowed, unsupported_charset,
+// timeout, time_budget, too_large, content_type_missing, content_type_not_allowed, unsupported_charset,
 // unsupported_encoding, connect_error, read_error, request_error, http_<status>.
 const BIZWEB = {
   MAX_BYTES: 512 * 1024, MAX_REDIRECTS: 3, HOP_MS: 8000, TOTAL_MS: 25000,
@@ -2068,6 +2068,12 @@ function bizFetchHop(u, hopDeadline, totalDeadline) {
     if (!BIZWEB.allowPort(parsed.port, parsed.protocol)) return resolve({ error: 'port_not_allowed' });
     if (bizHostLiteralBlocked(parsed.hostname)) return resolve({ error: 'ssrf_blocked' });
     const lib = parsed.protocol === 'https:' ? https : http;
+    // URL keeps IPv6 literals bracketed; the socket and TLS need the bare address while
+    // the Host header keeps the brackets.
+    const bracketed = parsed.hostname.startsWith('[') && parsed.hostname.endsWith(']');
+    const connectHost = bracketed ? parsed.hostname.slice(1, -1) : parsed.hostname;
+    const headers = { 'User-Agent': BIZWEB.UA, Accept: 'text/html,text/plain,application/xhtml+xml;q=0.9,*/*;q=0.5', 'Accept-Encoding': 'identity' };
+    if (bracketed) headers.Host = parsed.hostname + (parsed.port ? ':' + parsed.port : '');
     let req = null, settled = false;
     function done(r) {
       if (settled) return; settled = true; clearTimeout(hard);
@@ -2078,10 +2084,9 @@ function bizFetchHop(u, hopDeadline, totalDeadline) {
     if (hard.unref) hard.unref();
     try {
       req = lib.request({
-        hostname: parsed.hostname, port: parsed.port || undefined,
+        hostname: connectHost, servername: connectHost, port: parsed.port || undefined,
         path: parsed.pathname + parsed.search, method: 'GET',
-        headers: { 'User-Agent': BIZWEB.UA, Accept: 'text/html,text/plain,application/xhtml+xml;q=0.9,*/*;q=0.5', 'Accept-Encoding': 'identity' },
-        lookup: bizLookupGuarded
+        headers, lookup: bizLookupGuarded
       }, (res) => {
         const chunks = []; let n = 0;
         res.on('data', (c) => { n += c.length; if (n > BIZWEB.MAX_BYTES) return done({ error: 'too_large' }); chunks.push(c); });
@@ -2114,8 +2119,9 @@ async function bizWebFetch(u, maxRedirects, maxMs) {
     if (ce !== 'identity' && ce !== '') return { error: 'unsupported_encoding' };
     const ct = String(headers['content-type'] || '').toLowerCase();
     const mime = ct.split(';')[0].trim();
-    if (mime && !mime.startsWith('text/') && !BIZWEB_TEXT_MIMES.includes(mime)) return { error: 'content_type_not_allowed' };
-    const cs = (ct.match(/charset=([a-z0-9._-]+)/) || [])[1] || 'utf-8';
+    if (!mime) return { error: 'content_type_missing' }; // fail closed: no type, no guessing at bytes
+    if (!mime.startsWith('text/') && !BIZWEB_TEXT_MIMES.includes(mime)) return { error: 'content_type_not_allowed' };
+    const cs = (ct.match(/charset\s*=\s*"?([a-z0-9._-]+)"?/) || [])[1] || 'utf-8';
     if (!BIZWEB_CHARSETS.includes(cs)) return { error: 'unsupported_charset' };
     const body = r.body.toString(cs === 'iso-8859-1' || cs === 'latin1' ? 'latin1' : 'utf8');
     return { ok: true, finalUrl: url, body };
@@ -2149,9 +2155,11 @@ async function bizLocateCitation(url, excerpt, maxMs) {
   return { located: found, finalUrl: r.finalUrl, reason: found ? 'located' : 'excerpt_not_found' };
 }
 // Check the citations on one drafted dossier; at most BIZWEB.MAX_CITES fetches, sharing one
-// caller time budget (default and ceiling sized under a 30s serverless function limit).
+// caller time budget. maxMs is the REMAINING budget of the absolute deadline the caller
+// shares with the rest of its work (model call etc.) - never a fresh research budget -
+// clamped to BIZWEB.TOTAL_MS (sized under a 30s serverless function limit).
 async function bizCheckCitations(claims, maxMs) {
-  const deadline = Date.now() + Math.max(1000, Math.min(maxMs == null ? BIZWEB.TOTAL_MS : maxMs, 2 * BIZWEB.TOTAL_MS));
+  const deadline = Date.now() + Math.max(1000, Math.min(maxMs == null ? BIZWEB.TOTAL_MS : maxMs, BIZWEB.TOTAL_MS));
   const out = []; let fetched = 0;
   for (const c of (Array.isArray(claims) ? claims : []).slice(0, 20)) {
     const url = String((c && c.url) || ''), quote = String((c && c.quote) || '');

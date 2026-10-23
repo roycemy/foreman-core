@@ -8,14 +8,21 @@ const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizWebFetc
 // --- stub DNS: hostname -> chosen IPs ---
 const HOSTS={'good.example':['93.184.216.34'],'priv.example':['192.168.1.10'],'loop.example':['127.0.0.1'],
  'v6local.example':['fd00::1'],'mapped.example':['::ffff:10.0.0.5'],'multi.example':['93.184.216.34','10.1.2.3'],
- 'throw.example':['93.184.216.34']};
+ 'throw.example':['93.184.216.34'],'slow.example':['93.184.216.34']};
 const dnsCalls=[];
 const dnsStub={lookup:(h,o,cb)=>{dnsCalls.push({h,o});const ips=HOSTS[h]; if(!ips)return cb(new Error('ENOTFOUND')); cb(null,ips.map(a=>({address:a,family:a.includes(':')?6:4})));}};
 
 // --- stub http(s): canned responses; records every attempted connection ---
 const requests=[];
+const LONGP='Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter. '.repeat(12).trim();
 const PAGES={
- 'good.example/':{status:200,headers:{'content-type':'text/html; charset=utf-8'},body:'<html><body><p>Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter.</p><!-- hidden comment with the words hiring wave --><template><p>template only text</p></template></body></html>'},
+ 'good.example/':{status:200,headers:{'content-type':'text/html; charset=utf-8'},body:'<html><body><p>'+LONGP+'</p><!-- hidden comment with the words hiring wave --><template><p>template only text</p></template></body></html>'},
+ 'good.example/charset-quoted':{status:200,headers:{'content-type':'text/html; charset="utf-16"'},body:'<html><body>quoted</body></html>'},
+ 'good.example/charset-spaced':{status:200,headers:{'content-type':'text/html; charset = utf-16'},body:'<html><body>spaced</body></html>'},
+ 'good.example/charset-ok':{status:200,headers:{'content-type':'text/html; charset = "utf-8"'},body:'<html><body>spaced utf8 ok</body></html>'},
+ 'good.example/noct':{status:200,headers:{},body:'<html><body>untyped</body></html>'},
+ 'slow.example/':{status:200,headers:{'content-type':'text/plain'},delay:700,body:'Slow page quote for budget test. '+LONGP},
+ '2606:4700:4700::1111/':{status:200,headers:{'content-type':'text/plain'},body:'public v6 literal page'},
  'good.example/redir-priv':{status:302,headers:{location:'http://priv.example/'}},
  'good.example/redir-literal':{status:302,headers:{location:'http://2130706433/'}},
  'good.example/redir-bad':{status:302,headers:{location:'http://['}},
@@ -32,7 +39,7 @@ function fakeLib(proto){return {request:(opts,cb)=>{
   const key=opts.hostname+opts.path; requests.push({proto,hostname:opts.hostname,path:opts.path,headers:opts.headers});
   const res=new EventEmitter(); res.statusCode=(PAGES[key]||{status:404}).status; res.headers=(PAGES[key]||{}).headers||{};
   const req=new EventEmitter(); req.destroy=()=>{}; req.end=()=>{
-    const serve=()=>{const p=PAGES[key]; process.nextTick(()=>{cb(res); if(p&&p.body){res.emit('data',Buffer.from(p.body));} res.emit('end');});};
+    const serve=()=>{const p=PAGES[key]; const go=()=>{cb(res); if(p&&p.body){res.emit('data',Buffer.from(p.body));} res.emit('end');}; if(p&&p.delay)setTimeout(go,p.delay); else process.nextTick(go);};
     if(net.isIP(opts.hostname.replace(/^\[|\]$/g,''))) return serve(); // REAL NODE BEHAVIOR: no lookup for literal IPs
     opts.lookup(opts.hostname,{},(err)=>{ if(err){req.emit('error',err);return;} serve();});
   };
@@ -78,6 +85,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  // 4) redirect to private host and to literal IP blocked at the hop
  r=await f.bizWebFetch('https://good.example/redir-priv');assert.equal(r.error,'ssrf_blocked','redirect to private DNS host');
  r=await f.bizWebFetch('https://good.example/redir-literal');assert.equal(r.error,'ssrf_blocked','redirect to literal 2130706433');
+ assert(!requests.some(q=>q.hostname==='2130706433'||q.hostname==='127.0.0.1'),'literal redirect target never constructed');
  // 5) scheme, credentials, port refused
  assert.equal((await f.bizWebFetch('file:///etc/passwd')).error,'scheme_not_allowed');
  assert.equal((await f.bizWebFetch('ftp://good.example/')).error,'scheme_not_allowed');
@@ -96,6 +104,14 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  assert.equal((await f.bizWebFetch('https://good.example/binary')).error,'content_type_not_allowed');
  assert.equal((await f.bizWebFetch('https://good.example/charset')).error,'unsupported_charset');
  assert.equal((await f.bizWebFetch('https://good.example/gzip')).error,'unsupported_encoding');
+ assert.equal((await f.bizWebFetch('https://good.example/charset-quoted')).error,'unsupported_charset','quoted charset parsed');
+ assert.equal((await f.bizWebFetch('https://good.example/charset-spaced')).error,'unsupported_charset','spaced charset parsed');
+ assert.equal((await f.bizWebFetch('https://good.example/charset-ok')).ok,true,'spaced quoted utf-8 accepted');
+ assert.equal((await f.bizWebFetch('https://good.example/noct')).error,'content_type_missing','missing content-type fails closed');
+ // bracketed IPv6 literal: bare address on the socket/TLS, bracketed Host header
+ let n0=requests.length; r=await f.bizWebFetch('http://[2606:4700:4700::1111]/');
+ assert(r.ok,'public v6 literal fetch ok');assert.equal(requests[n0].hostname,'2606:4700:4700::1111','brackets stripped for connect');
+ assert.equal(requests[n0].headers.Host,'[2606:4700:4700::1111]','Host keeps brackets');
  // 10) citation locating: exact quote located, misquote not; comments/templates stripped from matching
  r=await f.bizLocateCitation('https://good.example/','Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter.');
  assert.equal(r.located,true);assert.equal(r.reason,'located');
@@ -106,8 +122,10 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  r=await f.bizLocateCitation('https://good.example/','template only text');
  assert.equal(r.located,false,'templates do not match');
  r=await f.bizLocateCitation('http://priv.example/','intranet page');assert.equal(r.located,false);assert.equal(r.reason,'ssrf_blocked');
- // 11) excerpt checked whole after normalization: oversize rejected, whitespace-only too short
- r=await f.bizLocateCitation('https://good.example/','x'.repeat(300)+' '+'Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter.'+' '.repeat(100)+'INVENTED SUFFIX THAT IS NOT ON THE PAGE AT ALL');
+ // 11) excerpt checked whole after normalization: 300 REAL matching chars + invented suffix must NOT locate
+ const real300=f.bizNorm(LONGP).slice(0,300);
+ r=await f.bizLocateCitation('https://good.example/',real300);assert.equal(r.located,true,'300 real chars located');
+ r=await f.bizLocateCitation('https://good.example/',real300+' invented suffix that is not on the page');
  assert.equal(r.located,false,'300 real chars + invented suffix is NOT located');assert.equal(r.reason,'excerpt_not_found');
  r=await f.bizLocateCitation('https://good.example/','Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter.'+'y'.repeat(1200));
  assert.equal(r.reason,'excerpt_too_long');
@@ -118,7 +136,11 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  const checks=await f.bizCheckCitations(claims);assert.equal(checks.length,6);
  assert.equal(checks.filter(x=>x.located).length,5);assert.equal(checks[5].reason,'citation_cap');
  assert.equal(requests.length,n+5,'exactly five fetches');
- const slow=await f.bizCheckCitations([{url:'https://good.example/',quote:'Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter.'},{url:'https://good.example/',quote:'Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter.'}],1000);
- assert.equal(slow[1].reason,'time_budget','shared caller budget enforced');
+ const t0=Date.now();
+ const slow=await f.bizCheckCitations([1,2,3].map(()=>({url:'https://slow.example/',quote:'Slow page quote for budget test.'})),2500);
+ assert.equal(slow[0].located,true,'first slow citation located');
+ assert.equal(slow[1].located,true,'second slow citation located');
+ assert.equal(slow[2].reason,'time_budget','third citation exhausts the shared cumulative budget');
+ assert(Date.now()-t0<2400,'cumulative elapsed bounded, not per-citation fresh budgets');
  console.log('PASS research tools logic: global-unicast classifier (IANA v4/v6 specials incl mapped/NAT64/6to4/Teredo/multicast), literal-host precheck (decimal/octal/hex/partial v4, v6), lookup contracts, redirect-hop revalidation, port/scheme/credential refusal, bad_redirect/request_error, size cap, content-type/charset/encoding validation, citation located vocabulary with whole-excerpt matching, cap + shared budget.');
 })().catch(e=>{console.error(e);process.exit(1)});

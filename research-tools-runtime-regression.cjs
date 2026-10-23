@@ -28,7 +28,8 @@ function load(dnsImpl){
    if(req.url==='/drip'){res.writeHead(200,{'content-type':'text/plain'});const iv=setInterval(()=>res.write('x'),50);res.on('close',()=>{clearInterval(iv);dripClosed=true;});return;}
    if(req.url==='/text'){res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end('<html><body><p>Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter.</p></body></html>');return;}
    if(req.url==='/binary'){res.writeHead(200,{'content-type':'application/octet-stream'});res.end(Buffer.from([0,159,146,150]));return;}
-   if(req.url==='/redir-literal'){res.writeHead(302,{location:'http://2130706433/'});res.end();return;}
+   if(req.url==='/redir-literal'){res.writeHead(302,{location:'http://10.9.9.9/'});res.end();return;}
+   if(req.url==='/noct'){res.writeHead(200);res.end('<html><body>untyped</body></html>');return;}
    res.writeHead(404);res.end();
  });
  await new Promise(res=>server.listen(0,'127.0.0.1',res));
@@ -48,11 +49,13 @@ function load(dnsImpl){
  assert(r.ok,'real socket fetch through guarded lookup works');assert(r.body.includes('hiring wave'));
  // Content-type refusal on a real 200:
  r=await f.bizWebFetch('http://fixture.test:'+port+'/binary');assert.equal(r.error,'content_type_not_allowed');
- // Redirect to a literal IP is refused at the hop even with the classifier seam open
- // (the literal precheck uses the same seam, so also prove the default-path hop order):
- f.BIZWEB.ipPublic=savedIp;
- r=await f.bizWebFetch('http://fixture.test:'+port+'/redir-literal');assert.equal(r.error,'ssrf_blocked','redirect to literal refused');
- f.BIZWEB.ipPublic=(ip)=>ip==='127.0.0.1'?true:savedIp(ip);
+ // Redirect to a literal IP the seam does NOT permit: initial fixture fetch succeeds
+ // (seen by the server), the redirect hop's literal precheck refuses the target.
+ const seenBefore=seen.length;
+ r=await f.bizWebFetch('http://fixture.test:'+port+'/redir-literal');
+ assert.equal(r.error,'ssrf_blocked','redirect to literal refused at the hop');
+ assert(seen.slice(seenBefore).includes('/redir-literal'),'initial fixture request actually happened');
+ r=await f.bizWebFetch('http://fixture.test:'+port+'/noct');assert.equal(r.error,'content_type_missing','missing content-type fails closed on real server');
  // Absolute deadline: drip one byte every 50ms; inactivity timeouts would never fire.
  const t0=Date.now(); r=await f.bizWebFetch('http://fixture.test:'+port+'/drip',null,1500);
  const elapsed=Date.now()-t0;
