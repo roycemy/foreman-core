@@ -24,7 +24,7 @@ async function deliver(t){const r=B.F[t.assignee];if(!r||B.reduced()||document.h
 B.deliverReceipt=deliver;
 function station(e){const x=String(e.action||(e.details&&e.details.action)||e.text||'').toLowerCase();return /mail|email/.test(x)?'sales':/card|spend|payment/.test(x)?'finance':/web|research|fetch/.test(x)?'ops':null}
 const map=xs=>Object.fromEntries(xs.map(x=>[x.id,JSON.parse(JSON.stringify(x))]));
-B.on(function(s){if(!s)return;const next={agents:map(s.agents||[]),tasks:map(s.tasks||[]),requests:map([...(s.requests||[]),...((B.cards&&B.cards.proposals)||[])])},events=s.events||[];
+B.on(function(s){if(!s)return;for(const r of Object.values(B.F||{})){const a=B.agent(r.id),t=a&&B.runningTask(a);const active=!!(a&&t&&!document.hidden&&!B.offline&&B.presence(a)==='connected'&&!B.pendingReqs().some(q=>q.taskId===t.id)&&a.status!=='revoked'&&!s.killed);r.el.classList[active?'add':'remove']('live-busy');} const next={agents:map(s.agents||[]),tasks:map(s.tasks||[]),requests:map([...(s.requests||[]),...((B.cards&&B.cards.proposals)||[])])},events=s.events||[];
  if(!prev||B.offline){prev=next;events.forEach(e=>seenEvents.add(e.id));Object.values(next.agents).filter(a=>a.lastSeen).forEach(a=>stretched.add(a.id));return;}
 
  for(const a of Object.values(next.agents)){const old=prev.agents[a.id];
