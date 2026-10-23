@@ -5,7 +5,7 @@
 //  4. IPv6 loopback/private, internal DNS suffixes and redirects are refused for the engine.
 // No real network: model endpoint stubbed with a controllable deferred fetch.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizEngine,bizRunKeysAll,als,setJ,getJ,r};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizEngine,bizRunKeysAll,bizSourceScrubbers,bizOpCancel,bizDailyTick,als,setJ,getJ,r};';
 let gate=null; // {promise,open} - when set, the stubbed provider call waits for open()
 const seen=[];
 const c={require,module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
@@ -119,7 +119,7 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  assert.equal((await f.bizConsentAct(false)).status,409,'withdraw reports the conflict instead of a fake success');
  const pd=(await f.bizDiscover());
  assert.equal(pd.status,409,'discover frozen pre-flight');
- assert.equal((await f.bizRespAct('resp_none','run',{input:'x'})).status,404,'run on missing resp still 404');
+ assert.equal((await f.bizRespAct('resp_none','run',{input:'x'})).status,409,'runs are quiesced under the freeze (409 before any read)');
  await f.r(['DEL','fm:biz:freeze']);
  assert.equal((await f.bizConsentAct(false)).status,200,'withdraw works again once the freeze clears');
 
@@ -172,5 +172,50 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  const red=await f.bizRespAct(rr,'run',{input:'hello'});
  assert.equal(red.status,503);assert.equal(red.body.code,'engine_redirect','redirect refused');
  assert.equal(seen.length,n0+1,'exactly one call, to the consented endpoint only');
- console.log('PASS privacy lifecycle: orphan inventory (overflow + pre-existing + indexless families), source-delete generation bump vs parked discover, freeze exclusion contract, resp-delete vs parked run, purge race fenced, truthful partial deletes with retry, keyspace-complete purge, vetted-origin allowlist + full classifier, redirect refused pre-payload.');
+ // --- R3a) expiry/ownership interleave: parked source delete, lock expires, purge wins,
+ // a THIRD holder takes the freeze; the resumed first delete must NOT recreate the proposal,
+ // NOT report success, and NOT release the third holder's lock
+ await f.bizSourceAdd({kind:'note',title:'X',text:'We answer customer emails within a day.'});
+ await consent();
+ const sx=(await f.bizState()).sources[0];
+ c.process.env.__s1=sx.id;
+ const px=(await f.bizDiscover()).body.proposals[0];
+ assert(px,'proposal exists');
+ let openX;f.bizSourceScrubbers.push(()=>new Promise(res=>{openX=res;}));
+ const delX=f.bizSourceDel(sx.id);
+ await new Promise(r=>setTimeout(r,30)); // delete parked inside the scrubber, freeze held
+ await f.r(['DEL','fm:biz:freeze']); // simulate the 60s TTL expiring
+ const purgeX=await f.bizDataPurge({confirm:'DELETE'});
+ assert.equal(purgeX.status,200,'second holder purges');
+ await f.r(['SET','fm:biz:freeze','holder2','NX','PX',60000]); // a later third holder
+ openX();
+ const delRes=await delX;
+ assert.equal(delRes.status,503,'resumed delete does NOT report success');assert.equal(delRes.body.code,'delete_incomplete');
+ assert.equal(await f.r(['GET','fm:biz:freeze']),'holder2','third holder lock NOT erased by the loser');
+ assert.equal(await f.getJ('fm:biz:prop:'+px.id),null,'purged proposal NOT recreated by the resumed delete');
+ assert.equal(await f.getJ('fm:biz:op_pending'),null,'purge consumed the pending intent');
+ await f.r(['DEL','fm:biz:freeze']);
+
+ // --- R3b) partial purge: durable intent quiesces processing + writes until retry or CANCEL
+ await f.bizSourceAdd({kind:'note',title:'Y',text:'We answer customer emails within a day.'});
+ await consent();
+ c.global.__bizFault='purge:props';
+ const pf=await f.bizDataPurge({confirm:'DELETE'});
+ assert.equal(pf.status,503);assert.equal(pf.body.code,'purge_incomplete');assert(pf.body.counts.sources>=1,'truthful partial counts');
+ const pend=await f.getJ('fm:biz:op_pending');assert(pend&&pend.op==='purge','durable intent recorded');
+ assert.equal((await f.bizDiscover()).status,409,'discover quiesced while purge pending');
+ assert.equal((await f.bizSourceAdd({kind:'note',title:'Z',text:'z z z z z z z z z z'})).status,409,'adds quiesced');
+ assert.equal((await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'})).status,409,'grants quiesced');
+ const tickP=await f.bizDailyTick();assert.equal(tickP.body.workspaces,0,'daily tick quiesced');
+ const retryP=await f.bizDataPurge({confirm:'DELETE'});
+ assert.equal(retryP.status,200,"retry completes");assert.equal(await f.getJ('fm:biz:op_pending'),null,'marker cleared on completion');
+ // cancel path: another partial, then explicit owner cancellation keeps what remains
+ await f.bizSourceAdd({kind:'note',title:'W',text:'Fridays are for invoicing.'});
+ c.global.__bizFault='purge:runs';
+ const pf2=await f.bizDataPurge({confirm:'DELETE'});assert.equal(pf2.status,503);
+ const cancel=await f.bizOpCancel();
+ assert.equal(cancel.status,200);assert.equal(cancel.body.cancelled,true);assert(cancel.body.abandoned.op==='purge');
+ assert.equal(await f.getJ('fm:biz:op_pending'),null,'cancel clears the intent');
+ assert.equal((await f.bizDataPurge({confirm:'nope'})).status,400,'typed confirmation still required');
+ console.log('PASS privacy lifecycle: orphan inventory, generation bumps, freeze exclusion + ownership-token interleave (expiry/purge/third-holder), durable partial purge with quiescence + retry + CANCEL, truthful partials, keyspace-complete purge, vetted-origin allowlist + full classifier, redirect refused pre-payload.');
 })().catch(e=>{console.error(e);process.exit(1)});

@@ -8,7 +8,14 @@
   let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {};
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
-  async function load() { loading = true; let j = null; try { j = await api('/state'); } catch (e) { j = null; } loading = false; if (j && !j.error) { B = j; loadErr = null; } else if (!B) loadErr = (j && j.error) || 'Could not load the Business view. Try again.'; paint(); }
+  const curWs = () => (BB.who && BB.who.workspace) || null;
+  async function load() { loading = true; const wsAtFetch = curWs(); let j = null; try { j = await api('/state'); } catch (e) { j = null; } loading = false; if (j && !j.error) { B = j; B._ws = wsAtFetch; loadErr = null; } else if (!B) loadErr = (j && j.error) || 'Could not load the Business view. Try again.'; paint(); }
+  // Tenant identity guard: state belongs to the workspace it was fetched under. If the account
+  // workspace changed since then, drop everything cached and reload - never paint wsA's cards
+  // while wsB is active, and never let a restore attach wsB text to stale wsA DOM.
+  function dropIfStaleTenant() {
+    const w = curWs(); if (B && B._ws && w && B._ws !== w) { B = null; loadErr = null; editingSrc = null; editingProp = null; openResp = {}; return true; } return false;
+  }
 
   const chip = (t, cls) => `<span class="bzc ${cls || ''}">${esc(t)}</span>`;
   const staleBadge = p => (p.stale && p.stale.length) ? chip('Sources changed since drafted', 'warn') : '';
@@ -95,6 +102,7 @@
 
   /* ---------- page ---------- */
   function paint() {
+    if (B && B._ws && curWs() && B._ws !== curWs()) { dropIfStaleTenant(); load(); return; }
     if (!V.classList.contains('on')) return;
     if (!B) { V.innerHTML = loadErr ? '<div class="page-in narrow"><p style="margin-top:24px">' + esc(loadErr) + '</p><p class="meta"><button class="btn" data-biz-retry type="button">Try again</button></p></div>' : '<div class="page-in narrow"><p class="meta" style="margin-top:24px">Loading…</p></div>'; const rt = $('[data-biz-retry]', V); if (rt) rt.onclick = () => load(); return; }
     const eng = B.engine || {}, srcs = B.sources || [], props = (B.proposals || []).filter(p => p.status !== 'rejected'), resps = B.responsibilities || [];
@@ -127,8 +135,12 @@
     const live = resps.filter(rp => rp.status !== 'retired'), retired = resps.filter(rp => rp.status === 'retired');
     const respSec = (live.length ? `<div class="bz-sech">Running with your approval</div>${live.map(respCard).join('')}` : '') + (retired.length ? `<div class="bz-sech">Retired</div>${retired.map(respCard).join('')}` : '');
     const logSec = (B.log && B.log.length) ? `<div class="bz-sech">Recent activity</div><div class="bz-log">${B.log.slice(0, 8).map(l => `<div><small>${BB.when(l.at)} · ${esc(logLine(l))}</small></div>`).join('')}</div>` : '';
+    const pend = B.opPending;
+    const pendCard = pend ? `<div class="bz-card"><div class="bz-sech">A delete did not finish</div>
+      <p class="meta">${pend.op === 'purge' ? 'Deleting all business data' : 'A delete'} started ${BB.when(pend.at)} but paused partway. Records already deleted stay deleted; everything else is held - no new work runs until you finish or cancel it.</p>
+      <div class="btns">${pend.op === 'purge' ? '<button class="b danger sm" id="bz-purge-retry">Finish deleting</button>' : ''}<button class="b out sm" id="bz-pend-cancel">Cancel the delete - keep what remains</button></div></div>` : '';
     V.innerHTML = `<div class="page-in narrow"><div class="page-h"><div><h1>Business</h1><p class="sub">Teach Alter the business. Approve what it takes over.</p></div></div>
-      ${empty}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
+      ${pendCard}${empty}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
     bind();
   }
   function logLine(l) {
@@ -211,11 +223,13 @@
     $$('[data-resp-resume]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respResume + '/resume', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Resumed.'); await load(); });
     const cOn = $('#bz-consent-on', V); if (cOn) cOn.onclick = async () => { const eng = (B && B.engine) || {}; const j = await api('/provider-consent', 'POST', { host: eng.host, model: eng.model }); if (j.error) { BB.toast(j.error); if (j.code === 'consent_stale') await load(); return; } BB.toast('Provider processing allowed.'); await load(); };
     const cOff = $('#bz-consent-off', V); if (cOff) cOff.onclick = async () => { if (!await askConfirm('Withdraw provider processing?', 'No new work goes to the provider, including daily check-ins, until you allow it again. A run already in flight can finish; its draft stays in the history until you delete it.', 'Withdraw')) return; const j = await api('/provider-consent', 'DELETE'); if (j.error) return BB.toast(j.error); BB.toast('Withdrawn. No new work goes to the provider.'); await load(); };
+    const pc = $('#bz-pend-cancel', V); if (pc) pc.onclick = async () => { if (!await askConfirm('Cancel the pending delete?', 'Records already deleted stay deleted; everything else is kept and work resumes.', 'Cancel the delete')) return; const j = await api('/data/delete', 'POST', { confirm: 'CANCEL' }); if (j.error) return BB.toast(j.error); BB.toast('Delete cancelled.'); await load(); };
+    const pr = $('#bz-purge-retry', V); if (pr) pr.onclick = async () => { const t = prompt('Finish deleting ALL business data in this workspace. Type DELETE to confirm.'); if (t !== 'DELETE') return; const j = await api('/data/delete', 'POST', { confirm: 'DELETE' }); if (j.error) { BB.toast(j.error); await load(); return; } BB.toast('All business data deleted.'); await load(); };
     const pg = $('#bz-purge', V); if (pg) pg.onclick = async () => { const t = prompt('This deletes ALL business data in this workspace: sources, proposals, responsibilities, work history, provider consent and the activity log. Type DELETE to confirm.'); if (t !== 'DELETE') return; const j = await api('/data/delete', 'POST', { confirm: 'DELETE' }); if (j.error) { BB.toast(j.error); await load(); return; } BB.toast('All business data deleted.'); await load(); };
     $$('[data-resp-retire]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Retire this responsibility?', 'Its history stays visible.', 'Retire')) return; const j = await api('/responsibilities/' + b.dataset.respRetire + '/retire', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Retired.'); await load(); });
     $$('[data-resp-del]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Delete this responsibility?', 'Its work history is deleted with it. This cannot be undone.', 'Delete')) return; const j = await api('/responsibilities/' + b.dataset.respDel + '/delete', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Deleted with its history.'); await load(); });
   }
 
-  BB.onRoute(r => { if (r.v === 'business' && !B && !loading) load(); else if (r.v === 'business') paint(); });
-  BB.on(() => { /* state syncs should not clobber an in-progress edit */ if (V.classList.contains('on') && !B && !loading) load(); });
+  BB.onRoute(r => { if (r.v !== 'business') return; if (dropIfStaleTenant()) { load(); return; } if (!B && !loading) load(); else paint(); });
+  BB.on(() => { /* state syncs should not clobber an in-progress edit, but a workspace change invalidates everything */ if (!V.classList.contains('on')) return; if (dropIfStaleTenant()) { load(); return; } if (!B && !loading) load(); });
 })();
