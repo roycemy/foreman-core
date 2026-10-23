@@ -88,7 +88,7 @@
         ${un ? `<div class="bz-sech">What Alter does not know</div><ul class="bz-ul">${un}</ul>` : ''}
         ${sys ? `<div class="bz-sech">Systems this would need</div><div class="bz-chips">${sys}</div>` : ''}
         <div class="bz-bound"><b>Starting boundary</b><p>${esc(p.boundary)}</p></div>
-        <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. On each run the first 4,000 characters of every source go to the reasoning engine. If a bot is connected, work you bring goes to it instead - you review the exact text first. Results are drafts for your review - nothing is sent, spent or connected.</p>
+        <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. On each run the first 4,000 characters of every source go to the reasoning engine. If a bot is connected, work you bring goes to it instead - you review the exact text first. Results come back here as drafts for your review. Alter does not send them anywhere, and cannot verify what a connected bot does with the text it receives.</p>
         <label class="fld bz-check"><input type="checkbox" data-p-research> Let it read public web pages during runs. Before each run you approve the exact pages it may read (chosen from URLs in your sources or the work you bring). It cannot search the web and it cannot visit pages you did not approve. Approved pages also go to the reasoning engine during those runs.</label>
         <div class="btns"><button class="b ink" data-p-activate="${p.id}">Approve and start</button><button class="b out" data-p-edit="${p.id}">Edit</button><button class="b out" data-p-reject="${p.id}">Reject</button></div>`}
     </div>`;
@@ -118,8 +118,8 @@
       : run.failureReason === 'bot_failed' ? botName + ' could not finish' + (run.failureDetail ? ': ' + run.failureDetail : '.')
       : 'The engine did not produce a draft this run.';
     const doneChip = run.backend === 'linked-bot'
-      ? `<span class="bzc">Draft from ${esc(botName)}${run.bot && run.bot.reassignedFrom ? ' (reassigned from ' + esc(run.bot.reassignedFrom) + ')' : ''} · bot-reported - Alter did not verify it · nothing was sent</span>`
-      : `<span class="bzc">Draft · nothing was sent</span>`;
+      ? `<span class="bzc">Draft from ${esc(botName)}${run.bot && run.bot.reassignedFrom ? ' (reassigned from ' + esc(run.bot.reassignedFrom) + ')' : ''} · bot-reported - Alter did not verify it · Alter sent nothing onward</span>`
+      : `<span class="bzc">Draft · Alter sent nothing onward</span>`;
     return `<div class="bz-run">
       ${head}
       ${rin}
@@ -149,7 +149,7 @@
         <p class="bz-sum">${esc(rp.summary)}</p>
         <p class="meta">Boundary you approved: ${esc(rp.boundary)}</p>
         <label class="fld">Bring it work<textarea class="in" data-run-input="${rp.id}" rows="3" maxlength="4000" placeholder="Paste an email to answer, a question, a request…"></textarea></label>
-        ${B.delegate && !rp.research ? `<p class="meta">Goes to <b>${esc(B.delegate.name)}</b>${B.delegate.connection && B.delegate.connection.status !== 'active' ? ' - not connected right now; it picks work up when it connects' : ''}. You review the exact text before anything is sent.</p>` : ''}
+        ${B.delegate && !rp.research ? `<p class="meta">Goes to <b>${esc(B.delegate.name)}</b>${B.delegate.connection && B.delegate.connection.status !== 'active' ? ' - not connected right now; it picks work up when it connects' : ''}. You review the exact text before it goes to the bot.</p>` : ''}
         <div class="btns"><button class="b ink" data-run="${rp.id}">Do this work</button>${rp.status === 'active' ? `<button class="b out" data-resp-pause="${rp.id}">Pause</button>` : `<button class="b out" data-resp-resume="${rp.id}">Resume</button>`}<button class="b out" data-resp-retire="${rp.id}">Retire</button><button class="b danger" data-resp-del="${rp.id}">Delete</button></div>
         ${pendingApproval && pendingApproval.respId === rp.id ? `<div class="bz-card bz-approve"><div class="bz-sech">Approve pages for this run</div>
           <p class="meta">Work being run (exactly as reviewed):</p><p class="bz-reviewed">${esc(pendingApproval.input)}</p>
@@ -163,9 +163,9 @@
           <p class="meta">Instructions (exact text):</p><p class="bz-reviewed">${esc(d.brief)}</p>
           <p class="meta">Work and sources (exact text):</p><p class="bz-reviewed">${esc(d.context)}</p>
           <p class="meta">${d.sources && d.sources.length ? 'Included sources: ' + d.sources.map(s => esc(s.title) + ' v' + s.version + (s.chars < s.totalChars ? ' (first ' + s.chars.toLocaleString() + ' of ' + s.totalChars.toLocaleString() + ' characters)' : '')).join(', ') + '.' : 'No sources are linked to this responsibility - only the work text goes.'}${d.omittedSources && d.omittedSources.length ? ' Not included (no room in one job): ' + d.omittedSources.map(s => esc(s.title)).join(', ') + '.' : ''}</p>
-          <p class="meta">The reply comes back here as a draft - nothing is sent, spent or connected.</p>
+          <p class="meta">The report comes back here as a draft. Alter does not send it anywhere and cannot verify what the bot did with the text.</p>
           <div class="btns"><button class="b ink" data-dele-run type="button">Send to ${esc(d.bot.name)}</button><button class="b out" data-dele-cancel type="button">Cancel</button></div></div>`; })() : ''}
-        <p class="meta">Alter also does a daily check-in on active responsibilities and leaves what it finds here. Results are drafts - they never leave Alter.${rp.research ? ' When it reads owner-approved pages during a run, those pages go to the reasoning engine too.' : ''}</p>
+        <p class="meta">Alter also does a daily check-in on active responsibilities and leaves what it finds here. Results come back here as drafts - Alter does not send them anywhere.${rp.research ? ' When it reads owner-approved pages during a run, those pages go to the reasoning engine too.' : ''}</p>
         ${runs ? `<div class="bz-sech">History</div>${runs}` : '<p class="meta">No work done yet.</p>'}
       </div>` : ''}
     </div>`;
@@ -188,7 +188,7 @@
       <p class="meta">Add from file reads a plain-text file (.txt, .md, .csv, .json, .log) on this device into the form for your review - the file itself is not uploaded. PDF and Word files are not readable yet.</p>
       <p class="meta">Saved to your Alter workspace. When the reasoning engine is connected, looking for work sends each source's full saved text (up to 20,000 characters per source); each responsibility run or daily check-in sends the first 4,000 characters of every source plus the work you bring. For a responsibility you allow to read public pages, the pages it reads during a run go to the engine too. When a bot is connected, work you delegate sends it the exact text you review at run time instead.</p></div>`;
     const empty = !srcs.length ? `<div class="bz-hero"><h2>Teach Alter the business</h2>
-      <p>1. Add notes or documents about how the business actually runs.<br>2. Alter proposes responsibilities it could take over, each backed by quotes from your own notes.<br>3. You approve what starts. Approved work runs as drafts you review - nothing is sent, spent or connected.</p></div>` : '';
+      <p>1. Add notes or documents about how the business actually runs.<br>2. Alter proposes responsibilities it could take over, each backed by quotes from your own notes.<br>3. You approve what starts. Approved work comes back as drafts you review - Alter does not send the results anywhere.</p></div>` : '';
     // Provider consent card: exact host+model, what is sent, withdraw any time. The gate is
     // server-side (engine_no_consent covers manual runs AND daily check-ins); this is its control.
     const consentCard = eng.configured && eng.enabled ? `<div class="bz-card"><div class="bz-sech">Reasoning provider</div>

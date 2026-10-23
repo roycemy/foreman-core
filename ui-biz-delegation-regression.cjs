@@ -91,7 +91,7 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(await poll(`!!document.querySelector('[data-run-input="resp_1"]')`),'resp card open');
  assert((await bizText()).includes('Goes to'),'destination line present');
  assert((await bizText()).includes('Grokbot'),'destination names the bot');
- assert((await bizText()).includes('You review the exact text before anything is sent'),'review promise visible');
+ assert((await bizText()).includes('You review the exact text before it goes to the bot'),'review promise visible');
  await ev(`(async()=>{const ta=document.querySelector('[data-run-input="resp_1"]');ta.value='Draft a reply about the $60 refund.';document.querySelector('[data-run="resp_1"]').click();})()`);
  assert(await poll(`!!document.querySelector('[data-dele-run]')`),'delegation review card paints');
  let t=await bizText();
@@ -138,6 +138,7 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  t=await bizText();
  assert(t.includes('Draft from Grokbot'),'provenance names the bot');
  assert(t.includes('Alter did not verify it'),'honest verification boundary');
+ assert(t.includes('Alter sent nothing onward'),'effects claim scoped to what Alter itself did');
  assert(t.includes('we can offer the $60 refund'),'draft text renders');
  assert(!(await ev(`!!document.querySelector('[data-run-stop="task_1"]')`)),'stop button gone after settle');
  await shot2('delegation-done',`[...document.querySelectorAll('.bz-run')].pop()`);
@@ -163,5 +164,5 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  await shot2('delegation-failed',`[...document.querySelectorAll('.bz-run')].pop()`);
 
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop - pixels at /downloads/delegation-{review,sent,working,done,failed}-{390,desktop}.png.');
+ console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions, scoped effects claims), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop - pixels at /downloads/delegation-{review,sent,working,done,failed}-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{server.close();}catch(_){/*noop*/}process.exit(1)});

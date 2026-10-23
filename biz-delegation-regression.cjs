@@ -6,7 +6,7 @@
 // Engine endpoint and bot side are exercised through the real internal call path the
 // gateway/MCP adapters use (claimTask/completeTask/stopTask); no real network, no real bot.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizSettleDelegatedRun,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,listTasks,setJ,getJ,r,als};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizDelegatePayload,bizDelegateRun,bizSettleDelegatedRun,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,reassignAsleepQueuedTasks,reassignTask,gatewayAct,newTask,bizSources,listTasks,setJ,getJ,r,als};';
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:(u,o)=>{const body=JSON.parse(o.body);const sys=body.messages[0].content;
   const reply=content=>Promise.resolve({ok:true,json:async()=>({choices:[{message:{content}}],usage:{prompt_tokens:1,completion_tokens:1}})});
@@ -17,7 +17,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
 const ISO=ms=>new Date(ms).toISOString();
 
 (async()=>{
- c.process.env.ALTER_MODEL_KEY='k';c.process.env.ALTER_MODEL_WS='wsdel,wslegacy,wsres';
+ c.process.env.ALTER_MODEL_KEY='k';c.process.env.ALTER_MODEL_WS='wsdel,wslegacy,wsres,wsorph,wsrace';
 
  await f.als.run({ws:'wsdel'},async()=>{
   await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
@@ -220,6 +220,114 @@ const ISO=ms=>new Date(ms).toISOString();
   assert.equal(resR.status,200);assert.equal(resR.body.run.research,true,'research run stays on the engine path');
   assert.equal(resR.body.run.backend,undefined,'no delegation backend on a research run');
   assert(!(await f.listTasks()).some(t=>t.biz&&t.biz.respId===respR),'no delegated job exists for the research run');
+ });
+
+ // === reviewer HOLD coverage: complete inventory beyond the recent list, pinned destination,
+ // payload accuracy (whole sources / fixed rules), refused creation leaving nothing behind ===
+ await f.als.run({ws:'wsorph'},async()=>{
+  await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
+  const g2=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});const ag2=g2.agent;
+  const so=await f.bizSourceAdd({kind:'note',title:'Ops',text:'We answer every customer email within a day. Refunds over $50 need Royce.'});
+  c.process.env.__sid=so.body.source.id;
+  const po=(await f.bizDiscover()).body.proposals[0];
+  const respO=(await f.bizProposalAct(po.id,'activate',{})).body.responsibility.id;
+  const pad=async(n,tag)=>{for(let i=0;i<n;i++)await f.newTask({title:tag+i,brief:'b',assignee:'agent_other'});};
+
+  // --- payload accuracy: whole sources (no silent slice), count overflow named, input capped in the builder
+  const longText='Start. '+'x'.repeat(1800)+' END-EXCEPTION-MARKER';
+  const sL=await f.bizSourceAdd({kind:'note',title:'Long',text:longText});
+  const rObj=await f.getJ('fm:biz:resp:'+respO);
+  rObj.sourceIds=[so.body.source.id,sL.body.source.id];await f.setJ('fm:biz:resp:'+respO,rObj);
+  const pvL=await f.bizRespAct(respO,'delegate-preview',{input:'Reply about the exception.'});
+  assert(pvL.body.delegation.context.includes('END-EXCEPTION-MARKER'),'a linked source is included WHOLE - no silent 1500 slice');
+  assert.equal(pvL.body.delegation.sources.find(s=>s.id===sL.body.source.id).chars,longText.length,'chars reports the whole source');
+  const tiny=[];for(let i=0;i<6;i++)tiny.push((await f.bizSourceAdd({kind:'note',title:'T'+i,text:'t'+i})).body.source.id);
+  rObj.sourceIds=[...tiny,so.body.source.id];await f.setJ('fm:biz:resp:'+respO,rObj); // 7 linked
+  const pv7=await f.bizRespAct(respO,'delegate-preview',{input:'x'});
+  assert.equal(pv7.body.delegation.omittedSources.filter(o=>o.reason==='over_source_limit').length,1,'a source past the count limit is NAMED omitted, not silently dropped');
+  const giant=(await f.bizSourceAdd({kind:'note',title:'Giant',text:'G'.repeat(5000)})).body.source.id;
+  rObj.sourceIds=[giant];await f.setJ('fm:biz:resp:'+respO,rObj);
+  const pvG2=await f.bizRespAct(respO,'delegate-preview',{input:'x'});
+  assert.equal(pvG2.body.delegation.omittedSources.filter(o=>o.reason==='did_not_fit').length,1,'a source too large for the context is NAMED omitted');
+  assert(!pvG2.body.delegation.context.includes('GGGG'),'its text is never sliced in');
+  // fixed control rules survive maximum-length responsibility fields
+  rObj.title='T'.repeat(120);rObj.summary='S'.repeat(600);rObj.boundary='B'.repeat(300);
+  rObj.sourceIds=[so.body.source.id];await f.setJ('fm:biz:resp:'+respO,rObj);
+  const pvB=await f.bizRespAct(respO,'delegate-preview',{input:'x'});
+  assert(pvB.body.delegation.brief.length<=1500,'brief stays inside the task cap');
+  assert(pvB.body.delegation.brief.endsWith('report what is missing instead.'),'the full fixed rules ride every brief, uncut');
+  assert(pvB.body.delegation.brief.includes('Boundary the owner set: '+'B'.repeat(300)),'the owner boundary survives ahead of the summary');
+  // the builder caps the work item inside the payload so review and execution bind identical text
+  const payloadBig=f.bizDelegatePayload(rObj,await f.bizSources(),'y'.repeat(4000),(await f.bizDelegateBot()));
+  assert.equal(payloadBig.input.length,1200,'work item capped inside the builder');
+  assert(payloadBig.context.length<=3900,'context can never outgrow the task cap on its own');
+  rObj.title='Customer reply desk';rObj.summary='Draft replies.';rObj.boundary='Drafts only';await f.setJ('fm:biz:resp:'+respO,rObj);
+
+  // --- complete inventory: source delete cancels a delegated job pushed outside the recent list
+  const pvO=await f.bizRespAct(respO,'delegate-preview',{input:'First orphan reply.'});
+  const runO=(await f.bizRespAct(respO,'run',{input:'First orphan reply.',delegateHash:pvO.body.delegation.hash})).body.run;
+  await pad(65,'pad1 ');
+  assert(!(await f.listTasks()).some(t=>t.id===runO.taskId),'setup: delegated job is outside the recent list');
+  const delO=await f.bizSourceDel(so.body.source.id,{});
+  assert.equal(delO.status,200,'source delete completes');
+  assert.equal((await f.getJ('fm:task:'+runO.taskId)).status,'failed','source delete cancels a delegated job beyond the recent list');
+  assert.equal((await f.getJ('fm:biz:run:'+runO.id)).failureReason,'source_deleted','its run settles honestly');
+
+  // --- complete inventory: stall sweep reaches an orphaned running delegated job
+  const pvS=await f.bizRespAct(respO,'delegate-preview',{input:'Second orphan reply.'});
+  const runS=(await f.bizRespAct(respO,'run',{input:'Second orphan reply.',delegateHash:pvS.body.delegation.hash})).body.run;
+  await f.claimTask(ag2);
+  const tS=await f.getJ('fm:task:'+runS.taskId);tS.startedAt=ISO(Date.now()-31*60000);tS.progressAt=tS.startedAt;await f.setJ('fm:task:'+runS.taskId,tS);
+  await pad(65,'pad2 ');
+  assert(!(await f.listTasks()).some(t=>t.id===runS.taskId),'setup: running delegated job is outside the recent list');
+  await f.expireStalledTasks();
+  assert.equal((await f.getJ('fm:biz:run:'+runS.id)).failureReason,'bot_stalled','stall sweep reaches a delegated job beyond the recent list');
+
+  // --- pinned destination: handoff, owner transfer and asleep reassignment all refused
+  const pvH=await f.bizRespAct(respO,'delegate-preview',{input:'Third orphan reply.'});
+  const runH=(await f.bizRespAct(respO,'run',{input:'Third orphan reply.',delegateHash:pvH.body.delegation.hash})).body.run;
+  const g3=await f.createAgent('OtherBot','Ops','custom',false,{preset:'balanced'});
+  const ho=await f.gatewayAct(ag2,{action:'work.handoff',params:{task_id:runH.taskId,to:g3.agent.id}});
+  assert(/owner-reviewed destination/.test(JSON.stringify(ho)),'a delegated job cannot be handed to another bot');
+  const tAfter=await f.getJ('fm:task:'+runH.taskId);
+  assert(tAfter.biz&&tAfter.biz.runId===runH.id,'the biz tag stays on the original job - no child carries it, stop/poll never diverge');
+  const mv=await f.reassignTask(runH.taskId,{confirmed:true,assignee:g3.agent.id,expectedAssignee:ag2.id,expectedStatus:'queued'});
+  assert.equal(mv.status,409,'owner transfer refuses to move a destination-pinned job');
+  const aA=await f.getJ('fm:agent:'+ag2.id);aA.lastSeen=ISO(Date.now()-3*3600000);await f.setJ('fm:agent:'+ag2.id,aA);
+  const aB=await f.getJ('fm:agent:'+g3.agent.id);aB.lastSeen=ISO(Date.now());await f.setJ('fm:agent:'+g3.agent.id,aB);
+  const tH=await f.getJ('fm:task:'+runH.taskId);tH.assignedAt=ISO(Date.now()-3*3600000);tH.createdAt=tH.assignedAt;await f.setJ('fm:task:'+runH.taskId,tH);
+  const ctlTask=await f.newTask({title:'ordinary ctl',brief:'b',assignee:ag2.id});
+  const tC=await f.getJ('fm:task:'+ctlTask.id);tC.assignedAt=tH.assignedAt;tC.createdAt=tH.assignedAt;await f.setJ('fm:task:'+ctlTask.id,tC);
+  await f.reassignAsleepQueuedTasks('claimant_x');
+  assert.equal((await f.getJ('fm:task:'+runH.taskId)).assignee,ag2.id,'a reviewed destination never silently moves, even when the bot is asleep');
+  assert.equal((await f.getJ('fm:task:'+ctlTask.id)).assignee,g3.agent.id,'control: an ordinary job in the same state DOES move (the rig was ripe)');
+
+  // --- complete inventory: purge removes an orphaned delegated job record and the inventory itself
+  const pvZ=await f.bizRespAct(respO,'delegate-preview',{input:'Fourth orphan reply.'});
+  const runZ=(await f.bizRespAct(respO,'run',{input:'Fourth orphan reply.',delegateHash:pvZ.body.delegation.hash})).body.run;
+  await pad(65,'pad3 ');
+  assert(!(await f.listTasks()).some(t=>t.id===runZ.taskId),'setup: delegated job is outside the recent list before purge');
+  const purgeO=await f.bizDataPurge({confirm:'DELETE'});
+  assert.equal(purgeO.status,200,'purge completes');
+  assert.equal(await f.getJ('fm:task:'+runZ.taskId),null,'purge removes a delegated job record beyond the recent list');
+  assert.equal((await f.r(['SMEMBERS','fm:biz:delegated'])||[]).length,0,'the delegated inventory itself is removed with the purge');
+ });
+
+ // --- refused creation leaves nothing behind (abandon path, stale fence)
+ await f.als.run({ws:'wsrace'},async()=>{
+  await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
+  await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const sr=await f.bizSourceAdd({kind:'note',title:'R',text:'We answer every customer email within a day.'});
+  c.process.env.__sid=sr.body.source.id;
+  const pr=(await f.bizDiscover()).body.proposals[0];
+  const respR=(await f.bizProposalAct(pr.id,'activate',{})).body.responsibility.id;
+  const bot=await f.bizDelegateBot();
+  const payload=f.bizDelegatePayload(await f.getJ('fm:biz:resp:'+respR),await f.bizSources(),'Race reply.',bot);
+  const out=await f.bizDelegateRun(await f.getJ('fm:biz:resp:'+respR),await f.bizSources(),'Race reply.',bot,'999',payload); // stale fence: a delete/purge landed first
+  assert.equal(out.status,409,'a workspace change during creation refuses the run');
+  assert.equal((await f.r(['SMEMBERS','fm:biz:delegated'])||[]).length,0,'no inventory entry survives the refused creation');
+  assert(!(await f.listTasks()).some(t=>t.biz),'no orphaned job record survives the refused creation');
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respR,0,-1])||[]).length,0,'no phantom run history survives the refused creation');
  });
 
  console.log('biz-delegation-regression: all assertions passed');
