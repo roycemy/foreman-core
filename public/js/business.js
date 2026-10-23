@@ -33,6 +33,7 @@
     const stale = (loadedId && loadedId !== curId) || (inflightId && inflightId !== curId);
     if (stale) {
       B = null; loadErr = null; editingSrc = null; editingProp = null; openResp = {}; loadedId = null;
+      pendingApproval = null; // A's reviewed pages and work text never survive into another identity
       V.innerHTML = ''; // synchronous DOM clear: nothing from the previous identity stays painted
       return true;
     }
@@ -151,14 +152,14 @@
     // Provider consent card: exact host+model, what is sent, withdraw any time. The gate is
     // server-side (engine_no_consent covers manual runs AND daily check-ins); this is its control.
     const consentCard = eng.configured && eng.enabled ? `<div class="bz-card"><div class="bz-sech">Reasoning provider</div>
-      ${eng.consent && eng.consent.current ? `<p class="meta">Provider processing is <b>on</b> for ${esc(eng.consent.host)} (${esc(eng.consent.model)}), allowed ${BB.when(eng.consent.at)}. While on, looking for work sends each source's full saved text to this provider; each run or daily check-in sends the first 4,000 characters of every source plus the work you bring.</p>
+      ${eng.consent && eng.consent.current ? `<p class="meta">Provider processing is <b>on</b> for ${esc(eng.consent.host)} (${esc(eng.consent.model)}), allowed ${BB.when(eng.consent.at)}. While on, looking for work sends each source's full saved text to this provider; each run or daily check-in sends the first 4,000 characters of every source plus the work you bring. For a responsibility you allow to read public pages, the exact pages it reads during a run go to this provider too.</p>
       <div class="btns"><button class="b out sm" id="bz-consent-off">Withdraw provider processing</button></div>` :
-      `<p class="meta">Alter's reasoning provider is <b>${esc(eng.host || 'unknown')}</b> using model <b>${esc(eng.model || 'unknown')}</b>. While allowed, looking for work sends each source's full saved text to this provider; each run or daily check-in sends the first 4,000 characters of every source plus the work you bring.${eng.consent && !eng.consent.current ? ' Your earlier allowance no longer matches the configured provider - review and choose again.' : ''}</p>
+      `<p class="meta">Alter's reasoning provider is <b>${esc(eng.host || 'unknown')}</b> using model <b>${esc(eng.model || 'unknown')}</b>. While allowed, looking for work sends each source's full saved text to this provider; each run or daily check-in sends the first 4,000 characters of every source plus the work you bring. For a responsibility you allow to read public pages, the exact pages it reads during a run go to this provider too.${eng.consent && !eng.consent.current ? ' Your earlier allowance no longer matches the configured provider - review and choose again.' : ''}</p>
       <div class="btns"><button class="b ink sm" id="bz-consent-on">Allow provider processing</button></div>`}
       <p class="meta">Source text is treated as data, not instructions, but no system can promise a hostile document cannot influence the engine's behavior. Results are drafts for your review.</p></div>` : '';
     const dataCard = `<div class="bz-card"><div class="bz-sech">Your data</div>
       <p class="meta">Your business data is stored in Alter's hosted database. There is no app-level encryption: the workspace owner and Alter's platform operator can access stored data operationally. The activity log above records key owner actions in this workspace (adding, editing and deleting sources, proposals, runs, consent changes); it is not an audit of operator access.</p>
-      <p class="meta">Deleting a source removes the source and the verbatim quotes copied from it into proposals. Work derived from it - proposal text, responsibilities, run drafts - is kept as your reviewable record, and activity entries can still mention a deleted item's title; that history is intentional. Deleting a responsibility removes that responsibility and its runs only. Only deleting all business data removes sources, proposals, responsibilities, work history, provider consent and the activity log from Alter's database; one minimal receipt of the purge itself remains there (an id, the time and item counts, none of your text). Content already sent to the reasoning provider is governed by that provider's own retention, and platform infrastructure backups are outside this deletion.</p>
+      <p class="meta">Deleting a source removes the source, the verbatim quotes copied from it into proposals, and page addresses copied from it into research run records: approved-page lists, fetched-page entries and citations that reference them. An address that appears in the source is removed even if you also pasted it into a work item - the work item text you pasted stays as your own record. Work derived from the source - proposal text, responsibilities, run drafts and suggested next steps, which can reflect its content - is kept as your reviewable record, and activity entries can still mention a deleted item's title; that history is intentional. Deleting a responsibility removes that responsibility and its runs only. Only deleting all business data removes sources, proposals, responsibilities, work history, provider consent and the activity log from Alter's database; one minimal receipt of the purge itself remains there (an id, the time and item counts, none of your text). Content already sent to the reasoning provider is governed by that provider's own retention, and platform infrastructure backups are outside this deletion.</p>
       <div class="btns"><button class="b danger sm" id="bz-purge">Delete all business data</button></div></div>`;
     const propSec = srcs.length ? `<div class="bz-sech row"><span>What Alter could take over</span><button class="b ink sm" id="bz-discover" ${eng.configured && eng.enabled && eng.consent && eng.consent.current ? '' : 'disabled'}>Look for work</button></div>
       ${engNote}
@@ -261,7 +262,9 @@
     // reviewed; the run executes exactly that text and the reviewed source versions.
     async function researchApprove(rp, input, b) {
       b.disabled = true; b.textContent = 'Checking pages…';
+      const stamp = identity(); // generation at request time
       const c = await api('/responsibilities/' + rp.id + '/candidates', 'POST', { input });
+      if (stamp && stamp !== identity()) return; // identity changed mid-check: the guard already cleared everything - a late reply must not restore the old identity's review
       b.disabled = false; b.textContent = 'Do this work';
       if (c.error) return BB.toast(c.error);
       const urls = c.urls || [];
@@ -272,7 +275,9 @@
     }
     async function runResearch(rp, review, b) {
       if (b) { b.disabled = true; b.textContent = 'Working…'; }
+      const stamp = identity(); // generation at request time
       const j = await api('/responsibilities/' + rp.id + '/run', 'POST', { input: review.input, approvedUrls: review.approvedUrls, reviewedVersions: review.reviewedVersions });
+      if (stamp && stamp !== identity()) return; // identity changed mid-run: discard - never restore the old identity's review or results
       if (b) { b.disabled = false; b.textContent = 'Do this work'; }
       if (j.error) {
         // Recoverable errors keep the review intact: same input, same checks, owner decides again.

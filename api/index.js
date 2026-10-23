@@ -2110,11 +2110,17 @@ async function bizSourceEdit(id, body) {
 // would be worse than stating the boundary. They go away with responsibility delete or a full
 // data purge. Integration hook: research snapshots/claims/citations register scrubbers here.
 const bizSourceScrubbers = [];
-// Research scrubber (combined branch): a research run's approvedUrls are URLs copied VERBATIM
-// from sources or the work item - they are the source's own text, not derived work - so the
-// ones that came from the deleted source leave with it. Work-INPUT URLs stay (they are the
-// owner's item, not the source). Citations quote fetched PUBLIC pages, never the source, and
-// sourceVersions are pointers (like proposal evidence pointers) - both stay for honest history.
+// Research scrubber (combined branch). Page addresses in a research run's metadata can be
+// copied VERBATIM from a source: approvedUrls (owner-checked destinations), fetchedPages
+// url/finalUrl (what was actually contacted) and citations (the model can cite an address that
+// was never fetched, and an unlocated quote is model text that can echo the source). Every
+// address that appears in the deleted source's text leaves with it, in all three places.
+// Overlap precedence: an address present in the source is treated as the source's copy and is
+// removed even if the owner also pasted it into the work item - the work item TEXT (run.input)
+// stays as the owner's own record. Retained, exactly as disclosed in the UI: run drafts
+// (output), suggested next steps, blocked steps and inputs - derived work that can reflect
+// source content - plus sourceVersions pointers (like proposal evidence pointers). Those leave
+// with a responsibility delete or a full purge, and the UI says so.
 bizSourceScrubbers.push(async (id, s, ctx) => {
   if (!s || !s.text) return 0; // a retry after the record stage has nothing left to compare
   const srcUrls = new Set(bizExtractUrls(s.text));
@@ -2122,11 +2128,27 @@ bizSourceScrubbers.push(async (id, s, ctx) => {
   let scrubbed = 0;
   for (const key of await bizRunKeysAll()) {
     const run = await getJ(key);
-    if (!run || !run.research || !Array.isArray(run.approvedUrls) || !run.approvedUrls.length) continue;
-    const keep = run.approvedUrls.filter(u => !srcUrls.has(u));
-    if (keep.length === run.approvedUrls.length) continue;
+    if (!run || !run.research) continue;
+    const next = { ...run };
+    let changed = false;
+    if (Array.isArray(next.approvedUrls) && next.approvedUrls.length) {
+      const keep = next.approvedUrls.filter(u => !srcUrls.has(u));
+      if (keep.length !== next.approvedUrls.length) { next.approvedUrls = keep; changed = true; }
+    }
+    if (Array.isArray(next.fetchedPages) && next.fetchedPages.length) {
+      next.fetchedPages = next.fetchedPages.map(p => {
+        if (!p || !(srcUrls.has(p.url) || (p.finalUrl && srcUrls.has(p.finalUrl)))) return p;
+        changed = true;
+        return { ...p, url: null, finalUrl: undefined, scrubbedWithSource: true }; // the fetch happened; the address leaves with the source
+      });
+    }
+    if (Array.isArray(next.citations) && next.citations.length) {
+      const keep = next.citations.filter(cit => !cit || !srcUrls.has(cit.url)); // the quote can echo source text when the page was never fetched
+      if (keep.length !== next.citations.length) { next.citations = keep; changed = true; }
+    }
+    if (!changed) continue;
     scrubbed++;
-    await bizOpWrite(ctx, 'set', key, JSON.stringify({ ...run, approvedUrls: keep }));
+    await bizOpWrite(ctx, 'set', key, JSON.stringify(next));
   }
   return scrubbed;
 });
