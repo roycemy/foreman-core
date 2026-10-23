@@ -26,7 +26,7 @@
 
 <header class="top" role="banner">
   <a class="mark" href="/index.html" aria-label="Alter website" title="Back to Alter website"><i aria-hidden="true"></i><span data-brand="upper">alter</span></a>
-  <nav class="nav" id="nav" aria-label="Main"><a href="#floor" data-v="floor">Floor</a><a href="#business" data-v="business">Business</a><a href="#receipts" data-v="receipts">Receipts</a><a href="#card" data-v="card">Card</a></nav>
+  <nav class="nav" id="nav" aria-label="Main"><a href="#overview" data-v="overview">Overview</a><a href="#floor" data-v="floor">Floor</a><a href="#business" data-v="business">Business</a><a href="#receipts" data-v="receipts">Receipts</a><a href="#card" data-v="card">Card</a></nav>
   <div class="sp"></div>
   <button class="kbar" id="kbar" type="button" aria-keyshortcuts="Meta+K Control+K"><span>Search or jump to a bot</span><span aria-hidden="true">⌘K</span></button>
   <button class="ibtn" id="ibtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="I">Inbox <span class="nw" id="nw" hidden></span><b class="count sr" id="icount" hidden></b></button>
@@ -61,6 +61,7 @@
 
     </div>
   </section>
+  <section class="view page" id="v-overview" aria-label="Overview"></section>
   <section class="view page" id="v-inbox" aria-label="HQ"></section>
   <section class="view page" id="v-business" aria-label="Business"></section>
   <section class="view page" id="v-receipts" aria-label="Receipts"></section>
@@ -72,6 +73,7 @@
 <div class="pop" id="pop" role="dialog" aria-modal="false" aria-labelledby="pop-h"></div>
 
 <nav class="tabs" id="tabs" aria-label="Main">
+  <a href="#overview" data-v="overview">${grid}Overview</a>
   <a href="#inbox" data-v="inbox">${inbox}HQ<i id="tcount" role="button" aria-label="Anything on me?" hidden></i></a>
   <a href="#business" data-v="business">${grid}Business</a>
   <a href="#receipts" data-v="receipts">${receipt}Receipts</a>
@@ -112,6 +114,8 @@
 <script src="/js/card.js"></script>
 <script src="/js/receipt-doc.js"></script>
 <script src="/js/business.js"></script>
+<script src="/js/onboarding.js"></script>
+<script src="/js/overview.js"></script>
 <script src="/js/receipts.js"></script>
 <script src="/js/share.js"></script>
 <script src="/js/components/dock.js"></script>

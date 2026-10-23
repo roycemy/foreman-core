@@ -9,8 +9,8 @@
   $$('.menu button svg,.menu a svg').forEach(s => { s.setAttribute('width', 15); s.setAttribute('height', 15); });
 
   /* ---------- routing ---------- */
-  const VIEWS = ['floor', 'inbox', 'business', 'receipts', 'card'];
-  BB.route = () => { const h = location.hash.replace(/^#/, ''); const [v, ...rest] = h.split('/'); return { v: VIEWS.includes(v) ? v : (BB.phone() ? 'inbox' : 'floor'), arg: rest.join('/') || null }; };
+  const VIEWS = ['overview', 'floor', 'inbox', 'business', 'receipts', 'card'];
+  BB.route = () => { const h = location.hash.replace(/^#/, ''); const [v, ...rest] = h.split('/'); return { v: VIEWS.includes(v) ? v : 'overview', arg: rest.join('/') || null }; };
   BB.go = h => { if (location.hash !== h) location.hash = h; else applyRoute(); };
   const routeHooks = BB._routeHooks;
   function applyRoute() {
