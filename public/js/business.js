@@ -5,7 +5,7 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {};
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null;
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
   async function load() { loading = true; let j = null; try { j = await api('/state'); } catch (e) { j = null; } loading = false; if (j && !j.error) { B = j; loadErr = null; } else if (!B) loadErr = (j && j.error) || 'Could not load the Business view. Try again.'; paint(); }
@@ -52,7 +52,7 @@
         ${sys ? `<div class="bz-sech">Systems this would need</div><div class="bz-chips">${sys}</div>` : ''}
         <div class="bz-bound"><b>Starting boundary</b><p>${esc(p.boundary)}</p></div>
         <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. Your sources go to the reasoning engine on each run. Results are drafts for your review - nothing is sent, spent or connected.</p>
-        <label class="fld bz-check"><input type="checkbox" data-p-research> Let it read public pages whose exact URLs already appear in your sources or the work you bring it. It cannot search the web and it cannot visit pages you did not point to. Pages it reads also go to the reasoning engine during those runs.</label>
+        <label class="fld bz-check"><input type="checkbox" data-p-research> Let it read public web pages during runs. Before each run you approve the exact pages it may read (chosen from URLs in your sources or the work you bring). It cannot search the web and it cannot visit pages you did not approve. Approved pages also go to the reasoning engine during those runs.</label>
         <div class="btns"><button class="b ink" data-p-activate="${p.id}">Approve and start</button><button class="b out" data-p-edit="${p.id}">Edit</button><button class="b out" data-p-reject="${p.id}">Reject</button></div>`}
     </div>`;
   }
@@ -65,7 +65,7 @@
       ${run.status === 'failed' ? `<div class="bz-draft"><span class="bzc warn">Run failed</span><p>${esc(run.failureReason === 'engine_malformed_output' ? 'The engine replied in a format Alter could not use, so nothing was drafted.' : 'The engine did not produce a draft this run.')}</p></div>` : `<div class="bz-draft"><span class="bzc">Draft · nothing was sent</span><p>${esc(run.output)}</p></div>`}
       ${run.blockedStep ? `<p class="bz-blocked">Did not do: ${esc(run.blockedStep)}</p>` : ''}
       ${run.fetchedPages && run.fetchedPages.length ? `<p class="meta">Pages read this run: ${run.fetchedPages.filter(x => x.ok).length}${run.fetchedPages.some(x => !x.ok) ? ' · ' + run.fetchedPages.filter(x => !x.ok).length + ' not read (' + run.fetchedPages.filter(x => !x.ok).map(x => x.error === 'url_not_approved' ? 'not an approved page' : x.error === 'ssrf_blocked' ? 'not a public page' : 'could not be read').join(', ') + ')' : ''}</p>` : ''}
-      ${run.citations && run.citations.length ? `<div class="bz-cites">${run.citations.map(c => { const u = c.finalUrl || c.url; let h = u, safe = ''; try { const pu = new URL(u); if (pu.protocol === 'http:' || pu.protocol === 'https:') { safe = u; h = pu.host; } } catch (e) {} const label = c.located ? 'Quote found on page' : c.reason === 'page_not_fetched' ? 'Page not read this run' : c.reason === 'excerpt_too_short' || c.reason === 'excerpt_too_long' ? 'Quote not usable' : 'Quote not found on page'; return `<div class="bz-cite">${chip(label, c.located ? 'ok' : 'warn')}<p>${esc(c.quote)}</p>${safe ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer nofollow">${esc(h)}</a>` : `<small>${esc(u)}</small>`}</div>`; }).join('')}</div>` : ''}
+      ${run.citations && run.citations.length ? `<div class="bz-cites">${run.citations.map(c => { const u = c.finalUrl || c.url; let h = u, safe = ''; try { const pu = new URL(u); if (pu.protocol === 'http:' || pu.protocol === 'https:') { safe = u; h = pu.host; } } catch (e) {} const label = c.located ? 'Quote found on page' : c.reason === 'page_not_fetched' ? 'Page not read this run' : c.reason === 'excerpt_too_short' || c.reason === 'excerpt_too_long' ? 'Quote not usable' : 'Quote not found on page'; return `<div class="bz-cite">${chip(label, c.located ? 'ok' : 'warn')}<p>${esc(c.quote)}</p>${c.located && safe ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer nofollow">${esc(h)}</a>` : `<small>${esc(u)}</small>`}</div>`; }).join('')}</div>` : ''}
       ${run.nextSteps && run.nextSteps.length ? `<div class="bz-next"><div class="bz-sech">Suggested next steps</div><ul>${run.nextSteps.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
     </div>`;
   }
@@ -85,7 +85,11 @@
         <p class="meta">Boundary you approved: ${esc(rp.boundary)}</p>
         <label class="fld">Bring it work<textarea class="in" data-run-input="${rp.id}" rows="3" maxlength="4000" placeholder="Paste an email to answer, a question, a request…"></textarea></label>
         <div class="btns"><button class="b ink" data-run="${rp.id}">Do this work</button>${rp.status === 'active' ? `<button class="b out" data-resp-pause="${rp.id}">Pause</button>` : `<button class="b out" data-resp-resume="${rp.id}">Resume</button>`}<button class="b out" data-resp-retire="${rp.id}">Retire</button></div>
-        <p class="meta">Alter also does a daily check-in on active responsibilities and leaves what it finds here. Results are drafts - they never leave Alter.${rp.research ? ' When it reads public pages during a run, those pages go to the reasoning engine too.' : ''}</p>
+        ${pendingApproval && pendingApproval.respId === rp.id ? `<div class="bz-card bz-approve"><div class="bz-sech">Approve pages for this run</div>
+          <p class="meta">These exact URLs appear in your sources or work item. Alter can read only the ones you check, for this run only - it cannot search the web or visit anything else. Checked pages go to the reasoning engine during the run.</p>
+          ${pendingApproval.urls.map(u => `<label class="bz-urlrow"><input type="checkbox" data-appr-url value="${esc(u)}"><span class="bz-url">${esc(u)}</span>${pendingApproval.flagged.includes(u) ? chip('Looks like a signed or private link - review carefully', 'warn') : ''}</label>`).join('')}
+          <div class="btns"><button class="b ink" data-appr-run type="button">Run with checked pages</button><button class="b out" data-appr-cancel type="button">Cancel</button></div></div>` : ''}
+        <p class="meta">Alter also does a daily check-in on active responsibilities and leaves what it finds here. Results are drafts - they never leave Alter.${rp.research ? ' When it reads owner-approved pages during a run, those pages go to the reasoning engine too.' : ''}</p>
         ${runs ? `<div class="bz-sech">History</div>${runs}` : '<p class="meta">No work done yet.</p>'}
       </div>` : ''}
     </div>`;
@@ -183,14 +187,47 @@
     });
     $$('[data-toggle-resp]', V).forEach(el => el.onclick = () => { openResp[el.dataset.toggleResp] = !openResp[el.dataset.toggleResp]; paint(); });
     $$('[data-run]', V).forEach(b => b.onclick = async () => {
+      const rp = (B.responsibilities || []).find(x => x.id === b.dataset.run);
       const ta = $('[data-run-input="' + b.dataset.run + '"]', V), input = ta.value;
       if (!input.trim()) return BB.toast('Describe or paste the work first');
+      if (rp && rp.research) return researchApprove(rp, input, b);
       b.disabled = true; b.textContent = 'Working…';
       const j = await api('/responsibilities/' + b.dataset.run + '/run', 'POST', { input });
       b.disabled = false; b.textContent = 'Do this work';
       if (j.error) return BB.toast(j.error);
       ta.value = ''; BB.toast('Draft ready.'); await load();
     });
+    // Research runs: the owner reviews the exact pages found in their sources/work item
+    // and approves each one for THIS run. Only approved exact URLs can ever be contacted.
+    async function researchApprove(rp, input, b) {
+      b.disabled = true; b.textContent = 'Checking pages…';
+      const c = await api('/responsibilities/' + rp.id + '/candidates', 'POST', { input });
+      b.disabled = false; b.textContent = 'Do this work';
+      if (c.error) return BB.toast(c.error);
+      const urls = c.urls || [];
+      if (!urls.length) return runResearch(rp, input, [], b);
+      openResp[rp.id] = true;
+      pendingApproval = { respId: rp.id, input, urls, flagged: c.flagged || [] };
+      paint();
+    }
+    async function runResearch(rp, input, approvedUrls, b) {
+      if (b) { b.disabled = true; b.textContent = 'Working…'; }
+      const j = await api('/responsibilities/' + rp.id + '/run', 'POST', { input, approvedUrls });
+      if (b) { b.disabled = false; b.textContent = 'Do this work'; }
+      if (j.error) return BB.toast(j.error);
+      pendingApproval = null;
+      const ta = $('[data-run-input="' + rp.id + '"]', V); if (ta) ta.value = '';
+      BB.toast('Draft ready.'); await load();
+    }
+    $$('[data-appr-run]', V).forEach(b => b.onclick = async () => {
+      if (!pendingApproval) return;
+      const checked = $$('[data-appr-url]', V).filter(x => x.checked).map(x => x.value);
+      const rp = (B.responsibilities || []).find(x => x.id === pendingApproval.respId);
+      const input = pendingApproval.input;
+      pendingApproval = null; paint();
+      if (rp) runResearch(rp, input, checked, $('[data-run="' + rp.id + '"]', V));
+    });
+    $$('[data-appr-cancel]', V).forEach(b => b.onclick = () => { pendingApproval = null; paint(); });
     $$('[data-resp-pause]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respPause + '/pause', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Paused. It does nothing while paused.'); await load(); });
     $$('[data-resp-resume]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respResume + '/resume', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Resumed.'); await load(); });
     $$('[data-resp-retire]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Retire this responsibility?', 'Its history stays visible.', 'Retire')) return; const j = await api('/responsibilities/' + b.dataset.respRetire + '/retire', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Retired.'); await load(); });
