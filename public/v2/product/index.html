@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alter product · One budget and one receipt</title>
+<meta name="description" content="Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/brand/alter-icon-light-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600&family=Instrument+Serif&display=swap">
+<link rel="stylesheet" href="/v2/v2.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="nav">
+<div class="nav-in">
+<a class="logo" href="/v2" aria-label="Alter"><svg viewBox="4 17 56 36" aria-hidden="true"><path d="M8 33 V37 L32 49 L56 37 V33" fill="none" stroke="#f4f1ea" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="none" stroke="#f4f1ea" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg><span>alter</span></a>
+<nav class="links" aria-label="Main"><a href="/v2#story">Story</a><a href="/v2/product" aria-current="page">Product</a><a href="/v2/waitlist">Waitlist</a><a href="/hq">Sign in</a></nav>
+</div>
+</header>
+<main id="main">
+<section class="hero">
+<div class="wrap">
+<p class="kicker">Today</p>
+<h1>What Alter does today.</h1>
+<p class="lede">Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.</p>
+<p class="prose">HQ, the approval pause, receipts, and the founding-seat counter are in this repo. Pictures of the app are sample data. The receipt on this page is an example. The seat count is read from the server.</p>
+</div>
+</section>
+
+<section class="block" id="hq">
+<div class="wrap split">
+<div class="side"><p class="idx">01</p><h2>HQ</h2></div>
+<div>
+<p class="prose">HQ is the workspace. It shows your bots, the jobs, and anything waiting on you. A new HQ starts empty. Opening it requires sign-in.</p>
+<figure>
+<img src="/marketing/assets/hq-desktop.jpg" width="1920" height="1080" alt="Alter HQ with sample bots on a floor, an inbox, and an approval card.">
+<figcaption>The real HQ interface, with sample data. Your HQ starts empty.</figcaption>
+</figure>
+<p><a class="textlink" href="/hq">Sign in to HQ</a></p>
+</div>
+</div>
+</section>
+
+<section class="block" id="pause">
+<div class="wrap split">
+<div class="side"><p class="idx">02</p><h2>Approval pause</h2></div>
+<div>
+<p class="prose">When a rule is Ask, Alter pauses the action on the server. It stays paused until you approve or deny it. Nothing in that pause spends money. The card path is a sandbox.</p>
+<figure>
+<img src="/hq/approval.webp" width="1536" height="1024" alt="Phone approval card for a supplier order. The card is marked demo data and no live charge.">
+<figcaption>The approval card in the product. The request in this picture is sample data. No live charge.</figcaption>
+</figure>
+<h3 style="margin-top:36px">Sandbox demo</h3>
+<p class="prose">The rows below are the server's own fixture at /api/authorization/demo. They are made up, they are not saved, and they use the same evaluator as sandbox card decisions.</p>
+<div class="ledger" id="demo-list" aria-live="polite"></div>
+<p class="note" id="demo-note">Reading the sandbox demo.</p>
+<p><a class="textlink" href="/authorization.html">Open the authorization page</a></p>
+</div>
+</div>
+</section>
+
+<section class="block" id="receipt">
+<div class="wrap split">
+<div class="side"><p class="idx">03</p><h2>Receipt</h2></div>
+<div>
+<p class="prose">A public receipt shows the job, the budget, the approvals, and a SHA-256 hash of the snapshot. Run this job copies the template and the budget. It does not start a job, and it does not charge anything.</p>
+<p class="prose">The document below is that same layout. It is an example assembled in the browser. It was not published from a live job.</p>
+<div class="frame">
+<iframe src="/v2/example-receipt.html" title="Example receipt using the live receipt layout"></iframe>
+</div>
+<p><a class="textlink" href="/v2/example-receipt.html">Open the example receipt</a></p>
+</div>
+</div>
+</section>
+
+<section class="block" id="seats">
+<div class="wrap split">
+<div class="side"><p class="idx">04</p><h2>Seat counter</h2></div>
+<div>
+<p class="prose">The founding access list is a real counter. A seat is a place on that list. It is not access to the product, and it is not a payment.</p>
+<p class="seats" data-seats>Founding access list: reading the server.</p>
+<p><a class="textlink" href="/v2/waitlist">Join the waitlist</a></p>
+<p class="prose" style="margin-top:28px">Honest limits. No live card issuing. The issuer webhook is test-only. Native provider bills stay outside Alter. <a href="/security.html">Security notes</a> · <a href="/pricing.html">What is available today</a></p>
+</div>
+</div>
+</section>
+</main>
+<footer class="foot"><div class="wrap" style="display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;width:min(1120px,calc(100% - 2 * var(--pad)))">
+<a class="logo" href="/v2" aria-label="Alter"><svg viewBox="4 17 56 36" aria-hidden="true"><path d="M8 33 V37 L32 49 L56 37 V33" fill="none" stroke="#f4f1ea" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="none" stroke="#f4f1ea" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg><span>alter</span></a>
+<p>One budget and one receipt across every bot you run.</p>
+<nav class="links" aria-label="Footer"><a href="/v2#story">Story</a><a href="/v2/waitlist">Waitlist</a><a href="/hq">Sign in</a></nav>
+</div></footer>
+<script src="/v2/waitlist.js" defer></script>
+<script src="/v2/product.js" defer></script>
+</body>
+</html>

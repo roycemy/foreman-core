@@ -1205,6 +1205,18 @@ async function cardControlUnlocked(body){
 const OAUTH_ORIGIN='https://foreman-core.vercel.app';
 const PUBLIC_ORIGIN='https://www.alterhq.app';
 const originOk=o=>o===OAUTH_ORIGIN||o===PUBLIC_ORIGIN;
+// Waitlist and seat lookup also accept the deployment's own host (preview URLs) and local http.
+// OAuth, runner and reconnect stay on the two public origins above.
+function waitlistOriginOk(req){
+ const o=String(req.headers.origin||'');
+ if(originOk(o))return true;
+ const host=String(req.headers.host||'').toLowerCase();
+ const ol=o.toLowerCase();
+ if(!ol||!host)return false;
+ if(ol==='https://'+host)return true;
+ if((/^localhost(:\d+)?$/.test(host)||/^127\.0\.0\.1(:\d+)?$/.test(host))&&ol==='http://'+host)return true;
+ return false;
+}
 const originFor=req=>/^(www\.)?alterhq\.app$/.test(String(req&&req.headers&&req.headers.host||''))?PUBLIC_ORIGIN:OAUTH_ORIGIN;
 const validRedirect=u=>{try{const x=new URL(u);return !x.username&&!x.password&&!x.hash&&(x.protocol==='https:'||x.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(x.hostname));}catch{return false;}};
 // Refresh grants have no routine expiry. Rotation is atomic; replay revokes the family.
@@ -1312,7 +1324,7 @@ const foundingSeats=(()=>{try{return require('../lib/founding-seats.cjs')}catch(
 async function joinWaitlist(req,res,body){
  res.setHeader('Cache-Control','no-store');
  if(req.method!=='POST')return res.status(405).json({error:'POST required'});
- if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
+ if(!waitlistOriginOk(req))return res.status(403).json({error:'origin'});
  if(body.website)return res.json({ok:true});
  const email=String(body.email||'').trim().toLowerCase();
  if(email.length>254||! /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||body.consent!==true)return res.status(400).json({error:'Enter your email and agree to an access update.'});
@@ -1429,7 +1441,7 @@ module.exports = async (req, res) => {
   try {
     if(path==='/authorization/demo'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return res.json(AUTHZ.demo());}
     if(path==='/founding/count'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');await foundingSeats.reconcile();return res.json({taken:await foundingSeats.total(),limit:1000});}
-    if(path==='/founding/receipt'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});const found=await foundingSeats.readReceipt(body.receipt);return found?res.json(found):res.status(404).json({error:'Receipt unavailable'});}
+    if(path==='/founding/receipt'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(!waitlistOriginOk(req))return res.status(403).json({error:'origin'});const found=await foundingSeats.readReceipt(body.receipt);return found?res.json(found):res.status(404).json({error:'Receipt unavailable'});}
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
     if(path.startsWith('/invite-page/')&&req.method==='GET')return await invitePage(req,res,path);
     // Vercel routing middleware may retain the original incoming URL on the rewritten request.

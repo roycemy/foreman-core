@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Example receipt · Alter</title>
+<meta name="theme-color" content="#F4F4F1">
+<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/styles/tokens.css">
+<link rel="stylesheet" href="/styles/app.css">
+<link rel="stylesheet" href="/styles/receipt.css">
+<script src="/brand.js"></script>
+<style>
+.banner{margin:0;padding:14px 20px;background:#121212;color:#f4f1ea;font:13px/1.45 Geist,system-ui,sans-serif;text-align:center}
+.banner a{color:#f4f1ea}
+</style>
+</head>
+<body class="public">
+<p class="banner">Example. Assembled in the browser from sample fields. Not published from a live job. <a href="/v2/product">Back to the product</a></p>
+<main class="rc wide" id="rc"></main>
+<script>
+window.__RECEIPT = {
+  snapshot: {
+    version: 2,
+    title: 'Reorder packing tape',
+    summary: 'Example only. A $27.40 request against a $40.00 budget. Not published from a live job.',
+    template: 'Reorder packing tape when stock falls under two weeks.\nStay inside the budget.',
+    budgetCents: 4000,
+    outcome: 'completed',
+    elapsedSeconds: 360,
+    reportedModelCostUsd: null,
+    externalCost: null,
+    ledgerCents: null,
+    trackedActions: 0,
+    approvals: 1,
+    steps: [
+      { at: '2026-10-23T14:02:00.000Z', code: 'assigned' },
+      { at: '2026-10-23T14:03:00.000Z', code: 'claimed' },
+      { at: '2026-10-23T14:06:00.000Z', code: 'approved' },
+      { at: '2026-10-23T14:08:00.000Z', code: 'delivered' }
+    ],
+    provenance: 'Example snapshot assembled in the browser. Not a bot report, not a published receipt, and not a card charge.'
+  },
+  hash: '',
+  publishedAt: null
+};
+</script>
+<script src="/js/receipt-doc.js"></script>
+<script>
+(function () {
+  var rc = document.getElementById('rc');
+  if (!window.crypto || !crypto.subtle) {
+    rc.textContent = 'Example receipt hash could not be computed in this browser.';
+    return;
+  }
+  crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(window.__RECEIPT.snapshot))).then(function (buf) {
+    window.__RECEIPT.hash = Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+    var s = document.createElement('script');
+    s.src = '/js/receipt-public.js';
+    document.body.appendChild(s);
+  }).catch(function () {
+    rc.textContent = 'Example receipt hash could not be computed in this browser.';
+  });
+})();
+</script>
+</body>
+</html>
