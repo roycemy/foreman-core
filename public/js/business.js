@@ -5,10 +5,10 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, editingSrc = null, editingProp = null, openResp = {};
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {};
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
-  async function load() { loading = true; const j = await api('/state'); loading = false; if (j && !j.error) B = j; paint(); }
+  async function load() { loading = true; let j = null; try { j = await api('/state'); } catch (e) { j = null; } loading = false; if (j && !j.error) { B = j; loadErr = null; } else if (!B) loadErr = (j && j.error) || 'Could not load the Business view. Try again.'; paint(); }
 
   const chip = (t, cls) => `<span class="bzc ${cls || ''}">${esc(t)}</span>`;
   const staleBadge = p => (p.stale && p.stale.length) ? chip('Sources changed since drafted', 'warn') : '';
@@ -89,7 +89,7 @@
   /* ---------- page ---------- */
   function paint() {
     if (!V.classList.contains('on')) return;
-    if (!B) { V.innerHTML = '<div class="page-in narrow"><p class="meta" style="margin-top:24px">Loading…</p></div>'; return; }
+    if (!B) { V.innerHTML = loadErr ? '<div class="page-in narrow"><p style="margin-top:24px">' + esc(loadErr) + '</p><p class="meta"><button class="btn" data-biz-retry type="button">Try again</button></p></div>' : '<div class="page-in narrow"><p class="meta" style="margin-top:24px">Loading…</p></div>'; const rt = $('[data-biz-retry]', V); if (rt) rt.onclick = () => load(); return; }
     const eng = B.engine || {}, srcs = B.sources || [], props = (B.proposals || []).filter(p => p.status !== 'rejected'), resps = B.responsibilities || [];
     const engNote = eng.configured && eng.enabled ? '' :
       `<div class="bz-note">The reasoning engine ${eng.configured ? 'is connected but not enabled for this workspace' : 'is not connected yet'}. You can add sources now; proposals and work runs start once setup finishes. Nothing is simulated - Alter will not invent proposals without it.</div>`;
