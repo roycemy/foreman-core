@@ -14,7 +14,8 @@
         <label class="fld">About the business<textarea class="in" id="ob-text" maxlength="20000" required style="min-height:140px" placeholder="We are a three-person plumbing company. Calls come in while we are on jobs and quotes go out late."></textarea></label>
         <p class="err" id="ob-err" role="alert">${esc(err || '')}</p>
         <div class="acts"><button class="b ink" type="submit" id="ob-save">Save and continue</button></div>
-        <p class="meta">Saved as a note in your workspace. You can edit or delete it later under Business. Nothing is sent anywhere.</p>
+        <p class="ov-disc-in">${esc(BB.BIZ_DISCLOSURE || '')} You can edit or delete it later under Business.</p>
+        <p class="ov-warn"><b>${esc(BB.BIZ_PRIVACY_WARNING || '')}</b></p>
       </form></div>`;
   };
   /* returns the API result; caller reloads state on success */
