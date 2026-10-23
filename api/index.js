@@ -102,7 +102,9 @@ function memOp(script, keys, argv) {
   if (script === BIZ_OP_BEGIN) {
     const pr = mem.kv.get(keys[2]); const p = pr ? JSON.parse(pr) : null; const fr = mem.kv.get(keys[1]);
     let opId = argv[6];
-    if (p) { const same = p.op === argv[0] && String(p.id) === argv[1]; if (!same && argv[5] !== '1') return ['pending']; if (fr != null) return ['held']; opId = p.opId; }
+    if (p) { const same = p.op === argv[0] && String(p.id) === argv[1];
+      if (same) { if (!argv[7] || argv[7] !== String(p.opId)) return ['stale']; if (fr != null) return ['held']; opId = p.opId; }
+      else { if (argv[5] !== '1') return ['pending']; if (fr != null) return ['held']; } }
     else if (fr != null) return ['held'];
     const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
     mem.kv.set(keys[1], argv[2]);
@@ -190,9 +192,9 @@ const BIZ_FENCE_LPUSH = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1]
 // later purge; CANCEL carries the owner-reviewed op identity, rejects stale cancels, bumps the
 // fence to invalidate in-flight holder writes, and releases the lease only when the lease token
 // belongs to the pending operation.
-const BIZ_OP_BEGIN = "local p=redis.call('GET',KEYS[3]); local fr=redis.call('GET',KEYS[2]); local opid=ARGV[7]; if p then local pj=cjson.decode(p); local same=(pj.op==ARGV[1] and tostring(pj.id)==ARGV[2]); if not same and ARGV[6]~='1' then return {'pending'} end; if fr then return {'held'} end; opid=pj.opId; elseif fr then return {'held'} end; local gen=redis.call('INCRBY',KEYS[1],1); redis.call('SET',KEYS[2],ARGV[3],'PX',tonumber(ARGV[4])); redis.call('SET',KEYS[3],cjson.encode({op=ARGV[1],id=ARGV[2],token=ARGV[3],gen=gen,at=ARGV[5],opId=opid})); return {'ok',gen,opid}";
+const BIZ_OP_BEGIN = "local p=redis.call('GET',KEYS[3]); local fr=redis.call('GET',KEYS[2]); local opid=ARGV[7]; if p then local pj=cjson.decode(p); local same=(pj.op==ARGV[1] and tostring(pj.id)==ARGV[2]); if same then if ARGV[8]=='' or ARGV[8]~=tostring(pj.opId) then return {'stale'} end; if fr then return {'held'} end; opid=pj.opId; else if ARGV[6]~='1' then return {'pending'} end; if fr then return {'held'} end; end; elseif fr then return {'held'} end; local gen=redis.call('INCRBY',KEYS[1],1); redis.call('SET',KEYS[2],ARGV[3],'PX',tonumber(ARGV[4])); redis.call('SET',KEYS[3],cjson.encode({op=ARGV[1],id=ARGV[2],token=ARGV[3],gen=gen,at=ARGV[5],opId=opid})); return {'ok',gen,opid}";
 const BIZ_OP_GUARD = "if redis.call('GET',KEYS[2])~=ARGV[1] then return 0 end; local p=redis.call('GET',KEYS[3]); if not p then return 0 end; local pj=cjson.decode(p); if pj.token~=ARGV[1] then return 0 end; if tostring(pj.gen)~=ARGV[2] then return 0 end; local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[2] then return 0 end; ";
-const BIZ_OP_WRITE = BIZ_OP_GUARD + "if ARGV[3]=='set' then redis.call('SET',KEYS[4],ARGV[4]) elseif ARGV[3]=='del' then redis.call('DEL',KEYS[4]) elseif ARGV[3]=='srem' then redis.call('SREM',KEYS[4],ARGV[4]) elseif ARGV[3]=='sadd' then redis.call('SADD',KEYS[4],ARGV[4]) elseif ARGV[3]=='stage' then redis.call('SET',KEYS[3],cjson.encode({op=pj.op,id=pj.id,token=pj.token,gen=pj.gen,at=pj.at,stage=ARGV[4]})) elseif ARGV[3]=='renew' then redis.call('PEXPIRE',KEYS[2],60000) else return 0 end; return 1";
+const BIZ_OP_WRITE = BIZ_OP_GUARD + "if ARGV[3]=='set' then redis.call('SET',KEYS[4],ARGV[4]) elseif ARGV[3]=='del' then redis.call('DEL',KEYS[4]) elseif ARGV[3]=='srem' then redis.call('SREM',KEYS[4],ARGV[4]) elseif ARGV[3]=='sadd' then redis.call('SADD',KEYS[4],ARGV[4]) elseif ARGV[3]=='stage' then redis.call('SET',KEYS[3],cjson.encode({op=pj.op,id=pj.id,token=pj.token,gen=pj.gen,at=pj.at,opId=pj.opId,stage=ARGV[4]})) elseif ARGV[3]=='renew' then redis.call('PEXPIRE',KEYS[2],60000) else return 0 end; return 1";
 const BIZ_OP_COMMIT = BIZ_OP_GUARD + "redis.call('LPUSH',KEYS[4],ARGV[3]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[4])-1); redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[2]); return 1";
 const BIZ_OP_CANCEL = "local p=redis.call('GET',KEYS[3]); if not p then return {'none'} end; local pj=cjson.decode(p); if tostring(pj.id)~=ARGV[1] or pj.op~=ARGV[2] or tostring(pj.opId)~=ARGV[5] then return {'stale'} end; redis.call('INCRBY',KEYS[1],1); redis.call('DEL',KEYS[3]); if redis.call('GET',KEYS[2])==pj.token then redis.call('DEL',KEYS[2]) end; redis.call('LPUSH',KEYS[4],ARGV[3]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[4])-1); return {'ok'}";
 const BIZ_OP_RELEASE = "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end; redis.call('DEL',KEYS[1]); return 1";
@@ -1717,7 +1719,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/business/state' && req.method === 'GET') return send({ status: 200, body: await bizState() });
     if (path === '/business/provider-consent' && (req.method === 'POST' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizConsentAct(req.method === 'POST', body)); }
     if (path === '/business/sources' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizSourceAdd(body)); }
-    { const bm = path.match(/^\/business\/sources\/(src_\w+)$/); if (bm && (req.method === 'PATCH' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(req.method === 'PATCH' ? await bizSourceEdit(bm[1], body) : await bizSourceDel(bm[1])); } }
+    { const bm = path.match(/^\/business\/sources\/(src_\w+)$/); if (bm && (req.method === 'PATCH' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(req.method === 'PATCH' ? await bizSourceEdit(bm[1], body) : await bizSourceDel(bm[1], body)); } }
     if (path === '/business/discover' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscover()); }
     { const bm = path.match(/^\/business\/proposals\/(prop_\w+)\/(edit|reject|activate)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProposalAct(bm[1], bm[2], body)); } }
     if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(body && body.confirm === 'CANCEL' ? await bizOpCancel(body) : await bizDataPurge(body)); }
@@ -1946,10 +1948,10 @@ class BizOpLost extends Error {}
 // impossible; the durable marker (fm:biz:op_pending, no TTL) survives crashes and quiesces all
 // processing until the operation commits or the owner cancels. A retry of the SAME op+id is
 // adopted only when the original lease is gone; a purge may subsume any pending intent.
-async function bizOpBegin(op, id, subsume) {
+async function bizOpBegin(op, id, subsume, reviewedOpId) {
   const token = rid('freeze'), opId = rid('op'), idStr = id || '';
   let res = null;
-  try { res = await r(['EVAL', BIZ_OP_BEGIN, 3, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', op, idStr, token, '60000', now(), subsume ? '1' : '0', opId]); }
+  try { res = await r(['EVAL', BIZ_OP_BEGIN, 3, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', op, idStr, token, '60000', now(), subsume ? '1' : '0', opId, reviewedOpId || '']); }
   catch (e) {
     // The begin EVAL may have LANDED even though its response was lost: reconcile against the
     // durable intent instead of claiming nothing changed. Same op+id+token = ours, adopt it.
@@ -1960,8 +1962,18 @@ async function bizOpBegin(op, id, subsume) {
     }
     return { uncertain: true };
   }
-  if (!Array.isArray(res) || res[0] !== 'ok') return null;
+  if (!Array.isArray(res)) return null;
+  if (res[0] === 'stale') return { stale: true }; // the reviewed intent was replaced or already completed
+  if (res[0] !== 'ok') return null;
   return { token, gen: String(res[1]), opId: String(res[2]), t0: Date.now(), n: 0 };
+}
+const bizOpStale = () => ({ status: 409, body: { error: 'That delete already finished or was replaced. Reload to see the current state.', code: 'op_stale' } });
+const bizOpNeedsReview = () => ({ status: 409, body: { error: 'A delete is already pending. Reload and finish or cancel it from the card shown.', code: 'retry_needs_review' } });
+const bizOpCompleted = () => ({ status: 409, body: { error: 'That delete already finished - there is nothing to finish. Reload to see the current state.', code: 'intent_completed' } });
+async function bizOpCloseRefused(ctx, what, extra) {
+  const p = await getJ('fm:biz:op_pending').catch(() => undefined);
+  if (p && p.token === ctx.token) return { status: 503, body: { error: what + ' finished its record changes but could not close cleanly - its exclusion lock was lost at the final step. The delete intent is still recorded and new work is held; retry to close it out.', code: 'delete_close_uncertain', ...extra } };
+  return { status: 503, body: { error: what + ' finished its record changes, but the close was refused - the workspace changed concurrently (the delete may have been cancelled or replaced). Reload to see the current state before doing anything else.', code: 'delete_close_refused', ...extra } };
 }
 const bizOpUncertain = () => ({ status: 503, body: { error: 'The delete request may or may not have registered - its response was lost. Nothing further was done. Reload, check the current state, and retry or cancel from what you see.', code: 'delete_uncertain' } });
 // One fully-guarded write inside a held operation: freeze ownership AND pending-token AND
@@ -2089,15 +2101,17 @@ async function bizSourceEdit(id, body) {
 // would be worse than stating the boundary. They go away with responsibility delete or a full
 // data purge. Integration hook: research snapshots/claims/citations register scrubbers here.
 const bizSourceScrubbers = [];
-async function bizSourceDel(id) {
+async function bizSourceDel(id, body) {
   const s = await getJ('fm:biz:src:' + id);
   const pending = await getJ('fm:biz:op_pending');
   const retrying = pending && pending.op === 'source_delete' && String(pending.id) === String(id);
   if (pending && !retrying) return { status: 409, body: { error: 'Another delete is pending in this workspace. Finish or cancel it first.', code: 'operation_pending' } };
+  if (retrying && !(body && body.opId)) return bizOpNeedsReview(); // a retry must carry the exact reviewed instance
+  if (!pending && body && body.opId) return bizOpCompleted(); // a stale Finish never starts a fresh delete
   if (!s && !retrying) return { status: 404, body: { error: 'not found' } };
   // Idempotent retry: when an earlier attempt died after removing the record, the durable intent
   // is still set and this call finishes the remaining stages (index cleanup is part of them).
-  const ctx = await bizOpBegin('source_delete', id); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
+  const ctx = await bizOpBegin('source_delete', id, false, body && body.opId); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
   let scrubbed = 0, stage = 'start';
   try {
     bizFault('sourcedel:begin');
@@ -2118,7 +2132,7 @@ async function bizSourceDel(id) {
     stage = 'close';
     bizFault('sourcedel:close');
     const committed = await bizOpCommit(ctx, 'source_deleted', { sourceId: id, title: s ? s.title : null, proposalsScrubbed: scrubbed, derivedRetained: true });
-    if (committed === 'refused') return { status: 503, body: { error: 'Deletion finished its record changes but could not close cleanly - its exclusion lock was lost at the final step. The delete intent is still recorded and new work is held; retry to close it out.', code: 'delete_close_uncertain', proposalsScrubbed: scrubbed } };
+    if (committed === 'refused') return await bizOpCloseRefused(ctx, 'Deletion', { proposalsScrubbed: scrubbed });
     if (committed === 'unknown') return { status: 503, body: { error: 'Deletion finished its record changes, but the final confirmation was lost - the close may or may not have registered. Reload to check before retrying.', code: 'delete_close_unknown', proposalsScrubbed: scrubbed } };
   } catch (e) {
     await bizOpRelease(ctx);
@@ -2289,10 +2303,12 @@ async function bizRespAct(id, op, body) {
     const pending = await getJ('fm:biz:op_pending');
     const retrying = pending && pending.op === 'resp_delete' && String(pending.id) === String(id);
     if (pending && !retrying) return { status: 409, body: { error: 'Another delete is pending in this workspace. Finish or cancel it first.', code: 'operation_pending' } };
+    if (retrying && !(body && body.opId)) return bizOpNeedsReview();
+    if (!pending && body && body.opId) return bizOpCompleted();
     // Idempotent retry: the record may already be gone from an earlier partial attempt; the
     // durable intent is what must close, and index/run cleanup is part of closing it.
     if (!resp && !retrying) return { status: 404, body: { error: 'not found' } };
-    const ctx = await bizOpBegin('resp_delete', id); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
+    const ctx = await bizOpBegin('resp_delete', id, false, body && body.opId); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
     let runsDeleted = 0, stage = 'start';
     try {
       bizFault('respdel:begin');
@@ -2309,7 +2325,7 @@ async function bizRespAct(id, op, body) {
       stage = 'close';
       bizFault('respdel:close');
       const committed = await bizOpCommit(ctx, 'responsibility_deleted', { respId: id, title: resp ? resp.title : null, runsDeleted });
-      if (committed === 'refused') return { status: 503, body: { error: 'Deletion finished its record changes but could not close cleanly - its exclusion lock was lost at the final step. The delete intent is still recorded and new work is held; retry to close it out.', code: 'delete_close_uncertain', runsDeleted } };
+      if (committed === 'refused') return await bizOpCloseRefused(ctx, 'Deletion', { runsDeleted });
       if (committed === 'unknown') return { status: 503, body: { error: 'Deletion finished its record changes, but the final confirmation was lost - the close may or may not have registered. Reload to check before retrying.', code: 'delete_close_unknown', runsDeleted } };
     } catch (e) {
       await bizOpRelease(ctx);
@@ -2572,7 +2588,19 @@ async function bizDataPurge(body) {
   // the fence key itself is NOT deleted - it keeps invalidating older writers. On failure the
   // intent marker STAYS: processing and writes are quiesced until a retry completes or the owner
   // explicitly cancels.
-  const ctx = await bizOpBegin('purge', null, true); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
+  // Retry of a pending purge is a DIFFERENT action from a fresh typed-DELETE purge: it must
+  // carry the exact reviewed instance id, bound atomically at BEGIN. A stale Finish with no
+  // pending intent is rejected, never starts a fresh purge over newer data.
+  const retry = !!(body && body.opId);
+  if (retry) {
+    const pendNow = await getJ('fm:biz:op_pending');
+    if (!pendNow) return bizOpCompleted();
+    if (pendNow.op !== 'purge') return { status: 409, body: { error: 'Another delete is pending in this workspace. Finish or cancel it first.', code: 'operation_pending' } };
+  } else {
+    const pendNow = await getJ('fm:biz:op_pending');
+    if (pendNow && pendNow.op === 'purge') return bizOpNeedsReview();
+  }
+  const ctx = await bizOpBegin('purge', null, !retry, retry ? body.opId : undefined); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
   const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0 };
   let stage = 'start';
   try {
@@ -2597,7 +2625,7 @@ async function bizDataPurge(body) {
     stage = 'close';
     bizFault('purge:close');
     const committed = await bizOpCommit(ctx, 'data_purged', { counts });
-    if (committed === 'refused') return { status: 503, body: { error: 'Purge finished its record changes but could not close cleanly - its exclusion lock was lost at the final step. The purge intent is still recorded and new work is held; retry to close it out.', code: 'purge_close_uncertain', purged: false, counts } };
+    if (committed === 'refused') return await bizOpCloseRefused(ctx, 'Purge', { purged: false, counts });
     if (committed === 'unknown') return { status: 503, body: { error: 'Purge finished its record changes, but the final confirmation was lost - the close may or may not have registered. Reload to check before retrying.', code: 'purge_close_unknown', purged: false, counts } };
   } catch (e) {
     await bizOpRelease(ctx);
