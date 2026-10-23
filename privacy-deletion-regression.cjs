@@ -14,7 +14,7 @@ const c={require,module:{exports:{}},process:{env:{}},global:{},console,URL,Buff
 vm.runInNewContext(src,c);const f=c.module.exports.t;
 (async()=>{
  c.process.env.ALTER_MODEL_KEY='k';c.process.env.ALTER_MODEL_WS='legacy';
- await f.bizConsentAct(true);
+ await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
  const s1=(await f.bizSourceAdd({kind:'note',title:'Replies',text:'We answer customer emails within a day.'})).body.source.id;
  const s2=(await f.bizSourceAdd({kind:'note',title:'Ops',text:'Fridays are for invoicing.'})).body.source.id;
  calls.__s1=s1;calls.__s2=s2;

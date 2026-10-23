@@ -35,7 +35,9 @@
   function propCard(p) {
     if (p.status === 'rejected') return '';
     const editing = editingProp === p.id;
-    const ev = (p.evidence || []).map(e => `<div class="bz-ev"><span class="bz-tick" title="This quote was checked against your source">✓</span><blockquote>${esc(e.excerpt)}</blockquote><small>${esc(e.sourceTitle || 'Source')} · v${e.sourceVersion}</small></div>`).join('');
+    const ev = (p.evidence || []).map(e => e && e.excerptDeleted
+      ? `<div class="bz-ev"><blockquote class="bz-ev-del">Quote removed - its source was deleted.</blockquote><small>${esc(e.sourceTitle || 'Source')}</small></div>`
+      : `<div class="bz-ev"><span class="bz-tick" title="This quote was checked against your source">✓</span><blockquote>${esc(e.excerpt)}</blockquote><small>${esc(e.sourceTitle || 'Source')} · v${e.sourceVersion}</small></div>`).join('');
     const un = (p.unknowns || []).map(u => `<li>${esc(u)}</li>`).join('');
     const sys = (p.systems || []).map(s => chip(s)).join('');
     return `<div class="bz-card" data-prop="${p.id}">
@@ -51,7 +53,7 @@
         ${un ? `<div class="bz-sech">What Alter does not know</div><ul class="bz-ul">${un}</ul>` : ''}
         ${sys ? `<div class="bz-sech">Systems this would need</div><div class="bz-chips">${sys}</div>` : ''}
         <div class="bz-bound"><b>Starting boundary</b><p>${esc(p.boundary)}</p></div>
-        <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. Your sources go to the reasoning engine on each run. Results are drafts for your review - nothing is sent, spent or connected.</p>
+        <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. On each run the first 4,000 characters of every source go to the reasoning engine. Results are drafts for your review - nothing is sent, spent or connected.</p>
         <div class="btns"><button class="b ink" data-p-activate="${p.id}">Approve and start</button><button class="b out" data-p-edit="${p.id}">Edit</button><button class="b out" data-p-reject="${p.id}">Reject</button></div>`}
     </div>`;
   }
@@ -66,7 +68,11 @@
     </div>`;
   }
   function respCard(rp) {
-    if (rp.status === 'retired') return '';
+    if (rp.status === 'retired') return `<div class="bz-card" data-resp="${rp.id}">
+      <div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>Retired${rp.retiredAt ? ' ' + BB.when(rp.retiredAt) : ''}${rp.runsCount ? ' · ' + rp.runsCount + (rp.runsCount === 1 ? ' run' : ' runs') + ' in history' : ''}</small></div>${chip('Retired', 'dim')}</div>
+      <p class="meta">Retired responsibilities keep their stored work history until you delete it.</p>
+      <div class="btns"><button class="b danger" data-resp-del="${rp.id}">Delete with its history</button></div>
+    </div>`;
     const open = !!openResp[rp.id];
     const runs = (rp.runs || []).map(runItem).join('');
     return `<div class="bz-card" data-resp="${rp.id}">
@@ -100,20 +106,20 @@
       <label class="fld">Title<input class="in" id="bz-add-title" maxlength="120" placeholder="e.g. How last week actually went"></label>
       <label class="fld">Text<textarea class="in" id="bz-add-text" rows="6" maxlength="20000" placeholder="Paste notes, a call summary, a process doc…"></textarea></label>
       <div class="btns"><button class="b ink" id="bz-add">Add source</button></div>
-      <p class="meta">Saved to your Alter workspace. When the reasoning engine is connected, a source's full text goes to it whenever you ask Alter to look for work, whenever you run a responsibility, and during each active responsibility's daily check-in.</p></div>`;
+      <p class="meta">Saved to your Alter workspace. When the reasoning engine is connected, looking for work sends each source's full saved text; each responsibility run or daily check-in sends the first 4,000 characters of every source plus the work you bring.</p></div>`;
     const empty = !srcs.length ? `<div class="bz-hero"><h2>Teach Alter the business</h2>
       <p>1. Add notes or documents about how the business actually runs.<br>2. Alter proposes responsibilities it could take over, each backed by quotes from your own notes.<br>3. You approve what starts. Approved work runs as drafts you review - nothing is sent, spent or connected.</p></div>` : '';
     // Provider consent card: exact host+model, what is sent, withdraw any time. The gate is
     // server-side (engine_no_consent covers manual runs AND daily check-ins); this is its control.
     const consentCard = eng.configured && eng.enabled ? `<div class="bz-card"><div class="bz-sech">Reasoning provider</div>
-      ${eng.consent && eng.consent.current ? `<p class="meta">Provider processing is <b>on</b> for ${esc(eng.consent.host)} (${esc(eng.consent.model)}), allowed ${BB.when(eng.consent.at)}. While on, the full text of your sources and the work you bring go to this provider when you ask Alter to look for work, when you run a responsibility, and during each active responsibility's daily check-in.</p>
+      ${eng.consent && eng.consent.current ? `<p class="meta">Provider processing is <b>on</b> for ${esc(eng.consent.host)} (${esc(eng.consent.model)}), allowed ${BB.when(eng.consent.at)}. While on, looking for work sends each source's full saved text to this provider; each run or daily check-in sends the first 4,000 characters of every source plus the work you bring.</p>
       <div class="btns"><button class="b out sm" id="bz-consent-off">Withdraw provider processing</button></div>` :
-      `<p class="meta">Alter's reasoning provider is <b>${esc(eng.host || 'unknown')}</b> using model <b>${esc(eng.model || 'unknown')}</b>. While allowed, the full text of your sources and the work you bring go to this provider when you ask Alter to look for work, when you run a responsibility, and during each active responsibility's daily check-in.${eng.consent && !eng.consent.current ? ' Your earlier allowance no longer matches the configured provider - review and choose again.' : ''}</p>
+      `<p class="meta">Alter's reasoning provider is <b>${esc(eng.host || 'unknown')}</b> using model <b>${esc(eng.model || 'unknown')}</b>. While allowed, looking for work sends each source's full saved text to this provider; each run or daily check-in sends the first 4,000 characters of every source plus the work you bring.${eng.consent && !eng.consent.current ? ' Your earlier allowance no longer matches the configured provider - review and choose again.' : ''}</p>
       <div class="btns"><button class="b ink sm" id="bz-consent-on">Allow provider processing</button></div>`}
       <p class="meta">Source text is treated as data, not instructions, but no system can promise a hostile document cannot influence the engine's behavior. Results are drafts for your review.</p></div>` : '';
     const dataCard = `<div class="bz-card"><div class="bz-sech">Your data</div>
       <p class="meta">Your business data is stored in Alter's hosted database. There is no app-level encryption: the workspace owner and Alter's platform operator can access stored data operationally. The activity log above records key owner actions in this workspace (adding, editing and deleting sources, proposals, runs, consent changes); it is not an audit of operator access.</p>
-      <p class="meta">Deleting a source also removes its quotes from proposals. Deleting a responsibility removes its work history. Deleting all business data removes sources, proposals, responsibilities, work history, provider consent and the activity log from Alter's database. Content already sent to the reasoning provider is governed by that provider's own retention, and platform infrastructure backups are outside this deletion.</p>
+      <p class="meta">Deleting a source removes the source and the verbatim quotes copied from it into proposals. Work derived from it - proposal text, responsibilities, run drafts and activity entries - is kept as your reviewable record; delete the responsibility or all business data to remove those. Deleting a responsibility removes its whole work history. Deleting all business data removes sources, proposals, responsibilities, work history, provider consent and the activity log from Alter's database. Content already sent to the reasoning provider is governed by that provider's own retention, and platform infrastructure backups are outside this deletion.</p>
       <div class="btns"><button class="b danger sm" id="bz-purge">Delete all business data</button></div></div>`;
     const propSec = srcs.length ? `<div class="bz-sech row"><span>What Alter could take over</span><button class="b ink sm" id="bz-discover" ${eng.configured && eng.enabled && eng.consent && eng.consent.current ? '' : 'disabled'}>Look for work</button></div>
       ${engNote}
@@ -161,7 +167,7 @@
     });
     $$('[data-src-cancel]', V).forEach(b => b.onclick = () => { editingSrc = null; paint(); });
     $$('[data-src-del]', V).forEach(b => b.onclick = async () => {
-      if (!await askConfirm('Delete this source?', 'Quotes copied from it into proposals are removed too.', 'Delete')) return;
+      if (!await askConfirm('Delete this source?', 'The source and its verbatim quotes in proposals are removed. Work derived from it (proposal text, responsibilities, run drafts) stays as your record.', 'Delete')) return;
       const j = await api('/sources/' + b.dataset.srcDel, 'DELETE'); if (j.error) return BB.toast(j.error); editingSrc = null; BB.toast('Deleted.'); await load();
     });
     const disc = $('#bz-discover', V);
@@ -202,9 +208,9 @@
     });
     $$('[data-resp-pause]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respPause + '/pause', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Paused. It does nothing while paused.'); await load(); });
     $$('[data-resp-resume]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respResume + '/resume', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Resumed.'); await load(); });
-    const cOn = $('#bz-consent-on', V); if (cOn) cOn.onclick = async () => { const j = await api('/provider-consent', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Provider processing allowed.'); await load(); };
-    const cOff = $('#bz-consent-off', V); if (cOff) cOff.onclick = async () => { if (!await askConfirm('Withdraw provider processing?', 'Alter stops sending your sources to the reasoning provider, including daily check-ins, until you allow it again.', 'Withdraw')) return; const j = await api('/provider-consent', 'DELETE'); if (j.error) return BB.toast(j.error); BB.toast('Withdrawn. Nothing more goes to the provider.'); await load(); };
-    const pg = $('#bz-purge', V); if (pg) pg.onclick = async () => { const t = prompt('This deletes ALL business data in this workspace: sources, proposals, responsibilities, work history, provider consent and the activity log. Type DELETE to confirm.'); if (t !== 'DELETE') return; const j = await api('/data/delete', 'POST', { confirm: 'DELETE' }); if (j.error) return BB.toast(j.error); BB.toast('All business data deleted.'); await load(); };
+    const cOn = $('#bz-consent-on', V); if (cOn) cOn.onclick = async () => { const eng = (B && B.engine) || {}; const j = await api('/provider-consent', 'POST', { host: eng.host, model: eng.model }); if (j.error) { BB.toast(j.error); if (j.code === 'consent_stale') await load(); return; } BB.toast('Provider processing allowed.'); await load(); };
+    const cOff = $('#bz-consent-off', V); if (cOff) cOff.onclick = async () => { if (!await askConfirm('Withdraw provider processing?', 'No new work goes to the provider, including daily check-ins, until you allow it again. A run already in flight can finish; its draft stays in the history until you delete it.', 'Withdraw')) return; const j = await api('/provider-consent', 'DELETE'); if (j.error) return BB.toast(j.error); BB.toast('Withdrawn. No new work goes to the provider.'); await load(); };
+    const pg = $('#bz-purge', V); if (pg) pg.onclick = async () => { const t = prompt('This deletes ALL business data in this workspace: sources, proposals, responsibilities, work history, provider consent and the activity log. Type DELETE to confirm.'); if (t !== 'DELETE') return; const j = await api('/data/delete', 'POST', { confirm: 'DELETE' }); if (j.error) { BB.toast(j.error); await load(); return; } BB.toast('All business data deleted.'); await load(); };
     $$('[data-resp-retire]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Retire this responsibility?', 'Its history stays visible.', 'Retire')) return; const j = await api('/responsibilities/' + b.dataset.respRetire + '/retire', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Retired.'); await load(); });
     $$('[data-resp-del]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Delete this responsibility?', 'Its work history is deleted with it. This cannot be undone.', 'Delete')) return; const j = await api('/responsibilities/' + b.dataset.respDel + '/delete', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Deleted with its history.'); await load(); });
   }
