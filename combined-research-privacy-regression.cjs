@@ -83,7 +83,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  // --- round-3 repro: a >500-char source URL must not dodge the scrub through a TRUNCATED
  // persisted citation. Ingestion rejects over-cap citation URLs whole; after the source is
  // deleted, no run field may carry the URL, its prefix or its token.
- const sLong=await f.bizSourceAdd({kind:'note',title:'Long link',text:'Reference: '+LONGURL});
+ const sLong=await f.bizSourceAdd({kind:'note',title:'Long link',text:'we want more mid-size manufacturing clients. Reference: '+LONGURL});
  c.process.env.__sid=sLong.body.source.id;c.process.env.__longurl=LONGURL;
  const pL=(await f.bizDiscover()).body.proposals[0];
  const respL=(await f.bizProposalAct(pL.id,'activate',{research:true})).body.responsibility.id;
@@ -117,7 +117,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  assert(!requests.some(k=>k.includes('qqqq')),'over-ceiling address never contacted');
 
  // --- purge while a research run is parked inside the provider call: nothing recreated
- const s2=await f.bizSourceAdd({kind:'note',title:'Ops',text:'Fridays are for invoicing. See https://good.example/'});
+ const s2=await f.bizSourceAdd({kind:'note',title:'Ops',text:'we want more mid-size manufacturing clients. Fridays are for invoicing. See https://good.example/'});
  c.process.env.__sid=s2.body.source.id;
  const p2=(await f.bizDiscover()).body.proposals[0];
  const resp2=(await f.bizProposalAct(p2.id,'activate',{research:true})).body.responsibility.id;

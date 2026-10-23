@@ -183,7 +183,7 @@
     const eng = B.engine || {}, srcs = B.sources || [], props = (B.proposals || []).filter(p => p.status !== 'rejected'), resps = B.responsibilities || [];
     const engNote = eng.configured && eng.enabled ? (eng.consent && eng.consent.current ? '' :
       `<div class="bz-note">Provider processing is off. Allow it above before Alter looks for work or runs responsibilities - your sources stay in Alter until you do.</div>`) :
-      `<div class="bz-note">The reasoning engine ${eng.configured ? 'is connected but not enabled for this workspace' : 'is not connected yet'}. ${B.delegate ? 'You can add sources and map the business with ' + esc(B.delegate.name) + ' now; engine runs and daily check-ins start once setup finishes.' : 'You can add sources now; proposals and work runs start once setup finishes.'} Nothing is simulated: proposals only come from a provider or bot answer whose quotes check against your sources, never invented.</div>`;
+      `<div class="bz-note">The reasoning engine ${eng.configured ? 'is connected but not enabled for this workspace' : 'is not connected yet'}. ${B.delegate ? 'You can add sources and map the business with ' + esc(B.delegate.name) + ' now; engine runs and daily check-ins start once setup finishes.' : 'You can add sources now; proposals and work runs start once setup finishes.'} Nothing is simulated: proposals come only from a real provider or bot answer - Alter never writes them itself. Every quote is checked against your sources and non-matching quotes are dropped; Alter does not verify the answer's reasoning or whether a proposal is a good fit.</div>`;
     const addForm = `<div class="bz-card"><div class="bz-sech">Add to what Alter knows</div>
       <div class="bz-kind"><button class="b out sm" data-kind="note" type="button">Note</button><button class="b out sm" data-kind="doc" type="button">Document</button></div>
       <label class="fld">Title<input class="in" id="bz-add-title" maxlength="120" placeholder="e.g. How last week actually went"></label>
@@ -203,7 +203,7 @@
       <p class="meta">Source text is treated as data, not instructions, but no system can promise a hostile document cannot influence the engine's behavior. Results are drafts for your review.</p></div>` : '';
     const dataCard = `<div class="bz-card"><div class="bz-sech">Your data</div>
       <p class="meta">Your business data is stored in Alter's hosted database. There is no app-level encryption: the workspace owner and Alter's platform operator can access stored data operationally. The activity log above records key owner actions in this workspace (adding, editing and deleting sources, proposals, runs, consent changes); it is not an audit of operator access.</p>
-      <p class="meta">Deleting a source removes the source, the verbatim quotes copied from it into proposals, and page addresses copied from it into research run records: approved-page lists, fetched-page entries and citations that reference them. An address that appears in the source is removed even if you also pasted it into a work item - the work item text you pasted stays as your own record. Work derived from the source - proposal text, responsibilities, run drafts and suggested next steps, which can reflect its content - is kept as your reviewable record, and activity entries can still mention a deleted item's title; that history is intentional. Deleting a responsibility removes that responsibility and its runs only. Only deleting all business data removes sources, proposals, responsibilities, work history, provider consent and the activity log from Alter's database; one minimal receipt of the purge itself remains there (an id, the time and item counts, none of your text). Content already sent to the reasoning provider is governed by that provider's own retention, and platform infrastructure backups are outside this deletion.</p>
+      <p class="meta">Deleting a source removes the source, the proposal quotes that matched it, and page addresses copied from it into research run records: approved-page lists, fetched-page entries and citations that reference them. An address that appears in the source is removed even if you also pasted it into a work item - the work item text you pasted stays as your own record. Work derived from the source - proposal text, responsibilities, run drafts and suggested next steps, which can reflect its content - is kept as your reviewable record, and activity entries can still mention a deleted item's title; that history is intentional. Deleting a responsibility removes that responsibility and its runs only. Only deleting all business data removes sources, proposals, responsibilities, work history, provider consent and the activity log from Alter's database; one minimal receipt of the purge itself remains there (an id, the time and item counts, none of your text). Content already sent to the reasoning provider is governed by that provider's own retention, and platform infrastructure backups are outside this deletion.</p>
       <p class="meta">Work you send to a connected bot leaves Alter through the bot's own connection; what the bot's provider processes or keeps is governed by that provider, and a connected personal bot account is not a separate private space for this business's data. Deleting a source cancels a pending delegated job that used it; deleting a responsibility cancels its pending delegated jobs; deleting all business data cancels every pending delegated job and removes every delegated job record with it.</p>
       <div class="btns"><button class="b danger sm" id="bz-purge">Delete all business data</button></div></div>`;
     const latestDisc = (B.discoveries || [])[0] || null;
@@ -313,13 +313,15 @@
     });
     $$('[data-src-cancel]', V).forEach(b => b.onclick = () => { editingSrc = null; paint(); });
     $$('[data-src-del]', V).forEach(b => b.onclick = async () => {
-      if (!await askConfirm('Delete this source?', 'The source and its verbatim quotes in proposals are removed. Work derived from it (proposal text, responsibilities, run drafts) stays as your record.', 'Delete')) return;
+      if (!await askConfirm('Delete this source?', 'The source and proposal quotes that matched it are removed. Work derived from it (proposal text, responsibilities, run drafts) stays as your record.', 'Delete')) return;
       const j = await api('/sources/' + b.dataset.srcDel, 'DELETE'); if (j.error) return BB.toast(j.error); editingSrc = null; BB.toast('Deleted.'); await load();
     });
     const discBot = $('#bz-discover-bot', V);
     if (discBot) discBot.onclick = async () => {
       discBot.disabled = true;
+      const stamp = identity();
       const c = await api('/discover/delegate-preview', 'POST', {});
+      if (stamp !== identity()) return; // ownership changed mid-flight (including unknown -> known): the old identity's scan payload never paints here
       discBot.disabled = false;
       if (c.error) return BB.toast(c.error);
       pendingDiscovery = { delegation: c.delegation }; paint();
@@ -328,7 +330,9 @@
     if (discRun) discRun.onclick = async () => {
       const d = pendingDiscovery; if (!d) return;
       discRun.disabled = true;
+      const stamp = identity();
       const j = await api('/discover/delegate-run', 'POST', { delegateHash: d.delegation.hash });
+      if (stamp !== identity()) return; // same discard rule for run results, including a 409 carrying the old identity's review payload
       discRun.disabled = false;
       if (j.error) {
         if (j.code === 'delegation_review_required' && j.delegation) { pendingDiscovery = { delegation: j.delegation }; paint(); return BB.toast('The payload changed - review the current version.'); }

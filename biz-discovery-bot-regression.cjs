@@ -8,7 +8,7 @@
 // enrolling the workspace in daily engine check-ins. No engine call is made anywhere in
 // this path; the bot side is driven through the real claimTask/completeTask call path.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizProposalAct,bizDataPurge,bizState,bizDiscoveryDelegatePreview,bizDiscoverDelegateRun,bizDiscoverPayload,bizSettleDiscovery,bizMakeProposals,bizProposals,bizSources,createAgent,claimTask,completeTask,stopTask,newTask,listTasks,setJ,getJ,r,als};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizProposalAct,bizRespAct,bizDailyTick,bizDataPurge,bizState,bizDiscoveryDelegatePreview,bizDiscoverDelegateRun,bizDiscoverPayload,bizSettleDiscovery,bizMakeProposals,bizProposals,bizSources,createAgent,claimTask,completeTask,stopTask,newTask,listTasks,setJ,getJ,r,als};';
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:(u,o)=>{throw new Error('the bot discovery path must never call the engine or any network: '+u);}};
 vm.runInNewContext(src,c);const f=c.module.exports.t;
@@ -132,12 +132,11 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
   const d=await f.getJ('fm:biz:disc:'+disc.id);
   assert.equal(d.status,'done');
   assert.equal(d.droppedEvidence,1,'a quote from the pre-edit text is dropped');
-  // Same semantics as engine discovery: a proposal may survive on its summary with zero
-  // verified quotes - it is stored with empty evidence and the dropped count shown, never
-  // with the unverified quote attached.
+  assert.equal(d.droppedProposals,1,'a proposal whose only quote went stale is dropped, not kept on its summary');
+  assert(d.note&&d.note.includes('dropped'),'the note says unsupported ideas are dropped');
+  // Grounded or dropped: no proposal survives on its summary with zero verified quotes.
   const props3=await f.bizProposals();
-  assert.equal(props3.length,1);assert.equal(props3[0].evidence.length,0,'the stale quote never reaches the owner');
-  assert.equal(props3[0].evidenceDropped,1);
+  assert.equal(props3.length,0,'the stale quote and its proposal never reach the owner');
  });
 
  // --- bot gone between review and run: explicit refusal, no silent destination switch
@@ -196,6 +195,102 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
   assert.equal((await f.r(['LRANGE','fm:biz:discoveries',0,99])||[]).length,0,'purge removes the scan index');
   assert.equal(await f.getJ('fm:task:'+disc.taskId),null,'purge removes the scan job record');
   assert.equal((await f.r(['SMEMBERS','fm:biz:delegated'])||[]).length,0,'purge empties the delegated inventory');
+ });
+
+ // --- whitespace-only excerpts never "match"; evidence must come from the REVIEWED
+ // snapshot (reviewed ids at unchanged current versions), and summary-only proposals drop
+ await f.als.run({ws:'wsdisc8'},async()=>{
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const s1=(await f.bizSourceAdd({kind:'note',title:'N1',text:S1})).body.source;
+  const pv=await f.bizDiscoveryDelegatePreview();
+  const run=await f.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash});
+  const disc=run.body.discovery;
+  await f.claimTask(g.agent);
+  // a source added AFTER the reviewed scan payload is outside the reviewed snapshot
+  const s2=(await f.bizSourceAdd({kind:'note',title:'N2',text:S2})).body.source;
+  await f.completeTask(g.agent,disc.taskId,{status:'done',result:JSON.stringify({proposals:[
+    {title:'Reply desk',summary:'Draft replies.',evidence:[
+      {sourceId:s1.id,excerpt:'          '}, // 10 spaces: passes the raw length gate, normalizes to empty
+      {sourceId:s1.id,excerpt:'We answer every customer email within a day'}],unknowns:[],systems:[],boundary:'Drafts only.'},
+    {title:'Estimate chase',summary:'Chase estimates.',evidence:[
+      {sourceId:s2.id,excerpt:'nobody follows up unless the customer calls back'}],unknowns:[],systems:[],boundary:'Drafts only.'}]})});
+  const d=await f.getJ('fm:biz:disc:'+disc.id);
+  assert.equal(d.status,'done');
+  assert.equal(d.proposals,1,'only the proposal with reviewed-snapshot evidence survives');
+  assert.equal(d.droppedEvidence,2,'whitespace-only and post-scan-source quotes both dropped');
+  assert.equal(d.droppedProposals,1,'the proposal grounded only in the unreviewed source is dropped');
+  const props=await f.bizProposals();
+  assert.equal(props.length,1);
+  assert.equal(props[0].evidence.length,1,'the whitespace excerpt never validated');
+  assert.equal(props[0].evidence[0].excerpt,'We answer every customer email within a day');
+ });
+
+ // --- edited-since-scan source cannot ground a proposal even when the quote matches the
+ // NEW text: validation never poses a changed source as the reviewed one
+ await f.als.run({ws:'wsdisc9'},async()=>{
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const s=(await f.bizSourceAdd({kind:'note',title:'N',text:S1})).body.source;
+  const pv=await f.bizDiscoveryDelegatePreview();
+  const run=await f.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash});
+  const disc=run.body.discovery;
+  await f.claimTask(g.agent);
+  await f.bizSourceEdit(s.id,{text:'Completely replaced content about something else entirely now.'});
+  await f.completeTask(g.agent,disc.taskId,{status:'done',result:JSON.stringify({proposals:[
+    {title:'New-text desk',summary:'From the new text.',evidence:[{sourceId:s.id,excerpt:'Completely replaced content about something else'}],unknowns:[],systems:[],boundary:'Drafts only.'}]})});
+  const d=await f.getJ('fm:biz:disc:'+disc.id);
+  assert.equal(d.status,'done');
+  assert.equal(d.proposals,0,'a quote matching only the POST-scan text cannot ground a proposal');
+  assert.equal(d.droppedProposals,1);
+  assert.equal((await f.bizProposals()).length,0);
+ });
+
+ // --- daily tick in a MIXED engine-consented registered workspace: the bot-mapped
+ // responsibility is skipped, the engine-mapped one runs, and no manual run on the
+ // bot-mapped responsibility ever falls back to the engine
+ await f.als.run({ws:'wsdisc10'},async()=>{
+  c.process.env.ALTER_MODEL_KEY='test-key';c.process.env.ALTER_MODEL_WS='wsdisc10';
+  await f.setJ('fm:biz:consent',{host:'api.groq.com',model:'openai/gpt-oss-120b',at:'now'});
+  const srcE={id:'src_e10',kind:'note',title:'E',text:'Engine source text with enough words.',version:1,createdAt:'now',updatedAt:'now'};
+  await f.setJ('fm:biz:src:'+srcE.id,srcE);await f.r(['SADD','fm:biz:sources',srcE.id]);
+  const f0=String((await f.r(['EVAL','if redis.call(\'EXISTS\',KEYS[2])==1 then return {\'held\'} end; if redis.call(\'EXISTS\',KEYS[3])==1 then return {\'pending\'} end; return {\'ok\', redis.call(\'GET\',KEYS[1]) or \'0\'}',3,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending']))[1]);
+  const mk=async(prov,title)=>(await f.bizMakeProposals({proposals:[{title,summary:'S.',evidence:[{sourceId:'src_e10',excerpt:'Engine source text with enough words'}],unknowns:[],systems:[],boundary:'Drafts only.'}]},[srcE],prov,f0,4)).made[0];
+  const engProp=await mk({engine:{model:'test-model',at:'now'}},'Engine desk');
+  const botProp=await mk({bot:{id:'agent_gone',name:'Grokbot',viaScan:'disc_x',at:'now'}},'Bot desk');
+  const engResp=(await f.bizProposalAct(engProp.id,'activate',{})).body.responsibility;
+  const botResp=(await f.bizProposalAct(botProp.id,'activate',{})).body.responsibility;
+  assert(botResp.bot&&botResp.bot.name==='Grokbot','the bot/manual-only marker persists on the responsibility');
+  assert((await f.r(['SMEMBERS','gl:biz:workspaces'])||[]).includes('wsdisc10'),'the workspace is engine-registered (mixed state)');
+  // engine mock: count calls, answer the run prompt
+  let engineCalls=0;
+  const realThrow=c.fetch;
+  c.fetch=async(u,o)=>{engineCalls++;return {ok:true,json:async()=>({choices:[{message:{content:JSON.stringify({draft:'Draft: daily note',blocked_step:null,sources_used:['src_e10']})}}],usage:{prompt_tokens:1,completion_tokens:1}})};};
+  const tick=await f.bizDailyTick();
+  assert.equal(tick.status,200);
+  assert.equal(tick.body.runs,1,'exactly one daily run: the engine-mapped responsibility');
+  assert(tick.body.skipped>=1,'the bot-mapped responsibility is skipped, not engine-run');
+  const st=await f.bizState();
+  const botDaily=(st.responsibilities.find(x=>x.id===botResp.id).runs||[]).filter(x=>x.kind==='daily');
+  assert.equal(botDaily.length,0,'no daily engine run recorded for the bot-mapped responsibility');
+  assert((st.responsibilities.find(x=>x.id===engResp.id).runs||[]).some(x=>x.kind==='daily'),'the engine-mapped responsibility still gets its daily run');
+  // manual run on the bot-mapped responsibility with its bot disconnected: refusal, no fallback
+  const before=engineCalls;
+  const mr=await f.bizRespAct(botResp.id,'run',{input:'Draft something.'});
+  assert.equal(mr.status,409);assert.equal(mr.body.code,'delegate_bot_gone');
+  assert(mr.body.error.includes('never substituted'),'the refusal says the engine is never substituted');
+  assert.equal(engineCalls,before,'no engine call from the refused manual run');
+  const ctrl=await f.bizRespAct(engResp.id,'run',{input:'Draft something.'});
+  assert.equal(ctrl.status,200,'the engine-mapped responsibility still runs manually (control)');
+  assert(engineCalls>before,'the control manual run did reach the engine');
+  c.fetch=realThrow;
+  delete c.process.env.ALTER_MODEL_KEY;delete c.process.env.ALTER_MODEL_WS;
+ });
+
+ // --- a legacy proposal with no checked quote cannot be activated as grounded work
+ await f.als.run({ws:'wsdisc11'},async()=>{
+  const legacy={id:'prop_legacy',title:'Old desk',summary:'Pre-rule record.',evidence:[],unknowns:[],systems:[],boundary:'Drafts only.',status:'draft',sourceMap:{},createdAt:'now',editedByOwner:false};
+  await f.setJ('fm:biz:prop:'+legacy.id,legacy);await f.r(['SADD','fm:biz:proposals',legacy.id]);
+  const act=await f.bizProposalAct(legacy.id,'activate',{});
+  assert.equal(act.status,409);assert.equal(act.body.code,'ungrounded_proposal');
  });
 
  console.log('biz-discovery-bot-regression: all assertions passed');

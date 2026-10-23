@@ -183,7 +183,7 @@ const ISO=ms=>new Date(ms).toISOString();
  await f.als.run({ws:'wslegacy'},async()=>{
   await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
   const g2=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
-  const sL=await f.bizSourceAdd({kind:'note',title:'L',text:'Legacy source text.'});
+  const sL=await f.bizSourceAdd({kind:'note',title:'L',text:'Legacy source text. we answer every customer email within a day'});
   c.process.env.__sid=sL.body.source.id;
   const pL=(await f.bizDiscover()).body.proposals[0];
   const respL=(await f.bizProposalAct(pL.id,'activate',{})).body.responsibility.id;

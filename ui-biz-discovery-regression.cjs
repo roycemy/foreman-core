@@ -15,13 +15,14 @@ const PROP_BOT={id:'prop_1',title:'Customer reply desk',summary:'Draft replies t
   evidence:[{sourceId:'src_1',sourceVersion:1,sourceTitle:'How we communicate',excerpt:'We answer every customer email within a day'}],evidenceDropped:1,unknowns:['Which inbox'],systems:['Email'],
   bot:{id:'agent_1',name:'Grokbot',providerId:'grok',viaScan:'disc_1',at:'2026-10-23T01:04:00Z'},sourceMap:{src_1:1,src_2:1}};
 let phase='none'; // none -> scansent -> scanworking -> scandone | scanf
+let parkKind=null, parkRelease=null, runMode='ok'; // parked-response controls for the identity-flip scenarios
 function stateFor(ident){
   const discoveries=[],proposals=[];
   if(phase==='scansent')discoveries.push({...DISC_BASE,status:'delegated',job:{status:'queued'}});
   if(phase==='scanworking')discoveries.push({...DISC_BASE,status:'running',claimedAt:'2026-10-23T01:01:00Z',job:{status:'running',startedAt:'2026-10-23T01:01:00Z'}});
   if(phase==='scandone'){discoveries.push({...DISC_BASE,status:'done',settledAt:'2026-10-23T01:04:00Z',proposals:1,droppedEvidence:1});proposals.push(PROP_BOT);}
   if(phase==='scanf')discoveries.push({...DISC_BASE,status:'failed',settledAt:'2026-10-23T01:04:00Z',failureReason:'bot_failed',failureDetail:'Could not read the notes format.'});
-  if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[],proposals:[],responsibilities:[],discoveries:[],log:[],opPending:null};
+  if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[{id:'src_b',kind:'note',title:'B-MARKER notes',version:1,text:'B notes, nothing private',updatedAt:'2026-10-23T00:00:00Z'}],proposals:[],responsibilities:[],discoveries:[],log:[],opPending:null};
   return {engine:{configured:false,enabled:false,consent:null},delegate:BOT,sources:[SRC1,SRC2],proposals,responsibilities:[],discoveries,log:[],opPending:null};
 }
 let ident='A';
@@ -35,11 +36,20 @@ const server=http.createServer((req,res)=>{
   if(u.pathname==='/api/money')return json({requests:[]});
   if(u.pathname==='/api/cards')return json({proposals:[],bots:[],ledger:[]});
   if(u.pathname==='/api/business/state')return json(stateFor(ident));
-  if(u.pathname==='/api/business/discover/delegate-preview'&&req.method==='POST')return json({delegation:SCANPAYLOAD});
+  if(u.pathname==='/__mode'){runMode=u.searchParams.get('m')||'ok';parkKind=u.searchParams.get('park')||null;return json({ok:true,runMode,parkKind});}
+  if(u.pathname==='/__release'){const r=parkRelease;parkRelease=null;parkKind=null;if(r)r();return json({ok:true,released:!!r});}
+  if(u.pathname==='/api/business/discover/delegate-preview'&&req.method==='POST'){
+    const respond=()=>json({delegation:SCANPAYLOAD});
+    if(parkKind==='preview'){parkRelease=respond;return;} // response held until /__release
+    return respond();
+  }
   if(u.pathname==='/api/business/discover/delegate-run'&&req.method==='POST'){
     let b='';req.on('data',d=>b+=d);req.on('end',()=>{const body=JSON.parse(b||'{}');
-      if(body.delegateHash!==SCANPAYLOAD.hash)return json({error:'Review exactly what would be sent first.',code:'delegation_review_required',delegation:SCANPAYLOAD});
-      phase='scansent';return json({discovery:{...DISC_BASE,status:'delegated'}});});
+      const respond=()=>{
+        if(runMode==='conflict'||body.delegateHash!==SCANPAYLOAD.hash)return json({error:'Review exactly what would be sent first.',code:'delegation_review_required',delegation:SCANPAYLOAD});
+        phase='scansent';return json({discovery:{...DISC_BASE,status:'delegated'}});};
+      if(parkKind==='run'){parkRelease=respond;return;} // response held until /__release
+      respond();});
     return;}
   if(u.pathname.startsWith('/api/'))return json({});
   if(u.pathname==='/'||u.pathname==='/app.html'||u.pathname==='/index.html'){res.setHeader('content-type','text/html');return res.end(fs.readFileSync('public/app.html'));}
@@ -127,7 +137,7 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  // Done: proposal lands stamped "Mapped by Grokbot", quotes checked, bot-scoped activation copy
  await ctl('/__phase?to=scandone');
  await reload();
- assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('Customer reply desk')`),'bot-mapped proposal paints');
+ assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('Mapped by Grokbot from your sources')`),'bot-mapped proposal paints');
  t=await bizText();
  assert(t.includes('Mapped by Grokbot from your sources'),'provenance names the bot, not an engine');
  assert(t.includes('every quote checked against them'),'verification stated on the proposal');
@@ -146,6 +156,44 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(t.includes('No proposals were drafted from it'),'honest empty outcome');
  await shot2('discovery-failed',`[...document.querySelectorAll('.bz-card')].find(x=>x.textContent.includes('Business scan'))`);
 
+ // --- Identity flips with parked responses: a late preview or a late 409 review payload
+ // from identity A must never paint A's source payload under identity B.
+ const flipTo=async(email,wsname,to)=>{
+   await ctl('/__ident?to='+to);
+   await ev(`BB.who=${JSON.stringify({email,workspace:wsname})};BB.emit();'flip'`);
+   assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('B-MARKER')`),'B state loads after flip');
+ };
+ // A) delayed PREVIEW: A requests the scan review, flips to B before it arrives
+ await ctl('/__phase?to=none');await ctl('/__ident?to=A');
+ await ev(`BB.who=${JSON.stringify({email:'a@a.test',workspace:'wA'})};BB.emit();'back'`);
+ assert(await poll(`!!document.querySelector('#bz-discover-bot')`),'bot mapping button back under A');
+ await ctl('/__mode?park=preview');
+ await ev(`document.querySelector('#bz-discover-bot').click();'preview-clicked'`);
+ await new Promise(r=>setTimeout(r,300)); // request is in flight, parked server-side
+ await flipTo('b@b.test','wB','B');
+ assert(!(await ev(`!!document.querySelector('#bz-discover-bot')`)),'B has no connected bot, no mapping button (precondition)');
+ await ctl('/__release'); // A's preview arrives late, under B
+ await new Promise(r=>setTimeout(r,700));
+ let t2=await bizText();
+ assert(!t2.includes('Refunds over $50'),'A scan payload never paints under B after a delayed preview');
+ assert(!(await ev(`!!document.querySelector('[data-disc-run]')`)),'no review card under B from the delayed preview');
+ // B) delayed 409 REVIEW PAYLOAD: A reviews, sends, the server asks for a fresh review - late, under B
+ await ctl('/__ident?to=A');
+ await ev(`BB.who=${JSON.stringify({email:'a@a.test',workspace:'wA'})};BB.emit();'back2'`);
+ assert(await poll(`!!document.querySelector('#bz-discover-bot')`),'bot mapping button back under A again');
+ await ev(`document.querySelector('#bz-discover-bot').click();'preview2'`);
+ assert(await poll(`!!document.querySelector('[data-disc-run]')`),'review card paints under A');
+ await ctl('/__mode?m=conflict&park=run');
+ await ev(`document.querySelector('[data-disc-run]').click();'send-clicked'`);
+ await new Promise(r=>setTimeout(r,300));
+ await flipTo('b@b.test','wB','B');
+ await ctl('/__release'); // the 409 carrying A's payload arrives late, under B
+ await new Promise(r=>setTimeout(r,700));
+ t2=await bizText();
+ assert(!t2.includes('Refunds over $50'),'A 409 review payload never paints under B');
+ assert(!(await ev(`!!document.querySelector('[data-disc-run]')`)),'no review card under B from the delayed 409');
+ await ctl('/__mode?m=ok');
+
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz discovery: gated engine + bot mapping entry, exact-payload scan review (destination, verbatim texts, privacy + verification boundaries), sent/working states with stop, bot-stamped proposal with checked quotes and bot-scoped activation copy, honest failed state - pixels at /downloads/discovery-{review,sent,working,done,failed}-{390,desktop}.png.');
+ console.log('PASS ui biz discovery: gated engine + bot mapping entry, exact-payload scan review (destination, verbatim texts, privacy + verification boundaries), sent/working states with stop, bot-stamped proposal with checked quotes and bot-scoped activation copy, honest failed state, delayed preview/409 from the old identity never painting under the new one - pixels at /downloads/discovery-{review,sent,working,done,failed}-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{server.close();}catch(_){/*noop*/}process.exit(1)});

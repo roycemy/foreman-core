@@ -2257,21 +2257,23 @@ function bizDiscoverPrompt(srcs, recentWork) {
   ];
 }
 // Shared proposal construction for engine and bot discovery: identical validation in both
-// paths. Every evidence quote must appear verbatim in a CURRENT source (a source edited
+// paths. Every evidence quote must be a case/whitespace-normalized substring of a CURRENT
+// source - quote fidelity only, never proof the proposal's inference is right (a source edited
 // mid-scan invalidates quotes from its old text), caps apply, and unverifiable quotes are
 // counted and dropped - they never reach the owner. prov carries the provenance marker
 // ({ engine: ... } or { bot: ... }) stamped onto every stored proposal.
 async function bizMakeProposals(parsed, srcs, prov, f0, room) {
   const list = (Array.isArray(parsed && parsed.proposals) ? parsed.proposals : []).slice(0, Math.max(0, Math.min(4, room)));
   const byId = {}; srcs.forEach(s => byId[s.id] = s);
-  const made = []; let droppedEvidence = 0, fenceFailed = false;
+  const made = []; let droppedEvidence = 0, droppedProposals = 0, fenceFailed = false;
   for (const p of list) {
     const evidence = [], seen = new Set(); let dropped = 0;
     for (const ev of (Array.isArray(p && p.evidence) ? p.evidence : [])) {
       const s = ev && byId[String(ev.sourceId)]; const ex = String((ev && ev.excerpt) || '').slice(0, 300);
-      if (!s || ex.length < 10 || ex.length > 300) { dropped++; continue; }
-      if (!bizNorm(s.text).includes(bizNorm(ex))) { dropped++; continue; } // invented or misquoted evidence never reaches the owner
-      const k = s.id + ':' + bizNorm(ex); if (seen.has(k)) continue; seen.add(k);
+      const nx = bizNorm(ex);
+      if (!s || ex.length < 10 || ex.length > 300 || !nx) { dropped++; continue; } // a whitespace-only excerpt normalizes to '' and would trivially "match" every source
+      if (!bizNorm(s.text).includes(nx)) { dropped++; continue; } // invented or misquoted evidence never reaches the owner
+      const k = s.id + ':' + nx; if (seen.has(k)) continue; seen.add(k);
       evidence.push({ sourceId: s.id, sourceVersion: s.version, sourceTitle: s.title, excerpt: ex });
     }
     droppedEvidence += dropped;
@@ -2283,12 +2285,16 @@ async function bizMakeProposals(parsed, srcs, prov, f0, room) {
       boundary: String((p && p.boundary) || '').slice(0, 300) || BIZ.BOUNDARY,
       status: 'draft', sourceMap: Object.fromEntries(srcs.map(s => [s.id, s.version])),
       ...prov, createdAt: now(), editedByOwner: false };
-    if (!prop.summary && !evidence.length) continue;
+    // Grounded or dropped: a proposal reaches the owner only with at least one quote that
+    // checks against a CURRENT source. A summary with no surviving quote is the provider's
+    // or bot's unsupported hypothesis - quote checks prove quote fidelity, never that the
+    // inference is right - so it is dropped and counted, not presented as grounded.
+    if (!evidence.length) { droppedProposals++; continue; }
     if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:prop:' + prop.id, f0, JSON.stringify(prop)])) { fenceFailed = true; break; }
     if (!await r(['EVAL', BIZ_FENCE_SADD, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:proposals', f0, prop.id])) { fenceFailed = true; break; }
     made.push(prop);
   }
-  return { made, droppedEvidence, fenceFailed };
+  return { made, droppedEvidence, droppedProposals, fenceFailed };
 }
 async function bizDiscover() {
   const eng = await bizEngine(); if (!eng.ok) return { status: 503, body: { error: eng.error, code: eng.code } };
@@ -2305,9 +2311,9 @@ async function bizDiscover() {
   try { out = await bizChat(bizDiscoverPrompt(srcs, recentWork.slice(0, 12)), { maxTokens: 2200 }); }
   catch (e) { return { status: e.code === 'engine_daily_cap' ? 429 : 503, body: { error: e.message, code: e.code || 'engine_error' } }; }
   const parsed = bizJson(out.text) || { proposals: [] };
-  const { made, droppedEvidence, fenceFailed } = await bizMakeProposals(parsed, srcs, { engine: { model: out.model, at: now() } }, f0, 4);
+  const { made, droppedEvidence, droppedProposals, fenceFailed } = await bizMakeProposals(parsed, srcs, { engine: { model: out.model, at: now() } }, f0, 4);
   if (fenceFailed) return bizFenceConflict();
-  if (!await bizLog('discover', { model: out.model, proposals: made.length, droppedEvidence, usage: out.usage || null }, f0)) return bizFenceConflict();
+  if (!await bizLog('discover', { model: out.model, proposals: made.length, droppedEvidence, droppedProposals: droppedProposals || undefined, usage: out.usage || null }, f0)) return bizFenceConflict();
   return { status: 200, body: { proposals: made, note: made.length ? null : 'The engine found nothing it could ground in your sources. Add more detail about the work that eats time.' } };
 }
 
@@ -2333,12 +2339,17 @@ async function bizProposalAct(id, op, body) {
   }
   if (op === 'activate') {
     if (p.status !== 'draft') return { status: 409, body: { error: 'Already decided' } };
+    if (!Array.isArray(p.evidence) || !p.evidence.length) return { status: 409, body: { error: 'This proposal has no quote that checked against your sources, so it cannot be started as grounded work.', code: 'ungrounded_proposal' } };
     if (p.bot && body.research === true) return { status: 400, body: { error: 'Reading public pages during runs uses the reasoning engine, not a connected bot.' } };
     const srcs = await bizSources(), stale = bizStale(p, srcs);
     if (stale.length && body.confirmStale !== true) return { status: 409, body: { error: 'stale_evidence', stale, message: 'Sources changed since this was drafted. Review the proposal against the current sources, then confirm.' } };
     const resp = { id: rid('resp'), proposalId: p.id, title: p.title, summary: p.summary, boundary: p.boundary || BIZ.BOUNDARY,
       sourceIds: [...new Set((p.evidence || []).map(e => String(e.sourceId)))].slice(0, 20),
-      status: 'active', research: body.research === true || undefined, staleAtActivation: stale.length ? stale : undefined, createdAt: now(), runsCount: 0 };
+      status: 'active', research: body.research === true || undefined, staleAtActivation: stale.length ? stale : undefined, createdAt: now(), runsCount: 0,
+      // Bot-mapped responsibilities stay bot/manual-only forever: the daily engine loop
+      // skips them and a manual run never falls back to the engine, even in an
+      // engine-consented, already-registered workspace.
+      bot: p.bot ? { id: p.bot.id || null, name: String(p.bot.name || 'bot').slice(0, 40) } : undefined };
     if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(resp)])) return bizFenceConflict();
     if (!await r(['EVAL', BIZ_FENCE_SADD, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resps', f0, resp.id])) return bizFenceConflict();
     // Daily check-ins are an engine path: a bot-mapped proposal never enrolls the workspace
@@ -2691,21 +2702,29 @@ async function bizSettleDiscovery(t) {
     } else {
       next.output = String(t.result || '').slice(0, 8000);
       const parsed = bizJson(String(t.result || ''));
-      const srcs = await bizSources();
+      // Snapshot discipline: quotes validate ONLY against sources the owner reviewed for
+      // this scan (by id) whose CURRENT version still equals the reviewed version - an
+      // unchanged current read, never a frozen copy passed off as current. A source edited
+      // since the scan, added after it, or omitted from the reviewed payload cannot ground
+      // a proposal; that evidence drops and the counts say so.
+      const reviewed = disc.sourceVersions || {};
+      const srcs = (await bizSources()).filter(s => reviewed[s.id] != null && s.version === reviewed[s.id]);
       const draftCount = (await bizProposals()).filter(p => p.status === 'draft').length;
       const botRef = (t.assignee && t.assignee !== disc.bot.id)
         ? { id: t.assignee, name: String(((await getJ('fm:agent:' + t.assignee)) || {}).name || 'bot').slice(0, 40), providerId: (((await getJ('fm:agent:' + t.assignee)) || {}).providerId) || null, reassignedFrom: disc.bot.name }
         : disc.bot;
-      const { made, droppedEvidence, fenceFailed } = await bizMakeProposals(parsed || { proposals: [] }, srcs, { bot: { ...botRef, viaScan: disc.id, at: now() } }, f0, Math.max(0, BIZ.MAX_PROPS - draftCount));
+      const { made, droppedEvidence, droppedProposals, fenceFailed } = await bizMakeProposals(parsed || { proposals: [] }, srcs, { bot: { ...botRef, viaScan: disc.id, at: now() } }, f0, Math.max(0, BIZ.MAX_PROPS - draftCount));
       if (fenceFailed) return; // a delete owns the workspace; the records are gone or being removed
       next.proposals = made.length;
       if (droppedEvidence) next.droppedEvidence = droppedEvidence;
+      if (droppedProposals) next.droppedProposals = droppedProposals;
       if (!parsed) next.note = 'The bot\'s answer was not readable as proposals - nothing was drafted.';
+      else if (!made.length && droppedProposals) next.note = 'The bot proposed ' + droppedProposals + (droppedProposals === 1 ? ' area' : ' areas') + ', but no quote in your sources supported ' + (droppedProposals === 1 ? 'it' : 'them') + ' - unsupported ideas are dropped, never shown as grounded.';
       else if (!made.length) next.note = 'The bot found nothing it could ground in your notes.';
       if (t.assignee && disc.bot && t.assignee !== disc.bot.id) next.bot = botRef;
     }
     if (await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', key, f0, raw, JSON.stringify(next)]) !== 1) return;
-    await bizLog('discover_settled', { discId: disc.id, taskId: t.id, status: next.status, proposals: next.proposals, droppedEvidence: next.droppedEvidence, failure: next.failureReason }, f0).catch(() => {});
+    await bizLog('discover_settled', { discId: disc.id, taskId: t.id, status: next.status, proposals: next.proposals, droppedEvidence: next.droppedEvidence, droppedProposals: next.droppedProposals, failure: next.failureReason }, f0).catch(() => {});
   } catch { /* a lost race with a delete owns the record; nothing to retry */ }
 }
 // Complete delegated-job inventory: a dedicated set, NOT the recent task list. The recent
@@ -2895,6 +2914,13 @@ async function bizRespAct(id, op, body) {
     const deadline = entryDeadline;
     const input = String(body.input || '').slice(0, 4000);
     if (!input.trim()) return { status: 400, body: { error: 'Describe or paste the work first' } };
+    if (resp.bot) {
+      // Bot/manual-only responsibility: the reasoning engine is never a fallback - not for
+      // manual runs here and not for daily check-ins (the tick skips these). A disconnected
+      // bot is a clear refusal, not a silent provider switch.
+      if (resp.research) return { status: 400, body: { error: 'Reading public pages during runs uses the reasoning engine, not a connected bot.' } };
+      if (!await bizDelegateBot()) return { status: 409, body: { error: 'This responsibility runs on ' + (resp.bot.name || 'the bot') + ', which is not connected. The reasoning engine is never substituted for it.', code: 'delegate_bot_gone' } };
+    }
     let approvedUrls, srcsSnapshot;
     if (resp.research) {
       // One snapshot, three jobs: the versions the owner reviewed must still be current
@@ -3341,6 +3367,7 @@ async function bizDailyTick() {
       out.workspaces++;
       for (const resp of await bizResps()) {
         if (resp.status !== 'active') continue;
+        if (resp.bot) { out.skipped++; continue; } // bot/manual-only: the daily engine loop never substitutes for the reviewed bot
         const lastIds = await r(['LRANGE', 'fm:biz:runs:' + resp.id, 0, 9]);
         const runs = lastIds.length ? (await r(['MGET', ...lastIds.map(i => 'fm:biz:run:' + i)])).filter(Boolean).map(v => JSON.parse(v)) : [];
         const lastDaily = runs.filter(x => x.kind === 'daily').map(x => Date.parse(x.at)).sort((a, b) => b - a)[0];
