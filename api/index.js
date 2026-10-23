@@ -64,10 +64,92 @@ async function r(cmd0) {
   if (j.error) { if (/max requests limit exceeded|monthly.*(limit|quota)|command.*quota/i.test(j.error)) {storeQuotaUntil = Date.now() + 900000; throw storeQuotaError();} throw new Error('store: ' + j.error); }
   return j.result;
 }
+const memList = k => mem.lists.get(k) || [];
+function memEval(script, n, keys, argv) {
+  if (script === AGENT_CAS || script === BOTLINK_CAS) {
+    if (Number(n) !== 1) throw Error('unsupported local EVAL');
+    const old = mem.kv.get(keys[0]); if (old == null) return -1; if (old !== argv[0]) return 0; mem.kv.set(keys[0], argv[1]); return 1;
+  }
+  const fence = mem.kv.get(keys[0]) || '0';
+  if (fence !== argv[0]) return 0; // a purge/delete bump invalidates stale writers
+  if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return 0; // a delete/purge freeze excludes ALL writers for its duration
+  if (mem.kv.has(keys[2])) return 0; // a durable delete intent quiesces every fenced write, even after the lease lapses
+  switch (script) {
+    case BIZ_FENCE_SET: mem.kv.set(keys[3], argv[1]); return 1;
+    case BIZ_FENCE_DEL: mem.kv.delete(keys[3]); mem.lists.delete(keys[3]); return 1;
+    case BIZ_FENCE_SADD: { const s = new Set(mem.kv.get(keys[3]) || []); s.add(argv[1]); mem.kv.set(keys[3], [...s]); return 1; }
+    case BIZ_FENCE_SREM: { mem.kv.set(keys[3], (mem.kv.get(keys[3]) || []).filter(v => v !== argv[1])); return 1; }
+    case BIZ_FENCE_LPUSH: { const l = memList(keys[3]); l.unshift(argv[1]); mem.lists.set(keys[3], l.slice(0, parseInt(argv[2], 10))); return 1; }
+    case BIZ_FENCE_RUN: {
+      mem.kv.set(keys[3], argv[1]);
+      const l = memList(keys[4]); l.unshift(argv[2]);
+      const keep = parseInt(argv[3], 10), extra = l.slice(keep);
+      mem.lists.set(keys[4], l.slice(0, keep));
+      for (const id of extra) mem.kv.delete(argv[4] + id);
+      return 1;
+    }
+  }
+  throw Error('unsupported local EVAL');
+}
+// In-memory mirror of the atomic operation protocol. The mirror has no TTLs: freeze expiry is
+// exercised in tests by deleting fm:biz:freeze directly. BIZ_OP_* guards match the Lua exactly.
+function memOp(script, keys, argv) {
+  if (script === BIZ_ENTRY) {
+    if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return ['held'];
+    if (mem.kv.has(keys[2])) return ['pending'];
+    return ['ok', mem.kv.get(keys[0]) || '0'];
+  }
+  if (script === BIZ_OP_BEGIN) {
+    const pr = mem.kv.get(keys[2]); const p = pr ? JSON.parse(pr) : null; const fr = mem.kv.get(keys[1]);
+    let opId = argv[6];
+    if (argv[7]) { // reviewed retry: the exact instance must still be pending, atomically in BEGIN
+      if (!p) return ['completed'];
+      if (p.op !== argv[0] || String(p.id) !== argv[1] || argv[7] !== String(p.opId)) return ['stale'];
+      if (fr != null) return ['held']; opId = p.opId;
+    } else if (p) { const same = p.op === argv[0] && String(p.id) === argv[1];
+      if (same) return ['stale'];
+      if (argv[5] !== '1') return ['pending'];
+      if (fr != null) return ['held']; }
+    else if (fr != null) return ['held'];
+    const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
+    mem.kv.set(keys[1], argv[2]);
+    mem.kv.set(keys[2], JSON.stringify({ op: argv[0], id: argv[1], token: argv[2], gen, at: argv[4], opId }));
+    return ['ok', gen, opId];
+  }
+  if (script === BIZ_OP_CANCEL) {
+    const pr = mem.kv.get(keys[2]); const p = pr ? JSON.parse(pr) : null;
+    if (!p) return ['none'];
+    if (String(p.id) !== argv[0] || p.op !== argv[1] || String(p.opId) !== argv[4]) return ['stale'];
+    const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
+    mem.kv.delete(keys[2]);
+    if (mem.kv.get(keys[1]) === p.token) mem.kv.delete(keys[1]);
+    const l = memList(keys[3]); l.unshift(argv[2]); mem.lists.set(keys[3], l.slice(0, parseInt(argv[3], 10)));
+    return ['ok'];
+  }
+  // WRITE / COMMIT shared guard: freeze ownership + pending token + generation + fence, one check
+  if (mem.kv.get(keys[1]) !== argv[0]) return 0;
+  const pr = mem.kv.get(keys[2]); const p = pr ? JSON.parse(pr) : null;
+  if (!p || p.token !== argv[0]) return 0;
+  if (String(p.gen) !== argv[1]) return 0;
+  if ((mem.kv.get(keys[0]) || '0') !== argv[1]) return 0;
+  if (script === BIZ_OP_COMMIT) {
+    const l = memList(keys[3]); l.unshift(argv[2]); mem.lists.set(keys[3], l.slice(0, parseInt(argv[3], 10)));
+    mem.kv.delete(keys[2]); mem.kv.delete(keys[1]); return 1;
+  }
+  if (argv[2] === 'set') mem.kv.set(keys[3], argv[3]);
+  else if (argv[2] === 'del') { mem.kv.delete(keys[3]); mem.lists.delete(keys[3]); }
+  else if (argv[2] === 'srem') mem.kv.set(keys[3], (mem.kv.get(keys[3]) || []).filter(v => v !== argv[3]));
+  else if (argv[2] === 'sadd') { const st = new Set(mem.kv.get(keys[3]) || []); st.add(argv[3]); mem.kv.set(keys[3], [...st]); }
+  else if (argv[2] === 'stage') mem.kv.set(keys[2], JSON.stringify({ ...p, stage: argv[3] }));
+  else if (argv[2] === 'renew') { /* no TTLs in the mirror */ }
+  else return 0;
+  return 1;
+}
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'EVAL': { const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
+    case 'EVAL': { const sc = k; const keys = a.slice(1, 1 + Number(a[0])), argv = a.slice(1 + Number(a[0])); if (sc === BIZ_ENTRY || sc === BIZ_OP_BEGIN || sc === BIZ_OP_WRITE || sc === BIZ_OP_COMMIT || sc === BIZ_OP_CANCEL) return memOp(sc, keys, argv); if (sc === BIZ_OP_RELEASE) { if (mem.kv.get(keys[0]) !== argv[0]) return 0; mem.kv.delete(keys[0]); return 1; } return memEval(sc, Number(a[0]), keys, argv); }
+    case 'KEYS': { const pfx = String(k).replace(/\*$/, ''); return [...mem.kv.keys(), ...mem.lists.keys()].filter(x => x.startsWith(pfx)); }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'SET': if(a.includes('NX')&&mem.kv.has(k))return null;mem.kv.set(k, a[0]); return 'OK';
@@ -92,6 +174,41 @@ const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
 const AGENT_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2]); return 1";
 // Same compare-and-set, but keeps the key's TTL so expiring bot-link pairing records stay expiring.
 const BOTLINK_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2],'KEEPTTL'); return 1";
+// Business workspace mutation fence: a workspace-scoped generation counter. Purge and the
+// delete actions bump it; every business write is fence-checked IN THE SAME Redis call (EVAL),
+// so a paused in-flight discover/run whose fence went stale cannot recreate records after a
+// successful purge or delete. Fence check and write in one Lua call: no check-then-write race,
+// including across serverless instances.
+// Every script checks TWO things atomically with the write: the caller's fence generation
+// (KEYS[1]) still matches, and no delete/purge freeze (KEYS[2]) is in progress. KEYS[3+] are
+// the mutation targets. The freeze key is fm:biz:freeze, set for the duration of a purge or
+// delete; the fence bump covers writers parked before the operation, the freeze covers writers
+// arriving during it.
+const BIZ_FENCE_SET = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call(\'SET\',KEYS[4],ARGV[2]); return 1";
+const BIZ_FENCE_DEL = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call(\'DEL\',KEYS[4]); return 1";
+const BIZ_FENCE_SADD = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call(\'SADD\',KEYS[4],ARGV[2]); return 1";
+const BIZ_FENCE_SREM = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call(\'SREM\',KEYS[4],ARGV[2]); return 1";
+const BIZ_FENCE_LPUSH = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call('LPUSH',KEYS[4],ARGV[2]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[3])-1); return 1";
+// Single atomic operation protocol for deletes/purges. ONE script per transition, no layered
+// prechecks: BEGIN acquires the lease + bumps the generation + registers the durable intent in
+// one atomic call; every WRITE re-verifies (freeze ownership AND pending-token AND generation
+// AND fence) in the same call as the mutation; COMMIT writes the completion log + clears the
+// intent + releases the lease atomically, so no post-release write can recreate records after a
+// later purge; CANCEL carries the owner-reviewed op identity, rejects stale cancels, bumps the
+// fence to invalidate in-flight holder writes, and releases the lease only when the lease token
+// belongs to the pending operation.
+const BIZ_OP_BEGIN = "local p=redis.call('GET',KEYS[3]); local fr=redis.call('GET',KEYS[2]); local opid=ARGV[7]; if ARGV[8]~='' then if not p then return {'completed'} end; local pj=cjson.decode(p); if pj.op~=ARGV[1] or tostring(pj.id)~=ARGV[2] or ARGV[8]~=tostring(pj.opId) then return {'stale'} end; if fr then return {'held'} end; opid=pj.opId; elseif p then local pj=cjson.decode(p); if pj.op==ARGV[1] and tostring(pj.id)==ARGV[2] then return {'stale'} end; if ARGV[6]~='1' then return {'pending'} end; if fr then return {'held'} end; elseif fr then return {'held'} end; local gen=redis.call('INCRBY',KEYS[1],1); redis.call('SET',KEYS[2],ARGV[3],'PX',tonumber(ARGV[4])); redis.call('SET',KEYS[3],cjson.encode({op=ARGV[1],id=ARGV[2],token=ARGV[3],gen=gen,at=ARGV[5],opId=opid})); return {'ok',gen,opid}";
+const BIZ_OP_GUARD = "if redis.call('GET',KEYS[2])~=ARGV[1] then return 0 end; local p=redis.call('GET',KEYS[3]); if not p then return 0 end; local pj=cjson.decode(p); if pj.token~=ARGV[1] then return 0 end; if tostring(pj.gen)~=ARGV[2] then return 0 end; local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[2] then return 0 end; ";
+const BIZ_OP_WRITE = BIZ_OP_GUARD + "if ARGV[3]=='set' then redis.call('SET',KEYS[4],ARGV[4]) elseif ARGV[3]=='del' then redis.call('DEL',KEYS[4]) elseif ARGV[3]=='srem' then redis.call('SREM',KEYS[4],ARGV[4]) elseif ARGV[3]=='sadd' then redis.call('SADD',KEYS[4],ARGV[4]) elseif ARGV[3]=='stage' then redis.call('SET',KEYS[3],cjson.encode({op=pj.op,id=pj.id,token=pj.token,gen=pj.gen,at=pj.at,opId=pj.opId,stage=ARGV[4]})) elseif ARGV[3]=='renew' then redis.call('PEXPIRE',KEYS[2],60000) else return 0 end; return 1";
+const BIZ_OP_COMMIT = BIZ_OP_GUARD + "redis.call('LPUSH',KEYS[4],ARGV[3]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[4])-1); redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[2]); return 1";
+const BIZ_OP_CANCEL = "local p=redis.call('GET',KEYS[3]); if not p then return {'none'} end; local pj=cjson.decode(p); if tostring(pj.id)~=ARGV[1] or pj.op~=ARGV[2] or tostring(pj.opId)~=ARGV[5] then return {'stale'} end; redis.call('INCRBY',KEYS[1],1); redis.call('DEL',KEYS[3]); if redis.call('GET',KEYS[2])==pj.token then redis.call('DEL',KEYS[2]) end; redis.call('LPUSH',KEYS[4],ARGV[3]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[4])-1); return {'ok'}";
+const BIZ_OP_RELEASE = "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end; redis.call('DEL',KEYS[1]); return 1";
+// Coherent entry snapshot for non-delete actions: fence generation + absence of freeze AND
+// pending intent read in one atomic call, so no check-then-write gap at entry.
+const BIZ_ENTRY = "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; return {'ok', redis.call('GET',KEYS[1]) or '0'}";
+// Run persistence in one fenced call: store the run, index it, trim the index AND delete the
+// run objects that fell out of the index, so object lifetime matches index lifetime.
+const BIZ_FENCE_RUN = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call('SET',KEYS[4],ARGV[2]); redis.call('LPUSH',KEYS[5],ARGV[3]); local extra=redis.call('LRANGE',KEYS[5],tonumber(ARGV[4]),-1); redis.call('LTRIM',KEYS[5],0,tonumber(ARGV[4])-1); for _,id in ipairs(extra) do redis.call('DEL',ARGV[5]..id) end; return 1";
 async function updateAgent(id, patch) {
   const key='fm:agent:'+id;
   for(let attempt=0;attempt<8;attempt++){
@@ -1605,11 +1722,13 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/state') return res.json(await fullState());
     // --- business workspace: owner sources -> evidence-checked proposals -> owner-bounded responsibilities ---
     if (path === '/business/state' && req.method === 'GET') return send({ status: 200, body: await bizState() });
+    if (path === '/business/provider-consent' && (req.method === 'POST' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizConsentAct(req.method === 'POST', body)); }
     if (path === '/business/sources' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizSourceAdd(body)); }
-    { const bm = path.match(/^\/business\/sources\/(src_\w+)$/); if (bm && (req.method === 'PATCH' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(req.method === 'PATCH' ? await bizSourceEdit(bm[1], body) : await bizSourceDel(bm[1])); } }
+    { const bm = path.match(/^\/business\/sources\/(src_\w+)$/); if (bm && (req.method === 'PATCH' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(req.method === 'PATCH' ? await bizSourceEdit(bm[1], body) : await bizSourceDel(bm[1], body)); } }
     if (path === '/business/discover' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscover()); }
     { const bm = path.match(/^\/business\/proposals\/(prop_\w+)\/(edit|reject|activate)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProposalAct(bm[1], bm[2], body)); } }
-    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
+    if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(body && body.confirm === 'CANCEL' ? await bizOpCancel(body) : await bizDataPurge(body)); }
+    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
     {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
@@ -1711,12 +1830,96 @@ function bizEngineEnv() {
   const allow = (process.env.ALTER_MODEL_WS || '').split(',').map(s => s.trim()).filter(Boolean);
   return { key: key || null, base, model, allow };
 }
+// The reasoning endpoint must be a vetted, fixed public provider origin: ALTER_MODEL_ALLOWED_HOSTS
+// (comma-separated) pins the exact hostnames the platform accepts, defaulting to Groq only.
+// Arbitrary DNS names are never consulted for identity - this, not DNS probing, is the control.
+// bizHostBlocked stays as defense in depth BEHIND the allowlist (a future allowed host must
+// still be syntactically public). Purely syntactic: no DNS resolution or connection probing.
+function bizAllowedEngineHosts() {
+  return (process.env.ALTER_MODEL_ALLOWED_HOSTS || 'api.groq.com').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+// Fail-closed public classifier: URL-normalized IPv4 literals by range, IPv6 literals by range
+// (loopback, unspecified, link-local, unique-local, site-local, multicast, IPv4-mapped in both
+// dotted and hex-hextet form, 6to4/Teredo tunnels), internal DNS suffixes, trailing-dot forms.
+function bizHostBlocked(hostname) {
+  let h = String(hostname || '').toLowerCase();
+  if (!h) return true;
+  if (h.endsWith('.')) h = h.slice(0, -1); // normalize a single trailing dot, then classify
+  if (!h) return true;
+  if (h === 'localhost' || /\.(localhost|internal|local|lan|corp|home|home\.arpa)$/.test(h)) return true;
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a === 192 && b === 0) return true;
+    if (a === 198 && (b === 18 || b === 19)) return true;
+    return false;
+  }
+  if (h.startsWith('[') && h.endsWith(']')) {
+    const v6 = h.slice(1, -1);
+    if (v6 === '::' || v6 === '::1') return true;
+    // IPv4-mapped IPv6, in either dotted or normalized hex-hextet form (the URL parser
+    // serializes ::ffff:127.0.0.1 as ::ffff:7f00:1) - check the embedded IPv4 ranges.
+    let mapped = v6.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (!mapped) { const hex = v6.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/); if (hex) { const hi = parseInt(hex[1], 16), lo = parseInt(hex[2], 16); mapped = [null, (hi >> 8) + '.' + (hi & 255) + '.' + (lo >> 8) + '.' + (lo & 255)]; } }
+    if (mapped) return bizHostBlocked(mapped[1]);
+    const first = parseInt((v6.split(':')[0] || '0'), 16) || 0;
+    if ((first & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+    if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
+    if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+    if ((first & 0xffc0) === 0xfec0) return true; // fec0::/10 site-local (deprecated)
+    if (first === 0x2002) return true; // 6to4 embeds an IPv4 address - not classifiable syntactically
+    if (first === 0x2001) return true; // 2001::/32 Teredo tunneling and other special-use; the allowlist is the real gate
+    return false;
+  }
+  return false;
+}
 async function bizEngine() {
   const e = bizEngineEnv();
   if (!e.key) return { ok: false, code: 'engine_not_configured', error: 'The reasoning engine is not connected yet.' };
   if (!e.allow.includes(wsId())) return { ok: false, code: 'engine_not_enabled', error: 'The reasoning engine is not enabled for this workspace.' };
-  if (/^https?:\/\/(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|172\.(1[6-9]|2\d|3[01])\.)|\.internal(\/|$)/.test(e.base)) return { ok: false, code: 'engine_bad_endpoint', error: 'The reasoning engine endpoint is not allowed.' };
+  let pu; try { pu = new URL(e.base); } catch { return { ok: false, code: 'engine_bad_endpoint', error: 'The reasoning engine endpoint is not allowed.' }; }
+  // Business content leaves over HTTPS only, to a vetted fixed provider origin, never via redirect.
+  if (pu.protocol !== 'https:' || bizHostBlocked(pu.hostname)) return { ok: false, code: 'engine_bad_endpoint', error: 'The reasoning engine endpoint must be a public HTTPS address.' };
+  if (!bizAllowedEngineHosts().includes(pu.hostname.toLowerCase())) return { ok: false, code: 'engine_bad_endpoint', error: 'The reasoning engine endpoint is not one of the vetted provider origins.' };
+  // Owner consent is per workspace, per provider+model: discover, manual runs AND the daily
+  // check-in all pass through here, so scheduled processing is gated the same way.
+  const consent = await getJ('fm:biz:consent');
+  if (!consent || consent.host !== pu.host || consent.model !== e.model) return { ok: false, code: 'engine_no_consent', error: 'The owner has not allowed this reasoning provider for this workspace.' };
   return { ok: true, key: e.key, base: e.base, model: e.model };
+}
+// Owner-granted provider consent: recorded with the exact provider host and model it covers.
+// A provider or model change invalidates it and processing stops until the owner re-approves.
+// Grant binds the exact provider host + model the owner was shown (the client echoes what the
+// state endpoint displayed; a mismatch means the configuration changed since and the owner must
+// review the current identity again). Withdrawal is UNCONDITIONAL: it works with a missing key,
+// an invalid endpoint URL or a workspace not on the allowlist, and no later config change can
+// revive a withdrawn or stale consent (bizEngine compares host+model on every call).
+async function bizConsentAct(grant, body, fence) {
+  if (!grant) {
+    const f0 = await bizFence();
+    if (!await r(['EVAL', BIZ_FENCE_DEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:consent', f0])) return bizFenceConflict();
+    let host = null, model = null; try { host = new URL(bizEngineEnv().base).host; model = bizEngineEnv().model; } catch {}
+    if (!await bizLog('provider_consent_withdrawn', { host, model }, f0)) return bizFenceConflict();
+    return { status: 200, body: { consent: null } };
+  }
+  const g0 = await bizEntry(); if (g0 == null) return bizFrozenConflict();
+  const f0 = g0;
+  const e = bizEngineEnv();
+  if (!e.key || !e.allow.includes(wsId())) return { status: 503, body: { error: 'The reasoning engine is not enabled for this workspace.', code: 'engine_not_enabled' } };
+  let pu; try { pu = new URL(e.base); } catch { return { status: 503, body: { error: 'The reasoning engine endpoint is not allowed.', code: 'engine_bad_endpoint' } }; }
+  if (pu.protocol !== 'https:' || bizHostBlocked(pu.hostname)) return { status: 503, body: { error: 'The reasoning engine endpoint must be a public HTTPS address.', code: 'engine_bad_endpoint' } };
+  if (!bizAllowedEngineHosts().includes(pu.hostname.toLowerCase())) return { status: 503, body: { error: 'The reasoning engine endpoint is not one of the vetted provider origins.', code: 'engine_bad_endpoint' } };
+  const b = body || {};
+  if (String(b.host || '') !== pu.host || String(b.model || '') !== e.model) return { status: 409, body: { error: 'The provider configuration changed since this screen loaded. Review the current provider and model, then confirm again.', code: 'consent_stale' } };
+  const consent = { host: pu.host, model: e.model, at: now() };
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:consent', f0, JSON.stringify(consent)])) return bizFenceConflict();
+  if (!await bizLog('provider_consent_granted', { host: pu.host, model: e.model }, f0)) return bizFenceConflict();
+  return { status: 200, body: { consent } };
 }
 async function bizChat(messages, opts) {
   opts = opts || {};
@@ -1725,10 +1928,12 @@ async function bizChat(messages, opts) {
   const day = now().slice(0, 10), ck = 'fm:biz:calls:' + day;
   const calls = await r(['INCRBY', ck, 1]); await r(['EXPIRE', ck, 172800]);
   if (calls > BIZ.CALLS_PER_DAY) { const err = new Error('Daily reasoning limit reached for this workspace. Try again tomorrow.'); err.code = 'engine_daily_cap'; throw err; }
-  const res = await fetch(e.base + '/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + e.key }, signal: AbortSignal.timeout(opts.timeoutMs || 25000),
+  // redirect: 'manual' - consent covers the exact consented host. A redirect would forward the
+  // model payload (owner sources and work) to a different recipient, so any 3xx fails the call.
+  const res = await fetch(e.base + '/chat/completions', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + e.key }, signal: AbortSignal.timeout(opts.timeoutMs || 25000),
     body: JSON.stringify({ model: e.model, max_tokens: opts.maxTokens || 1800, temperature: opts.temperature == null ? 0.2 : opts.temperature, messages }) });
   let j = {}; try { j = await res.json(); } catch {}
-  if (!res.ok) { const err = new Error(res.status === 401 || res.status === 403 ? 'The reasoning engine rejected its key' : res.status === 429 ? 'The reasoning engine is rate limited. Try again in a minute.' : 'Reasoning engine error (HTTP ' + res.status + ')'); err.code = 'engine_error'; throw err; }
+  if (!res.ok) { const err = new Error(res.status >= 300 && res.status < 400 ? 'The reasoning engine endpoint tried to redirect; refused, because approval covers only the exact provider address.' : res.status === 401 || res.status === 403 ? 'The reasoning engine rejected its key' : res.status === 429 ? 'The reasoning engine is rate limited. Try again in a minute.' : 'Reasoning engine error (HTTP ' + res.status + ')'); err.code = res.status >= 300 && res.status < 400 ? 'engine_redirect' : 'engine_error'; throw err; }
   const text = String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
   return { text, usage: usageOf(j), model: e.model };
 }
@@ -1737,7 +1942,103 @@ function bizJson(text) {
   const a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a < 0 || b <= a) return null;
   try { return JSON.parse(s.slice(a, b + 1)); } catch { return null; }
 }
-async function bizLog(kind, detail) { await r(['LPUSH', 'fm:biz:log', JSON.stringify({ id: rid('bizlog'), at: now(), kind, ...detail })]); await r(['LTRIM', 'fm:biz:log', 0, BIZ.LOG_KEEP - 1]); }
+// Test-only fault injection at stage boundaries (global.__bizFault is never set in production;
+// the in-memory fallback cannot raise real quota faults, so interleavings are exercised here).
+function bizFault(point) { if (global.__bizFault === point) { global.__bizFault = null; throw Object.assign(new Error('injected storage fault'), { code: 'store_quota' }); } }
+async function bizFence() { return (await r(['GET', 'fm:biz:fence'])) || '0'; }
+class BizOpLost extends Error {}
+// Delete/purge lifecycle as ONE atomic operation protocol (no layered prechecks):
+// bizOpBegin = lease + generation bump + durable intent registration in a single EVAL, so a
+// delayed starter can never overwrite a newer operation's intent and a crash between steps is
+// impossible; the durable marker (fm:biz:op_pending, no TTL) survives crashes and quiesces all
+// processing until the operation commits or the owner cancels. A retry of the SAME op+id is
+// adopted only when the original lease is gone; a purge may subsume any pending intent.
+async function bizOpBegin(op, id, subsume, reviewedOpId) {
+  const token = rid('freeze'), opId = rid('op'), idStr = id || '';
+  let res = null;
+  try { res = await r(['EVAL', BIZ_OP_BEGIN, 3, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', op, idStr, token, '60000', now(), subsume ? '1' : '0', opId, reviewedOpId || '']); }
+  catch (e) {
+    // The begin EVAL may have LANDED even though its response was lost: reconcile against the
+    // durable intent instead of claiming nothing changed. Same op+id+token = ours, adopt it.
+    const p = await getJ('fm:biz:op_pending').catch(() => null);
+    if (p && p.op === op && String(p.id) === String(idStr)) {
+      if (p.token === token) return { token, gen: String(p.gen), opId: p.opId, t0: Date.now(), n: 0, reconciled: true };
+      return { uncertain: true }; // an intent for this op exists but is not provably ours
+    }
+    return { uncertain: true };
+  }
+  if (!Array.isArray(res)) return null;
+  if (res[0] === 'completed') return { completed: true }; // the reviewed intent already finished elsewhere
+  if (res[0] === 'stale') return { stale: true }; // the reviewed intent was replaced or already completed
+  if (res[0] !== 'ok') return null;
+  return { token, gen: String(res[1]), opId: String(res[2]), t0: Date.now(), n: 0 };
+}
+const bizOpStale = () => ({ status: 409, body: { error: 'That delete already finished or was replaced. Reload to see the current state.', code: 'op_stale' } });
+const bizOpNeedsReview = () => ({ status: 409, body: { error: 'A delete is already pending. Reload and finish or cancel it from the card shown.', code: 'retry_needs_review' } });
+const bizOpCompleted = () => ({ status: 409, body: { error: 'That delete already finished - there is nothing to finish. Reload to see the current state.', code: 'intent_completed' } });
+async function bizOpCloseRefused(ctx, what, extra) {
+  const p = await getJ('fm:biz:op_pending').catch(() => undefined);
+  if (p && p.token === ctx.token) return { status: 503, body: { error: what + ' finished its record changes but could not close cleanly - its exclusion lock was lost at the final step. The delete intent is still recorded and new work is held; retry to close it out.', code: 'delete_close_uncertain', ...extra } };
+  return { status: 503, body: { error: what + ' finished its record changes, but the close was refused - the workspace changed concurrently (the delete may have been cancelled or replaced). Reload to see the current state before doing anything else.', code: 'delete_close_refused', ...extra } };
+}
+const bizOpUncertain = () => ({ status: 503, body: { error: 'The delete request may or may not have registered - its response was lost. Nothing further was done. Reload, check the current state, and retry or cancel from what you see.', code: 'delete_uncertain' } });
+// One fully-guarded write inside a held operation: freeze ownership AND pending-token AND
+// generation AND fence are re-verified in the same atomic call as the mutation, so a cancel's
+// fence bump or a lost lease stops the very next write. Renew every 25 writes; 45s deadline.
+async function bizOpWrite(ctx, mode, key, val) {
+  if (Date.now() - ctx.t0 > 45000) throw new BizOpLost('operation exceeded its 45s deadline'); // pre-step check only: it bounds new writes, never proves anything about storage timing
+  if (++ctx.n % 25 === 0 && !await r(['EVAL', BIZ_OP_WRITE, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:op_pending', ctx.token, ctx.gen, 'renew', ''])) throw new BizOpLost('freeze lost');
+  if (!await r(['EVAL', BIZ_OP_WRITE, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', key, ctx.token, ctx.gen, mode, val === undefined ? '' : val])) throw new BizOpLost('freeze lost');
+}
+// Atomic close: completion log + clear the durable intent + release the lease, all under the
+// operation's original generation and ownership. A post-release log write can therefore never
+// recreate the activity log after a later purge. False = ownership lost at the final step; the
+// durable intent is still recorded and a retry closes it out (all stages are idempotent).
+async function bizOpCommit(ctx, kind, detail) {
+  const entryId = rid('bizlog');
+  const entry = JSON.stringify({ id: entryId, at: now(), kind, ...detail });
+  const call = () => r(['EVAL', BIZ_OP_COMMIT, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:log', ctx.token, ctx.gen, entry, String(BIZ.LOG_KEEP)]);
+  let ok = 0, lost = false;
+  try { ok = await call(); } catch (e) { lost = true; }
+  if (ok) return 'committed';
+  if (!lost) return 'refused'; // guard rejected: ownership was lost - the intent is still recorded
+  // Response lost: the commit may have landed. Reconcile against the intent and the receipt.
+  const p = await getJ('fm:biz:op_pending').catch(() => undefined);
+  if (p === undefined) return 'unknown';
+  if (p && p.token === ctx.token) return 'refused'; // our intent still open: commit did not land
+  const log = await r(['LRANGE', 'fm:biz:log', 0, 19]).catch(() => null);
+  if (log && log.some(x => { try { return JSON.parse(x).id === entryId; } catch { return false; } })) return 'committed';
+  if (p === null) return 'unknown'; // intent gone but no receipt found: cancelled concurrently or landed-and-trimmed
+  return 'unknown';
+}
+// Failure-path release, token-compared; the 60s lease is the backstop when even this fails, and
+// the durable intent keeps the workspace quiesced either way.
+const bizOpRelease = ctx => r(['EVAL', BIZ_OP_RELEASE, 1, 'fm:biz:freeze', ctx.token]).catch(() => 0);
+async function bizHold() { return (await bizFrozen()) || !!(await getJ('fm:biz:op_pending')); }
+// Coherent entry snapshot for non-delete actions: generation + absence of freeze AND pending
+// intent in one atomic call. null = a delete/purge holds or intends the workspace.
+async function bizEntry() {
+  const res = await r(['EVAL', BIZ_ENTRY, 3, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending']);
+  if (!Array.isArray(res) || res[0] !== 'ok') return null;
+  return String(res[1]);
+}
+const bizFenceConflict = () => ({ status: 409, body: { error: 'This workspace changed while the request was in flight (a delete or purge was running). Earlier steps may already have completed - reload and retry to finish.', code: 'workspace_changed' } });
+// Entry gate for non-delete actions: refuse fast while a delete/purge holds the freeze. The
+// same check lives inside every fenced EVAL, so a freeze that starts after this check still
+// blocks the write itself.
+async function bizFrozen() { return !!(await r(['GET', 'fm:biz:freeze'])); }
+const bizFrozenConflict = () => ({ status: 409, body: { error: 'A delete is in progress in this workspace. Retry in a moment.', code: 'workspace_changed' } });
+// Log writes are fence-checked like every other mutation: a stale in-flight action must not
+// recreate the activity log after a purge. A log line lost to a fence conflict is acceptable.
+async function bizLog(kind, detail, fence) { const f0 = fence || await bizFence(); return await r(['EVAL', BIZ_FENCE_LPUSH, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:log', f0, JSON.stringify({ id: rid('bizlog'), at: now(), kind, ...detail }), String(BIZ.LOG_KEEP)]); }
+// Full inventory of stored run objects for this workspace, INCLUDING records that already fell
+// out of the trimmed index (the index keeps the newest RUNS_KEEP ids only). Used by deletes and
+// purge so nothing is left behind. Keys come back workspace-namespaced; strip to the raw id.
+async function bizRunKeysAll() {
+  const prefix = nsKey('fm:biz:run:');
+  const keys = await r(['KEYS', 'fm:biz:run:*']);
+  return (keys || []).filter(k => k.startsWith(prefix));
+}
 async function bizSources() {
   const ids = await r(['SMEMBERS', 'fm:biz:sources']); if (!ids.length) return [];
   const vs = await r(['MGET', ...ids.map(i => 'fm:biz:src:' + i)]);
@@ -1759,17 +2060,20 @@ const bizStale = (p, srcs) => { const byId = {}; srcs.forEach(s => byId[s.id] = 
   return stale; };
 
 async function bizState() {
-  const [srcs, props, resps, logRaw] = await Promise.all([bizSources(), bizProposals(), bizResps(), r(['LRANGE', 'fm:biz:log', 0, 19])]);
+  const [srcs, props, resps, logRaw, opPending] = await Promise.all([bizSources(), bizProposals(), bizResps(), r(['LRANGE', 'fm:biz:log', 0, 19]), getJ('fm:biz:op_pending')]);
   const eng = bizEngineEnv();
-  const engine = eng.key ? { configured: true, enabled: eng.allow.includes(wsId()), host: (() => { try { return new URL(eng.base).host; } catch { return 'unknown'; } })(), model: eng.model } : { configured: false, enabled: false };
+  const consent = await getJ('fm:biz:consent');
+  const engine = eng.key ? { configured: true, enabled: eng.allow.includes(wsId()), host: (() => { try { return new URL(eng.base).host; } catch { return 'unknown'; } })(), model: eng.model,
+    consent: consent ? { host: consent.host, model: consent.model, at: consent.at, current: consent.host === (() => { try { return new URL(eng.base).host; } catch { return ''; } })() && consent.model === eng.model } : null } : { configured: false, enabled: false, consent: null };
   const runsByResp = {};
   for (const rp of resps) { const ids = await r(['LRANGE', 'fm:biz:runs:' + rp.id, 0, 9]); if (ids.length) runsByResp[rp.id] = (await r(['MGET', ...ids.map(i => 'fm:biz:run:' + i)])).filter(Boolean).map(v => JSON.parse(v)); }
   return { engine, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
     responsibilities: resps.map(rp => ({ ...rp, runs: runsByResp[rp.id] || [] })),
-    log: (logRaw || []).map(x => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean) };
+    opPending, log: (logRaw || []).map(x => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean) };
 }
 
 async function bizSourceAdd(body) {
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict();
   const kind = body.kind === 'doc' ? 'doc' : 'note';
   const title = String(body.title || '').trim().slice(0, BIZ.MAX_TITLE);
   const text = String(body.text || '').slice(0, BIZ.MAX_TEXT);
@@ -1777,26 +2081,72 @@ async function bizSourceAdd(body) {
   if (!text.trim()) return { status: 400, body: { error: 'Paste the text first' } };
   if ((await r(['SCARD', 'fm:biz:sources'])) >= BIZ.MAX_SOURCES) return { status: 409, body: { error: 'Source limit reached. Delete something you no longer need.' } };
   const s = { id: rid('src'), kind, title, text, version: 1, createdAt: now(), updatedAt: now() };
-  await setJ('fm:biz:src:' + s.id, s); await r(['SADD', 'fm:biz:sources', s.id]);
-  await bizLog('source_added', { sourceId: s.id, title });
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:src:' + s.id, f0, JSON.stringify(s)])) return bizFenceConflict();
+  if (!await r(['EVAL', BIZ_FENCE_SADD, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:sources', f0, s.id])) return bizFenceConflict();
+  if (!await bizLog('source_added', { sourceId: s.id, title }, f0)) return bizFenceConflict();
   return { status: 200, body: { source: s } };
 }
 async function bizSourceEdit(id, body) {
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict(); // one atomic snapshot: generation + no freeze + no pending intent
   const s = await getJ('fm:biz:src:' + id); if (!s) return { status: 404, body: { error: 'not found' } };
   const title = body.title != null ? String(body.title).trim().slice(0, BIZ.MAX_TITLE) : s.title;
   const text = body.text != null ? String(body.text).slice(0, BIZ.MAX_TEXT) : s.text;
   if (!title || !text.trim()) return { status: 400, body: { error: 'Title and text are both required' } };
   const changed = text !== s.text;
   const next = { ...s, title, text, updatedAt: now(), version: changed ? s.version + 1 : s.version, edits: (s.edits || 0) + 1 };
-  await setJ('fm:biz:src:' + id, next);
-  if (changed) await bizLog('source_edited', { sourceId: id, fromVersion: s.version, toVersion: next.version });
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:src:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+  if (changed && !await bizLog('source_edited', { sourceId: id, fromVersion: s.version, toVersion: next.version }, f0)) return bizFenceConflict();
   return { status: 200, body: { source: next, proposalsStale: changed ? (await bizProposals()).filter(p => (p.sourceMap || {})[id] != null && p.status === 'draft').map(p => p.id) : [] } };
 }
-async function bizSourceDel(id) {
-  const s = await getJ('fm:biz:src:' + id); if (!s) return { status: 404, body: { error: 'not found' } };
-  await r(['DEL', 'fm:biz:src:' + id]); await r(['SREM', 'fm:biz:sources', id]);
-  await bizLog('source_deleted', { sourceId: id, title: s.title });
-  return { status: 200, body: { deleted: true } };
+// Source-deletion policy (explicit, narrow, stated in the UI): deleting a source removes the
+// source record and the verbatim quotes copied from it into proposal evidence (any status).
+// The evidence pointer stays (sourceId, marked excerptDeleted) so history is honest without
+// keeping the content. Work DERIVED from the source - proposal title/summary/boundary/unknowns,
+// responsibilities, run inputs/outputs, and activity entries that mention its title - is KEPT:
+// those are owner-reviewed work records, and silently destroying them to overpromise deletion
+// would be worse than stating the boundary. They go away with responsibility delete or a full
+// data purge. Integration hook: research snapshots/claims/citations register scrubbers here.
+const bizSourceScrubbers = [];
+async function bizSourceDel(id, body) {
+  const s = await getJ('fm:biz:src:' + id);
+  const pending = await getJ('fm:biz:op_pending');
+  const retrying = pending && pending.op === 'source_delete' && String(pending.id) === String(id);
+  if (pending && !retrying) return { status: 409, body: { error: 'Another delete is pending in this workspace. Finish or cancel it first.', code: 'operation_pending' } };
+  if (retrying && !(body && body.opId)) return bizOpNeedsReview(); // a retry must carry the exact reviewed instance
+  if (!pending && body && body.opId) return bizOpCompleted(); // a stale Finish never starts a fresh delete
+  if (!s && !retrying) return { status: 404, body: { error: 'not found' } };
+  // Idempotent retry: when an earlier attempt died after removing the record, the durable intent
+  // is still set and this call finishes the remaining stages (index cleanup is part of them).
+  const ctx = await bizOpBegin('source_delete', id, false, body && body.opId); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
+  let scrubbed = 0, stage = 'start';
+  try {
+    bizFault('sourcedel:begin');
+    stage = 'scrub';
+    for (const p of await bizProposals()) {
+      let changed = false;
+      const evidence = (p.evidence || []).map(ev => {
+        if (ev && ev.sourceId === id && ev.excerpt) { changed = true; return { sourceId: id, excerpt: null, excerptDeleted: true }; }
+        return ev;
+      });
+      if (changed) { scrubbed++; await bizOpWrite(ctx, 'set', 'fm:biz:prop:' + p.id, JSON.stringify({ ...p, evidence })); }
+    }
+    for (const fn of bizSourceScrubbers) await fn(id, s);
+    bizFault('sourcedel:scrubbed');
+    stage = 'record';
+    await bizOpWrite(ctx, 'del', 'fm:biz:src:' + id);
+    await bizOpWrite(ctx, 'srem', 'fm:biz:sources', id);
+    stage = 'close';
+    bizFault('sourcedel:close');
+    const committed = await bizOpCommit(ctx, 'source_deleted', { sourceId: id, title: s ? s.title : null, proposalsScrubbed: scrubbed, derivedRetained: true });
+    if (committed === 'refused') return await bizOpCloseRefused(ctx, 'Deletion', { proposalsScrubbed: scrubbed });
+    if (committed === 'unknown') return { status: 503, body: { error: 'Deletion finished its record changes, but the final confirmation was lost - the close may or may not have registered. Reload to check before retrying.', code: 'delete_close_unknown', proposalsScrubbed: scrubbed } };
+  } catch (e) {
+    await bizOpRelease(ctx);
+    if (e instanceof BizOpLost) return { status: 503, body: { error: 'Deletion paused: its exclusion lock was lost mid-operation, so it stopped instead of touching records another delete may own. Nothing further was written; the delete intent is still recorded - retry to finish.', code: 'delete_incomplete', proposalsScrubbed: scrubbed } };
+    if (stage === 'start') return { status: 503, body: { error: 'Deletion did not start (' + (e.code === 'store_quota' ? 'database limit' : 'storage error') + '). Nothing was deleted.', code: 'delete_not_started' } };
+    return { status: 503, body: { error: 'Deletion paused partway at ' + stage + ' (' + (e.code === 'store_quota' ? 'database limit' : 'storage error') + '). ' + (stage === 'scrub' ? 'The source is NOT deleted; some derived quotes may already be scrubbed.' : 'The source record may or may not be deleted; derived quotes are scrubbed.') + ' The delete intent is recorded and new work is held - retry to finish.', code: 'delete_incomplete', proposalsScrubbed: scrubbed } };
+  }
+  return { status: 200, body: { deleted: true, retried: s ? undefined : true, proposalsScrubbed: scrubbed, derivedRetained: true, auditLogged: true } };
 }
 
 function bizDiscoverPrompt(srcs, recentWork) {
@@ -1810,6 +2160,7 @@ function bizDiscoverPrompt(srcs, recentWork) {
 async function bizDiscover() {
   const eng = await bizEngine(); if (!eng.ok) return { status: 503, body: { error: eng.error, code: eng.code } };
   if (await r(['GET', 'fm:kill'])) return { status: 403, body: { error: 'Workspace is paused' } };
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict(); // one atomic snapshot before ANY read and the slow engine call
   const srcs = await bizSources();
   if (!srcs.length) return { status: 400, body: { error: 'Add at least one note or document about the business first' } };
   const existing = (await bizProposals()).filter(p => p.status === 'draft');
@@ -1843,13 +2194,16 @@ async function bizDiscover() {
       status: 'draft', sourceMap: Object.fromEntries(srcs.map(s => [s.id, s.version])),
       engine: { model: out.model, at: now() }, createdAt: now(), editedByOwner: false };
     if (!prop.summary && !evidence.length) continue;
-    await setJ('fm:biz:prop:' + prop.id, prop); await r(['SADD', 'fm:biz:proposals', prop.id]); made.push(prop);
+    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:prop:' + prop.id, f0, JSON.stringify(prop)])) return bizFenceConflict();
+    if (!await r(['EVAL', BIZ_FENCE_SADD, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:proposals', f0, prop.id])) return bizFenceConflict();
+    made.push(prop);
   }
-  await bizLog('discover', { model: out.model, proposals: made.length, droppedEvidence, usage: out.usage || null });
+  if (!await bizLog('discover', { model: out.model, proposals: made.length, droppedEvidence, usage: out.usage || null }, f0)) return bizFenceConflict();
   return { status: 200, body: { proposals: made, note: made.length ? null : 'The engine found nothing it could ground in your sources. Add more detail about the work that eats time.' } };
 }
 
 async function bizProposalAct(id, op, body) {
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict(); // one atomic snapshot: generation + no freeze + no pending intent
   const p = await getJ('fm:biz:prop:' + id); if (!p) return { status: 404, body: { error: 'not found' } };
   if (op === 'edit') {
     if (p.status !== 'draft') return { status: 409, body: { error: 'Only draft proposals can be edited' } };
@@ -1857,13 +2211,15 @@ async function bizProposalAct(id, op, body) {
     if (body.title != null) next.title = String(body.title).slice(0, 90) || p.title;
     if (body.summary != null) next.summary = String(body.summary).slice(0, 600);
     if (body.boundary != null) next.boundary = String(body.boundary).slice(0, 300);
-    await setJ('fm:biz:prop:' + id, next); await bizLog('proposal_edited', { proposalId: id });
+    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:prop:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+    if (!await bizLog('proposal_edited', { proposalId: id }, f0)) return bizFenceConflict();
     return { status: 200, body: { proposal: next } };
   }
   if (op === 'reject') {
     if (p.status !== 'draft') return { status: 409, body: { error: 'Already decided' } };
     const next = { ...p, status: 'rejected', decidedAt: now(), rejectReason: String(body.reason || '').slice(0, 200) || undefined };
-    await setJ('fm:biz:prop:' + id, next); await bizLog('proposal_rejected', { proposalId: id, title: p.title });
+    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:prop:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+    if (!await bizLog('proposal_rejected', { proposalId: id, title: p.title }, f0)) return bizFenceConflict();
     return { status: 200, body: { proposal: next } };
   }
   if (op === 'activate') {
@@ -1872,9 +2228,11 @@ async function bizProposalAct(id, op, body) {
     if (stale.length && body.confirmStale !== true) return { status: 409, body: { error: 'stale_evidence', stale, message: 'Sources changed since this was drafted. Review the proposal against the current sources, then confirm.' } };
     const resp = { id: rid('resp'), proposalId: p.id, title: p.title, summary: p.summary, boundary: p.boundary || BIZ.BOUNDARY,
       status: 'active', staleAtActivation: stale.length ? stale : undefined, createdAt: now(), runsCount: 0 };
-    await setJ('fm:biz:resp:' + resp.id, resp); await r(['SADD', 'fm:biz:resps', resp.id]); await r(['SADD', 'gl:biz:workspaces', wsId()]);
-    await setJ('fm:biz:prop:' + id, { ...p, status: 'active', decidedAt: now() });
-    await bizLog('responsibility_activated', { proposalId: id, respId: resp.id, title: resp.title, confirmedWithStaleEvidence: stale.length > 0 || undefined });
+    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(resp)])) return bizFenceConflict();
+    if (!await r(['EVAL', BIZ_FENCE_SADD, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resps', f0, resp.id])) return bizFenceConflict();
+    if (!await r(['EVAL', BIZ_FENCE_SADD, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'gl:biz:workspaces', f0, wsId()])) return bizFenceConflict();
+    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:prop:' + id, f0, JSON.stringify({ ...p, status: 'active', decidedAt: now() })])) return bizFenceConflict();
+    if (!await bizLog('responsibility_activated', { proposalId: id, respId: resp.id, title: resp.title, confirmedWithStaleEvidence: stale.length > 0 || undefined }, f0)) return bizFenceConflict();
     return { status: 200, body: { responsibility: resp } };
   }
   return { status: 404, body: { error: 'not found' } };
@@ -1890,10 +2248,12 @@ function bizRunPrompt(resp, srcs, input, kind) {
     { role: 'user', content: 'Sources:\n\n' + srcBlock + '\n\n<work_item>\n' + ask + '\n</work_item>' }
   ];
 }
-async function bizRun(resp, input, kind) {
+async function bizRun(resp, input, kind, f0) {
   const eng = await bizEngine(); if (!eng.ok) return { status: 503, body: { error: eng.error, code: eng.code } };
   if (await r(['GET', 'fm:kill'])) return { status: 403, body: { error: 'Workspace is paused' } };
   if (resp.status !== 'active') return { status: 409, body: { error: 'This responsibility is ' + resp.status } };
+  if (f0 == null) f0 = await bizEntry(); // callers pass the snapshot captured at action entry, before the resp was read
+  if (f0 == null) return bizFrozenConflict();
   const srcs = await bizSources();
   let out;
   try { out = await bizChat(bizRunPrompt(resp, srcs, input, kind), { maxTokens: 1800 }); }
@@ -1907,31 +2267,79 @@ async function bizRun(resp, input, kind) {
     sourcesUsed: (parsed && Array.isArray(parsed.sources_used) ? parsed.sources_used : []).filter(x => srcIds.has(String(x))).slice(0, 20),
     sourceVersions: Object.fromEntries(srcs.map(s => [s.id, s.version])),
     model: out.model, usage: out.usage || null, status: 'done', jsonOk: !!parsed };
-  await setJ('fm:biz:run:' + run.id, run);
-  await r(['LPUSH', 'fm:biz:runs:' + resp.id, run.id]); await r(['LTRIM', 'fm:biz:runs:' + resp.id, 0, BIZ.RUNS_KEEP - 1]);
+  // One fenced call: store + index + trim + drop overflowed run objects. A stale fence (purge or
+  // delete while the provider was thinking) refuses the write - nothing is recreated afterwards.
+  const persisted = await r(['EVAL', BIZ_FENCE_RUN, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, 'fm:biz:runs:' + resp.id, f0, JSON.stringify(run), run.id, String(BIZ.RUNS_KEEP), 'fm:biz:run:']);
+  if (!persisted) return bizFenceConflict();
   const cur = await getJ('fm:biz:resp:' + resp.id);
-  if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; await setJ('fm:biz:resp:' + resp.id, cur); }
-  await bizLog('run', { respId: resp.id, runId: run.id, runKind: kind, model: run.model, usage: run.usage });
+  if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)])) return bizFenceConflict(); }
+  if (!await bizLog('run', { respId: resp.id, runId: run.id, runKind: kind, model: run.model, usage: run.usage }, f0)) return bizFenceConflict();
   return { status: 200, body: { run } };
 }
 async function bizRespAct(id, op, body) {
-  const resp = await getJ('fm:biz:resp:' + id); if (!resp) return { status: 404, body: { error: 'not found' } };
+  const f0 = op === 'delete' ? null : await bizEntry(); // one atomic snapshot before the record read; threaded into runs so a delete during the read invalidates persistence
+  if (op !== 'delete' && f0 == null) return bizFrozenConflict();
+  const resp = await getJ('fm:biz:resp:' + id);
+  if (!resp && op !== 'delete') return { status: 404, body: { error: 'not found' } }; // delete handles a missing record below: an idempotent retry may still owe intent close + index cleanup
   if (op === 'run') {
     const input = String(body.input || '').slice(0, 4000);
     if (!input.trim()) return { status: 400, body: { error: 'Describe or paste the work first' } };
-    return await bizRun(resp, input, 'manual');
+    return await bizRun(resp, input, 'manual', f0);
   }
   if (op === 'pause' || op === 'resume') {
     if (resp.status !== 'active' && resp.status !== 'paused') return { status: 409, body: { error: 'This responsibility is ' + resp.status } };
     const next = { ...resp, status: op === 'pause' ? 'paused' : 'active' };
-    await setJ('fm:biz:resp:' + id, next); await bizLog('responsibility_' + (op === 'pause' ? 'paused' : 'resumed'), { respId: id, title: resp.title });
+    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+    if (!await bizLog('responsibility_' + (op === 'pause' ? 'paused' : 'resumed'), { respId: id, title: resp.title }, f0)) return bizFenceConflict();
     return { status: 200, body: { responsibility: next } };
   }
   if (op === 'retire') {
     if (resp.status === 'retired') return { status: 200, body: { responsibility: resp } };
     const next = { ...resp, status: 'retired', retiredAt: now() };
-    await setJ('fm:biz:resp:' + id, next); await bizLog('responsibility_retired', { respId: id, title: resp.title });
+    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+    if (!await bizLog('responsibility_retired', { respId: id, title: resp.title }, f0)) return bizFenceConflict();
     return { status: 200, body: { responsibility: next } };
+  }
+  if (op === 'delete') {
+    // Deleting a responsibility deletes its work history too: every run record and its index.
+    // Lifecycle: one atomic begin (lease + generation + durable intent); every destructive write
+    // re-verifies ownership AND generation in the same call; inventory is the full run keyspace
+    // (index PLUS orphans), never the index alone; the close (log + clear intent + release) is
+    // atomic, so no post-release write can recreate records after a later purge.
+    const pending = await getJ('fm:biz:op_pending');
+    const retrying = pending && pending.op === 'resp_delete' && String(pending.id) === String(id);
+    if (pending && !retrying) return { status: 409, body: { error: 'Another delete is pending in this workspace. Finish or cancel it first.', code: 'operation_pending' } };
+    if (retrying && !(body && body.opId)) return bizOpNeedsReview();
+    if (!pending && body && body.opId) return bizOpCompleted();
+    // Idempotent retry: the record may already be gone from an earlier partial attempt; the
+    // durable intent is what must close, and index/run cleanup is part of closing it.
+    if (!resp && !retrying) return { status: 404, body: { error: 'not found' } };
+    const ctx = await bizOpBegin('resp_delete', id, false, body && body.opId); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
+    let runsDeleted = 0, stage = 'start';
+    try {
+      bizFault('respdel:begin');
+      stage = 'runs';
+      const allKeys = await bizRunKeysAll();
+      const vals = allKeys.length ? await r(['MGET', ...allKeys.map(k => k.slice(nsKey('').length))]) : [];
+      const mine = allKeys.filter((k, i) => { try { return JSON.parse(vals[i]).respId === id; } catch { return false; } });
+      for (const k of mine) { await bizOpWrite(ctx, 'del', k.slice(nsKey('').length)); runsDeleted++; }
+      bizFault('respdel:runs');
+      stage = 'record';
+      await bizOpWrite(ctx, 'del', 'fm:biz:runs:' + id);
+      await bizOpWrite(ctx, 'del', 'fm:biz:resp:' + id);
+      await bizOpWrite(ctx, 'srem', 'fm:biz:resps', id);
+      stage = 'close';
+      bizFault('respdel:close');
+      const committed = await bizOpCommit(ctx, 'responsibility_deleted', { respId: id, title: resp ? resp.title : null, runsDeleted });
+      if (committed === 'refused') return await bizOpCloseRefused(ctx, 'Deletion', { runsDeleted });
+      if (committed === 'unknown') return { status: 503, body: { error: 'Deletion finished its record changes, but the final confirmation was lost - the close may or may not have registered. Reload to check before retrying.', code: 'delete_close_unknown', runsDeleted } };
+    } catch (e) {
+      await bizOpRelease(ctx);
+      if (e instanceof BizOpLost) return { status: 503, body: { error: 'Deletion paused: its exclusion lock was lost mid-operation, so it stopped instead of touching records another delete may own. Nothing further was written; the delete intent is still recorded - retry to finish.', code: 'delete_incomplete', runsDeleted } };
+      if (stage === 'start') return { status: 503, body: { error: 'Deletion did not start (' + (e.code === 'store_quota' ? 'database limit' : 'storage error') + '). Nothing was deleted.', code: 'delete_not_started' } };
+      return { status: 503, body: { error: 'Deletion paused partway at ' + stage + ' (' + (e.code === 'store_quota' ? 'database limit' : 'storage error') + '). ' + (stage === 'runs' ? 'The responsibility is NOT deleted; some run records may already be gone.' : 'The responsibility record may or may not be deleted; its runs are gone.') + ' The delete intent is recorded and new work is held - retry to finish.', code: 'delete_incomplete', runsDeleted } };
+    }
+    return { status: 200, body: { deleted: true, retried: resp ? undefined : true, runsDeleted, auditLogged: true } };
   }
   return { status: 404, body: { error: 'not found' } };
 }
@@ -2172,12 +2580,91 @@ async function bizCheckCitations(claims, maxMs) {
   }
   return out;
 }
+// Full deletion of this workspace's business data: sources, proposals (and their derived
+// excerpts), responsibilities, all run history, provider consent and the activity log.
+// Scope honesty: this removes the records from Alter's app database. It does NOT cover
+// content already sent to the reasoning provider (that is governed by the provider's own
+// retention) or platform-level infrastructure backups outside this data set.
+async function bizDataPurge(body) {
+  if (!body || body.confirm !== 'DELETE') return { status: 400, body: { error: 'Type DELETE to confirm' } };
+  // One atomic begin with subsume: a purge is the universal resolution path - it replaces any
+  // pending narrower intent in the same atomic transition that takes the lease and bumps the
+  // generation, so a stuck partial delete can never trap the owner's data and a delayed starter
+  // can never overwrite this intent. Every destructive write re-verifies ownership+generation;
+  // the fence key itself is NOT deleted - it keeps invalidating older writers. On failure the
+  // intent marker STAYS: processing and writes are quiesced until a retry completes or the owner
+  // explicitly cancels.
+  // Retry of a pending purge is a DIFFERENT action from a fresh typed-DELETE purge: it must
+  // carry the exact reviewed instance id, bound atomically at BEGIN. A stale Finish with no
+  // pending intent is rejected, never starts a fresh purge over newer data.
+  const retry = !!(body && body.opId);
+  if (retry) {
+    const pendNow = await getJ('fm:biz:op_pending');
+    if (!pendNow) return bizOpCompleted();
+    if (pendNow.op !== 'purge') return { status: 409, body: { error: 'Another delete is pending in this workspace. Finish or cancel it first.', code: 'operation_pending' } };
+    // Test-only seam (global.__bizBetween is never set in production): interleavings between
+    // this review precheck and the atomic BEGIN guard below. The BEGIN guard alone must refuse.
+    if (global.__bizBetween) { const fn = global.__bizBetween; global.__bizBetween = null; await fn(); }
+  } else {
+    const pendNow = await getJ('fm:biz:op_pending');
+    if (pendNow && pendNow.op === 'purge') return bizOpNeedsReview();
+  }
+  const ctx = await bizOpBegin('purge', null, !retry, retry ? body.opId : undefined); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
+  const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0 };
+  let stage = 'start';
+  try {
+    bizFault('purge:begin');
+    // Full inventory by keyspace, family by family - never by the indexes, which may be missing
+    // entries (partial writes, records orphaned before the run-index bound existed).
+    const fam = async (pattern, counter, faultPoint) => {
+      const prefix = nsKey(pattern.replace('*', ''));
+      for (const k of (await r(['KEYS', pattern])) || []) { if (!k.startsWith(prefix)) continue; await bizOpWrite(ctx, 'del', k.slice(nsKey('').length)); if (counter) counts[counter]++; }
+      if (faultPoint) bizFault(faultPoint);
+    };
+    stage = 'sources'; await fam('fm:biz:src:*', 'sources');
+    bizFault('purge:sources');
+    stage = 'proposals'; await fam('fm:biz:prop:*', 'proposals');
+    bizFault('purge:props');
+    stage = 'responsibilities'; await fam('fm:biz:resp:*', 'responsibilities');
+    stage = 'runs'; await fam('fm:biz:run:*', 'runs'); await fam('fm:biz:runs:*', null);
+    bizFault('purge:runs');
+    stage = 'sets';
+    for (const k of ['fm:biz:sources', 'fm:biz:proposals', 'fm:biz:resps', 'fm:biz:consent', 'fm:biz:log']) await bizOpWrite(ctx, 'del', k);
+    await r(['SREM', 'gl:biz:workspaces', wsId()]); // global registry: idempotent, outside the workspace freeze
+    stage = 'close';
+    bizFault('purge:close');
+    const committed = await bizOpCommit(ctx, 'data_purged', { counts });
+    if (committed === 'refused') return await bizOpCloseRefused(ctx, 'Purge', { purged: false, counts });
+    if (committed === 'unknown') return { status: 503, body: { error: 'Purge finished its record changes, but the final confirmation was lost - the close may or may not have registered. Reload to check before retrying.', code: 'purge_close_unknown', purged: false, counts } };
+  } catch (e) {
+    await bizOpRelease(ctx);
+    if (e instanceof BizOpLost) return { status: 503, body: { error: 'Purge paused: its exclusion lock was lost mid-operation, so it stopped instead of touching records another delete may own. The counts show what WAS deleted. The purge intent is still recorded and new work is held - retry to finish.', code: 'purge_incomplete', purged: false, counts } };
+    if (stage === 'start') return { status: 503, body: { error: 'Purge did not start (' + (e.code === 'store_quota' ? 'database limit' : 'storage error') + '). Nothing was deleted.', code: 'purge_not_started' } };
+    return { status: 503, body: { error: 'Deletion paused partway at ' + stage + ' (' + (e.code === 'store_quota' ? 'database limit' : 'storage error') + '). The counts show what WAS deleted; the rest is still stored. The purge intent is recorded and new work is held - retry to finish, or cancel to keep what remains.', code: 'purge_incomplete', purged: false, counts } };
+  }
+  return { status: 200, body: { purged: true, counts } };
+}
+
+async function bizOpCancel(body) {
+  const op = body && body.op, id = String((body && body.id) || ''), opId = String((body && body.opId) || '');
+  if (!op || !opId) return { status: 400, body: { error: 'Reload and cancel the delete currently shown - the request must name the exact pending delete you reviewed.' } };
+  // Atomic: reject a cancel whose reviewed op no longer matches (stale), bump the generation so
+  // the in-flight holder's very next guarded write fails, clear the intent, and release the
+  // lease ONLY when the lease token belongs to the pending operation being cancelled.
+  const entry = JSON.stringify({ id: rid('bizlog'), at: now(), kind: 'delete_abandoned', op, id: id || null });
+  const res = await r(['EVAL', BIZ_OP_CANCEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:log', id, String(op), entry, String(BIZ.LOG_KEEP), opId]).catch(() => null);
+  if (!Array.isArray(res)) return { status: 503, body: { error: 'storage error' } };
+  if (res[0] === 'none') return { status: 409, body: { error: 'No delete is pending', code: 'nothing_pending' } };
+  if (res[0] === 'stale') return { status: 409, body: { error: 'That delete already finished or was replaced. Reload to see the current state.', code: 'op_stale' } };
+  return { status: 200, body: { cancelled: true, note: 'Records already deleted stay deleted; everything else is kept. Work has resumed.' } };
+}
 async function bizDailyTick() {
   const wss = await r(['SMEMBERS', 'gl:biz:workspaces']);
   const out = { workspaces: 0, runs: 0, skipped: 0, errors: 0 };
   for (const ws of wss) {
     await als.run({ ws }, async () => {
       const eng = await bizEngine(); if (!eng.ok) { out.skipped++; return; }
+      const f0 = await bizEntry(); if (f0 == null) { out.skipped++; return; } // one atomic snapshot; a delete during the tick invalidates persistence
       out.workspaces++;
       for (const resp of await bizResps()) {
         if (resp.status !== 'active') continue;
@@ -2185,7 +2672,7 @@ async function bizDailyTick() {
         const runs = lastIds.length ? (await r(['MGET', ...lastIds.map(i => 'fm:biz:run:' + i)])).filter(Boolean).map(v => JSON.parse(v)) : [];
         const lastDaily = runs.filter(x => x.kind === 'daily').map(x => Date.parse(x.at)).sort((a, b) => b - a)[0];
         if (lastDaily && Date.now() - lastDaily < BIZ.DAILY_GAP_MS) { out.skipped++; continue; }
-        const res = await bizRun(resp, null, 'daily');
+        const res = await bizRun(resp, null, 'daily', f0);
         if (res.status === 200) out.runs++; else out.errors++;
       }
     });

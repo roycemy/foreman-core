@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizState,bizDailyTick,bizCronOk,bizChat,setJ,getJ,r};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizState,bizDailyTick,bizCronOk,bizChat,bizConsentAct,setJ,getJ,r};';
 const calls=[];
 const c={require,module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:async(u,o)=>{calls.push({u:String(u),o});const body=JSON.parse(o.body);
@@ -26,6 +26,9 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  c.process.env.ALTER_MODEL_KEY='test-key';
  const before=calls.length;d=await f.bizDiscover();assert.equal(d.status,503);assert.equal(d.body.code,'engine_not_enabled');assert.equal(calls.length,before,'no model call when workspace is not enabled');
  c.process.env.ALTER_MODEL_WS='legacy';
+ // no owner provider consent yet: engine paths refuse BEFORE any model call
+ {const nc=calls.length;const dn=await f.bizDiscover();assert.equal(dn.status,503);assert.equal(dn.body.code,'engine_no_consent');assert.equal(calls.length,nc,'no model call without owner provider consent');}
+ await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'}); // owner allows this provider+model for this workspace
  // empty library is a 400 without a model call
  await f.bizSourceDel(srcId);const b2=calls.length;d=await f.bizDiscover();assert.equal(d.status,400);assert.equal(calls.length,b2);
  // 2) sources CRUD + versioning
@@ -96,9 +99,9 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  // 8b) disclosure covers every actual transmission: bizRun sends full source texts on manual AND daily runs, so the UI must say so
  assert(/s\.text\.slice\(0, 4000\)/.test(src),'runs transmit source text');
  const bizjs=fs.readFileSync('public/js/business.js','utf8');
- assert(bizjs.includes('whenever you run a responsibility'),'source copy covers manual runs');
- assert(bizjs.includes("daily check-in"),'source copy covers scheduled daily runs');
- assert(bizjs.includes('Sources go to the reasoning engine on each run')||bizjs.includes('Your sources go to the reasoning engine on each run'),'activation point discloses per-run transmission + scheduled processing');
+ assert(bizjs.includes("each run or daily check-in sends the first 4,000 characters of every source"),'source copy covers manual runs with the real truncation');
+ assert(bizjs.includes("looking for work sends each source's full saved text (up to 20,000 characters per source)"),'source copy covers discover transmission accurately');
+ assert(bizjs.includes('On each run the first 4,000 characters of every source go to the reasoning engine'),'activation point discloses per-run transmission + scheduled processing');
  // 9) route wiring: bizState returns a bare body, so the route must wrap it in {status,body} (production 500 'Invalid status code: undefined' regression)
  assert(src.includes("send({ status: 200, body: await bizState() })"),'route wraps bizState body in a status');
  console.log('PASS business workspace: honest engine-off 503, source CRUD+versioning, verbatim evidence verification (2 dropped), discover prompt fences hostile text as data, edit/reject/activate lifecycle, stale-evidence block + confirm, runs with boundary + filtered sourcesUsed + audit, pause/kill blocking, daily tick with gap, state shape, state-route wiring, cron fail-closed guard.');
