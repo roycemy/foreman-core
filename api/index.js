@@ -1610,7 +1610,8 @@ async function routes(req, res, path, body, agentPre) {
     { const bm = path.match(/^\/business\/sources\/(src_\w+)$/); if (bm && (req.method === 'PATCH' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(req.method === 'PATCH' ? await bizSourceEdit(bm[1], body) : await bizSourceDel(bm[1])); } }
     if (path === '/business/discover' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscover()); }
     { const bm = path.match(/^\/business\/proposals\/(prop_\w+)\/(edit|reject|activate)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProposalAct(bm[1], bm[2], body)); } }
-    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
+    if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDataPurge(body)); }
+    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
     {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
@@ -1812,11 +1813,23 @@ async function bizSourceEdit(id, body) {
   if (changed) await bizLog('source_edited', { sourceId: id, fromVersion: s.version, toVersion: next.version });
   return { status: 200, body: { source: next, proposalsStale: changed ? (await bizProposals()).filter(p => (p.sourceMap || {})[id] != null && p.status === 'draft').map(p => p.id) : [] } };
 }
+// Deletion lifecycle: deleting a source also removes the copies of its text that Alter
+// derived - proposal evidence excerpts quoting it (any status). The evidence pointer stays
+// (sourceId, marked excerptDeleted) so the proposal's history is honest without keeping the content.
 async function bizSourceDel(id) {
   const s = await getJ('fm:biz:src:' + id); if (!s) return { status: 404, body: { error: 'not found' } };
   await r(['DEL', 'fm:biz:src:' + id]); await r(['SREM', 'fm:biz:sources', id]);
-  await bizLog('source_deleted', { sourceId: id, title: s.title });
-  return { status: 200, body: { deleted: true } };
+  let scrubbed = 0;
+  for (const p of await bizProposals()) {
+    let changed = false;
+    const evidence = (p.evidence || []).map(ev => {
+      if (ev && ev.sourceId === id && ev.excerpt) { changed = true; return { sourceId: id, excerpt: null, excerptDeleted: true }; }
+      return ev;
+    });
+    if (changed) { scrubbed++; await setJ('fm:biz:prop:' + p.id, { ...p, evidence }); }
+  }
+  await bizLog('source_deleted', { sourceId: id, title: s.title, proposalsScrubbed: scrubbed });
+  return { status: 200, body: { deleted: true, proposalsScrubbed: scrubbed } };
 }
 
 function bizDiscoverPrompt(srcs, recentWork) {
@@ -1952,6 +1965,14 @@ async function bizRespAct(id, op, body) {
     const next = { ...resp, status: 'retired', retiredAt: now() };
     await setJ('fm:biz:resp:' + id, next); await bizLog('responsibility_retired', { respId: id, title: resp.title });
     return { status: 200, body: { responsibility: next } };
+  }
+  if (op === 'delete') {
+    // Deleting a responsibility deletes its work history too: every run record and its index.
+    const runIds = await r(['LRANGE', 'fm:biz:runs:' + id, 0, BIZ.RUNS_KEEP]);
+    for (const rid2 of runIds) await r(['DEL', 'fm:biz:run:' + rid2]);
+    await r(['DEL', 'fm:biz:runs:' + id]); await r(['DEL', 'fm:biz:resp:' + id]); await r(['SREM', 'fm:biz:resps', id]);
+    await bizLog('responsibility_deleted', { respId: id, title: resp.title, runsDeleted: runIds.length });
+    return { status: 200, body: { deleted: true, runsDeleted: runIds.length } };
   }
   return { status: 404, body: { error: 'not found' } };
 }
@@ -2191,6 +2212,25 @@ async function bizCheckCitations(claims, maxMs) {
     out.push({ url, ...(await bizLocateCitation(url, quote, remain)) });
   }
   return out;
+}
+// Full deletion of this workspace's business data: sources, proposals (and their derived
+// excerpts), responsibilities, all run history, provider consent and the activity log.
+// Scope honesty: this removes the records from Alter's app database. It does NOT cover
+// content already sent to the reasoning provider (that is governed by the provider's own
+// retention) or platform-level infrastructure backups outside this data set.
+async function bizDataPurge(body) {
+  if (!body || body.confirm !== 'DELETE') return { status: 400, body: { error: 'Type DELETE to confirm' } };
+  const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0 };
+  for (const s of await bizSources()) { await r(['DEL', 'fm:biz:src:' + s.id]); counts.sources++; }
+  for (const p of await bizProposals()) { await r(['DEL', 'fm:biz:prop:' + p.id]); counts.proposals++; }
+  for (const rp of await bizResps()) {
+    const runIds = await r(['LRANGE', 'fm:biz:runs:' + rp.id, 0, BIZ.RUNS_KEEP]);
+    for (const rid2 of runIds) { await r(['DEL', 'fm:biz:run:' + rid2]); counts.runs++; }
+    await r(['DEL', 'fm:biz:runs:' + rp.id]); await r(['DEL', 'fm:biz:resp:' + rp.id]); counts.responsibilities++;
+  }
+  for (const k of ['fm:biz:sources', 'fm:biz:proposals', 'fm:biz:resps', 'fm:biz:consent', 'fm:biz:log']) await r(['DEL', k]);
+  await r(['SREM', 'gl:biz:workspaces', wsId()]);
+  return { status: 200, body: { purged: true, counts } };
 }
 async function bizDailyTick() {
   const wss = await r(['SMEMBERS', 'gl:biz:workspaces']);
