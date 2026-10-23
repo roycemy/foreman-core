@@ -1605,6 +1605,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/state') return res.json(await fullState());
     // --- business workspace: owner sources -> evidence-checked proposals -> owner-bounded responsibilities ---
     if (path === '/business/state' && req.method === 'GET') return send({ status: 200, body: await bizState() });
+    if (path === '/business/provider-consent' && (req.method === 'POST' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizConsentAct(req.method === 'POST')); }
     if (path === '/business/sources' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizSourceAdd(body)); }
     { const bm = path.match(/^\/business\/sources\/(src_\w+)$/); if (bm && (req.method === 'PATCH' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(req.method === 'PATCH' ? await bizSourceEdit(bm[1], body) : await bizSourceDel(bm[1])); } }
     if (path === '/business/discover' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscover()); }
@@ -1715,8 +1716,25 @@ async function bizEngine() {
   const e = bizEngineEnv();
   if (!e.key) return { ok: false, code: 'engine_not_configured', error: 'The reasoning engine is not connected yet.' };
   if (!e.allow.includes(wsId())) return { ok: false, code: 'engine_not_enabled', error: 'The reasoning engine is not enabled for this workspace.' };
-  if (/^https?:\/\/(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|172\.(1[6-9]|2\d|3[01])\.)|\.internal(\/|$)/.test(e.base)) return { ok: false, code: 'engine_bad_endpoint', error: 'The reasoning engine endpoint is not allowed.' };
+  let pu; try { pu = new URL(e.base); } catch { return { ok: false, code: 'engine_bad_endpoint', error: 'The reasoning engine endpoint is not allowed.' }; }
+  // Business content leaves over HTTPS only; private-host endpoints stay refused as defense in depth.
+  if (pu.protocol !== 'https:' || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|172\.(1[6-9]|2\d|3[01])\.)|\.internal(\/|$)/.test(pu.host)) return { ok: false, code: 'engine_bad_endpoint', error: 'The reasoning engine endpoint must be a public HTTPS address.' };
+  // Owner consent is per workspace, per provider+model: discover, manual runs AND the daily
+  // check-in all pass through here, so scheduled processing is gated the same way.
+  const consent = await getJ('fm:biz:consent');
+  if (!consent || consent.host !== pu.host || consent.model !== e.model) return { ok: false, code: 'engine_no_consent', error: 'The owner has not allowed this reasoning provider for this workspace.' };
   return { ok: true, key: e.key, base: e.base, model: e.model };
+}
+// Owner-granted provider consent: recorded with the exact provider host and model it covers.
+// A provider or model change invalidates it and processing stops until the owner re-approves.
+async function bizConsentAct(grant) {
+  const e = bizEngineEnv();
+  if (!e.key || !e.allow.includes(wsId())) return { status: 503, body: { error: 'The reasoning engine is not enabled for this workspace.', code: 'engine_not_enabled' } };
+  let pu; try { pu = new URL(e.base); } catch { return { status: 503, body: { error: 'The reasoning engine endpoint is not allowed.', code: 'engine_bad_endpoint' } }; }
+  if (!grant) { await r(['DEL', 'fm:biz:consent']); await bizLog('provider_consent_withdrawn', { host: pu.host, model: e.model }); return { status: 200, body: { consent: null } }; }
+  const consent = { host: pu.host, model: e.model, at: now() };
+  await setJ('fm:biz:consent', consent); await bizLog('provider_consent_granted', { host: pu.host, model: e.model });
+  return { status: 200, body: { consent } };
 }
 async function bizChat(messages, opts) {
   opts = opts || {};
@@ -1761,7 +1779,9 @@ const bizStale = (p, srcs) => { const byId = {}; srcs.forEach(s => byId[s.id] = 
 async function bizState() {
   const [srcs, props, resps, logRaw] = await Promise.all([bizSources(), bizProposals(), bizResps(), r(['LRANGE', 'fm:biz:log', 0, 19])]);
   const eng = bizEngineEnv();
-  const engine = eng.key ? { configured: true, enabled: eng.allow.includes(wsId()), host: (() => { try { return new URL(eng.base).host; } catch { return 'unknown'; } })(), model: eng.model } : { configured: false, enabled: false };
+  const consent = await getJ('fm:biz:consent');
+  const engine = eng.key ? { configured: true, enabled: eng.allow.includes(wsId()), host: (() => { try { return new URL(eng.base).host; } catch { return 'unknown'; } })(), model: eng.model,
+    consent: consent ? { host: consent.host, model: consent.model, at: consent.at, current: consent.host === (() => { try { return new URL(eng.base).host; } catch { return ''; } })() && consent.model === eng.model } : null } : { configured: false, enabled: false, consent: null };
   const runsByResp = {};
   for (const rp of resps) { const ids = await r(['LRANGE', 'fm:biz:runs:' + rp.id, 0, 9]); if (ids.length) runsByResp[rp.id] = (await r(['MGET', ...ids.map(i => 'fm:biz:run:' + i)])).filter(Boolean).map(v => JSON.parse(v)); }
   return { engine, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
