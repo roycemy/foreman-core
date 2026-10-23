@@ -52,7 +52,7 @@
         ${sys ? `<div class="bz-sech">Systems this would need</div><div class="bz-chips">${sys}</div>` : ''}
         <div class="bz-bound"><b>Starting boundary</b><p>${esc(p.boundary)}</p></div>
         <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. Your sources go to the reasoning engine on each run. Results are drafts for your review - nothing is sent, spent or connected.</p>
-        <label class="fld bz-check"><input type="checkbox" data-p-research> Let it read specific public web pages for this work (exact pages only - it cannot search the web). Pages it reads also go to the reasoning engine during those runs.</label>
+        <label class="fld bz-check"><input type="checkbox" data-p-research> Let it read public pages whose exact URLs already appear in your sources or the work you bring it. It cannot search the web and it cannot visit pages you did not point to. Pages it reads also go to the reasoning engine during those runs.</label>
         <div class="btns"><button class="b ink" data-p-activate="${p.id}">Approve and start</button><button class="b out" data-p-edit="${p.id}">Edit</button><button class="b out" data-p-reject="${p.id}">Reject</button></div>`}
     </div>`;
   }
@@ -62,10 +62,10 @@
     return `<div class="bz-run">
       <div class="bz-run-h"><small>${run.kind === 'daily' ? 'Daily check-in' : 'You brought work'} · ${BB.when(run.at)}${run.usage ? ' · ' + esc(tok(run.usage)) + ' tokens' : ''}</small></div>
       ${run.input ? `<p class="bz-run-in">${esc(run.input.length > 240 ? run.input.slice(0, 240) + '…' : run.input)}</p>` : ''}
-      <div class="bz-draft"><span class="bzc">Draft · nothing was sent</span><p>${esc(run.output)}</p></div>
+      ${run.status === 'failed' ? `<div class="bz-draft"><span class="bzc warn">Run failed</span><p>${esc(run.failureReason === 'engine_malformed_output' ? 'The engine replied in a format Alter could not use, so nothing was drafted.' : 'The engine did not produce a draft this run.')}</p></div>` : `<div class="bz-draft"><span class="bzc">Draft · nothing was sent</span><p>${esc(run.output)}</p></div>`}
       ${run.blockedStep ? `<p class="bz-blocked">Did not do: ${esc(run.blockedStep)}</p>` : ''}
-      ${run.fetchedPages && run.fetchedPages.length ? `<p class="meta">Pages read this run: ${run.fetchedPages.filter(x => x.ok).length}${run.fetchedPages.some(x => !x.ok) ? ' · ' + run.fetchedPages.filter(x => !x.ok).length + ' could not be read' : ''}</p>` : ''}
-      ${run.citations && run.citations.length ? `<div class="bz-cites">${run.citations.map(c => { const u = c.finalUrl || c.url; let h = u, safe = ''; try { const pu = new URL(u); if (pu.protocol === 'http:' || pu.protocol === 'https:') { safe = u; h = pu.host; } } catch (e) {} return `<div class="bz-cite">${chip(c.located ? 'Quote found on page' : 'Quote not found on page', c.located ? 'ok' : 'warn')}<p>${esc(c.quote)}</p>${safe ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer nofollow">${esc(h)}</a>` : `<small>${esc(u)}</small>`}</div>`; }).join('')}</div>` : ''}
+      ${run.fetchedPages && run.fetchedPages.length ? `<p class="meta">Pages read this run: ${run.fetchedPages.filter(x => x.ok).length}${run.fetchedPages.some(x => !x.ok) ? ' · ' + run.fetchedPages.filter(x => !x.ok).length + ' not read (' + run.fetchedPages.filter(x => !x.ok).map(x => x.error === 'url_not_approved' ? 'not an approved page' : x.error === 'ssrf_blocked' ? 'not a public page' : 'could not be read').join(', ') + ')' : ''}</p>` : ''}
+      ${run.citations && run.citations.length ? `<div class="bz-cites">${run.citations.map(c => { const u = c.finalUrl || c.url; let h = u, safe = ''; try { const pu = new URL(u); if (pu.protocol === 'http:' || pu.protocol === 'https:') { safe = u; h = pu.host; } } catch (e) {} const label = c.located ? 'Quote found on page' : c.reason === 'page_not_fetched' ? 'Page not read this run' : c.reason === 'excerpt_too_short' || c.reason === 'excerpt_too_long' ? 'Quote not usable' : 'Quote not found on page'; return `<div class="bz-cite">${chip(label, c.located ? 'ok' : 'warn')}<p>${esc(c.quote)}</p>${safe ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer nofollow">${esc(h)}</a>` : `<small>${esc(u)}</small>`}</div>`; }).join('')}</div>` : ''}
       ${run.nextSteps && run.nextSteps.length ? `<div class="bz-next"><div class="bz-sech">Suggested next steps</div><ul>${run.nextSteps.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
     </div>`;
   }
