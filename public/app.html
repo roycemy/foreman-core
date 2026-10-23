@@ -26,7 +26,7 @@
 
 <header class="top" role="banner">
   <a class="mark" href="/index.html" aria-label="Alter website" title="Back to Alter website"><i aria-hidden="true"></i><span data-brand="upper">alter</span></a>
-  <nav class="nav" id="nav" aria-label="Main"><a href="#floor" data-v="floor">Floor</a><a href="#receipts" data-v="receipts">Receipts</a><a href="#card" data-v="card">Card</a></nav>
+  <nav class="nav" id="nav" aria-label="Main"><a href="#floor" data-v="floor">Floor</a><a href="#business" data-v="business">Business</a><a href="#receipts" data-v="receipts">Receipts</a><a href="#card" data-v="card">Card</a></nav>
   <div class="sp"></div>
   <button class="kbar" id="kbar" type="button" aria-keyshortcuts="Meta+K Control+K"><span>Search or jump to a bot</span><span aria-hidden="true">⌘K</span></button>
   <button class="ibtn" id="ibtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="I">Inbox <span class="nw" id="nw" hidden></span><b class="count sr" id="icount" hidden></b></button>
@@ -62,6 +62,7 @@
     </div>
   </section>
   <section class="view page" id="v-inbox" aria-label="HQ"></section>
+  <section class="view page" id="v-business" aria-label="Business"></section>
   <section class="view page" id="v-receipts" aria-label="Receipts"></section>
   <section class="view page" id="v-card" aria-label="Card"></section>
 </main>
@@ -72,6 +73,7 @@
 
 <nav class="tabs" id="tabs" aria-label="Main">
   <a href="#inbox" data-v="inbox">${inbox}HQ<i id="tcount" role="button" aria-label="Anything on me?" hidden></i></a>
+  <a href="#business" data-v="business">${grid}Business</a>
   <a href="#receipts" data-v="receipts">${receipt}Receipts</a>
   <a href="#card" data-v="card">${card}Card</a>
 </nav>
@@ -109,6 +111,7 @@
 <script src="/js/cmdk.js"></script>
 <script src="/js/card.js"></script>
 <script src="/js/receipt-doc.js"></script>
+<script src="/js/business.js"></script>
 <script src="/js/receipts.js"></script>
 <script src="/js/share.js"></script>
 <script src="/js/components/dock.js"></script>
@@ -123,7 +126,7 @@
 <script src="/js/app.js"></script>
 <script>(function(){
 /* Installed PWAs stay alive for days and keep old JS in memory. On every resume: ask for a new service worker, and compare the app files with what this page loaded. A change reloads at once, or shows an Update bar if you are typing. */
-var reloaded=false,base=null,files=['/js/components/motion.js','/styles/components/motion.css','/js/floor.js','/js/inbox.js','/js/core.js','/js/connect.js','/js/inspector.js','/js/app.js','/styles/app.css'];
+var reloaded=false,base=null,files=['/js/components/motion.js','/styles/components/motion.css','/js/floor.js','/js/inbox.js','/js/core.js','/js/connect.js','/js/inspector.js','/js/business.js','/js/app.js','/styles/app.css'];
 function bar(){if(document.getElementById('upd'))return;var b=document.createElement('div');b.id='upd';b.setAttribute('role','status');b.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:999;background:#121212;color:#fff;border-radius:12px;padding:12px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;font:14px system-ui';b.innerHTML='<span>A new version of Alter is ready.</span><button style="background:#fff;color:#121212;border:0;border-radius:8px;padding:8px 14px;font:600 14px system-ui" type="button">Update</button>';b.querySelector('button').onclick=function(){location.reload()};document.body.appendChild(b)}
 function typing(){var a=document.activeElement;return !!(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.value)}
 function fp(){return Promise.all(files.map(function(u){return fetch(u,{cache:'no-store'}).then(function(r){return r.text()}).then(function(t){return t.length+':'+t.slice(0,30)+t.slice(-40)})})).then(function(a){var s=a.join('|');if(base===null){base=s;return}if(s!==base&&!reloaded){if(typing())bar();else{reloaded=true;location.reload()}}}).catch(function(){})}
