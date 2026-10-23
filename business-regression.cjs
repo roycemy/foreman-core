@@ -93,6 +93,12 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  assert.equal(f.bizCronOk({headers:{authorization:'bearer topsecret'}}),false,'wrong scheme case -> closed');
  assert.equal(f.bizCronOk({headers:{authorization:'Bearer topsecret'}}),true,'exact bearer opens');
  delete c.process.env.CRON_SECRET;
+ // 8b) disclosure covers every actual transmission: bizRun sends full source texts on manual AND daily runs, so the UI must say so
+ assert(/s\.text\.slice\(0, 4000\)/.test(src),'runs transmit source text');
+ const bizjs=fs.readFileSync('public/js/business.js','utf8');
+ assert(bizjs.includes('whenever you run a responsibility'),'source copy covers manual runs');
+ assert(bizjs.includes("daily check-in"),'source copy covers scheduled daily runs');
+ assert(bizjs.includes('Sources go to the reasoning engine on each run')||bizjs.includes('Your sources go to the reasoning engine on each run'),'activation point discloses per-run transmission + scheduled processing');
  // 9) route wiring: bizState returns a bare body, so the route must wrap it in {status,body} (production 500 'Invalid status code: undefined' regression)
  assert(src.includes("send({ status: 200, body: await bizState() })"),'route wraps bizState body in a status');
  console.log('PASS business workspace: honest engine-off 503, source CRUD+versioning, verbatim evidence verification (2 dropped), discover prompt fences hostile text as data, edit/reject/activate lifecycle, stale-evidence block + confirm, runs with boundary + filtered sourcesUsed + audit, pause/kill blocking, daily tick with gap, state shape, state-route wiring, cron fail-closed guard.');

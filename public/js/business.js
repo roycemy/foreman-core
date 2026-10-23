@@ -51,6 +51,7 @@
         ${un ? `<div class="bz-sech">What Alter does not know</div><ul class="bz-ul">${un}</ul>` : ''}
         ${sys ? `<div class="bz-sech">Systems this would need</div><div class="bz-chips">${sys}</div>` : ''}
         <div class="bz-bound"><b>Starting boundary</b><p>${esc(p.boundary)}</p></div>
+        <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. Your sources go to the reasoning engine on each run. Results are drafts for your review - nothing is sent, spent or connected.</p>
         <div class="btns"><button class="b ink" data-p-activate="${p.id}">Approve and start</button><button class="b out" data-p-edit="${p.id}">Edit</button><button class="b out" data-p-reject="${p.id}">Reject</button></div>`}
     </div>`;
   }
@@ -98,7 +99,7 @@
       <label class="fld">Title<input class="in" id="bz-add-title" maxlength="120" placeholder="e.g. How last week actually went"></label>
       <label class="fld">Text<textarea class="in" id="bz-add-text" rows="6" maxlength="20000" placeholder="Paste notes, a call summary, a process doc…"></textarea></label>
       <div class="btns"><button class="b ink" id="bz-add">Add source</button></div>
-      <p class="meta">Saved to your Alter workspace. Shared with the reasoning engine only when it is connected and you ask Alter to look for work.</p></div>`;
+      <p class="meta">Saved to your Alter workspace. When the reasoning engine is connected, a source's full text goes to it whenever you ask Alter to look for work, whenever you run a responsibility, and during each active responsibility's daily check-in.</p></div>`;
     const empty = !srcs.length ? `<div class="bz-hero"><h2>Teach Alter the business</h2>
       <p>1. Add notes or documents about how the business actually runs.<br>2. Alter proposes responsibilities it could take over, each backed by quotes from your own notes.<br>3. You approve what starts. Approved work runs as drafts you review - nothing is sent, spent or connected.</p></div>` : '';
     const propSec = srcs.length ? `<div class="bz-sech row"><span>What Alter could take over</span><button class="b ink sm" id="bz-discover" ${eng.configured && eng.enabled ? '' : 'disabled'}>Look for work</button></div>
