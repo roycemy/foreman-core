@@ -69,6 +69,20 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  assert.equal((await f.bizProposals?[]:[]).length,0);
  assert.equal((await f.bizState()).proposals.length,0,'no proposal recreated');
 
+ // --- 1b) source delete bumps the fence: a parked discover cannot persist the deleted source's quote
+ await consent();
+ const s9=(await f.bizSourceAdd({kind:'note',title:'Nine',text:'We answer customer emails within a day.'})).body.source.id;
+ c.process.env.__s1=s9;
+ let open9;gate={promise:new Promise(res=>{open9=res;})};
+ const disc9=f.bizDiscover();
+ await new Promise(r=>setTimeout(r,20)); // parked in the provider call
+ const del9=await f.bizSourceDel(s9);
+ assert.equal(del9.status,200,'source delete completes while discover is parked');
+ open9();gate=null;
+ const d9=await disc9;
+ assert.equal(d9.status,409,'parked discover refused after the source delete generation bump');
+ assert.equal((await f.bizState()).proposals.length,0,'no proposal carrying the deleted quote persisted');
+
  // --- 3a) source delete partial failure: source survives, retry finishes
  await f.bizSourceAdd({kind:'note',title:'Keep',text:'Fridays are for invoicing.'});
  const victim=(await f.bizState()).sources[0];
@@ -80,19 +94,72 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  const retry=await f.bizSourceDel(victim.id);
  assert.equal(retry.status,200,'retry completes after the storage fault clears');
 
- // --- 3b) purge partial failure: truthful counts, retry finishes
- await f.r(['SET','fm:biz:src:src_bad','not json']);await f.r(['SADD','fm:biz:sources','src_bad']);
- const pfail=await f.bizDataPurge({confirm:'DELETE'});
- assert.equal(pfail.status,503);assert.equal(pfail.body.code,'purge_incomplete');assert.equal(pfail.body.purged,false);
- await f.r(['DEL','fm:biz:src:src_bad']);await f.r(['SREM','fm:biz:sources','src_bad']);
- const pretry=await f.bizDataPurge({confirm:'DELETE'});
- assert.equal(pretry.status,200);assert.equal(pretry.body.purged,true,'purge retry completes');
+ // --- 3b) purge inventory is keyspace-complete: corrupted, index-missing and orphan records of
+ // EVERY family are collected (indexes are never trusted), and the freeze clears afterwards
+ await f.r(['SET','fm:biz:src:src_bad','not json']); // corrupted AND indexless
+ await f.r(['SET','fm:biz:prop:prop_orphan','{"id":"prop_orphan"}']);
+ await f.r(['SET','fm:biz:resp:resp_orphan','{"id":"resp_orphan"}']);
+ await f.r(['SET','fm:biz:run:run_orphan','{"id":"run_orphan","respId":"resp_orphan"}']);
+ await f.r(['LPUSH','fm:biz:runs:resp_orphan','run_orphan']);
+ const full=await f.bizDataPurge({confirm:'DELETE'});
+ assert.equal(full.status,200);assert.equal(full.body.purged,true);
+ for(const k of ['fm:biz:src:src_bad','fm:biz:prop:prop_orphan','fm:biz:resp:resp_orphan','fm:biz:run:run_orphan','fm:biz:runs:resp_orphan','fm:biz:sources','fm:biz:proposals','fm:biz:resps','fm:biz:consent','fm:biz:log'])
+  assert.equal(await f.r(['GET',k]),null,k+' purged without any index entry');
+ assert.equal(await f.r(['GET','fm:biz:freeze']),null,'freeze cleared after purge');
+ assert((await f.r(['GET','fm:biz:fence']))!=='0'&&!!(await f.r(['GET','fm:biz:fence'])),'fence survives the purge to keep invalidating older writers');
+
+ // --- 2c) freeze contract: while the freeze is held, ALL writes are refused (entry gate AND EVAL gate)
+ await f.bizSourceAdd({kind:'note',title:'F',text:'We answer customer emails within a day.'});
+ await consent();
+ await f.r(['SET','fm:biz:freeze','freeze_test','NX','PX',60000]);
+ assert.equal((await f.bizSourceAdd({kind:'note',title:'X',text:'x x x x x x x x x x'})).status,409,'add frozen');
+ const sF=(await f.bizState()).sources[0];
+ assert.equal((await f.bizSourceDel(sF.id)).status,409,'delete cannot start under another freeze');
+ assert.equal((await f.bizDataPurge({confirm:'DELETE'})).status,409,'purge cannot start under another freeze');
+ assert.equal((await f.bizConsentAct(false)).status,409,'withdraw reports the conflict instead of a fake success');
+ const pd=(await f.bizDiscover());
+ assert.equal(pd.status,409,'discover frozen pre-flight');
+ assert.equal((await f.bizRespAct('resp_none','run',{input:'x'})).status,404,'run on missing resp still 404');
+ await f.r(['DEL','fm:biz:freeze']);
+ assert.equal((await f.bizConsentAct(false)).status,200,'withdraw works again once the freeze clears');
+
+ // --- 2d) resp delete excludes a NEW-generation run parked mid-delete window: after the delete
+ // completes, a parked old-generation run still cannot persist (fence bump), and the resp is gone
+ const sR=(await f.bizSourceAdd({kind:'note',title:'R2',text:'We answer customer emails within a day.'})).body.source.id;
+ c.process.env.__s1=sR;
+ await consent();
+ const pR=(await f.bizDiscover()).body.proposals[0];
+ const rR=(await f.bizProposalAct(pR.id,'activate',{})).body.responsibility.id;
+ let openR;gate={promise:new Promise(res=>{openR=res;})};
+ const runR=f.bizRespAct(rR,'run',{input:'parked work'});
+ await new Promise(r=>setTimeout(r,20));
+ const delR=await f.bizRespAct(rR,'delete',{});
+ assert.equal(delR.status,200,'delete completes while the run is parked in the provider call');
+ openR();gate=null;
+ const runRes=await runR;
+ assert.equal(runRes.status,409,'parked run cannot persist after the delete');
+ assert.equal((await f.bizRunKeysAll()).length,0,'no run object recreated');
+ assert.equal(await f.getJ('fm:biz:resp:'+rR),null,'responsibility stays deleted');
 
  // --- 4a) IPv6 / internal-DNS / CGNAT endpoints refused
- for(const bad of ['https://[::1]/v1','https://[fd00::8]/v1','https://[fe80::1]/v1','https://[::ffff:127.0.0.1]/v1','https://x.internal/v1','https://x.local/v1','https://100.64.0.1/v1']){
+ // allowlist every bad host so the CLASSIFIER layer is what must refuse them
+ c.process.env.ALTER_MODEL_ALLOWED_HOSTS='api.groq.com,::1,fd00::8,fe80::1,ff02::1,fec0::1,::ffff:127.0.0.1,x.internal,x.local,100.64.0.1,localhost,api.openai.com,api.groq.com.';
+ for(const bad of ['https://[::1]/v1','https://[fd00::8]/v1','https://[fe80::1]/v1','https://[ff02::1]/v1','https://[fec0::1]/v1','https://[::ffff:127.0.0.1]/v1','https://x.internal/v1','https://x.local/v1','https://100.64.0.1/v1','https://localhost./v1']){
   c.process.env.ALTER_MODEL_BASE_URL=bad;
   const e=await f.bizEngine();assert.equal(e.ok,false,bad);assert.equal(e.code,'engine_bad_endpoint',bad);
  }
+ // the allowlist is the real gate: a perfectly public syntactically-valid host is refused when not vetted
+ delete c.process.env.ALTER_MODEL_ALLOWED_HOSTS;
+ c.process.env.ALTER_MODEL_BASE_URL='https://api.openai.com/v1';
+ let e2=await f.bizEngine();assert.equal(e2.ok,false);assert.equal(e2.code,'engine_bad_endpoint','unvetted public origin refused');
+ // trailing-dot look-alike of a vetted origin is not the vetted origin
+ c.process.env.ALTER_MODEL_BASE_URL='https://api.groq.com./v1';
+ e2=await f.bizEngine();assert.equal(e2.ok,false,'trailing-dot origin refused');
+ // operator-vetted extension works with owner consent
+ c.process.env.ALTER_MODEL_ALLOWED_HOSTS='api.groq.com,api.openai.com';
+ c.process.env.ALTER_MODEL_BASE_URL='https://api.openai.com/v1';
+ e2=await f.bizEngine();assert.equal(e2.ok,false,'still gated on consent');assert.equal(e2.code,'engine_no_consent');
+ delete c.process.env.ALTER_MODEL_ALLOWED_HOSTS;
  c.process.env.ALTER_MODEL_BASE_URL='https://api.groq.com/openai/v1';
 
  // --- 4b) redirect: the payload never follows a 3xx off the consented host
@@ -105,5 +172,5 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  const red=await f.bizRespAct(rr,'run',{input:'hello'});
  assert.equal(red.status,503);assert.equal(red.body.code,'engine_redirect','redirect refused');
  assert.equal(seen.length,n0+1,'exactly one call, to the consented endpoint only');
- console.log('PASS privacy lifecycle: orphan run inventory (overflow + pre-existing), purge/discover race fenced (no recreation), truthful partial deletes with working retry, IPv6/internal-DNS/CGNAT endpoints refused, redirect refused pre-payload.');
+ console.log('PASS privacy lifecycle: orphan inventory (overflow + pre-existing + indexless families), source-delete generation bump vs parked discover, freeze exclusion contract, resp-delete vs parked run, purge race fenced, truthful partial deletes with retry, keyspace-complete purge, vetted-origin allowlist + full classifier, redirect refused pre-payload.');
 })().catch(e=>{console.error(e);process.exit(1)});
