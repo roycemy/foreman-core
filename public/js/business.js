@@ -5,7 +5,7 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pollT = null;
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pollT = null;
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
   // Tenant identity guard: loaded state belongs to the exact identity (account + workspace)
@@ -39,6 +39,7 @@
       B = null; loadErr = null; editingSrc = null; editingProp = null; openResp = {}; loadedId = null;
       pendingApproval = null; // A's reviewed pages and work text never survive into another identity
       pendingDelegation = null; // same for a reviewed delegation payload
+      pendingDiscovery = null; // and a reviewed discovery scan payload
       V.innerHTML = ''; // synchronous DOM clear: nothing from the previous identity stays painted
       return true;
     }
@@ -76,7 +77,7 @@
     const un = (p.unknowns || []).map(u => `<li>${esc(u)}</li>`).join('');
     const sys = (p.systems || []).map(s => chip(s)).join('');
     return `<div class="bz-card" data-prop="${p.id}">
-      <div class="bz-prop-h"><div class="t"><b>${esc(p.title)}</b><small>Drafted by the reasoning engine from your sources · ${BB.when(p.createdAt)}${p.editedByOwner ? ' · edited by you' : ''}</small></div>${chip('Proposal · not running', 'dim')}${staleBadge(p)}</div>
+      <div class="bz-prop-h"><div class="t"><b>${esc(p.title)}</b><small>${p.bot ? 'Mapped by ' + esc(p.bot.name) + ' from your sources · every quote checked against them' : 'Drafted by the reasoning engine from your sources'} · ${BB.when(p.createdAt)}${p.editedByOwner ? ' · edited by you' : ''}</small></div>${chip('Proposal · not running', 'dim')}${staleBadge(p)}</div>
       ${editing ? `
         <label class="fld">Name<input class="in" data-p-title value="${esc(p.title)}" maxlength="90"></label>
         <label class="fld">What it covers<textarea class="in" data-p-summary rows="3" maxlength="600">${esc(p.summary)}</textarea></label>
@@ -88,8 +89,10 @@
         ${un ? `<div class="bz-sech">What Alter does not know</div><ul class="bz-ul">${un}</ul>` : ''}
         ${sys ? `<div class="bz-sech">Systems this would need</div><div class="bz-chips">${sys}</div>` : ''}
         <div class="bz-bound"><b>Starting boundary</b><p>${esc(p.boundary)}</p></div>
-        <p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. On each run the first 4,000 characters of every source go to the reasoning engine. If a bot is connected, work you bring goes to it instead - you review the exact text first. Results come back here as drafts for your review. Alter does not send them anywhere, and cannot verify what a connected bot does with the text it receives.</p>
-        <label class="fld bz-check"><input type="checkbox" data-p-research> Let it read public web pages during runs. Before each run you approve the exact pages it may read (chosen from URLs in your sources or the work you bring). It cannot search the web and it cannot visit pages you did not approve. Approved pages also go to the reasoning engine during those runs.</label>
+        ${p.bot
+          ? `<p class="meta">Starting runs this responsibility inside the boundary above. Work you bring goes to <b>${esc(p.bot.name)}</b> - you review the exact text before anything leaves, and the draft comes back here. Alter does not send drafts anywhere and cannot verify what the bot does with the text it receives. Daily check-ins and web-page reading use the reasoning engine and are not turned on for this responsibility.</p>`
+          : `<p class="meta">Starting runs this responsibility inside the boundary above, plus a daily check-in. On each run the first 4,000 characters of every source go to the reasoning engine. If a bot is connected, work you bring goes to it instead - you review the exact text first. Results come back here as drafts for your review. Alter does not send them anywhere, and cannot verify what a connected bot does with the text it receives.</p>
+        <label class="fld bz-check"><input type="checkbox" data-p-research> Let it read public web pages during runs. Before each run you approve the exact pages it may read (chosen from URLs in your sources or the work you bring). It cannot search the web and it cannot visit pages you did not approve. Approved pages also go to the reasoning engine during those runs.</label>`}
         <div class="btns"><button class="b ink" data-p-activate="${p.id}">Approve and start</button><button class="b out" data-p-edit="${p.id}">Edit</button><button class="b out" data-p-reject="${p.id}">Reject</button></div>`}
     </div>`;
   }
@@ -131,6 +134,7 @@
     </div>`;
   }
   function respCard(rp) {
+    const engC = (B && B.engine) || {};
     if (rp.status === 'retired') return `<div class="bz-card" data-resp="${rp.id}">
       <div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>Retired${rp.retiredAt ? ' ' + BB.when(rp.retiredAt) : ''}${rp.runsCount ? ' · ' + rp.runsCount + (rp.runsCount === 1 ? ' run' : ' runs') + ' in history' : ''}</small></div>${chip('Retired', 'dim')}</div>
       <p class="meta">Retired responsibilities keep their stored work history until you delete it.</p>
@@ -165,7 +169,7 @@
           <p class="meta">${d.sources && d.sources.length ? 'Included sources: ' + d.sources.map(s => esc(s.title) + ' v' + s.version + (s.chars < s.totalChars ? ' (first ' + s.chars.toLocaleString() + ' of ' + s.totalChars.toLocaleString() + ' characters)' : '')).join(', ') + '.' : 'No sources are linked to this responsibility - only the work text goes.'}${d.omittedSources && d.omittedSources.length ? ' Not included (no room in one job): ' + d.omittedSources.map(s => esc(s.title)).join(', ') + '.' : ''}</p>
           <p class="meta">The report comes back here as a draft. Alter does not send it anywhere and cannot verify what the bot did with the text.</p>
           <div class="btns"><button class="b ink" data-dele-run type="button">Send to ${esc(d.bot.name)}</button><button class="b out" data-dele-cancel type="button">Cancel</button></div></div>`; })() : ''}
-        <p class="meta">Alter also does a daily check-in on active responsibilities and leaves what it finds here. Results come back here as drafts - Alter does not send them anywhere.${rp.research ? ' When it reads owner-approved pages during a run, those pages go to the reasoning engine too.' : ''}</p>
+        ${engC.consent && engC.consent.current ? `<p class="meta">Alter also does a daily check-in on active responsibilities and leaves what it finds here. Results come back here as drafts - Alter does not send them anywhere.${rp.research ? ' When it reads owner-approved pages during a run, those pages go to the reasoning engine too.' : ''}</p>` : `<p class="meta">Results come back here as drafts - Alter does not send them anywhere. Daily check-ins use the reasoning engine and are off in this workspace.</p>`}
         ${runs ? `<div class="bz-sech">History</div>${runs}` : '<p class="meta">No work done yet.</p>'}
       </div>` : ''}
     </div>`;
@@ -179,7 +183,7 @@
     const eng = B.engine || {}, srcs = B.sources || [], props = (B.proposals || []).filter(p => p.status !== 'rejected'), resps = B.responsibilities || [];
     const engNote = eng.configured && eng.enabled ? (eng.consent && eng.consent.current ? '' :
       `<div class="bz-note">Provider processing is off. Allow it above before Alter looks for work or runs responsibilities - your sources stay in Alter until you do.</div>`) :
-      `<div class="bz-note">The reasoning engine ${eng.configured ? 'is connected but not enabled for this workspace' : 'is not connected yet'}. You can add sources now; proposals and work runs start once setup finishes. Nothing is simulated - Alter will not invent proposals without it.</div>`;
+      `<div class="bz-note">The reasoning engine ${eng.configured ? 'is connected but not enabled for this workspace' : 'is not connected yet'}. ${B.delegate ? 'You can add sources and map the business with ' + esc(B.delegate.name) + ' now; engine runs and daily check-ins start once setup finishes.' : 'You can add sources now; proposals and work runs start once setup finishes.'} Nothing is simulated: proposals only come from a provider or bot answer whose quotes check against your sources, never invented.</div>`;
     const addForm = `<div class="bz-card"><div class="bz-sech">Add to what Alter knows</div>
       <div class="bz-kind"><button class="b out sm" data-kind="note" type="button">Note</button><button class="b out sm" data-kind="doc" type="button">Document</button></div>
       <label class="fld">Title<input class="in" id="bz-add-title" maxlength="120" placeholder="e.g. How last week actually went"></label>
@@ -202,8 +206,33 @@
       <p class="meta">Deleting a source removes the source, the verbatim quotes copied from it into proposals, and page addresses copied from it into research run records: approved-page lists, fetched-page entries and citations that reference them. An address that appears in the source is removed even if you also pasted it into a work item - the work item text you pasted stays as your own record. Work derived from the source - proposal text, responsibilities, run drafts and suggested next steps, which can reflect its content - is kept as your reviewable record, and activity entries can still mention a deleted item's title; that history is intentional. Deleting a responsibility removes that responsibility and its runs only. Only deleting all business data removes sources, proposals, responsibilities, work history, provider consent and the activity log from Alter's database; one minimal receipt of the purge itself remains there (an id, the time and item counts, none of your text). Content already sent to the reasoning provider is governed by that provider's own retention, and platform infrastructure backups are outside this deletion.</p>
       <p class="meta">Work you send to a connected bot leaves Alter through the bot's own connection; what the bot's provider processes or keeps is governed by that provider, and a connected personal bot account is not a separate private space for this business's data. Deleting a source cancels a pending delegated job that used it; deleting a responsibility cancels its pending delegated jobs; deleting all business data cancels every pending delegated job and removes every delegated job record with it.</p>
       <div class="btns"><button class="b danger sm" id="bz-purge">Delete all business data</button></div></div>`;
-    const propSec = srcs.length ? `<div class="bz-sech row"><span>What Alter could take over</span><button class="b ink sm" id="bz-discover" ${eng.configured && eng.enabled && eng.consent && eng.consent.current ? '' : 'disabled'}>Look for work</button></div>
+    const latestDisc = (B.discoveries || [])[0] || null;
+    const discLive = latestDisc && (latestDisc.status === 'delegated' || latestDisc.status === 'running') ? latestDisc : null;
+    const discFailed = !discLive && latestDisc && latestDisc.status === 'failed' ? latestDisc : null;
+    const discCard = discLive ? (() => { const j = discLive.job || null;
+        const state = !j || j.status === 'queued' ? 'Sent. Waiting for it to pick the job up.'
+          : j.status === 'running' ? 'Working on it' + (j.startedAt ? ' since ' + BB.when(j.startedAt) : '') + '.'
+          : j.status === 'missing' ? 'The job record is gone, so this scan cannot finish.'
+          : 'Finishing up.';
+        return `<div class="bz-card"><div class="bz-sech">Business scan · with ${esc(discLive.bot.name)}</div>
+          <p class="meta">${esc(state)} Its answer is checked against your sources before any proposal appears - quotes that do not match are dropped.</p>
+          ${j && (j.status === 'queued' || j.status === 'running') && discLive.taskId ? `<div class="btns"><button class="b out sm" data-run-stop="${esc(discLive.taskId)}" type="button">Stop this scan</button></div>` : ''}</div>`; })()
+      : discFailed ? `<div class="bz-card"><div class="bz-sech">Business scan · with ${esc(discFailed.bot.name)}</div>
+          <p class="meta">The scan did not finish${discFailed.failureReason === 'bot_stalled' ? ': the bot went quiet and the job was stopped' : discFailed.failureReason === 'owner_stopped' ? ': you stopped it' : discFailed.failureReason === 'source_deleted' ? ': a source it used was deleted' : discFailed.failureReason === 'data_deleted' ? ': the business data was deleted' : discFailed.failureReason === 'workspace_changed' ? ': the workspace changed while it was being created' : discFailed.failureDetail ? ': ' + esc(String(discFailed.failureDetail).replace(/\.+$/, '')) : ''}. No proposals were drafted from it.</p></div>`
+      : '';
+    const propSec = srcs.length ? `<div class="bz-sech row"><span>What Alter could take over</span><span><button class="b ink sm" id="bz-discover" ${eng.configured && eng.enabled && eng.consent && eng.consent.current ? '' : 'disabled'}>Look for work</button>${B.delegate ? ` <button class="b ink sm" id="bz-discover-bot">Map with ${esc(B.delegate.name)}</button>` : ''}</span></div>
       ${engNote}
+      ${B.delegate ? `<p class="meta">Map with ${esc(B.delegate.name)} sends your sources to that bot after you review the exact text. Its answer is checked against your sources - quotes that do not match are dropped - and proposals come back here as drafts. Alter does not send the answer anywhere and cannot verify what the bot does with the text it receives.</p>` : ''}
+      ${discCard}
+      ${pendingDiscovery ? (() => { const d = pendingDiscovery.delegation, conn = (d.bot && d.bot.connection) || {};
+        const presence = conn.status === 'active' ? 'connected now' : conn.lastRealCallAt ? 'last heard from ' + BB.when(conn.lastRealCallAt) : 'not heard from yet - it picks the job up when it connects';
+        return `<div class="bz-card bz-approve"><div class="bz-sech">Review exactly what goes to ${esc(d.bot.name)} for the scan</div>
+        <p class="meta">Destination: <b>${esc(d.bot.name)}</b>${d.bot.providerId ? ' (' + esc(d.bot.providerId) + ')' : ''} - ${esc(presence)}. This text leaves Alter to that bot through its own connection. How the bot processes or keeps it is between you and the bot's provider: Alter does not control or verify it, and a connected personal bot account is not a separate private space for this business's data.</p>
+        <p class="meta">Instructions (exact text):</p><p class="bz-reviewed">${esc(d.brief)}</p>
+        <p class="meta">Sources (exact text):</p><p class="bz-reviewed">${esc(d.context)}</p>
+        <p class="meta">${d.sources && d.sources.length ? 'Included sources: ' + d.sources.map(s => esc(s.title) + ' v' + s.version).join(', ') + '.' : 'No sources fit in one scan job.'}${d.omittedSources && d.omittedSources.length ? ' Not included (no room in one job): ' + d.omittedSources.map(s => esc(s.title)).join(', ') + '.' : ''}</p>
+        <p class="meta">The answer comes back here. Alter checks every quote against your sources and drops what does not match; proposals are drafts for your review. Alter does not send the answer anywhere and cannot verify what the bot did with the text.</p>
+        <div class="btns"><button class="b ink" data-disc-run type="button">Send scan to ${esc(d.bot.name)}</button><button class="b out" data-disc-cancel type="button">Cancel</button></div></div>`; })() : ''}
       ${props.length ? props.map(propCard).join('') : '<p class="meta">No proposals yet. Ask Alter to look for work once you have added sources.</p>'}` : '';
     const live = resps.filter(rp => rp.status !== 'retired'), retired = resps.filter(rp => rp.status === 'retired');
     const respSec = (live.length ? `<div class="bz-sech">Running with your approval</div>${live.map(respCard).join('')}` : '') + (retired.length ? `<div class="bz-sech">Retired</div>${retired.map(respCard).join('')}` : '');
@@ -219,7 +248,8 @@
     // A delegated run settles whenever the bot reports: refresh on a slow poll while one is
     // in flight so the draft appears without a manual reload. Never faster - this is a view.
     clearTimeout(pollT); pollT = null;
-    if (resps.some(rp => (rp.runs || []).some(r => r.status === 'delegated' || r.status === 'running'))) pollT = setTimeout(() => { if (!dropIfStaleTenant()) load(); }, 12000);
+    if (resps.some(rp => (rp.runs || []).some(r => r.status === 'delegated' || r.status === 'running'))
+      || (B.discoveries || []).some(d => d.status === 'delegated' || d.status === 'running')) pollT = setTimeout(() => { if (!dropIfStaleTenant()) load(); }, 12000);
   }
   function logLine(l) {
     return { source_added: 'Source added: ' + (l.title || ''), source_edited: 'Source edited (v' + l.fromVersion + ' → v' + l.toVersion + ')', source_deleted: 'Source deleted: ' + (l.title || ''),
@@ -229,6 +259,8 @@
       responsibility_activated: 'Started: ' + (l.title || ''), responsibility_paused: 'Paused: ' + (l.title || ''), responsibility_resumed: 'Resumed: ' + (l.title || ''), responsibility_retired: 'Retired: ' + (l.title || ''),
       run: (l.runKind === 'daily' ? 'Daily check-in' : 'Work run') + (l.usage ? ' · ' + tok(l.usage) + ' tokens' : ''),
       run_delegated: 'Sent to ' + (l.botName || 'the connected bot') + (l.omittedSources ? ' · ' + l.omittedSources + ' linked source(s) did not fit' : ''),
+      discover_delegated: 'Business scan sent to ' + (l.botName || 'the connected bot') + (l.omittedSources ? ' · ' + l.omittedSources + ' source(s) did not fit' : ''),
+      discover_settled: l.status === 'done' ? 'Business scan finished: ' + (l.proposals || 0) + ' proposal' + (l.proposals === 1 ? '' : 's') + (l.droppedEvidence ? ' · ' + l.droppedEvidence + ' unverifiable quote' + (l.droppedEvidence === 1 ? '' : 's') + ' dropped' : '') : 'Business scan ended without proposals' + (l.failure ? ' (' + l.failure + ')' : ''),
       run_settled: l.status === 'done' ? 'Draft received from the bot' : 'Delegated run ended without a draft' + (l.failure ? ' (' + l.failure + ')' : ''),
       data_purged: 'All business data deleted. Earlier activity was deleted with it; only this minimal receipt remains.', delete_abandoned: 'A paused delete was cancelled; what remained was kept.' }[l.kind] || l.kind;
   }
@@ -284,6 +316,30 @@
       if (!await askConfirm('Delete this source?', 'The source and its verbatim quotes in proposals are removed. Work derived from it (proposal text, responsibilities, run drafts) stays as your record.', 'Delete')) return;
       const j = await api('/sources/' + b.dataset.srcDel, 'DELETE'); if (j.error) return BB.toast(j.error); editingSrc = null; BB.toast('Deleted.'); await load();
     });
+    const discBot = $('#bz-discover-bot', V);
+    if (discBot) discBot.onclick = async () => {
+      discBot.disabled = true;
+      const c = await api('/discover/delegate-preview', 'POST', {});
+      discBot.disabled = false;
+      if (c.error) return BB.toast(c.error);
+      pendingDiscovery = { delegation: c.delegation }; paint();
+    };
+    const discRun = $('[data-disc-run]', V);
+    if (discRun) discRun.onclick = async () => {
+      const d = pendingDiscovery; if (!d) return;
+      discRun.disabled = true;
+      const j = await api('/discover/delegate-run', 'POST', { delegateHash: d.delegation.hash });
+      discRun.disabled = false;
+      if (j.error) {
+        if (j.code === 'delegation_review_required' && j.delegation) { pendingDiscovery = { delegation: j.delegation }; paint(); return BB.toast('The payload changed - review the current version.'); }
+        pendingDiscovery = null; paint();
+        return BB.toast(j.error);
+      }
+      pendingDiscovery = null;
+      BB.toast('Scan sent to ' + (d.delegation.bot.name || 'the bot') + '. Proposals appear here when its answer checks out.'); await load();
+    };
+    const discCancel = $('[data-disc-cancel]', V);
+    if (discCancel) discCancel.onclick = () => { pendingDiscovery = null; paint(); };
     const disc = $('#bz-discover', V);
     if (disc) disc.onclick = async () => {
       disc.disabled = true; disc.textContent = 'Reading your sources…';
