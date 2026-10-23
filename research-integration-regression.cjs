@@ -39,6 +39,9 @@ const c={require:(m)=>m==='dns'?dnsStub:m==='https'?fakeLib('https'):m==='http'?
 vm.runInNewContext(src,c);const f=c.module.exports.t;
 
 (async()=>{
+ // changed frontend JS must parse (a declaration error here disabled the whole Business UI in review)
+ new vm.Script(fs.readFileSync('public/js/business.js','utf8'),{filename:'business.js'});
+ new vm.Script(fs.readFileSync('public/js/app.js','utf8'),{filename:'app.js'});
  // engine off: honest 503, no fabrication
  let rr=await f.bizRespAct('resp_none','run',{input:'x'});assert.equal(rr.status,404);
  c.process.env.ALTER_MODEL_KEY='test-key';c.process.env.ALTER_MODEL_WS='legacy';

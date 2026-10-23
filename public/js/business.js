@@ -175,7 +175,7 @@
     $$('[data-p-activate]', V).forEach(b => b.onclick = async () => {
       const card = b.closest('.bz-card'), title = $('.bz-prop-h b', card).textContent;
       if (!await askConfirm('Start "' + title + '"?', 'It will draft work for your review only. Nothing is sent, posted, purchased or connected.', 'Approve and start')) return;
-      b.disabled = true; const card = b.closest('.bz-card'), research = !!($('[data-p-research]', card) && $('[data-p-research]', card).checked);
+      b.disabled = true; const research = !!($('[data-p-research]', card) && $('[data-p-research]', card).checked);
       let j = await api('/proposals/' + b.dataset.pActivate + '/activate', 'POST', research ? { research: true } : {});
       if (j.error === 'stale_evidence' && await askConfirm('Sources changed since this was drafted', (j.message || 'Review it against the current sources.') + ' Start it anyway?', 'Start anyway')) j = await api('/proposals/' + b.dataset.pActivate + '/activate', 'POST', { confirmStale: true, ...(research ? { research: true } : {}) });
       b.disabled = false; if (j.error) return BB.toast(j.message || j.error);
