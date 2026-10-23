@@ -632,6 +632,9 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .bz-prop-h{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;margin-bottom:8px}
 .bz-sech{font-size:var(--t-section);font-weight:600;letter-spacing:var(--tr-section);color:var(--ink);margin:22px 0 10px}
 .bz-sech.row{display:flex;align-items:center;justify-content:space-between}
+/* Pending-delete recovery actions: wrap and stack on narrow screens so neither button clips */
+.bz-pendbtns{flex-wrap:wrap}
+.bz-pendbtns .b{flex:1 1 200px;min-width:0;white-space:normal;text-align:center;height:auto;min-height:44px;padding:10px 12px;line-height:1.3}
 .bz-sum{font-size:14.5px;line-height:1.55;color:var(--ink);margin:6px 0 10px;white-space:pre-wrap}
 .bz-ev{display:flex;gap:8px;align-items:flex-start;margin:8px 0}
 .bz-ev blockquote{margin:0;padding:6px 10px;border-left:2px solid var(--line-2);color:var(--ink);font-size:13.5px;line-height:1.5;font-style:italic;flex:1}

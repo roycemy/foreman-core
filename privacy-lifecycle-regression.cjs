@@ -216,9 +216,11 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  await f.bizSourceAdd({kind:'note',title:'W',text:'Fridays are for invoicing.'});
  c.global.__bizFault='purge:runs';
  const pf2=await f.bizDataPurge({confirm:'DELETE'});assert.equal(pf2.status,503);
- const cancel=await f.bizOpCancel({op:'purge',id:''});
+ const pendC=await f.getJ('fm:biz:op_pending');
+ assert.equal((await f.bizOpCancel({op:'purge',id:''})).status,400,'cancel without the reviewed instance id is refused');
+ const cancel=await f.bizOpCancel({op:'purge',id:'',opId:pendC.opId});
  assert.equal(cancel.status,200);assert.equal(cancel.body.cancelled,true);
- assert.equal((await f.bizOpCancel({op:'purge',id:''})).status,409,'second cancel finds nothing pending');
+ assert.equal((await f.bizOpCancel({op:'purge',id:'',opId:pendC.opId})).status,409,'second cancel finds nothing pending');
  assert.equal(await f.getJ('fm:biz:op_pending'),null,'cancel clears the intent');
  assert.equal((await f.bizDataPurge({confirm:'nope'})).status,400,'typed confirmation still required');
  // --- R4-1) durable intent enforced INSIDE fenced writes, not only at entry: a writer holding
@@ -231,7 +233,7 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  assert.equal(await f.bizEntry(),null,'coherent entry snapshot refuses during pending intent');
  const newFence=await f.r(['GET','fm:biz:fence']);
  assert.equal(await f.bizLog('source_added',{sourceId:'x',title:'x'},newFence),0,'writer holding the NEW generation still refused while intent pends');
- assert.equal((await f.bizOpCancel({op:'purge',id:''})).status,200);
+ assert.equal((await f.bizOpCancel({op:'purge',id:'',opId:pend1.opId})).status,200);
  const postCancelFence=await f.r(['GET','fm:biz:fence']);
  assert.notEqual(postCancelFence,newFence,'cancel bumps the generation');
  assert(await f.bizLog('source_added',{sourceId:'x',title:'x'},postCancelFence),'writes resume after owner cancellation');
@@ -277,16 +279,18 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  c.global.__bizFault='purge:runs';
  const pg=await f.bizDataPurge({confirm:'DELETE'});assert.equal(pg.status,503);assert.equal(pg.body.code,'purge_incomplete','purge subsumes a pending narrower intent atomically');
  assert.equal((await f.getJ('fm:biz:op_pending')).op,'purge','newer purge intent pending');
- const staleCancel=await f.bizOpCancel({op:'source_delete',id:sd5});
+ const pendS=await f.getJ('fm:biz:op_pending');
+ const staleCancel=await f.bizOpCancel({op:'source_delete',id:sd5,opId:'op_staleold'});
  assert.equal(staleCancel.status,409);assert.equal(staleCancel.body.code,'op_stale','stale cancel rejected; newer intent untouched');
+ assert.equal((await f.bizOpCancel({op:'purge',id:'',opId:'op_staleold'})).status,409,'a prior purge instance cancel is stale against the new purge');
  assert.equal((await f.getJ('fm:biz:op_pending')).op,'purge','stale cancel did not clear the newer purge intent');
  const pgR=await f.bizDataPurge({confirm:'DELETE'});assert.equal(pgR.status,200,'purge retry completes');
- assert.equal((await f.bizOpCancel({op:'purge',id:''})).status,409,'nothing pending after the completed purge');
+ assert.equal((await f.bizOpCancel({op:'purge',id:'',opId:pendS.opId})).status,409,'nothing pending after the completed purge');
  const sd6=(await f.bizSourceAdd({kind:'note',title:'S6',text:'We answer customer emails within a day.'})).body.source.id;
  c.global.__bizFault='sourcedel:begin';
  await f.bizSourceDel(sd6);
  const fence6=await f.r(['GET','fm:biz:fence']);
- const cx=await f.bizOpCancel({op:'source_delete',id:sd6});assert.equal(cx.status,200);
+ const cx=await f.bizOpCancel({op:'source_delete',id:sd6,opId:(await f.getJ('fm:biz:op_pending')).opId});assert.equal(cx.status,200);
  assert.equal(await f.bizLog('source_deleted',{sourceId:sd6,title:'S6'},fence6),0,'cancel generation bump invalidates the in-flight holder next write');
  assert.equal((await f.bizDataPurge({confirm:'nope'})).status,400,'typed confirmation still required');
 
@@ -299,5 +303,22 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  assert.equal(await f.bizLog('source_deleted',{sourceId:sd7,title:'S7'},preDel),0,'stale post-release log write refused');
  const stLog=(await f.bizState()).log;assert(stLog.length>0&&stLog.every(e=>e.kind==='data_purged'),'only the purge own commit entry survives');
 
- console.log('PASS privacy lifecycle: orphan inventory, generation bumps, freeze exclusion + ownership-token interleave (expiry/purge/third-holder), durable partial purge with quiescence + retry + CANCEL, truthful partials, keyspace-complete purge, vetted-origin allowlist + full classifier, redirect refused pre-payload, R4 atomic op protocol (pending inside fenced writes, coherent begin, idempotent gone-record retries, reviewed-identity cancel, commit-inside-ownership).');
+ // --- R4-6) stable instance id: retry keeps it, a fresh operation gets a fresh one, cancel
+ // must carry the reviewed instance (old tab cannot cancel a newer purge)
+ c.global.__bizFault='purge:sources';
+ const pgA=await f.bizDataPurge({confirm:'DELETE'});assert.equal(pgA.status,503);
+ const instA=(await f.getJ('fm:biz:op_pending')).opId;assert(instA,'instance id recorded');
+ c.global.__bizFault='purge:runs';
+ const pgA2=await f.bizDataPurge({confirm:'DELETE'});assert.equal(pgA2.status,503,'retry of the same operation');
+ assert.equal((await f.getJ('fm:biz:op_pending')).opId,instA,'retry preserves the intent instance id');
+ const cA=await f.bizOpCancel({op:'purge',id:'',opId:instA});assert.equal(cA.status,200,'cancel with the reviewed instance id works');
+ c.global.__bizFault='purge:sources';
+ await f.bizDataPurge({confirm:'DELETE'});
+ const instB=(await f.getJ('fm:biz:op_pending')).opId;assert(instB&&instB!==instA,'a fresh operation defines a fresh instance id');
+ const staleB=await f.bizOpCancel({op:'purge',id:'',opId:instA});
+ assert.equal(staleB.status,409);assert.equal(staleB.body.code,'op_stale','an old tab cannot cancel the newer purge');
+ assert.equal((await f.getJ('fm:biz:op_pending')).opId,instB,'newer purge intent survives the stale cancel');
+ assert.equal((await f.bizDataPurge({confirm:'DELETE'})).status,200,'newer purge completes');
+
+ console.log('PASS privacy lifecycle: orphan inventory, generation bumps, freeze exclusion + ownership-token interleave (expiry/purge/third-holder), durable partial purge with quiescence + retry + CANCEL, truthful partials, keyspace-complete purge, vetted-origin allowlist + full classifier, redirect refused pre-payload, R4 atomic op protocol (pending inside fenced writes, coherent begin, idempotent gone-record retries, reviewed-identity cancel, commit-inside-ownership), stable intent instance ids across retry vs fresh operations.');
 })().catch(e=>{console.error(e);process.exit(1)});

@@ -161,7 +161,7 @@
     const pendWhat = pend && (pend.op === 'purge' ? 'Deleting all business data' : pend.op === 'source_delete' ? 'Deleting a source' : pend.op === 'resp_delete' ? 'Deleting a responsibility and its work history' : 'A delete');
     const pendCard = pend ? `<div class="bz-card"><div class="bz-sech">A delete did not finish</div>
       <p class="meta">${esc(pendWhat)} started ${BB.when(pend.at)} but paused partway. Records already deleted stay deleted; everything else is held - no new work runs until you finish or cancel it.</p>
-      <div class="btns"><button class="b danger sm" id="bz-pend-finish">Finish this delete</button><button class="b out sm" id="bz-pend-cancel">Cancel the delete - keep what remains</button></div></div>` : '';
+      <div class="btns bz-pendbtns"><button class="b danger sm" id="bz-pend-finish">Finish this delete</button><button class="b out sm" id="bz-pend-cancel">Cancel the delete - keep what remains</button></div></div>` : '';
     V.innerHTML = `<div class="page-in narrow"><div class="page-h"><div><h1>Business</h1><p class="sub">Teach Alter the business. Approve what it takes over.</p></div></div>
       ${pendCard}${empty}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
     bind();
@@ -172,7 +172,8 @@
       proposal_edited: 'Proposal edited', proposal_rejected: 'Proposal rejected: ' + (l.title || ''),
       responsibility_deleted: 'Deleted with its history: ' + (l.title || ''), provider_consent_granted: 'Provider processing allowed: ' + (l.host || '') + ' (' + (l.model || '') + ')', provider_consent_withdrawn: 'Provider processing withdrawn',
       responsibility_activated: 'Started: ' + (l.title || ''), responsibility_paused: 'Paused: ' + (l.title || ''), responsibility_resumed: 'Resumed: ' + (l.title || ''), responsibility_retired: 'Retired: ' + (l.title || ''),
-      run: (l.runKind === 'daily' ? 'Daily check-in' : 'Work run') + (l.usage ? ' · ' + tok(l.usage) + ' tokens' : '') }[l.kind] || l.kind;
+      run: (l.runKind === 'daily' ? 'Daily check-in' : 'Work run') + (l.usage ? ' · ' + tok(l.usage) + ' tokens' : ''),
+      data_purged: 'All business data deleted. Earlier activity was deleted with it; only this minimal receipt remains.', delete_abandoned: 'A paused delete was cancelled; what remained was kept.' }[l.kind] || l.kind;
   }
 
   /* ---------- confirm via the app modal ---------- */
@@ -246,7 +247,7 @@
     $$('[data-resp-resume]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respResume + '/resume', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Resumed.'); await load(); });
     const cOn = $('#bz-consent-on', V); if (cOn) cOn.onclick = async () => { const eng = (B && B.engine) || {}; const j = await api('/provider-consent', 'POST', { host: eng.host, model: eng.model }); if (j.error) { BB.toast(j.error); if (j.code === 'consent_stale') await load(); return; } BB.toast('Provider processing allowed.'); await load(); };
     const cOff = $('#bz-consent-off', V); if (cOff) cOff.onclick = async () => { if (!await askConfirm('Withdraw provider processing?', 'No new work goes to the provider, including daily check-ins, until you allow it again. A run already in flight can finish; its draft stays in the history until you delete it.', 'Withdraw')) return; const j = await api('/provider-consent', 'DELETE'); if (j.error) return BB.toast(j.error); BB.toast('Withdrawn. No new work goes to the provider.'); await load(); };
-    const pc = $('#bz-pend-cancel', V); if (pc) pc.onclick = async () => { const pendNow = B && B.opPending; if (!pendNow) return; if (!await askConfirm('Cancel the pending delete?', 'Records already deleted stay deleted; everything else is kept and work resumes.', 'Cancel the delete')) return; const j = await api('/data/delete', 'POST', { confirm: 'CANCEL', op: pendNow.op, id: pendNow.id || '' }); if (j.error) { BB.toast(j.error); await load(); return; } BB.toast('Delete cancelled.'); await load(); };
+    const pc = $('#bz-pend-cancel', V); if (pc) pc.onclick = async () => { const pendNow = B && B.opPending; if (!pendNow) return; if (!await askConfirm('Cancel the pending delete?', 'Records already deleted stay deleted; everything else is kept and work resumes.', 'Cancel the delete')) return; const j = await api('/data/delete', 'POST', { confirm: 'CANCEL', op: pendNow.op, id: pendNow.id || '', opId: pendNow.opId || '' }); if (j.error) { BB.toast(j.error); await load(); return; } BB.toast('Delete cancelled.'); await load(); };
     // Finish retries the ORIGINAL pending operation only - a narrower delete is never escalated
     // into a full purge from this card; a purge retry keeps its own typed-DELETE ceremony.
     const pf = $('#bz-pend-finish', V); if (pf) pf.onclick = async () => {
