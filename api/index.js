@@ -1440,7 +1440,7 @@ module.exports = async (req, res) => {
     if(path.startsWith('/pair/')||path==='/link/call')return await botLinkBotRoutes(req,res,path,body);
     if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN&&req.headers.origin!=='https://'+req.headers.host)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);if(o.status===200&&body.persistent===true){const ws=await r(['GET','gl:key:'+sha(o.body.key)]);const out=await startRunnerSession(res,ws,o.body.agent.id,o.body.key);return res.status(200).json(out);}return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
-    if (path === '/cron/business-daily' && req.method === 'GET') { if (process.env.CRON_SECRET && req.headers.authorization !== 'Bearer ' + process.env.CRON_SECRET) return res.status(401).json({ error: 'auth' }); return send(await bizDailyTick()); }
+    if (path === '/cron/business-daily' && req.method === 'GET') { if (!bizCronOk(req)) return res.status(401).json({ error: 'auth' }); return send(await bizDailyTick()); }
     { const rm = (req.url || '').split('?')[0].match(/^\/receipt\/([^/?#]+)$/) || path.match(/^\/receipt\/([^/?#]+)$/); if (rm && req.method === 'GET') { const x = await publicReceiptRead(rm[1]); const host = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); res.setHeader('Referrer-Policy', 'no-referrer'); return res.status(x ? 200 : 404).send(receiptPage(x, host, BRAND_NAME)); } }
     { const pm = path.match(/^\/public-receipts\/([a-f0-9]{48})$/); if (pm && req.method === 'GET') { res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); const x = await publicReceiptRead(pm[1]); return x ? res.json(x) : res.status(404).json({ error: 'Receipt unavailable or expired' }); } }
     if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
@@ -1934,6 +1934,15 @@ async function bizRespAct(id, op, body) {
 
 // Daily check-in: one engine run per active responsibility per day, only in workspaces the platform enabled.
 // This is owner-approved scheduled work inside the workspace, not monitoring of any external system.
+// Cron guard: fail CLOSED. No secret configured, or a missing/wrong bearer, is a 401 - never an open trigger.
+function bizCronOk(req) {
+  const cs = String(process.env.CRON_SECRET || '');
+  if (!cs) return false;
+  const expect = 'Bearer ' + cs;
+  const got = String((req && req.headers && req.headers.authorization) || '');
+  if (got.length !== expect.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expect));
+}
 async function bizDailyTick() {
   const wss = await r(['SMEMBERS', 'gl:biz:workspaces']);
   const out = { workspaces: 0, runs: 0, skipped: 0, errors: 0 };
