@@ -2084,7 +2084,8 @@ function bizFetchHop(u, hopDeadline, totalDeadline) {
     if (hard.unref) hard.unref();
     try {
       req = lib.request({
-        hostname: connectHost, servername: connectHost, port: parsed.port || undefined,
+        // SNI is a DNS-name mechanism: omit it for IP literals (certificate IP checks still apply).
+        hostname: connectHost, servername: net.isIP(connectHost) ? undefined : connectHost, port: parsed.port || undefined,
         path: parsed.pathname + parsed.search, method: 'GET',
         headers, lookup: bizLookupGuarded
       }, (res) => {

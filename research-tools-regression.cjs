@@ -36,7 +36,7 @@ const PAGES={
 };
 function fakeLib(proto){return {request:(opts,cb)=>{
   if(opts.hostname==='throw.example') throw new Error('boom');
-  const key=opts.hostname+opts.path; requests.push({proto,hostname:opts.hostname,path:opts.path,headers:opts.headers});
+  const key=opts.hostname+opts.path; requests.push({proto,hostname:opts.hostname,path:opts.path,headers:opts.headers,servername:opts.servername});
   const res=new EventEmitter(); res.statusCode=(PAGES[key]||{status:404}).status; res.headers=(PAGES[key]||{}).headers||{};
   const req=new EventEmitter(); req.destroy=()=>{}; req.end=()=>{
     const serve=()=>{const p=PAGES[key]; const go=()=>{cb(res); if(p&&p.body){res.emit('data',Buffer.from(p.body));} res.emit('end');}; if(p&&p.delay)setTimeout(go,p.delay); else process.nextTick(go);};
@@ -112,6 +112,8 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  let n0=requests.length; r=await f.bizWebFetch('http://[2606:4700:4700::1111]/');
  assert(r.ok,'public v6 literal fetch ok');assert.equal(requests[n0].hostname,'2606:4700:4700::1111','brackets stripped for connect');
  assert.equal(requests[n0].headers.Host,'[2606:4700:4700::1111]','Host keeps brackets');
+ assert.equal(requests[n0].servername,undefined,'no SNI for IP literals');
+ assert.equal(requests[0].servername,'good.example','SNI set for DNS names');
  // 10) citation locating: exact quote located, misquote not; comments/templates stripped from matching
  r=await f.bizLocateCitation('https://good.example/','Acme Manufacturing plans a 40-person hiring wave in Dallas this quarter.');
  assert.equal(r.located,true);assert.equal(r.reason,'located');
