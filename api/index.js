@@ -1,5 +1,9 @@
 // Foreman core v9: real permission gateway + external-agent adapters + work bus. Agents hold only a Foreman key; every action goes through /api/gateway/act.
 const crypto = require('crypto');
+const dns = require('dns');
+const http = require('http');
+const https = require('https');
+const net = require('net');
 const AUTHZ = (()=>{
 // Deterministic policy only. Never a payment rail or a grant of authority.
 const VERSION='rules-v1';
@@ -1942,6 +1946,100 @@ function bizCronOk(req) {
   const got = String((req && req.headers && req.headers.authorization) || '');
   if (got.length !== expect.length) return false;
   return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expect));
+}
+// --- research tool layer (P1, review-only): guarded fetch + citation locating ---
+// Fetched pages and search results are untrusted DATA, fenced in prompts like owner sources.
+// A located citation means the quoted text exists on the cited page - never that a claim is true.
+const BIZWEB = { MAX_BYTES: 512 * 1024, MAX_REDIRECTS: 3, HOP_MS: 8000, MAX_CITES: 5, UA: 'alter-research/1 (+https://alterhq.app)' };
+
+function bizIpBlocked(ip) {
+  if (net.isIPv6(ip)) {
+    const v = ip.toLowerCase();
+    if (v === '::1' || v === '::') return true;
+    if (v.startsWith('::ffff:')) return bizIpBlocked(v.slice(7)); // v4-mapped: judge the v4 part
+    return /^f[cd]/.test(v) || /^fe[89ab]/.test(v); // unique-local fc00::/7, link-local fe80::/10
+  }
+  if (!net.isIPv4(ip)) return true;
+  const p = ip.split('.').map(Number);
+  if (p.length !== 4 || p.some(n => !(n >= 0 && n <= 255))) return true;
+  const [a, b] = p;
+  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+function bizLookupGuarded(hostname, opts, cb) {
+  dns.lookup(hostname, { all: true }, (err, addrs) => {
+    if (err) return cb(err);
+    if (!addrs || !addrs.length || addrs.some(a => bizIpBlocked(a.address))) {
+      const e = new Error('Address not allowed'); e.code = 'ssrf_blocked'; return cb(e);
+    }
+    cb(null, addrs[0].address, addrs[0].family);
+  });
+}
+// One redirect hop. Never forwards cookies or credentials; connect-time DNS is re-validated
+// per request, so a host that re-resolves to a private address is refused at connect.
+function bizFetchHop(u, deadline) {
+  return new Promise((resolve) => {
+    let parsed;
+    try { parsed = new URL(u); } catch { return resolve({ error: 'bad_url' }); }
+    if (parsed.username || parsed.password) return resolve({ error: 'credentials_in_url' });
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return resolve({ error: 'scheme_not_allowed' });
+    const lib = parsed.protocol === 'https:' ? https : http;
+    const req = lib.request({
+      hostname: parsed.hostname, port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + parsed.search, method: 'GET',
+      headers: { 'User-Agent': BIZWEB.UA, Accept: 'text/html,text/plain,*/*;q=0.5' },
+      lookup: bizLookupGuarded, timeout: Math.max(1000, Math.min(BIZWEB.HOP_MS, deadline - Date.now()))
+    }, (res) => {
+      const chunks = []; let n = 0;
+      res.on('data', (c) => { n += c.length; if (n > BIZWEB.MAX_BYTES) { req.destroy(); return resolve({ error: 'too_large' }); } chunks.push(c); });
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
+      res.on('error', () => resolve({ error: 'read_error' }));
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ error: 'timeout' }); });
+    req.on('error', (e) => resolve({ error: e.code === 'ssrf_blocked' ? 'ssrf_blocked' : 'connect_error' }));
+    req.end();
+  });
+}
+async function bizWebFetch(u, maxRedirects) {
+  const deadline = Date.now() + (BIZWEB.HOP_MS * (1 + (maxRedirects == null ? BIZWEB.MAX_REDIRECTS : maxRedirects)));
+  let url = u;
+  for (let hop = 0; ; hop++) {
+    if (Date.now() >= deadline) return { error: 'timeout' };
+    const r = await bizFetchHop(url, deadline);
+    if (r.error) return { error: r.error };
+    if (r.status >= 300 && r.status < 400 && r.headers && r.headers.location) {
+      if (hop >= (maxRedirects == null ? BIZWEB.MAX_REDIRECTS : maxRedirects)) return { error: 'too_many_redirects' };
+      url = new URL(r.headers.location, url).toString();
+      continue; // next hop re-validates scheme, credentials and DNS
+    }
+    if (r.status !== 200) return { error: 'http_' + r.status };
+    return { ok: true, finalUrl: url, body: r.body };
+  }
+}
+function bizPageText(html) {
+  return String(html || '').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&quot;/g, '"');
+}
+// Citation locating: fetch the cited page and check the quoted excerpt appears in it.
+// Result vocabulary is deliberately "located" - existence of a quote on a page is not truth.
+async function bizLocateCitation(url, excerpt) {
+  const ex = String(excerpt || '').slice(0, 300);
+  if (!ex || ex.length < 10) return { located: false, reason: 'excerpt_too_short' };
+  const r = await bizWebFetch(url);
+  if (!r.ok) return { located: false, reason: r.error };
+  const page = bizNorm(bizPageText(r.body));
+  return { located: page.includes(bizNorm(ex)), finalUrl: r.finalUrl, reason: page.includes(bizNorm(ex)) ? 'located' : 'excerpt_not_found' };
+}
+// Check the citations on one drafted dossier; at most BIZWEB.MAX_CITES fetches.
+async function bizCheckCitations(claims) {
+  const out = []; let fetched = 0;
+  for (const c of (Array.isArray(claims) ? claims : []).slice(0, 20)) {
+    const url = String((c && c.url) || ''), quote = String((c && c.quote) || '');
+    if (fetched >= BIZWEB.MAX_CITES) { out.push({ url, located: false, reason: 'citation_cap' }); continue; }
+    fetched++;
+    out.push({ url, ...(await bizLocateCitation(url, quote)) });
+  }
+  return out;
 }
 async function bizDailyTick() {
   const wss = await r(['SMEMBERS', 'gl:biz:workspaces']);
