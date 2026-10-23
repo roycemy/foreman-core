@@ -858,12 +858,15 @@ async function handleAuth(req, res, path, body) {
   if (!/^[^@\s]{1,64}@[^@\s]{1,120}\.[^@\s]{2,}$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
   const rl = await r(['INCRBY', 'gl:rl:' + sha(email), 1]); await r(['EXPIRE', 'gl:rl:' + sha(email), 900]); if (rl > 12) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
   if (path === '/auth/signup') {
+    if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
+    if(!await earlyAccess.inspect(body.earlyToken))return res.status(403).json({error:'Early access requires an active invitation. Public email signup joins the waitlist at /waitlist.'});
     if (pw.length < 8) return res.status(400).json({ error: 'Use a password of at least 8 characters' });
     if (await r(['GET', 'gl:user:' + sha(email)])) return res.status(409).json({ error: 'An account with that email already exists. Sign in instead.' });
     let ws = 'ws' + crypto.randomBytes(6).toString('hex');
-    if (body.claim) { if (sha(String(body.claim).trim()) !== LEGACY_CLAIM_HASH || await r(['GET', 'gl:legacy-owner'])) return res.status(400).json({ error: 'That claim code is not valid or was already used' }); ws = 'legacy'; await r(['SET', 'gl:legacy-owner', email]); }
+    if(body.claim)return res.status(400).json({error:'Early access creates your own workspace; owner claims are not accepted.'});
     const salt = crypto.randomBytes(16).toString('hex'); const user = { id: rid('user'), email, salt, hash: crypto.scryptSync(pw, salt, 32).toString('hex'), ws, createdAt: now() };
-    await r(['SET', 'gl:user:' + sha(email), JSON.stringify(user)]); await track('signup', null, ws); await startSession(res, user); return res.json({ ok: true, email, legacy: ws === 'legacy' });
+    if(!await earlyAccess.reserve(body.earlyToken,email))return res.status(403).json({error:'This early-access invitation is full, expired or revoked.'});
+    if(!await r(['SET', 'gl:user:' + sha(email), JSON.stringify(user),'NX']))return res.status(409).json({error:'An account with that email already exists. Sign in instead.'}); await track('signup', null, ws); await startSession(res, user); return res.json({ ok: true, email, legacy: ws === 'legacy' });
   }
   if (path === '/auth/login') {
     const raw = await r(['GET', 'gl:user:' + sha(email)]); const u = raw && JSON.parse(raw);
@@ -1308,6 +1311,7 @@ async function oauthRoutes(req,res,path,body){
 }
 
 const foundingSeats=(()=>{try{return require('../lib/founding-seats.cjs')}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;return require('./lib/founding-seats.cjs')}})()({r,getJ});
+const earlyAccess=(()=>{try{return require('../lib/early-access.cjs')}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;return require('./lib/early-access.cjs')}})()({r,getJ,getSession,origin:PUBLIC_ORIGIN});
 // Public waitlist: explicit request only, no auto-mail or third-party sharing.
 async function joinWaitlist(req,res,body){
  res.setHeader('Cache-Control','no-store');
@@ -1430,6 +1434,7 @@ module.exports = async (req, res) => {
     if(path==='/authorization/demo'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return res.json(AUTHZ.demo());}
     if(path==='/founding/count'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');await foundingSeats.reconcile();return res.json({taken:await foundingSeats.total(),limit:1000});}
     if(path==='/founding/receipt'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});const found=await foundingSeats.readReceipt(body.receipt);return found?res.json(found):res.status(404).json({error:'Receipt unavailable'});}
+    if(path.startsWith('/early/'))return await earlyAccess.route(req,res,path,body);
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
     if(path.startsWith('/invite-page/')&&req.method==='GET')return await invitePage(req,res,path);
     // Vercel routing middleware may retain the original incoming URL on the rewritten request.
