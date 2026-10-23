@@ -5,7 +5,9 @@
 //  4. IPv6 loopback/private, internal DNS suffixes and redirects are refused for the engine.
 // No real network: model endpoint stubbed with a controllable deferred fetch.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizEngine,bizRunKeysAll,bizSourceScrubbers,bizOpCancel,bizDailyTick,als,setJ,getJ,r};';
+let src=fs.readFileSync('api/index.js','utf8');
+if(process.env.TDBG){src=src.replace("async function bizSourceDel(id) {","async function bizSourceDel(id) { console.error('SD enter',id);").replace("for (const p of await bizProposals()) {","console.error('SD pre-props'); for (const p of await bizProposals()) {").replace("stage = 'record';","console.error('SD record'); stage = 'record';").replace("const committed = await bizOpCommit(ctx, 'source_deleted'","console.error('SD pre-commit'); const committed = await bizOpCommit(ctx, 'source_deleted'");}
+src+='\nmodule.exports.t={bizSourceAdd,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizEngine,bizRunKeysAll,bizSourceScrubbers,bizOpCancel,bizDailyTick,bizEntry,bizLog,als,setJ,getJ,r};';
 let gate=null; // {promise,open} - when set, the stubbed provider call waits for open()
 const seen=[];
 const c={require,module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
@@ -54,7 +56,7 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  assert.equal(raced.status,409);assert.equal(raced.body.code,'workspace_changed','stale in-flight run refused after purge');
  keys=await f.bizRunKeysAll();assert.equal(keys.length,0,'purge race: no run object recreated');
  const st=await f.bizState();
- assert.equal(st.responsibilities.length,0);assert.equal(st.log.length,0,'purge race: no log entry recreated');
+ assert.equal(st.responsibilities.length,0);assert(st.log.every(e=>e.kind==='data_purged'),'purge race: only the purge own atomic commit entry exists, no stale log entry recreated');
 
  // --- 2b) discover race: paused discovery cannot recreate proposals after purge
  await f.bizSourceAdd({kind:'note',title:'Again',text:'We answer customer emails within a day.'});
@@ -195,6 +197,7 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  assert.equal(await f.getJ('fm:biz:prop:'+px.id),null,'purged proposal NOT recreated by the resumed delete');
  assert.equal(await f.getJ('fm:biz:op_pending'),null,'purge consumed the pending intent');
  await f.r(['DEL','fm:biz:freeze']);
+ f.bizSourceScrubbers.length=0; // the parked-scrubber interleave is over: later deletes must not park on it
 
  // --- R3b) partial purge: durable intent quiesces processing + writes until retry or CANCEL
  await f.bizSourceAdd({kind:'note',title:'Y',text:'We answer customer emails within a day.'});
@@ -213,9 +216,88 @@ const consent=()=>f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-os
  await f.bizSourceAdd({kind:'note',title:'W',text:'Fridays are for invoicing.'});
  c.global.__bizFault='purge:runs';
  const pf2=await f.bizDataPurge({confirm:'DELETE'});assert.equal(pf2.status,503);
- const cancel=await f.bizOpCancel();
- assert.equal(cancel.status,200);assert.equal(cancel.body.cancelled,true);assert(cancel.body.abandoned.op==='purge');
+ const cancel=await f.bizOpCancel({op:'purge',id:''});
+ assert.equal(cancel.status,200);assert.equal(cancel.body.cancelled,true);
+ assert.equal((await f.bizOpCancel({op:'purge',id:''})).status,409,'second cancel finds nothing pending');
  assert.equal(await f.getJ('fm:biz:op_pending'),null,'cancel clears the intent');
  assert.equal((await f.bizDataPurge({confirm:'nope'})).status,400,'typed confirmation still required');
- console.log('PASS privacy lifecycle: orphan inventory, generation bumps, freeze exclusion + ownership-token interleave (expiry/purge/third-holder), durable partial purge with quiescence + retry + CANCEL, truthful partials, keyspace-complete purge, vetted-origin allowlist + full classifier, redirect refused pre-payload.');
+ // --- R4-1) durable intent enforced INSIDE fenced writes, not only at entry: a writer holding
+ // the NEW post-bump generation is still refused while op_pending exists (reviewer finding 1 repro)
+ await f.bizSourceAdd({kind:'note',title:'R4',text:'We answer customer emails within a day.'});
+ c.global.__bizFault='purge:begin';
+ const pbegin=await f.bizDataPurge({confirm:'DELETE'});
+ assert.equal(pbegin.status,503);assert.equal(pbegin.body.code,'purge_not_started','fault before any delete is truthful');
+ const pend1=await f.getJ('fm:biz:op_pending');assert(pend1&&pend1.op==='purge'&&pend1.token&&pend1.gen,'intent + ownership + generation registered atomically at begin');
+ assert.equal(await f.bizEntry(),null,'coherent entry snapshot refuses during pending intent');
+ const newFence=await f.r(['GET','fm:biz:fence']);
+ assert.equal(await f.bizLog('source_added',{sourceId:'x',title:'x'},newFence),0,'writer holding the NEW generation still refused while intent pends');
+ assert.equal((await f.bizOpCancel({op:'purge',id:''})).status,200);
+ const postCancelFence=await f.r(['GET','fm:biz:fence']);
+ assert.notEqual(postCancelFence,newFence,'cancel bumps the generation');
+ assert(await f.bizLog('source_added',{sourceId:'x',title:'x'},postCancelFence),'writes resume after owner cancellation');
+
+ // --- R4-2) begin is one coherent OWNED transition: a delayed starter cannot overwrite a newer intent
+ const sd1=(await f.bizSourceAdd({kind:'note',title:'S1',text:'We answer customer emails within a day.'})).body.source.id;
+ c.global.__bizFault='sourcedel:begin';
+ const d1=await f.bizSourceDel(sd1);
+ assert.equal(d1.status,503);assert.equal(d1.body.code,'delete_not_started');
+ const pendA=await f.getJ('fm:biz:op_pending');assert(pendA&&pendA.op==='source_delete'&&pendA.id===sd1,'intent A durable after a crash at begin');
+ const blocked=await f.bizSourceDel('src_other');
+ assert.equal(blocked.status,409);assert.equal(blocked.body.code,'operation_pending','a different delete is refused behind the pending intent');
+ assert.equal((await f.getJ('fm:biz:op_pending')).id,sd1,'delayed starter did not overwrite the intent');
+ const d1r=await f.bizSourceDel(sd1);assert.equal(d1r.status,200);assert.strictEqual(d1r.body.auditLogged,true,'completion log written inside the atomic commit');
+ assert.equal((await f.bizState()).log[0].kind,'source_deleted');
+
+ // --- R4-3) idempotent retry when the record is already gone: closes intent + cleans indexes
+ const sd3=(await f.bizSourceAdd({kind:'note',title:'S3',text:'We answer customer emails within a day.'})).body.source.id;
+ c.global.__bizFault='sourcedel:close';
+ const d3=await f.bizSourceDel(sd3);assert.equal(d3.status,503);assert.equal(d3.body.code,'delete_incomplete');
+ assert.equal(await f.getJ('fm:biz:src:'+sd3),null,'record stage completed before the close fault');
+ const d3r=await f.bizSourceDel(sd3);
+ assert.equal(d3r.status,200);assert.equal(d3r.body.retried,true,'source retry with record already gone completes');
+ assert.equal(await f.getJ('fm:biz:op_pending'),null,'retry closed the intent');
+ assert(!(await f.r(['SMEMBERS','fm:biz:sources'])).includes(sd3),'source index membership cleaned');
+ const sd4=(await f.bizSourceAdd({kind:'note',title:'S4',text:'We answer customer emails within a day.'})).body.source.id;
+ c.process.env.__s1=sd4;
+ await consent();
+ const disc4=await f.bizDiscover(); if(!disc4.body.proposals||!disc4.body.proposals[0]){console.error('disc4',disc4.status,JSON.stringify(disc4.body));process.exit(3);} const px4=disc4.body.proposals[0];
+ const act4=await f.bizProposalAct(px4.id,'activate',{}); if(!act4.body.responsibility){console.error('act4',act4.status,JSON.stringify(act4.body));process.exit(3);} const rx=act4.body.responsibility.id;
+ c.global.__bizFault='respdel:close';
+ const rd3=await f.bizRespAct(rx,'delete',{}); if(rd3.status!==503){console.error('rd3',rd3.status,JSON.stringify(rd3.body));process.exit(3);}assert.equal(rd3.body.code,'delete_incomplete');
+ assert.equal(await f.getJ('fm:biz:resp:'+rx),null,'resp record stage completed before the close fault');
+ const rd3r=await f.bizRespAct(rx,'delete',{});
+ assert.equal(rd3r.status,200);assert.equal(rd3r.body.retried,true,'resp retry: no more 404-stranded marker');
+ assert.equal(await f.getJ('fm:biz:op_pending'),null);
+ assert(!(await f.r(['SMEMBERS','fm:biz:resps'])).includes(rx),'resp index membership cleaned');
+
+ // --- R4-4) cancel carries the reviewed op identity: stale reject + generation invalidation
+ const sd5=(await f.bizSourceAdd({kind:'note',title:'S5',text:'We answer customer emails within a day.'})).body.source.id;
+ c.global.__bizFault='sourcedel:scrubbed';
+ const d5=await f.bizSourceDel(sd5);assert.equal(d5.status,503);assert.equal(d5.body.code,'delete_incomplete');
+ c.global.__bizFault='purge:runs';
+ const pg=await f.bizDataPurge({confirm:'DELETE'});assert.equal(pg.status,503);assert.equal(pg.body.code,'purge_incomplete','purge subsumes a pending narrower intent atomically');
+ assert.equal((await f.getJ('fm:biz:op_pending')).op,'purge','newer purge intent pending');
+ const staleCancel=await f.bizOpCancel({op:'source_delete',id:sd5});
+ assert.equal(staleCancel.status,409);assert.equal(staleCancel.body.code,'op_stale','stale cancel rejected; newer intent untouched');
+ assert.equal((await f.getJ('fm:biz:op_pending')).op,'purge','stale cancel did not clear the newer purge intent');
+ const pgR=await f.bizDataPurge({confirm:'DELETE'});assert.equal(pgR.status,200,'purge retry completes');
+ assert.equal((await f.bizOpCancel({op:'purge',id:''})).status,409,'nothing pending after the completed purge');
+ const sd6=(await f.bizSourceAdd({kind:'note',title:'S6',text:'We answer customer emails within a day.'})).body.source.id;
+ c.global.__bizFault='sourcedel:begin';
+ await f.bizSourceDel(sd6);
+ const fence6=await f.r(['GET','fm:biz:fence']);
+ const cx=await f.bizOpCancel({op:'source_delete',id:sd6});assert.equal(cx.status,200);
+ assert.equal(await f.bizLog('source_deleted',{sourceId:sd6,title:'S6'},fence6),0,'cancel generation bump invalidates the in-flight holder next write');
+ assert.equal((await f.bizDataPurge({confirm:'nope'})).status,400,'typed confirmation still required');
+
+ // --- R4-5) completion log inside the operation own generation: no post-release write can
+ // recreate the activity log after a later purge
+ const sd7=(await f.bizSourceAdd({kind:'note',title:'S7',text:'We answer customer emails within a day.'})).body.source.id;
+ const preDel=await f.r(['GET','fm:biz:fence']);
+ const d7=await f.bizSourceDel(sd7);assert.equal(d7.status,200);assert.strictEqual(d7.body.auditLogged,true);
+ await f.bizDataPurge({confirm:'DELETE'});
+ assert.equal(await f.bizLog('source_deleted',{sourceId:sd7,title:'S7'},preDel),0,'stale post-release log write refused');
+ const stLog=(await f.bizState()).log;assert(stLog.length>0&&stLog.every(e=>e.kind==='data_purged'),'only the purge own commit entry survives');
+
+ console.log('PASS privacy lifecycle: orphan inventory, generation bumps, freeze exclusion + ownership-token interleave (expiry/purge/third-holder), durable partial purge with quiescence + retry + CANCEL, truthful partials, keyspace-complete purge, vetted-origin allowlist + full classifier, redirect refused pre-payload, R4 atomic op protocol (pending inside fenced writes, coherent begin, idempotent gone-record retries, reviewed-identity cancel, commit-inside-ownership).');
 })().catch(e=>{console.error(e);process.exit(1)});

@@ -44,7 +44,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  assert.equal(purge.body.purged,true);assert(purge.body.counts.sources>=1&&purge.body.counts.proposals===1);
  const after=await f.bizState();
  assert.equal(after.sources.length,0);assert.equal(after.proposals.length,0);assert.equal(after.responsibilities.length,0);
- assert.equal(after.log.length,0,'activity log is part of the purge');
+ assert(after.log.length<=1&&after.log.every(e=>e.kind==='data_purged'),'activity log is purged; only the purge own atomic commit entry remains');
  assert.equal(after.engine.consent,null,'provider consent is part of the purge');
  const other=await f.als.run({ws:'tenant-two'},()=>f.bizSources());
  assert.equal(other.length,1,'other workspace untouched by purge');
