@@ -1,0 +1,38 @@
+/* Alter · owner overview + first run. Text uses --ink/--stone only (AA on white and porcelain); controls are >= 44px. */
+#v-overview .ov{padding-left:max(24px,env(safe-area-inset-left));padding-right:max(24px,env(safe-area-inset-right))}
+.ov .ov-sec{margin-top:8px}
+.ov .bz-sech{font-size:var(--t-section-l)}
+.ov .ov-item{display:block;color:var(--ink);text-decoration:none}
+.ov .ov-item>b,.ov .ov-item summary>b{display:block;font-weight:600;line-height:1.35}
+.ov .ov-item small,.ov .ov-tag,.ov .ov-why{display:block;color:var(--stone);font-size:13px;line-height:1.45;margin-top:4px}
+.ov .ov-tag{margin:0 0 4px;font-weight:500}
+.ov .ov-empty,.ov .ov-refresh{color:var(--stone);font-size:14px;margin:4px 0 12px}
+.ov .ov-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center}
+.ov .b,.ov .ov-link{min-height:44px}
+.ov .b{padding:0 16px;font-size:14px}
+.ov .ov-link{display:inline-flex;align-items:center;color:var(--ink);text-decoration:underline;text-underline-offset:3px;padding:0 4px}
+.ov .ov-open{min-height:44px}
+.ov summary{cursor:pointer;min-height:44px;list-style:none}
+.ov summary::-webkit-details-marker{display:none}
+.ov .ov-out{white-space:pre-wrap;font:13px/1.5 var(--font-code);color:var(--ink);margin-top:10px;max-height:320px;overflow:auto}
+.ov .ov-run{display:flex;flex-wrap:wrap;gap:8px 12px;margin-top:12px;align-items:center}
+.ov .ov-run .ov-why{margin-top:0;flex:1 1 220px}
+.ov .b:disabled{opacity:1;background:var(--porcelain);color:var(--stone);border-color:var(--line);cursor:not-allowed}
+.ov .ov-banner{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:12px 14px;margin:16px 0;border:1px solid var(--line);border-radius:var(--r-inner,12px);background:var(--surface);color:var(--ink);font-size:14px;line-height:1.45}
+.ov .ov-banner.err{border-color:var(--vermilion-press);background:var(--vermilion-tint)}
+.ov .ov-engine{margin-top:16px}
+.ov .ov-disc,.ov .ov-disc-in{color:var(--stone);font-size:13px;line-height:1.5;margin-top:24px}
+.ov .ov-disc-in{margin-top:4px}
+.ov .ov-warn{color:var(--ink);font-size:13px;line-height:1.5;margin-top:8px;padding:10px 12px;border-left:3px solid var(--vermilion-press);background:var(--vermilion-tint);border-radius:6px}
+.ov .ob h2{font-size:22px;letter-spacing:-.02em;margin-bottom:6px}
+.ov .ob .sub{color:var(--stone);margin-bottom:16px}
+.ov .ob .in{min-height:44px}
+@media (max-width:760px){
+  #v-overview .ov{padding:calc(16px + env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) calc(var(--h-tabs,64px) + 24px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+  .ov .page-h h1{font-size:24px}
+  .ov .ov-acts .b{flex:1 1 auto}
+}
+.ov .ov-pending>*{margin-left:0;margin-right:0}
+.ov .ov-st-failed{color:var(--vermilion-press);font-weight:600}
+.ov .ov-st-blocked,.ov .ov-st-unchecked{color:var(--ink);font-weight:600}
+#v-business .ov-focus{outline:2px solid var(--ink);outline-offset:3px;transition:outline-color .4s}
