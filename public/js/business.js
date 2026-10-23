@@ -98,7 +98,7 @@
       <label class="fld">Title<input class="in" id="bz-add-title" maxlength="120" placeholder="e.g. How last week actually went"></label>
       <label class="fld">Text<textarea class="in" id="bz-add-text" rows="6" maxlength="20000" placeholder="Paste notes, a call summary, a process doc…"></textarea></label>
       <div class="btns"><button class="b ink" id="bz-add">Add source</button></div>
-      <p class="meta">Only you can see these. They leave Alter only to the reasoning engine, once connected.</p></div>`;
+      <p class="meta">Saved to your Alter workspace. Shared with the reasoning engine only when it is connected and you ask Alter to look for work.</p></div>`;
     const empty = !srcs.length ? `<div class="bz-hero"><h2>Teach Alter the business</h2>
       <p>1. Add notes or documents about how the business actually runs.<br>2. Alter proposes responsibilities it could take over, each backed by quotes from your own notes.<br>3. You approve what starts. Approved work runs as drafts you review - nothing is sent, spent or connected.</p></div>` : '';
     const propSec = srcs.length ? `<div class="bz-sech row"><span>What Alter could take over</span><button class="b ink sm" id="bz-discover" ${eng.configured && eng.enabled ? '' : 'disabled'}>Look for work</button></div>

@@ -663,4 +663,5 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 @media (max-width:760px){
   .bz-card{padding:14px}
   .page-in .bz-hero{padding-top:8px}
+  #v-business .page-in{padding-left:16px;padding-right:16px}
 }
