@@ -106,7 +106,7 @@
       <label class="fld">Title<input class="in" id="bz-add-title" maxlength="120" placeholder="e.g. How last week actually went"></label>
       <label class="fld">Text<textarea class="in" id="bz-add-text" rows="6" maxlength="20000" placeholder="Paste notes, a call summary, a process doc…"></textarea></label>
       <div class="btns"><button class="b ink" id="bz-add">Add source</button></div>
-      <p class="meta">Saved to your Alter workspace. When the reasoning engine is connected, looking for work sends each source's full saved text; each responsibility run or daily check-in sends the first 4,000 characters of every source plus the work you bring.</p></div>`;
+      <p class="meta">Saved to your Alter workspace. When the reasoning engine is connected, looking for work sends each source's full saved text (up to 20,000 characters per source); each responsibility run or daily check-in sends the first 4,000 characters of every source plus the work you bring.</p></div>`;
     const empty = !srcs.length ? `<div class="bz-hero"><h2>Teach Alter the business</h2>
       <p>1. Add notes or documents about how the business actually runs.<br>2. Alter proposes responsibilities it could take over, each backed by quotes from your own notes.<br>3. You approve what starts. Approved work runs as drafts you review - nothing is sent, spent or connected.</p></div>` : '';
     // Provider consent card: exact host+model, what is sent, withdraw any time. The gate is

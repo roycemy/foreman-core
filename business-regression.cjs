@@ -100,7 +100,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  assert(/s\.text\.slice\(0, 4000\)/.test(src),'runs transmit source text');
  const bizjs=fs.readFileSync('public/js/business.js','utf8');
  assert(bizjs.includes("each run or daily check-in sends the first 4,000 characters of every source"),'source copy covers manual runs with the real truncation');
- assert(bizjs.includes("looking for work sends each source's full saved text"),'source copy covers discover transmission accurately');
+ assert(bizjs.includes("looking for work sends each source's full saved text (up to 20,000 characters per source)"),'source copy covers discover transmission accurately');
  assert(bizjs.includes('On each run the first 4,000 characters of every source go to the reasoning engine'),'activation point discloses per-run transmission + scheduled processing');
  // 9) route wiring: bizState returns a bare body, so the route must wrap it in {status,body} (production 500 'Invalid status code: undefined' regression)
  assert(src.includes("send({ status: 200, body: await bizState() })"),'route wraps bizState body in a status');
