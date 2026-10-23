@@ -125,8 +125,8 @@
     let title = raw, assignee = null; const m = raw.match(/^@(\S+)\s+(.+)$/);
     if (m) { const bot = BB.assignable().find(a => a.name.toLowerCase().replace(/\s+/g, '') === m[1].toLowerCase()); if (bot) { assignee = bot.id; title = m[2]; } }
     ask.querySelector('button').disabled = true;
-    if(!assignee&&/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){ask.querySelector('button').disabled=false;return BB.reviewParts(title,plan);}}
-    const j = await BB.api('/api/tasks', 'POST', assignee ? { title, assignee } : { title, route: true });
+    if (!assignee) { const ok = await BB.leadTask(title, ''); if (ok) askin.value = ''; ask.querySelector('button').disabled = !askin.value.trim(); return; }
+    const j = await BB.api('/api/tasks', 'POST', { title, assignee });
     if (j.error) { BB.toast(j.error); ask.querySelector('button').disabled = false; return; }
     askin.value = '';
     /* never say "Sent" without the catch: a bot that is not connected, needs reconnecting or is dark picks the job up later, not now */
@@ -135,17 +135,29 @@
     else if (j.unrouted) { BB.toast(j.allAsleep ? 'Every bot is asleep right now. It\'s queued - the first bot to check in takes it.' : 'Couldn\'t route this. It\'s in your inbox, marked unrouted.' + (BB.assignable().length ? '' : ' Connect a bot and assign it there.')); BB.sync(true); }
     else { BB.toast(assignee ? 'Sent to ' + BB.agent(assignee).name + '.' + sendNote(BB.agent(assignee)) : 'Added to your inbox. Pick a bot for it.' + (BB.assignable().length ? '' : ' Connect a bot first.')); BB.sync(true); }
   };
-  BB.reviewParts=function(title,plan,brief){const box=BB.modal(`<h3>Review the parts</h3><p>${esc(plan.note)}</p><form id="parts-form"><div class="parts-plan">${plan.parts.map((p,i)=>`<label class="fld">Part ${i+1}<input class="in" data-part-title value="${esc(p.title)}" maxlength="120" required><small>${esc(p.reason)}</small><select class="in" data-part-bot><option value="">First available bot</option>${BB.assignable().filter(a=>!a.hosted&&!a.paused).map(a=>`<option value="${esc(a.id)}" ${a.id===p.assignee?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label>`).join('')}</div><p class="meta">Each part waits for the previous result. No bot-to-bot connection is needed. Nothing has started yet.</p><div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit">Start these parts</button></div></form>`,{label:'Review task parts'});box.querySelector('#parts-form').onsubmit=async e=>{e.preventDefault();const b=box.querySelector('[type=submit]');b.disabled=true;const titles=[...box.querySelectorAll('[data-part-title]')],bots=[...box.querySelectorAll('[data-part-bot]')];const parts=plan.parts.map((p,i)=>({...p,title:titles[i].value.trim(),assignee:bots[i].value||null}));const j=await BB.api('/api/tasks','POST',{title,brief,orchestrate:true,parts});b.disabled=false;if(j.error)return BB.toast(j.error);askin.value='';BB.closeModal();BB.toast('Parts queued. Each starts after the previous result.');await BB.sync(true);BB.go('#receipts/'+j.task.id);};};
+  /* One job to the lead: the most recently active awake bot. It plans and hands parts to the other connected bots through Alter's queue. */
+  let pendingReq = null, leadBusy = false;
+  BB.leadTask = async function (title, brief) {
+    if (leadBusy) return false; leadBusy = true;
+    /* one stable requestId per submit; retrying the same submit reuses it, so the server never creates a second job */
+    const sig = JSON.stringify([title, brief || '']);
+    if (!pendingReq || pendingReq.sig !== sig) pendingReq = { sig, id: (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9_-]/g, '') };
+    try {
+      const j = await BB.api('/api/tasks', 'POST', { title, brief, lead: true, requestId: pendingReq.id });
+      if (j.error) { BB.toast(j.error); return false; }
+      pendingReq = null;
+      BB.toast(j.waiting ? 'Queued. Waiting for ' + (j.lead.name || 'your bot') + ' to wake.' : 'Sent to ' + (j.lead.name || 'your bot') + '. It leads and can hand parts to your other bots.');
+      await BB.sync(true); BB.go('#receipts/' + j.task.id); return true;
+    } finally { leadBusy = false; }
+  };
   BB.newJob = function () {
-    const box = BB.modal(`<h3>New job</h3><p>Describe what you want done. Pick a bot, or let Alter choose an awake bot.</p>
+    const box = BB.modal(`<h3>New job</h3><p>Describe what you want done. Your most recently active bot leads it and can hand parts to your other bots.</p>
       <form class="stackf" id="nj"><label class="fld">What should happen?<input class="in" id="nj-t" maxlength="120" required placeholder="Summarize this week's support tickets"></label>
       <label class="fld">Details <small>optional</small><textarea class="in" id="nj-b" maxlength="1500" style="min-height:90px"></textarea></label>
-      <label class="fld">Who takes it<select class="in" id="nj-a"><option value="">Pick the best available bot</option>${BB.assignable().map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
-      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit">Add job</button></div></form>`, { label: 'New job' });
+      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit" id="nj-go">Send</button></div></form>`, { label: 'New job' });
     box.querySelector('#nj').onsubmit = async e => {
-      e.preventDefault();const title=$('#nj-t').value.trim(),brief=$('#nj-b').value.trim(),assignee=$('#nj-a').value||null;if(!assignee&&/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){BB.closeModal();return BB.reviewParts(title,plan,brief);}}
-      const j = await BB.api('/api/tasks', 'POST', {title,brief,assignee,route:!assignee});
-      if (j.error) return BB.toast(j.error); BB.closeModal(); BB.toast('Job added.'); BB.sync(true);
+      e.preventDefault(); const b = box.querySelector('#nj-go'); if (b.disabled) return; b.disabled = true;
+      const ok = await BB.leadTask($('#nj-t').value.trim(), $('#nj-b').value.trim()); if (ok) BB.closeModal(); else b.disabled = false;
     };
   };
 

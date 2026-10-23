@@ -15,7 +15,7 @@
     return {
       bot: { name: t.orchestration?'Your team':bot.name, initials: t.orchestration?'T':BB.initials(bot.name), color: BB.avColor(bot) },
       at: t.finishedAt || t.createdAt,
-      headline: t.orchestration ? (t.status==='done'?'Your team finished all parts':t.status==='failed'?'This plan stopped':'Your team is working through the parts') : t.status === 'failed' ? bot.name + ' stopped after ' + BB.durWords(ms) : bot.name + ' finished this in ' + BB.durWords(ms),
+      headline: t.orchestration ? (t.status==='done'?'Your team finished all parts':t.status==='failed'?'This plan stopped':'Your team is working through the parts') : t.status === 'queued' ? bot.name + ' has this queued' : t.status === 'running' ? bot.name + ' is working on this' : t.status === 'failed' ? bot.name + ' stopped after ' + BB.durWords(ms) : bot.name + ' finished this in ' + BB.durWords(ms),
       lede: t.brief ? t.title + '. ' + t.brief : t.title,
       artifact: lines.length ? { title: lines[0].replace(/^\d+[.)]\s*/, '').slice(0, 90), text: lines.slice(1).join(' · ').slice(0, 220), words, name: t.title, full: t.result } : null,
       costUsd: t.modelCostUsd == null ? null : t.modelCostUsd, showCost: true,
@@ -42,11 +42,11 @@
     if (!cache[id]) { V.innerHTML = `<div class="rc"><a class="back" href="#receipts">‹ Receipts</a><p class="meta" style="margin-top:24px">Loading…</p></div>`; }
     const j = await BB.api('/api/jobs/' + id); if (openId !== id) return;
     if (j.error) { V.innerHTML = `<div class="rc"><a class="back" href="#receipts">‹ Receipts</a><div class="list-empty" style="margin-top:24px"><b>Receipt not found</b>It may be older than the retained history.</div></div>`; return; }
-    cache[id] = j; painted = id + ':' + BB.agents().length; paintDetail(j);
+    j.syncAt = BB.lastSync; cache[id] = j; painted = id + ':' + BB.agents().length; paintDetail(j);
   }
   function paintDetail(j) {
     const t = j.task, d = BB.receiptData(j), done = ['done', 'failed'].includes(t.status);
-    V.innerHTML = `<div class="rc wide"><a class="back" href="#receipts">‹ Receipts</a><div style="height:28px"></div>${BB.partsHTML?BB.partsHTML(t,j.children):''}${receiptDoc(d, { fullResult: true })}${t.orchestration&&!done?'<div class="acts" style="margin-top:20px"><button class="b out" data-stop-plan>Stop remaining parts</button></div>':''}
+    V.innerHTML = `<div class="rc wide"><a class="back" href="#receipts">‹ Receipts</a><div style="height:28px"></div>${BB.partsHTML?BB.partsHTML(t,j.children):''}${BB.leadHTML?BB.leadHTML(t,j.children):''}${receiptDoc(d, { fullResult: true })}${t.orchestration&&!done?'<div class="acts" style="margin-top:20px"><button class="b out" data-stop-plan>Stop remaining parts</button></div>':''}
       ${done ? `<div class="share-box" id="share-box"><h3>Share a public receipt</h3><p>You write a public title, description and reusable template, review the exact page, then publish. Nothing from the private job is copied in. Links expire in 30 days.</p><div class="acts" style="justify-content:flex-start;margin-top:14px"><button class="b ink" type="button" data-share>Share…</button></div></div>` : `<p class="meta" style="margin-top:24px">This job is ${esc(BB.jobStatus(t).word.toLowerCase())}. Its receipt is final once it finishes.</p>`}
       <div class="foot"><span class="mark"><i aria-hidden="true"></i>${esc(BRAND.upper)}</span>· Receipt</div></div>`;
     receiptBind(V);const stop=V.querySelector('[data-stop-plan]');if(stop)stop.onclick=async()=>{stop.disabled=true;const out=await BB.api('/api/tasks/'+t.id+'/stop','POST',{});if(out.error){stop.disabled=false;return BB.toast(out.error);}await BB.sync(true);detail(t.id);};
@@ -61,6 +61,8 @@
   let painted = '';
   BB.on(() => {
     if (!V.classList.contains('on')) return; const id = BB.route().arg;
+    /* lead jobs: refetch the detail on every state sync (the app's live-update tick) while any part is open or new parts may appear, so child create/update/complete shows without a reload */
+    if (id && cache[id] && cache[id].task.lead && BB.lastSync && cache[id].syncAt !== BB.lastSync) { const c = cache[id], open = !['done', 'failed'].includes(c.task.status) || (c.children || []).some(k => !['done', 'failed'].includes(k.status)); c.syncAt = BB.lastSync; if (open) return detail(id); }
     if (id) { const t = BB.task(id), c = cache[id]; if (t && c && (c.task.status !== t.status || t.orchestration && c.task.progressAt!==t.progressAt)) return detail(id); if (t?.orchestration&&c){c.task=t;paintDetail(c);return;} if (c && painted !== id + ':' + BB.agents().length) { painted = id + ':' + BB.agents().length; paintDetail(c); } return; }
     list();
   });

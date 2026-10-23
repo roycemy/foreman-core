@@ -397,3 +397,17 @@
 })();
 
 (function(){const B=window.BB;B.partsHTML=function(t,children){if(!t.orchestration)return '';return '<section class="parts-progress"><h2>Parts and owners</h2><p>Sequential tasks in Alter, not a live bot-to-bot call.</p>'+t.partIds.map((id,i)=>{const c=B.task(id)||(children||[]).find(x=>x.id===id);if(!c)return '<p>Part '+(i+1)+' unavailable</p>';const a=B.agent(c.assignee);return '<a href="#receipts/'+B.esc(c.id)+'"><span>'+(i+1)+'</span><div><b>'+B.esc(c.title)+'</b><small>'+B.esc(a?a.name:'First available bot')+' · '+B.esc(c.status==='waiting'?'Waiting for previous part':c.status)+'</small></div><span>↗</span></a>'}).join('')+'</section>';};})();
+/* Lead view: the lead's job, the parts it handed off through Alter's queue (owners, statuses, real results only). */
+(function(){const B=window.BB;B.leadHTML=function(t,children){if(!t.lead)return '';const a=B.agent(t.assignee),all=children||[];
+ const asleep=a&&t.status==='queued'&&(B.wentDark(a)||!a.lastSeen);const st=s=>s==='queued'?'queued':s==='running'?'working':s;
+ const res=c=>c.result?'<small class="lres">'+B.esc(String(c.result).slice(0,240))+'</small>':'';
+ /* nested sub-parts: render each part's own children indented under it */
+ const tree=(pid,depth,prefix)=>all.filter(c=>c.parentId===pid).map((c,i)=>{const o=B.agent(c.assignee),n=prefix+(i+1);return '<a href="#receipts/'+B.esc(c.id)+'" class="lpart" data-depth="'+depth+'" style="margin-left:'+Math.min(depth,4)*20+'px"><span>'+n+'</span><div><b>'+B.esc(c.title)+'</b><small>Handed to '+B.esc(o?o.name:'a bot')+' \u00b7 '+B.esc(st(c.status))+'</small>'+res(c)+'</div><span>\u2197</span></a>'+tree(c.id,depth+1,n+'.');}).join('');
+ const lim=t.owner&&t.owner.limits?Object.entries({draftOnly:'draft only',noSend:"don't send",noSpend:"don't spend",noPurchase:"don't buy"}).filter(([k])=>t.owner.limits[k]).map(([,v])=>v):[];
+ const parts=tree(t.id,0,'');
+ return '<section class="parts-progress lead-view"><h2>Lead and parts</h2><p>The lead plans the task and hands parts to your other bots through Alter\u2019s queue. Bots don\u2019t message each other directly. Only real results are shown.</p>'
+ +(lim.length?'<p class="meta owner-limits">Your limits apply to every part: '+B.esc(lim.join(', '))+'</p>':'')
+ +(asleep?'<p class="plan-wait">Waiting for '+B.esc(a.name)+' to wake. Alter never hands this to a paid hosted worker.</p>':'')
+ +(t.leadAlone?'<p class="plan-wait">'+B.esc(a?a.name:'This bot')+' will do this alone, can\u2019t hand off.</p>':'')
+ +'<div class="lead-row"><b>Lead: '+B.esc(a?a.name:'Unknown bot')+'</b><small>'+B.esc(st(t.status))+(t.routingReason?' \u00b7 '+B.esc(t.routingReason):'')+'</small>'+res(t)+'</div>'
+ +(parts||'<p class="meta">No parts handed off yet. If the lead hands any off, they show here.</p>')+'</section>';};})();

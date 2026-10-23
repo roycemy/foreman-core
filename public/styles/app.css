@@ -618,3 +618,9 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 @media (max-width:940px){.hero{display:none}}
 
 .parts-plan{display:grid;gap:18px;margin:22px 0}.parts-plan .fld small{line-height:1.4;margin:7px 0;display:block}.parts-progress{margin-top:26px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px}.parts-progress h2{font-size:18px;margin:0}.parts-progress>p{font-size:12px;color:var(--stone);margin:8px 0 16px}.parts-progress>a{display:flex;gap:12px;align-items:center;padding:14px 0;border-top:1px solid var(--line);text-decoration:none;color:inherit}.parts-progress>a>span:first-child{font-size:12px;color:var(--stone)}.parts-progress a div{flex:1;min-width:0}.parts-progress b{display:block;font-size:13px}.parts-progress small{display:block;margin-top:6px;font-size:11px;color:var(--stone)}
+
+/* lead view */
+.plan-wait{font-size:13px;padding:10px 12px;border-radius:10px;background:#fff4e5;color:var(--ink);margin-top:10px}
+.lead-view .lead-row{padding:14px 0;border-bottom:1px solid var(--line);display:grid;gap:3px}
+.lead-view small{display:block;color:var(--stone);font-size:12.5px}
+.lead-view .lres{color:var(--ink);background:var(--line);border-radius:8px;padding:6px 8px;margin-top:4px;white-space:pre-wrap}
