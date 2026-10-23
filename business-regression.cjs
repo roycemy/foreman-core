@@ -1,7 +1,7 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizState,bizDailyTick,bizChat,setJ,getJ,r};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizState,bizDailyTick,bizCronOk,bizChat,setJ,getJ,r};';
 const calls=[];
-const c={require,module:{exports:{}},process:{env:{}},global:{},console,URL,AbortSignal,setTimeout,clearTimeout,
+const c={require,module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:async(u,o)=>{calls.push({u:String(u),o});const body=JSON.parse(o.body);
   const user=body.messages[1].content;
   function reply(content,usage){return {ok:true,json:async()=>({choices:[{message:{content}}],usage})};}
@@ -83,7 +83,17 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  assert.equal(respDaily.runs.find(x=>x.kind==='daily').input,null,'daily runs have no pasted input');
  // 8) stale flags surface in state
  const st3=await f.bizState();assert(st3.proposals.every(x=>Array.isArray(x.stale)));
+ // 10) cron guard fails CLOSED: no secret, missing bearer, wrong secret all denied; only exact bearer passes
+ c.process.env.CRON_SECRET='';
+ const reqNo={headers:{authorization:'Bearer x'}};assert.equal(f.bizCronOk(reqNo),false,'no secret configured -> closed');
+ c.process.env.CRON_SECRET='topsecret';
+ assert.equal(f.bizCronOk({headers:{}}),false,'missing bearer -> closed');
+ assert.equal(f.bizCronOk({headers:{authorization:'Bearer wrong'}}),false,'wrong secret -> closed');
+ assert.equal(f.bizCronOk({headers:{authorization:'Bearer topsecret '}}),false,'near-miss length -> closed');
+ assert.equal(f.bizCronOk({headers:{authorization:'bearer topsecret'}}),false,'wrong scheme case -> closed');
+ assert.equal(f.bizCronOk({headers:{authorization:'Bearer topsecret'}}),true,'exact bearer opens');
+ delete c.process.env.CRON_SECRET;
  // 9) route wiring: bizState returns a bare body, so the route must wrap it in {status,body} (production 500 'Invalid status code: undefined' regression)
  assert(src.includes("send({ status: 200, body: await bizState() })"),'route wraps bizState body in a status');
- console.log('PASS business workspace: honest engine-off 503, source CRUD+versioning, verbatim evidence verification (2 dropped), discover prompt fences hostile text as data, edit/reject/activate lifecycle, stale-evidence block + confirm, runs with boundary + filtered sourcesUsed + audit, pause/kill blocking, daily tick with gap, state shape, state-route wiring.');
+ console.log('PASS business workspace: honest engine-off 503, source CRUD+versioning, verbatim evidence verification (2 dropped), discover prompt fences hostile text as data, edit/reject/activate lifecycle, stale-evidence block + confirm, runs with boundary + filtered sourcesUsed + audit, pause/kill blocking, daily tick with gap, state shape, state-route wiring, cron fail-closed guard.');
 })().catch(e=>{console.error(e);process.exit(1)});
