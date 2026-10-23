@@ -2,182 +2,210 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Alter · One budget and one receipt</title>
 <meta name="description" content="Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.">
-<meta name="theme-color" content="#090909">
 <meta property="og:title" content="Alter · One budget and one receipt">
 <meta property="og:description" content="Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.">
-<meta property="og:image" content="/brand/alter-mark-256.png">
+<meta name="theme-color" content="#F4F4F1">
 <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
-<link rel="icon" href="/brand/favicon-32.png" sizes="32x32" type="image/png">
-<link rel="apple-touch-icon" href="/brand/alter-icon-light-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600&family=Instrument+Serif&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/marketing/one.css">
+<link rel="stylesheet" href="/marketing/hero.css">
+<link rel="stylesheet" href="/marketing/home.css">
 <link rel="stylesheet" href="/v2/v2.css">
 <script>try{if(matchMedia('(prefers-reduced-motion: reduce)').matches)document.documentElement.classList.add('reduce')}catch(e){}</script>
 </head>
-<body>
+<body class="pa v2">
 <a class="skip" href="#main">Skip to content</a>
-<header class="nav">
-<div class="nav-in">
-<a class="logo" href="/v2" aria-label="Alter"><svg viewBox="4 17 56 36" aria-hidden="true"><path d="M8 33 V37 L32 49 L56 37 V33" fill="none" stroke="#f4f1ea" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="none" stroke="#f4f1ea" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg><span>alter</span></a>
-<nav class="links" aria-label="Main"><a href="/v2#story">Story</a><a href="/v2/product">Product</a><a href="/v2/waitlist">Waitlist</a><a href="/hq">Sign in</a></nav>
-</div>
-</header>
+<header class="nav"><div class="wrap"><a class="wm" href="/v2"><img src="/marketing/assets/H1-mark.svg" alt=""><span>alter</span></a><div class="sp"></div><a class="si nav-more" href="/v2#story">Story</a><a class="si nav-more" href="/v2/product">Product</a><a class="si" href="/hq">Sign in</a><a class="btn sm" href="/v2#waitlist">Get started</a></div></header>
 <main id="main">
-<section class="hero">
-<div class="wrap">
-<p class="kicker">Spending permission</p>
-<h1>One budget. One receipt.</h1>
-<p class="lede">Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.</p>
-<form class="wait" novalidate>
-<div class="fields">
-<label class="sr" for="email-hero">Email address</label>
-<input id="email-hero" name="email" type="email" autocomplete="email" inputmode="email" maxlength="254" placeholder="you@example.com" required>
-<button type="submit">Join the waitlist</button>
-</div>
-<label class="consent"><input name="consent" type="checkbox" required><span>Email me when Alter access is available.</span></label>
-<div class="trap" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
-<p class="status" role="status" aria-live="polite"></p>
-<p class="seats" data-seats>Founding access list: reading the server.</p>
-<p class="fine">We keep your email for this access request. No sale of your address. This form does not connect a bot or issue a card.</p>
-</form>
-</div>
+<section class="hero"><div class="wrap hero-in">
+ <div class="copy">
+  <h1>One budget. One receipt.</h1>
+  <p class="lead">Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.</p>
+  <div class="ctas"><a class="btn" href="#waitlist">Join the waitlist</a></div>
+  <p class="seats on" data-seats aria-live="polite">Founding access list: reading the server.</p>
+ </div>
+ <div class="hv-col">
+  <div class="hv" id="hvA" role="img" aria-label="Example illustration: sample bots hand off a job in HQ, and one raises a hand for approval"><img class="fl" src="/marketing/assets/floor-crop.jpg" alt="">
+<span class="tag" style="left:47.7%;top:9.9%"><i style="background:#2F6B55">IN</i>Instinct</span>
+<span class="tag" style="left:30.4%;top:23.4%"><i style="background:#121212">GB</i>Grok Bot</span>
+<span class="tag" style="left:49.3%;top:38.3%"><i style="background:#5A4A8A">MU</i>Muse</span>
+<span class="fold"></span><span class="hand" style="left:54.7%;top:44.5%">✋</span><div class="ask" style="left:62%;top:40%"><span class="needs">Needs you</span><b>Approve Meta ads for $49</b><span class="d"></span><div class="acts"><span>Deny</span><span class="ok">Approve</span></div><div class="done">Approved by you</div></div><div class="toast">Your bots are working</div></div>
+  <p class="cap">Example. Sample requests. The floor, the handoff, and the card are a sample.</p>
+ </div>
+</div></section>
+
+<section class="sec" id="problem"><div class="wrap">
+ <div class="shead rv"><p class="eyebrow">The problem</p><h2>Three lines.</h2></div>
+ <ul class="facts">
+  <li class="rv"><h3>A checkout in every lab</h3><p>Each lab is building a checkout inside its own agent.</p></li>
+  <li class="rv"><h3>You will run many agents</h3><p>The bots will not all live in one app.</p></li>
+  <li class="rv"><h3>No shared record</h3><p>Nobody gives one budget and one receipt per job across all of them.</p></li>
+ </ul>
+</div></section>
+
+<section class="sec story" id="story">
+ <div class="wrap"><div class="shead rv"><p class="eyebrow">The loop</p><h2>Context. Action. Feedback. Memory.</h2><p class="lead">One example job, from the brief to the receipt. Nothing on this page is a live charge.</p></div></div>
+ <div class="story-pin">
+  <article class="step-row" data-step="context"><div class="wrap story-grid">
+   <div class="story-copy">
+    <p class="eyebrow">01 · Context</p>
+    <h3 class="beat-title">Job, budget, rules, expiry.</h3>
+    <p>Context is the job, the budget, the rules, and the expiry.</p>
+    <p class="ex">Example. Not a live job.</p>
+   </div>
+   <div class="story-visual" aria-hidden="true"><div class="scene center">
+    <article class="brief">
+     <p class="eyebrow">Example</p>
+     <h3>Reorder packing tape</h3>
+     <ul>
+      <li><span>Budget</span><b>$40.00</b></li>
+      <li><span>Rules</span><b>Ask above $20</b></li>
+      <li><span>Expiry</span><b>10 minutes</b></li>
+     </ul>
+    </article>
+   </div></div>
+  </div></article>
+
+  <article class="step-row" data-step="action"><div class="wrap story-grid">
+   <div class="story-copy">
+    <p class="eyebrow">02 · Action</p>
+    <h3 class="beat-title">They work. Alter hands off.</h3>
+    <p>The bots keep working on their own servers. Alter routes the job and hands it off.</p>
+    <p class="ex">Example handoff. Instinct, Grok Bot, and Muse are sample names on this page.</p>
+   </div>
+   <div class="story-visual" aria-hidden="true"><div class="scene floor-scene"><div class="floor">
+    <img class="fl" src="/marketing/assets/floor-crop.jpg" alt="">
+    <span class="tag" style="left:47.7%;top:9.9%"><i style="background:#2F6B55">IN</i>Instinct</span>
+    <span class="tag" style="left:30.4%;top:23.4%"><i style="background:#121212">GB</i>Grok Bot</span>
+    <span class="tag" style="left:49.3%;top:38.3%"><i style="background:#5A4A8A">MU</i>Muse</span>
+    <span class="packet"></span>
+   </div></div></div>
+  </div></article>
+
+  <article class="step-row" data-step="feedback"><div class="wrap story-grid">
+   <div class="story-copy">
+    <p class="eyebrow">03 · Feedback</p>
+    <h3 class="beat-title">You tap. The card is armed.</h3>
+    <p>You tap. The card is armed for that amount and that merchant. Anything else is declined.</p>
+    <p class="ex">Example. No live card is issued. Nothing is charged.</p>
+   </div>
+   <div class="story-visual" aria-hidden="true"><div class="scene floor-scene"><div class="floor">
+    <img class="fl" src="/marketing/assets/floor-crop.jpg" alt="">
+    <span class="tag" style="left:47.7%;top:9.9%"><i style="background:#2F6B55">IN</i>Instinct</span>
+    <span class="tag" style="left:30.4%;top:23.4%"><i style="background:#121212">GB</i>Grok Bot</span>
+    <span class="tag" style="left:49.3%;top:38.3%"><i style="background:#5A4A8A">MU</i>Muse</span>
+    <div class="permit"><span class="needs">Needs you</span><b>Reorder packing tape</b><span class="d">$27.40 · Office supply</span><div class="acts"><span>Deny</span><span class="ok">Approve</span></div><p class="armed">Armed for $27.40 at this merchant. Anything else is declined.</p></div>
+   </div></div></div>
+  </div></article>
+
+  <article class="step-row" data-step="memory"><div class="wrap story-grid">
+   <div class="story-copy">
+    <p class="eyebrow">04 · Memory</p>
+    <h3 class="beat-title">A hash-chained receipt.</h3>
+    <p>The hash is verified from the snapshot. What the bot says about the work is reported, not verified.</p>
+    <p class="ex">Example. Not a live job. <b data-hash>Computing example hash</b></p>
+   </div>
+   <div class="story-visual" aria-hidden="true"><div class="scene center">
+    <article class="receipt">
+     <header><span>Example receipt</span><span>Not a live job</span></header>
+     <div class="lines">
+      <p class="line" data-k="Job"><span>Job</span><b>Reorder packing tape</b></p>
+      <p class="line" data-k="Budget"><span>Budget</span><b>$40.00</b></p>
+      <p class="line" data-k="Amount"><span>Amount</span><b>$27.40</b></p>
+      <p class="line" data-k="Approver"><span>Approver</span><b>You</b></p>
+      <p class="line" data-k="Timestamp"><span>Timestamp</span><b>2026-10-23 14:06:00 UTC</b></p>
+      <p class="line" data-k="Hash"><span>Hash</span><b class="hash" data-hash>Computing example hash</b></p>
+      <p class="line"><span>Verified</span><b>Hash matches this snapshot</b></p>
+      <p class="line"><span>Reported</span><b>Bot note about the work</b></p>
+     </div>
+    </article>
+   </div></div>
+  </div></article>
+  <div class="meter" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i></div>
+ </div>
 </section>
 
-<section class="block" id="problem">
-<div class="wrap">
-<p class="kicker">The problem</p>
-<h2>Three lines.</h2>
-<ol class="problem">
-<li><span>01</span>Each lab is building a checkout inside its own agent.</li>
-<li><span>02</span>You will run many agents.</li>
-<li><span>03</span>Nobody gives one budget and one receipt per job across all of them.</li>
-</ol>
-</div>
-</section>
+<section class="sec how" id="how"><div class="wrap">
+ <div class="shead rv"><p class="eyebrow">How it works</p><h2>Bot, budget, tap, receipt.</h2></div>
+ <ol class="steps four">
+  <li class="step rv"><div class="viz"><div class="chip"><i style="background:#121212">GB</i>Grok Bot</div><div class="chip in"><i style="background:#5A4A8A">MU</i>Muse</div></div><span class="n">01</span><h3>Bot</h3><p>The agent asks through Alter. It does not hold your card. It keeps working on its own server.</p></li>
+  <li class="step rv"><div class="viz"><div class="seg" role="presentation"><span>Auto</span><span class="on">Ask</span><span>Never</span></div><p class="vl">Ask above $20 · 10 minutes</p></div><span class="n">02</span><h3>Budget</h3><p>You set the job, the amount, the rules, and the expiry. Example values, not a live job.</p></li>
+  <li class="step rv"><div class="viz"><div class="mini"><span class="needs">Needs you</span><b>Reorder packing tape</b><div class="acts"><span>Deny</span><span class="ok">Approve</span></div></div></div><span class="n">03</span><h3>Tap</h3><p>You tap. The card is armed for that amount and that merchant. Anything else is declined.</p></li>
+  <li class="step rv"><div class="viz"><div class="chip">Hash verified</div><div class="chip">Bot note reported</div></div><span class="n">04</span><h3>Receipt</h3><p>A hash-chained receipt. The hash is verified from the snapshot. What the bot says about the work is reported, not verified.</p></li>
+ </ol>
+</div></section>
 
-<section class="story" id="story">
-<div class="wrap story-intro">
-<p class="kicker">Scroll</p>
-<h2>From the agent to a receipt.</h2>
-<p class="prose">A spend request leaves the agent, holds on your tap, then becomes a receipt. Example only. Nothing here is a live job.</p>
-</div>
-<div class="stage">
-<p class="beat" data-beat>Request</p>
-<p class="exlabel">Example. Not a live job.</p>
-<div class="rail" aria-hidden="true"><span></span></div>
-<div class="scene">
-<article class="req">
-<p class="who">From the agent</p>
-<strong>Spend request</strong>
-<p>Job · Reorder packing tape</p>
-<p>Budget · $40.00</p>
-</article>
-<div class="phone-slot">
-<div class="phone wire" aria-hidden="true">
-<p class="need">Needs you</p>
-<p class="sum">$27.40</p>
-<p class="job">Reorder packing tape</p>
-<div class="taps"><span>Deny</span><span class="ok">Approve</span></div>
-</div>
-<div class="phone solid" aria-hidden="true">
-<p class="need">Needs you</p>
-<p class="sum">$27.40</p>
-<p class="job">Reorder packing tape</p>
-<div class="taps"><span>Deny</span><span class="ok">Approve</span></div>
-</div>
-</div>
-<div class="receipt-slot">
-<article class="receipt" aria-label="Example receipt">
-<header><span>Example receipt</span><span>Not a live job</span></header>
-<p class="line" data-k="Job"><span>Job</span><b>Reorder packing tape</b></p>
-<p class="line" data-k="Budget"><span>Budget</span><b>$40.00</b></p>
-<p class="line" data-k="Amount"><span>Amount</span><b>$27.40</b></p>
-<p class="line" data-k="Approver"><span>Approver</span><b>You</b></p>
-<p class="line" data-k="Timestamp"><span>Timestamp</span><b>2026-10-23 14:06:00 UTC</b></p>
-<p class="line"><span>Hash</span><b data-hash>Computing example hash</b></p>
-<p class="fineprint">Example hash of the five lines above. It shows those lines were not edited after the hash was made. It does not prove a live job or a card charge.</p>
-</article>
-</div>
-</div>
-</div>
-</section>
+<section class="demo dsec" id="product"><div class="wrap">
+ <div class="dhead rv"><p class="eyebrow">Product</p><h2>What is in the product today.</h2><p class="lead">HQ, the tap, and the receipt are in the repo. Pictures are sample data. The seat count is read from the server.</p></div>
+ <div class="vid rv">
+  <video controls playsinline preload="none" poster="/marketing/video/hero-d.jpg" aria-label="Alter product demo, with sound. Sample data.">
+   <source src="/marketing/video/hero-m.mp4" type="video/mp4" media="(max-width: 640px)">
+   <source src="/marketing/video/hero-d.mp4" type="video/mp4">
+  </video>
+ </div>
+ <p class="cap">The real app, with sample data. Your HQ starts empty.</p>
+ <div class="pair">
+  <figure class="shot rv"><img src="/marketing/assets/hq-desktop.jpg" width="1920" height="1080" alt="Alter HQ with sample bots on a floor, an inbox, and an approval card."><figcaption class="cap">The real HQ interface, with sample data. Your HQ starts empty.</figcaption></figure>
+  <figure class="shot rv"><img src="/hq/approval.webp" width="1536" height="1024" alt="Phone approval card for a supplier order. The picture is sample data and no live charge."><figcaption class="cap">Example. No live card is issued. Nothing is charged.</figcaption></figure>
+ </div>
+ <div class="shead rv" style="margin-top:48px"><h3>Card sandbox fixture</h3><p class="lead">Example rows from /api/authorization/demo. They are not saved. This is the card path, not a place bots run.</p></div>
+ <div class="ledger" id="demo-list" aria-live="polite"></div>
+ <p class="note" id="demo-note">Reading the card sandbox fixture.</p>
+ <p style="margin-top:20px"><a class="tl more" href="/v2/example-receipt.html">Open the example receipt <span aria-hidden="true">&rarr;</span></a></p>
+ <p style="margin-top:8px"><a class="tl more" href="/security.html">Read how security works <span aria-hidden="true">&rarr;</span></a></p>
+</div></section>
 
-<section class="block" id="how">
-<div class="wrap">
-<p class="kicker">How it works</p>
-<h2>Bot, budget, tap, receipt.</h2>
-<ol class="steps">
-<li class="step"><span class="n">01</span><h3>Bot</h3><p>The agent asks through Alter. It does not hold your card.</p></li>
-<li class="step"><span class="n">02</span><h3>Budget</h3><p>You set how much, and what the job is for.</p></li>
-<li class="step"><span class="n">03</span><h3>Tap</h3><p>The request pauses until you approve it.</p></li>
-<li class="step"><span class="n">04</span><h3>Receipt</h3><p>The job, the budget, the amount, who approved, and a hash stay together.</p></li>
-</ol>
-</div>
-</section>
+<section class="sec" id="agents"><div class="wrap">
+ <div class="shead rv"><p class="eyebrow">Agents</p><h2>The ones this repo knows.</h2></div>
+ <ul class="facts">
+  <li class="rv"><h3>Instinct, Grok Bot, Muse</h3><p>One setup message. No real client of those three has been tested.</p></li>
+  <li class="rv"><h3>Link key</h3><p>The link key is accepted on the bot-link call only.</p></li>
+  <li class="rv"><h3>Remote connector</h3><p>Another agent can use the remote connector when its client supports it.</p></li>
+ </ul>
+</div></section>
 
-<section class="block" id="agents">
-<div class="wrap split">
-<div class="side"><p class="idx">05</p><h2>Your agents</h2></div>
-<div>
-<p class="prose">Alter sits with the agents you already run. It is not a checkout inside one of them.</p>
-<p class="prose">This repo uses one setup message for Instinct, Grok Bot, and Muse. The link key is accepted on the bot-link call only. No real client of those three has been tested. Another agent can use the remote connector when its client supports it.</p>
-<p class="prose"><a href="/v2/product">See what the product does today.</a></p>
-</div>
-</div>
-</section>
+<section class="sec ahead" id="ahead"><div class="wrap rv">
+ <p class="eyebrow">12 to 18 months</p>
+ <h2>Where this is going.</h2>
+ <p>Over the next 12 to 18 months, agents will buy in stores, card networks will issue agent tokens, and approval taps will show up inside each lab.</p>
+ <p>Alter stays the budget and the receipt for the job, across all of them.</p>
+</div></section>
 
-<section class="block" id="ahead">
-<div class="wrap split">
-<div class="side"><p class="idx">06</p><h2>Where this is going</h2></div>
-<div>
-<p class="prose">Over the next 12 to 18 months, agents will buy in stores, card networks will issue agent tokens, and approval taps will show up inside each lab.</p>
-<p class="prose">Alter stays the budget and the receipt for the job, across all of them.</p>
-</div>
-</div>
-</section>
+<section class="sec" id="faq"><div class="wrap">
+ <div class="shead rv"><p class="eyebrow">Questions</p><h2>Free, the card, the receipt.</h2></div>
+ <details class="qa rv"><summary>Is it free?</summary><p>Yes. Alter is free for people.</p></details>
+ <details class="qa rv"><summary>Is my card safe?</summary><p>There is no live card today. Card decisions run in a card sandbox, and no real money moves. A bot does not take your login. Bills a provider charges on its own stay outside Alter.</p></details>
+ <details class="qa rv"><summary>What is a receipt?</summary><p>A receipt records the job, the budget, the amount, who approved, when, and a SHA-256 hash of that snapshot. The hash is verified from the snapshot. What the bot says about the work is reported, not verified.</p></details>
+</div></section>
 
-<section class="block" id="faq">
-<div class="wrap split">
-<div class="side"><p class="idx">07</p><h2>Questions</h2></div>
-<div>
-<details class="qa"><summary>Is it free?</summary><p>Yes. Alter is free for people.</p></details>
-<details class="qa"><summary>Is my card safe?</summary><p>There is no live card today. The card flow in the product is a sandbox, and no real money moves through it. A bot does not take your login. A spend that comes through Alter pauses until you approve it. Bills a provider charges on its own stay outside Alter.</p></details>
-<details class="qa"><summary>What is a receipt?</summary><p>A receipt records the job, the budget, the amount, who approved, when, and a SHA-256 hash of that snapshot. The hash shows the snapshot has not changed since it was written. It does not by itself prove the work, or a card charge.</p></details>
-</div>
-</div>
-</section>
-
-<section class="block cta" id="join">
-<div class="wrap">
-<p class="kicker">Waitlist</p>
-<h2>One budget and one receipt.</h2>
-<p class="lede">Free for people.</p>
-<form class="wait" novalidate>
-<div class="fields">
-<label class="sr" for="email-foot">Email address</label>
-<input id="email-foot" name="email" type="email" autocomplete="email" inputmode="email" maxlength="254" placeholder="you@example.com" required>
-<button type="submit">Join the waitlist</button>
-</div>
-<label class="consent"><input name="consent" type="checkbox" required><span>Email me when Alter access is available.</span></label>
-<div class="trap" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
-<p class="status" role="status" aria-live="polite"></p>
-<p class="fine">We keep your email for this access request. No sale of your address. This form does not connect a bot or issue a card.</p>
-</form>
-</div>
-</section>
+<section class="sec final" id="waitlist"><div class="wrap center rv">
+ <h2>Join the list.</h2>
+ <p class="lead">Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.</p>
+ <form class="join" novalidate>
+  <div class="fields">
+   <label class="sr" for="email-foot">Email address</label>
+   <input id="email-foot" name="email" type="email" autocomplete="email" inputmode="email" maxlength="254" placeholder="you@example.com" required>
+   <button class="btn" type="submit">Join the waitlist</button>
+  </div>
+  <label class="consent"><input name="consent" type="checkbox" required><span>Email me when Alter access is available.</span></label>
+  <div class="trap" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
+  <p class="status" role="status" aria-live="polite"></p>
+  <p class="fine">We keep your email for this access request. No sale of your address. This form does not connect a bot or issue a card. A founding seat is your place on the access list, not access to the product.</p>
+ </form>
+ <p class="seats on" data-seats aria-live="polite">Founding access list: reading the server.</p>
+</div></section>
 </main>
-<footer class="foot"><div class="wrap" style="display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;width:min(1120px,calc(100% - 2 * var(--pad)))">
-<a class="logo" href="/v2" aria-label="Alter"><svg viewBox="4 17 56 36" aria-hidden="true"><path d="M8 33 V37 L32 49 L56 37 V33" fill="none" stroke="#f4f1ea" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="none" stroke="#f4f1ea" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg><span>alter</span></a>
-<p>One budget and one receipt across every bot you run.</p>
-<nav class="links" aria-label="Footer"><a href="/v2/product">Product</a><a href="/v2/waitlist">Waitlist</a><a href="/hq">Sign in</a></nav>
-</div></footer>
+<footer class="foot"><div class="wrap"><a class="wm" href="/v2"><img src="/marketing/assets/H1-mark.svg" alt=""><span>alter</span></a><div class="sp"></div><a href="/v2#story">Story</a><a href="/v2/product">Product</a><a href="/v2/waitlist">Waitlist</a><a href="/security.html">Security</a><a href="/hq">Sign in</a></div><p class="music-credit">"Inspired" by Kevin MacLeod (incompetech.com), licensed under CC BY 4.0.</p></footer>
 <script src="/v2/vendor/gsap.min.js" defer></script>
 <script src="/v2/vendor/ScrollTrigger.min.js" defer></script>
+<script src="/marketing/hero.js" defer></script>
 <script src="/v2/story.js" defer></script>
 <script src="/v2/waitlist.js" defer></script>
+<script src="/v2/product.js" defer></script>
 </body>
 </html>

@@ -2,61 +2,60 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Alter waitlist · One budget and one receipt</title>
 <meta name="description" content="Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.">
-<meta name="theme-color" content="#090909">
+<meta name="theme-color" content="#F4F4F1">
 <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
-<link rel="icon" href="/brand/favicon-32.png" sizes="32x32" type="image/png">
-<link rel="apple-touch-icon" href="/brand/alter-icon-light-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600&family=Instrument+Serif&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/marketing/one.css">
+<link rel="stylesheet" href="/marketing/hero.css">
+<link rel="stylesheet" href="/marketing/home.css">
 <link rel="stylesheet" href="/v2/v2.css">
 </head>
-<body>
+<body class="pa v2">
 <a class="skip" href="#main">Skip to content</a>
-<header class="nav">
-<div class="nav-in">
-<a class="logo" href="/v2" aria-label="Alter"><svg viewBox="4 17 56 36" aria-hidden="true"><path d="M8 33 V37 L32 49 L56 37 V33" fill="none" stroke="#f4f1ea" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="none" stroke="#f4f1ea" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg><span>alter</span></a>
-<nav class="links" aria-label="Main"><a href="/v2#story">Story</a><a href="/v2/product">Product</a><a href="/v2/waitlist" aria-current="page">Waitlist</a><a href="/hq">Sign in</a></nav>
-</div>
-</header>
+<header class="nav"><div class="wrap"><a class="wm" href="/v2"><img src="/marketing/assets/H1-mark.svg" alt=""><span>alter</span></a><div class="sp"></div><a class="si nav-more" href="/v2#story">Story</a><a class="si nav-more" href="/v2/product">Product</a><a class="si" href="/hq">Sign in</a><a class="btn sm" href="#join">Get started</a></div></header>
 <main id="main">
-<section class="hero">
-<div class="wrap">
-<p class="kicker">Waitlist</p>
-<h1>Join the list.</h1>
-<p class="lede">Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.</p>
-<form class="wait" id="join" novalidate>
-<div class="fields">
-<label class="sr" for="email">Email address</label>
-<input id="email" name="email" type="email" autocomplete="email" inputmode="email" maxlength="254" placeholder="you@example.com" required>
-<button type="submit">Join the waitlist</button>
-</div>
-<label class="consent"><input name="consent" type="checkbox" required><span>Email me when Alter access is available.</span></label>
-<div class="trap" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
-<p class="status" role="status" aria-live="polite"></p>
-<p class="seats" data-seats>Founding access list: reading the server.</p>
-<p class="fine">We keep your email for this access request. No sale of your address. This form does not connect a bot or issue a card. A founding seat is your place on the access list, not access to the product.</p>
-</form>
-</div>
-</section>
-<section class="block">
-<div class="wrap split">
-<div class="side"><p class="idx">Also</p><h2>Look around</h2></div>
-<div>
-<p class="prose"><a href="/v2">The story</a> follows one example job from the agent to a receipt.</p>
-<p class="prose"><a href="/v2/product">The product</a> shows HQ, the approval pause, a receipt, and this same seat counter.</p>
-</div>
-</div>
-</section>
+<section class="hero" id="join"><div class="wrap hero-in">
+ <div class="copy">
+  <h1>Join the list.</h1>
+  <p class="lead">Alter is the spending permission for AI agents: one budget and one receipt across every bot you run. Free for people.</p>
+  <form class="join" novalidate>
+   <div class="fields">
+    <label class="sr" for="email">Email address</label>
+    <input id="email" name="email" type="email" autocomplete="email" inputmode="email" maxlength="254" placeholder="you@example.com" required>
+    <button class="btn" type="submit">Join the waitlist</button>
+   </div>
+   <label class="consent"><input name="consent" type="checkbox" required><span>Email me when Alter access is available.</span></label>
+   <div class="trap" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
+   <p class="status" role="status" aria-live="polite"></p>
+   <p class="fine">We keep your email for this access request. No sale of your address. This form does not connect a bot or issue a card. A founding seat is your place on the access list, not access to the product.</p>
+  </form>
+  <p class="seats on" data-seats aria-live="polite">Founding access list: reading the server.</p>
+ </div>
+ <div class="hv-col">
+  <div class="hv" id="hvA" role="img" aria-label="Example illustration: sample bots hand off a job in HQ, and one raises a hand for approval"><img class="fl" src="/marketing/assets/floor-crop.jpg" alt="">
+<span class="tag" style="left:47.7%;top:9.9%"><i style="background:#2F6B55">IN</i>Instinct</span>
+<span class="tag" style="left:30.4%;top:23.4%"><i style="background:#121212">GB</i>Grok Bot</span>
+<span class="tag" style="left:49.3%;top:38.3%"><i style="background:#5A4A8A">MU</i>Muse</span>
+<span class="fold"></span><span class="hand" style="left:54.7%;top:44.5%">✋</span><div class="ask" style="left:62%;top:40%"><span class="needs">Needs you</span><b>Approve Meta ads for $49</b><span class="d"></span><div class="acts"><span>Deny</span><span class="ok">Approve</span></div><div class="done">Approved by you</div></div><div class="toast">Your bots are working</div></div>
+  <p class="cap">Example. Sample requests.</p>
+ </div>
+</div></section>
+<section class="sec"><div class="wrap">
+ <div class="shead rv"><p class="eyebrow">Also</p><h2>Look around.</h2></div>
+ <ul class="facts">
+  <li class="rv"><h3>The story</h3><p><a href="/v2#story">Context, action, feedback, and memory</a> follow one example job to a receipt.</p></li>
+  <li class="rv"><h3>The product</h3><p><a href="/v2/product">HQ, the tap, a receipt, and this same seat counter.</a></p></li>
+  <li class="rv"><h3>Security</h3><p><a href="/security.html">How the narrow door works.</a></p></li>
+ </ul>
+</div></section>
 </main>
-<footer class="foot"><div class="wrap" style="display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;width:min(1120px,calc(100% - 2 * var(--pad)))">
-<a class="logo" href="/v2" aria-label="Alter"><svg viewBox="4 17 56 36" aria-hidden="true"><path d="M8 33 V37 L32 49 L56 37 V33" fill="none" stroke="#f4f1ea" stroke-width="3" stroke-linejoin="round"/><path d="M8 33 L32 21 L56 33 L32 45 Z" fill="none" stroke="#f4f1ea" stroke-width="3.5" stroke-linejoin="round"/><circle cx="36" cy="33" r="4" fill="#E2452B"/></svg><span>alter</span></a>
-<p>One budget and one receipt across every bot you run.</p>
-<nav class="links" aria-label="Footer"><a href="/v2#story">Story</a><a href="/v2/product">Product</a><a href="/hq">Sign in</a></nav>
-</div></footer>
+<footer class="foot"><div class="wrap"><a class="wm" href="/v2"><img src="/marketing/assets/H1-mark.svg" alt=""><span>alter</span></a><div class="sp"></div><a href="/v2#story">Story</a><a href="/v2/product">Product</a><a href="/security.html">Security</a><a href="/hq">Sign in</a></div></footer>
+<script src="/marketing/hero.js" defer></script>
 <script src="/v2/waitlist.js" defer></script>
 </body>
 </html>

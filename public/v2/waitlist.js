@@ -1,7 +1,7 @@
 /* Posts to the existing waitlist. Stores only the seat receipt token, never the email. */
 (function () {
   'use strict';
-  var forms = [].slice.call(document.querySelectorAll('form.wait'));
+  var forms = [].slice.call(document.querySelectorAll('form.join'));
   var seats = [].slice.call(document.querySelectorAll('[data-seats]'));
   if (!forms.length && !seats.length) return;
 
@@ -30,17 +30,19 @@
   function seatsText(taken, limit) {
     return taken.toLocaleString() + ' of ' + limit.toLocaleString() + ' founding access-list places';
   }
+  function showSeats(text) {
+    seats.forEach(function (el) { el.textContent = text; el.classList.add('on'); });
+  }
 
   if (seats.length) {
     fetch('/api/founding/count', { cache: 'no-store' }).then(function (r) {
       return r.ok ? r.json() : null;
     }).then(function (j) {
-      var text = (j && typeof j.taken === 'number' && typeof j.limit === 'number')
+      showSeats((j && typeof j.taken === 'number' && typeof j.limit === 'number')
         ? seatsText(j.taken, j.limit)
-        : 'Founding access list could not be read.';
-      seats.forEach(function (el) { el.textContent = text; });
+        : 'Founding access list could not be read.');
     }).catch(function () {
-      seats.forEach(function (el) { el.textContent = 'Founding access list could not be read.'; });
+      showSeats('Founding access list could not be read.');
     });
   }
 
@@ -89,7 +91,7 @@
         if (typeof res.body.seat === 'number') {
           paint('Your founding seat is #' + res.body.seat + ' of ' + res.body.limit + '. This is your place on the access list, not access to the product.');
           fetch('/api/founding/count', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
-            if (j && typeof j.taken === 'number' && typeof j.limit === 'number') seats.forEach(function (el) { el.textContent = seatsText(j.taken, j.limit); });
+            if (j && typeof j.taken === 'number' && typeof j.limit === 'number') showSeats(seatsText(j.taken, j.limit));
           }).catch(function () {});
         } else if (res.body.limit) {
           paint('The ' + res.body.limit.toLocaleString() + ' founding places are full. Your access request is saved.');

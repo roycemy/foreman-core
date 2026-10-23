@@ -24,14 +24,14 @@
       var result = row.result || {};
       var request = row.request || {};
       var decision = word[result.decision] || result.decision || '';
-      var kind = result.decision === 'DENY' ? 'deny' : result.decision === 'ASK' ? 'ask' : '';
+      var kind = result.decision === 'DENY' ? 'deny' : result.decision === 'ASK' ? 'is-ask' : '';
       return '<article class="row"><div><b>' + esc(row.name) + '</b><span class="amt">' + esc(usd(request.amountCents)) + '</span></div><div class="dec ' + kind + '">' + esc(decision) + '</div><p class="why">' + esc(result.reason || '') + '</p><p class="rule">' + esc(result.code || '') + ' · charged ' + esc(usd(result.chargedCents || 0)) + '</p></article>';
     }).join('');
     if (note) {
-      note.textContent = 'Sandbox fixture from /api/authorization/demo. ' + (data.note || '') + ' Stored: ' + (data.stored ? 'yes' : 'no') + '. Charged on this response: ' + usd(data.chargedCents || 0) + '.';
+      note.textContent = 'Example. Card sandbox fixture from /api/authorization/demo. ' + (data.note || '') + ' Stored: ' + (data.stored ? 'yes' : 'no') + '. Charged on this response: ' + usd(data.chargedCents || 0) + '.';
     }
   }).catch(function () {
     list.innerHTML = '';
-    if (note) note.textContent = 'The sandbox demo could not be read from this server.';
+    if (note) note.textContent = 'The card sandbox fixture could not be read from this server.';
   });
 })();
