@@ -25,13 +25,21 @@
     var list = root.matches && root.matches('[data-run-input]') ? [root] : root.querySelectorAll('[data-run-input]');
     for (var i = 0; i < list.length; i++) { var ta = list[i]; if (ta.value) continue; var v = BB.draftKeeper.get(ta.dataset.runInput); if (v) ta.value = v; }
   }
-  // Clear only after the server accepted the run (same success test business.js uses).
+  // Clear only after the server accepted the run (same success test business.js uses), and only if the saved
+  // draft is still exactly the submitted text. Newer text typed while the run was in flight is kept and put back
+  // after business.js empties the box on completion.
   if (typeof BB.api === 'function' && !BB.api.__draftKeeper) {
     var orig = BB.api;
     BB.api = async function (path, method, body) {
-      var w = ident(), j = await orig.apply(this, arguments);
       var m = /^\/api\/business\/responsibilities\/([^/]+)\/run$/.exec(path || '');
-      if (m && method === 'POST' && j && !j.error && w && w === ident()) BB.draftKeeper.clear(decodeURIComponent(m[1]));
+      if (!m || method !== 'POST') return orig.apply(this, arguments);
+      var id = decodeURIComponent(m[1]), w = ident(), sent = body && typeof body.input === 'string' ? body.input : null;
+      var j = await orig.apply(this, arguments);
+      if (j && !j.error && w && w === ident()) {
+        var cur = BB.draftKeeper.get(id);
+        if (cur === null || cur === sent) BB.draftKeeper.clear(id);
+        else setTimeout(function () { if (typeof document !== 'undefined') restore(document.getElementById('v-business')); }, 0);
+      }
       return j;
     };
     BB.api.__draftKeeper = true;
