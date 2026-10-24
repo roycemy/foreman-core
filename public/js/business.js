@@ -5,7 +5,7 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, pollT = null;
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null;
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
   // Tenant identity guard: loaded state belongs to the exact identity (account + workspace)
@@ -40,7 +40,7 @@
       pendingApproval = null; // A's reviewed pages and work text never survive into another identity
       pendingDelegation = null; // same for a reviewed delegation payload
       pendingDiscovery = null; // and a reviewed discovery scan payload
-      pendingSchedule = null; // and a reviewed daily-schedule payload
+      pendingSchedule = null; schedGen++; // and a reviewed daily-schedule payload
       V.innerHTML = ''; // synchronous DOM clear: nothing from the previous identity stays painted
       return true;
     }
@@ -358,27 +358,27 @@
       if (j.error) return BB.toast(j.error); BB.toast('Saved.'); await load();
     };
     $$('[data-hq-target]', V).forEach(b => b.onclick = () => { if (b.dataset.hqTarget === 'connect') return BB.openConnect(); const el = document.querySelector(b.dataset.hqTarget); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); const rid = el.getAttribute('data-resp'); if (rid && !openResp[rid]) { openResp[rid] = true; paint(); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } } });
-    $$('[data-sched-on]', V).forEach(b => b.onclick = () => { pendingSchedule = { respId: b.dataset.schedOn, instruction: '', delegation: null }; paint(); });
-    $$('[data-sched-edit]', V).forEach(b => b.onclick = () => { const rp = (B.responsibilities || []).find(x => x.id === b.dataset.schedEdit); pendingSchedule = { respId: b.dataset.schedEdit, instruction: (rp && rp.schedule && rp.schedule.instruction) || '', delegation: null }; paint(); });
+    $$('[data-sched-on]', V).forEach(b => b.onclick = () => { pendingSchedule = { respId: b.dataset.schedOn, instruction: '', delegation: null }; schedGen++; paint(); });
+    $$('[data-sched-edit]', V).forEach(b => b.onclick = () => { const rp = (B.responsibilities || []).find(x => x.id === b.dataset.schedEdit); pendingSchedule = { respId: b.dataset.schedEdit, instruction: (rp && rp.schedule && rp.schedule.instruction) || '', delegation: null }; schedGen++; paint(); });
     $$('[data-sched-off]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Turn the daily schedule off?', 'The bot stops getting the daily text. You can set it again any time.', 'Turn off')) return; const j = await api('/responsibilities/' + b.dataset.schedOff + '/schedule', 'POST', { op: 'disable' }); if (j.error) return BB.toast(j.error); BB.toast('Schedule off.'); await load(); });
     {
       const sc = $('[data-sched-input]', V); if (sc) sc.oninput = () => { if (pendingSchedule) pendingSchedule.instruction = sc.value; };
       const sp = $('[data-sched-preview]', V); if (sp) sp.onclick = async () => {
-        const req = pendingSchedule; if (!req) return;
+        const req = pendingSchedule, gen = schedGen; if (!req) return;
         sp.disabled = true; const j = await api('/responsibilities/' + req.respId + '/schedule', 'POST', { op: 'preview', instruction: req.instruction }); sp.disabled = false;
-        if (pendingSchedule !== req) return; // canceled, replaced or reloaded mid-flight: discard the stale response
+        if (pendingSchedule !== req || schedGen !== gen) return; // canceled, replaced or reloaded mid-flight: discard the stale response
         if (j.error) return BB.toast(j.error);
         req.delegation = j.delegation; paint();
       };
       const sb = $('[data-sched-back]', V); if (sb) sb.onclick = () => { const req = pendingSchedule; if (req) { req.delegation = null; paint(); } };
-      const sx = $('[data-sched-cancel]', V); if (sx) sx.onclick = () => { pendingSchedule = null; paint(); };
+      const sx = $('[data-sched-cancel]', V); if (sx) sx.onclick = () => { pendingSchedule = null; schedGen++; paint(); };
       const se = $('[data-sched-enable]', V); if (se) se.onclick = async () => {
-        const req = pendingSchedule; if (!req || !req.delegation) return;
+        const req = pendingSchedule, gen = schedGen; if (!req || !req.delegation) return;
         se.disabled = true;
         const j = await api('/responsibilities/' + req.respId + '/schedule', 'POST', { op: 'enable', instruction: req.instruction, delegateHash: req.delegation.hash });
-        if (pendingSchedule !== req) return; // the review this response belongs to is gone: never enable from a stale continuation
+        if (pendingSchedule !== req || schedGen !== gen) return; // the review this response belongs to is gone: never enable from a stale continuation
         if (j.error) { se.disabled = false; if (j.delegation) { req.delegation = j.delegation; paint(); } return BB.toast(j.error); }
-        pendingSchedule = null; BB.toast('Daily schedule saved. Automatic sends are not live yet, so nothing is sent for now.'); await load();
+        pendingSchedule = null; schedGen++; BB.toast('Daily schedule saved. Automatic sends are not live yet, so nothing is sent for now.'); await load();
       };
     }
     let kind = 'note';

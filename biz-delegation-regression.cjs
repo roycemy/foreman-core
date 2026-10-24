@@ -439,15 +439,52 @@ const ISO=ms=>new Date(ms).toISOString();
   assert.ok(!(await f.getJ('fm:task:'+killedRun.taskId)),'no job becomes visible under the emergency stop');
   await f.r(['DEL','fm:kill']);
 
-  // a source edit between the claim and the flip: the gate binds reviewed source versions
+  // kill cleared after a mid-flight refusal: the released claim lets the next tick retry
+  await f.r(['DEL','fm:kill']);
+  await f.bizDailyTick();
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length,before+4,'the released claim retries after the emergency stop clears');
+  const retryRun=await f.getJ('fm:biz:run:'+(await f.r(['LRANGE','fm:biz:runs:'+respS,0,9]))[0]);
+  assert.equal(retryRun.status,'delegated','the retry queues normally');
+
+  // a TITLE-only source edit between claim and flip: same version, still refused - the gate
+  // binds the exact source records, not just version numbers
+  {const rg=await f.getJ('fm:biz:resp:'+respS);rg.schedule.lastQueuedAt=new Date(Date.now()-21*3600e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rg);}
+  const srcBefore=await f.getJ('fm:biz:src:'+sr.body.source.id);
+  c.global.__bizSchedInterleave=async()=>{ await f.bizSourceEdit(sr.body.source.id,{title:'Estimate book',text:srcBefore.text}); };
+  await f.bizDailyTick();
+  const runsAfterTitle=await f.r(['LRANGE','fm:biz:runs:'+respS,0,9]);
+  assert.equal(runsAfterTitle.length,before+5,'the title-edit-refused run is recorded honestly');
+  const titleRun=await f.getJ('fm:biz:run:'+runsAfterTitle[0]);
+  assert.equal(titleRun.status,'failed','a title-only edit mid-flight refuses the flip - the reviewed title never goes stale');
+  assert.ok(!(await f.getJ('fm:task:'+titleRun.taskId)),'the title-refused job never becomes visible');
+  assert.equal((await f.getJ('fm:biz:src:'+sr.body.source.id)).version,srcBefore.version,'title-only edit kept the version (the gate caught it by exact record)');
+
+  // the destination bot paused between claim and flip: the gate binds bot active/paused
+  {const rg=await f.getJ('fm:biz:resp:'+respS);rg.schedule.lastQueuedAt=new Date(Date.now()-21*3600e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rg);}
+  const pv5=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
+  await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv5.body.delegation.hash});
+  c.global.__bizSchedInterleave=async()=>{ const a=await f.getJ('fm:agent:'+g.agent.id); a.paused=true; await f.setJ('fm:agent:'+g.agent.id,a); };
+  await f.bizDailyTick();
+  const runsAfterPause=await f.r(['LRANGE','fm:biz:runs:'+respS,0,9]);
+  assert.equal(runsAfterPause.length,before+6,'the bot-pause-refused run is recorded honestly');
+  const pauseRun=await f.getJ('fm:biz:run:'+runsAfterPause[0]);
+  assert.equal(pauseRun.status,'failed','a bot pause mid-flight refuses the flip - nothing queues to a paused bot');
+  assert.ok(!(await f.getJ('fm:task:'+pauseRun.taskId)),'the paused-bot job never becomes visible');
+  {const a=await f.getJ('fm:agent:'+g.agent.id); a.paused=false; await f.setJ('fm:agent:'+g.agent.id,a);}
+
+  // a source TEXT edit between the claim and the flip: the gate binds the exact records
   {const rg=await f.getJ('fm:biz:resp:'+respS);rg.schedule.lastQueuedAt=new Date(Date.now()-21*3600e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rg);} // past the gap: the tick must evaluate
   c.global.__bizSchedInterleave=async()=>{ await f.bizSourceEdit(sr.body.source.id,{title:'Estimates',text:'Follow up on day TEN now.'}); };
   await f.bizDailyTick();
   const runsAfterEdit=await f.r(['LRANGE','fm:biz:runs:'+respS,0,9]);
-  assert.equal(runsAfterEdit.length,before+4,'the drift-refused run is recorded honestly');
+  assert.equal(runsAfterEdit.length,before+7,'the drift-refused run is recorded honestly');
   const driftRun=await f.getJ('fm:biz:run:'+runsAfterEdit[0]);
   assert.equal(driftRun.status,'failed','a source edit mid-flight refuses the flip - old text never queues');
   assert.ok(!(await f.getJ('fm:task:'+driftRun.taskId)),'the drifted job never becomes visible');
+
+  // after the release, the next tick evaluates honestly: the drift is detected and pauses
+  await f.bizDailyTick();
+  assert.ok((await f.getJ('fm:biz:resp:'+respS)).schedule.needsReview,'the drifted schedule pauses itself on the next evaluation');
 
  });
 
