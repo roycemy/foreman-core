@@ -526,7 +526,7 @@ const ISO=ms=>new Date(ms).toISOString();
   // a stalled attempt resuming AFTER recovery: its late flip is atomically defeated
   const pv7=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
   await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv7.body.delegation.hash});
-  await f.setJ('fm:task:'+retryRun2.taskId,{...retryJob,status:'done'}); // settle the earlier job so the bot is free
+  await f.setJ('fm:task:'+retryRun2.taskId,{...retryJob,status:'done'});await f.r(['SREM','fm:biz:delegated',retryRun2.taskId]); // settle the earlier job so the bot is free
   c.global.__bizSchedInterleave=async()=>{ throw new Error('simulated process death'); };
   await assert.rejects(()=>f.bizDailyTick(),/simulated process death/);
   const lateRuns=await f.r(['LRANGE','fm:biz:runs:'+respS,0,1]);
@@ -580,6 +580,43 @@ const ISO=ms=>new Date(ms).toISOString();
    assert.ok(rpAfter.schedule.lastQueuedAt,"attempt B's window stays consumed");
    await f.r(['SREM','fm:biz:delegated','task_ownA']);
    rpO.schedule.claimId=null; rpO.schedule.lastQueuedAt=null; await f.setJ('fm:biz:resp:'+respS,rpO);}
+
+  // --- early crashes: claim-only and job-without-run must both recover durably
+  // crash at bizDelegateRun entry: claim CAS landed (claimId + consumed window), nothing else exists
+  const pv8=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
+  await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv8.body.delegation.hash});
+  c.global.__bizSchedEntryAbort=1;
+  await assert.rejects(()=>f.bizDailyTick(),/simulated process death/);
+  {const rc=await f.getJ('fm:biz:resp:'+respS);
+   assert.ok(rc.schedule.claimId,'the dead attempt left its claim identity');
+   assert.ok(rc.schedule.lastQueuedAt,'the dead attempt consumed the window');
+   assert.ok(!(await f.getJ('fm:biz:run:'+rc.schedule.claimId)),'no run record exists');
+   rc.schedule.lastQueuedAt=new Date(Date.now()-3*60e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rc);} // age the claim
+  const runsBeforeEntry=(await f.r(['LRANGE','fm:biz:runs:'+respS,0,49])).length;
+  const queuedBeforeEntry=new Set((await f.listTasks()).filter(x=>x.status==='queued').map(x=>x.id));
+  await f.bizDailyTick();
+  {const rc=await f.getJ('fm:biz:resp:'+respS);
+   assert.notEqual(rc.schedule.lastQueuedAt,null,'the same tick retried after releasing the dead claim');}
+  const entryNew=(await f.listTasks()).filter(x=>x.status==='queued'&&!queuedBeforeEntry.has(x.id));
+  assert.equal(entryNew.length,1,'the claim-only crash recovered and queued exactly one retry');
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,49])).length,runsBeforeEntry+1,'exactly one new run - the dead attempt left nothing to fail');
+
+  // crash between job creation and run registration: held job + inventory, no run record
+  {const rc=await f.getJ('fm:biz:resp:'+respS);rc.schedule.lastQueuedAt=new Date(Date.now()-21*3600e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rc);} // past the gap: the tick must evaluate (the claim-identity sweep skips - the retry run exists)
+  c.global.__bizSchedPreRegister=1;
+  await assert.rejects(()=>f.bizDailyTick(),/simulated process death/);
+  const invPre=await f.r(['SMEMBERS','fm:biz:delegated']);
+  let preTaskId=null;
+  for (const i of invPre) { const ti=await f.getJ('fm:task:'+i); if (ti && ti.status==='waiting') { preTaskId=i; break; } }
+  assert.ok(preTaskId,'the pre-registration crash left a held job in the inventory');
+  {const rc=await f.getJ('fm:biz:resp:'+respS);assert.ok(rc.schedule.claimId,'its claim identity is on the record');
+   const preTask=await f.getJ('fm:task:'+preTaskId);preTask.createdAt=new Date(Date.now()-3*60e3).toISOString();await f.setJ('fm:task:'+preTaskId,preTask);
+   rc.schedule.lastQueuedAt=new Date(Date.now()-3*60e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rc);}
+  const queuedBeforePre=new Set((await f.listTasks()).filter(x=>x.status==='queued').map(x=>x.id));
+  await f.bizDailyTick();
+  assert.ok(!(await f.getJ('fm:task:'+preTaskId)),'the job-without-run attempt is cleaned up');
+  const preNew=(await f.listTasks()).filter(x=>x.status==='queued'&&!queuedBeforePre.has(x.id));
+  assert.equal(preNew.length,1,'the job-without-run crash released the claim and queued exactly one retry');
 
   // caps must never be undefined (a swallowed constant would silently uncap daily calls)
   assert.equal(f.BIZ.CALLS_PER_DAY,200,'daily call cap constant exists');

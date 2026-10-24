@@ -2925,6 +2925,7 @@ async function failDelegatedTask(id, reason) {
 // re-checks the record through BIZ_SCHED_GATE - an owner action landing anywhere in between
 // refuses the run honestly instead of queueing against stale state.
 async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind, gate) {
+  if (global.__bizSchedEntryAbort && gate) { global.__bizSchedEntryAbort = null; throw new Error('simulated process death'); } // test-only interleave hook, never set in production
   const run = { id: (gate && gate.runId) || rid('run'), respId: resp.id, kind: kind === 'auto' ? 'auto' : 'manual', at: now(), input: String(input).slice(0, 4000),
     status: 'delegated', backend: 'linked-bot',
     bot: { id: bot.id, name: String(bot.name || 'bot').slice(0, 40), providerId: bot.providerId || null },
@@ -2948,6 +2949,7 @@ async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind, gate) {
     await r(['DEL', 'fm:task:' + t.id]);
     if (runRegistered) await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, f0, JSON.stringify(run), JSON.stringify({ ...run, status: 'failed', output: null, failureReason: 'workspace_changed', failureDetail: 'The workspace changed while the run was being created.', settledAt: now() })]);
   };
+  if (global.__bizSchedPreRegister && gate) { global.__bizSchedPreRegister = null; throw new Error('simulated process death'); } // test-only interleave hook, never set in production
   if (!await r(['EVAL', BIZ_FENCE_RUN, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, 'fm:biz:runs:' + resp.id, f0, JSON.stringify(run), run.id, String(BIZ.RUNS_KEEP), 'fm:biz:run:'])) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); }
   runRegistered = true;
   if (gate) {
@@ -3592,6 +3594,23 @@ async function bizDailyTick() {
       // the same way. Only a win fails the run honestly, removes the never-visible job,
       // and releases the claim so this same tick re-evaluates from CURRENT state. A job
       // that did flip (queued/running/done) is untouched, so nothing can ever queue twice.
+      // Claim-identity recovery, independent of the job inventory: a claim whose attempt died
+      // before creating anything leaves only schedule.claimId + a consumed window. With no run
+      // record under that id the flip provably never ran (registration precedes it), so the
+      // reservation is released - atomically, bound to the exact record and its claimId.
+      for (const rp of await bizResps()) {
+        const sch = rp.schedule;
+        if (!sch || !sch.claimId || !sch.lastQueuedAt) continue;
+        if (Date.now() - Date.parse(sch.lastQueuedAt) < BIZ.STUCK_HELD_MS) continue; // liveness timeout only
+        if (await r(['GET', 'fm:biz:run:' + sch.claimId])) continue; // a run exists: the job-inventory sweep owns it
+        const rpKey = 'fm:biz:resp:' + rp.id, rpRaw = await r(['GET', rpKey]);
+        if (!rpRaw) continue;
+        const cur = JSON.parse(rpRaw);
+        if (!cur.schedule || cur.schedule.claimId !== sch.claimId) continue; // someone newer owns the record
+        if (await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', rpKey, f0, rpRaw, JSON.stringify({ ...cur, schedule: { ...cur.schedule, lastQueuedAt: null, claimId: null } })]) === 1) {
+          await bizLog('schedule_claim_released', { respId: rp.id, title: cur.title }, f0); // nothing was ever created or sent
+        }
+      }
       for (const tid of (await r(['SMEMBERS', 'fm:biz:delegated']))) {
         const tRaw = await r(['GET', 'fm:task:' + tid]);
         if (!tRaw) { await r(['SREM', 'fm:biz:delegated', tid]); continue; }
@@ -3602,9 +3621,11 @@ async function bizDailyTick() {
         const run = runRaw && JSON.parse(runRaw);
         if (run && run.status !== 'delegated') { await r(['SREM', 'fm:biz:delegated', tid]); continue; } // settled already; only the index entry lingered
         const failedJson = run ? JSON.stringify({ ...run, status: 'failed', output: null, failureReason: 'interrupted', failureDetail: 'The run was interrupted before the job went out. Nothing was sent; the next daily check-in tries again.', settledAt: now() }) : '';
+        // Release ownership is checked by the script against schedule.claimId, so it works with
+        // or without a run record: a crash between job creation and run registration releases too.
         let rpRaw = '', releasedJson = '';
-        if (run && run.kind === 'auto') {
-          const raw = await r(['GET', 'fm:biz:resp:' + run.respId]);
+        {
+          const raw = await r(['GET', 'fm:biz:resp:' + t.biz.respId]);
           if (raw) {
             const rp = JSON.parse(raw);
             if (rp.schedule && rp.schedule.lastQueuedAt) { rpRaw = raw; releasedJson = JSON.stringify({ ...rp, schedule: { ...rp.schedule, lastQueuedAt: null, claimId: null } }); }
