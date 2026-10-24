@@ -3510,8 +3510,7 @@ async function bizRunResearch(resp, srcs, input, approvedUrls, deadline, f0) {
     // working refuses every write here - no run object, index entry or log line is recreated.
     fenced = !!await r(['EVAL', BIZ_FENCE_RUN, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, 'fm:biz:runs:' + resp.id, f0, JSON.stringify(run), run.id, String(BIZ.RUNS_KEEP), 'fm:biz:run:']);
     if (!fenced) return;
-    const cur = await getJ('fm:biz:resp:' + resp.id);
-    if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; fenced = !!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)]); }
+    fenced = !!await bizRespRunBump(resp.id, run.at, f0);
     if (!fenced) return;
     fenced = !!await bizLog('run', { respId: resp.id, runId: run.id, runKind: 'manual', model: run.model, usage: run.usage, research: true,
       fetches: fetchedPages.length, contacts: contacts.n, refused: fetchedPages.filter(p => p.error === 'url_not_approved').length,
@@ -3817,8 +3816,7 @@ async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind, gate) {
     if (await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, gate.expectedResp, nextJson]) !== 1) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); }
     gate.finalResp = nextJson;
   } else {
-    const cur = await getJ('fm:biz:resp:' + resp.id);
-    if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)])) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); } }
+    if (!await bizRespRunBump(resp.id, run.at, f0)) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); }
   }
   if (!await bizLog('run_delegated', { respId: resp.id, runId: run.id, taskId: t.id, botId: bot.id, botName: run.bot.name, sources: payload.sources.map(s => s.id), omittedSources: payload.omittedSources.length || undefined }, f0)) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); }
   // Everything recorded: flip queued atomically, only then wake. A claimant always sees a
@@ -3931,10 +3929,25 @@ async function bizRun(resp, input, kind, f0, approvedUrls, deadline, srcsSnapsho
   // delete while the provider was thinking) refuses the write - nothing is recreated afterwards.
   const persisted = await r(['EVAL', BIZ_FENCE_RUN, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, 'fm:biz:runs:' + resp.id, f0, JSON.stringify(run), run.id, String(BIZ.RUNS_KEEP), 'fm:biz:run:']);
   if (!persisted) return bizFenceConflict();
-  const cur = await getJ('fm:biz:resp:' + resp.id);
-  if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)])) return bizFenceConflict(); }
+  if (!await bizRespRunBump(resp.id, run.at, f0)) return bizFenceConflict();
   if (!await bizLog('run', { respId: resp.id, runId: run.id, runKind: kind, model: run.model, usage: run.usage }, f0)) return bizFenceConflict();
   return { status: 200, body: { run } };
+}
+// Run-counter bump: narrow retry-fresh CAS. A concurrent assignment, pause, schedule or
+// retire is never overwritten: on drift the record is re-read and only the counter fields
+// are reapplied. A true fence change (purge/delete) stops the write honestly.
+async function bizRespRunBump(respId, at, f0) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const raw = await r(['GET', 'fm:biz:resp:' + respId]);
+    if (!raw) return 1; // the record is gone - nothing to count on
+    const cur = JSON.parse(raw);
+    cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = at;
+    if (global.__bizRunCounterBeforeWrite) { const fn = global.__bizRunCounterBeforeWrite; global.__bizRunCounterBeforeWrite = null; await fn(); } // test-only interleave hook, never set in production
+    const cas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + respId, f0, raw, JSON.stringify(cur)]);
+    if (cas === 1 || cas === -1) return 1; // -1: deleted concurrently - nothing to count on
+    // 0: fence change or drift - a fresh read distinguishes them on the next attempt
+  }
+  return 0;
 }
 async function bizRespAct(id, op, body) {
   const f0 = op === 'delete' ? null : await bizEntry(); // one atomic snapshot before the record read; threaded into runs so a delete during the read invalidates persistence
@@ -4078,14 +4091,20 @@ async function bizRespAct(id, op, body) {
   if (op === 'pause' || op === 'resume') {
     if (resp.status !== 'active' && resp.status !== 'paused') return { status: 409, body: { error: 'This responsibility is ' + resp.status } };
     const next = { ...resp, status: op === 'pause' ? 'paused' : 'active' };
-    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+    if (global.__bizRespActBeforeWrite) { const fn = global.__bizRespActBeforeWrite; global.__bizRespActBeforeWrite = null; await fn(); } // test-only interleave hook, never set in production
+    const pcas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]); // exact entry bytes: a concurrent assignment/edit wins, never overwritten
+    if (pcas === -1) return { status: 404, body: { error: 'not found' } };
+    if (pcas !== 1) { if (!respRaw0) return bizFenceConflict(); return { status: 409, body: { error: 'This responsibility changed while you were ' + (op === 'pause' ? 'pausing' : 'resuming') + ' - reload and review it. Nothing was overwritten.', code: 'resp_changed' } }; }
     if (!await bizLog('responsibility_' + (op === 'pause' ? 'paused' : 'resumed'), { respId: id, title: resp.title }, f0)) return bizFenceConflict();
     return { status: 200, body: { responsibility: next } };
   }
   if (op === 'retire') {
     if (resp.status === 'retired') return { status: 200, body: { responsibility: resp } };
     const next = { ...resp, status: 'retired', retiredAt: now() };
-    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+    if (global.__bizRespActBeforeWrite) { const fn = global.__bizRespActBeforeWrite; global.__bizRespActBeforeWrite = null; await fn(); } // test-only interleave hook, never set in production
+    const rcas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]); // exact entry bytes: a concurrent assignment/edit wins, never overwritten
+    if (rcas === -1) return { status: 404, body: { error: 'not found' } };
+    if (rcas !== 1) { if (!respRaw0) return bizFenceConflict(); return { status: 409, body: { error: 'This responsibility changed while you were retiring it - reload and review it. Nothing was overwritten.', code: 'resp_changed' } }; }
     if (!await bizLog('responsibility_retired', { respId: id, title: resp.title }, f0)) return bizFenceConflict();
     return { status: 200, body: { responsibility: next } };
   }

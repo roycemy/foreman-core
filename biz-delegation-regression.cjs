@@ -793,6 +793,32 @@ await f.als.run({ws:'wsdel'},async()=>{
   assert.ok(!afterRace.assignment,'the refused assignment never landed');
   const asg2=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});
   assert.equal(asg2.status,200,'a fresh assignment on the current record still works');
+  // run-counter bump vs a mid-run assignment: the narrow retry-fresh CAS preserves BOTH
+  const cntT=(await f.getJ('fm:biz:resp:'+respT)).runsCount||0;
+  let bumpHookRan=false;
+  c.global.__bizRunCounterBeforeWrite=async()=>{bumpHookRan=true;const ax=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});assert.equal(ax.status,200,'the interleaved assignment lands mid-run');};
+  const pvT2=await f.bizRespAct(respT,'delegate-preview',{input:'Draft a reply about hours.'});
+  const runT2=await f.bizRespAct(respT,'run',{input:'Draft a reply about hours.',delegateHash:pvT2.body.delegation.hash});
+  assert.equal(runT2.status,200,'the delegated run is accepted');
+  assert(bumpHookRan,'the interleave actually exercised the counter write');
+  const recT2=await f.getJ('fm:biz:resp:'+respT);
+  assert.equal(recT2.assignment&&recT2.assignment.botId,gT.agent.id,'a run-counter write never erases an approved assignment');
+  assert.equal(recT2.runsCount,cntT+1,'the counter still lands');
+  // pause vs assignment: refused, the newer assignment is preserved, status untouched
+  {const aS2=await f.getJ('fm:agent:'+sT.agent.id);aS2.paused=false;await f.setJ('fm:agent:'+sT.agent.id,aS2);} // sT is connected again: the interleave is a real A->B swap (byte-visible drift)
+  c.global.__bizRespActBeforeWrite=async()=>{const ax=await f.bizRespAct(respT,'assign',{botId:sT.agent.id});assert.equal(ax.status,200);};
+  const pzT=await f.bizRespAct(respT,'pause',{});
+  assert.equal(pzT.status,409);assert.equal(pzT.body.code,'resp_changed','a pause racing an assignment refuses instead of erasing it');
+  const recT3=await f.getJ('fm:biz:resp:'+respT);
+  assert.equal(recT3.status,'active','the refused pause never landed');
+  assert.equal(recT3.assignment&&recT3.assignment.botId,sT.agent.id,'the newer assignment is preserved after the refused pause');
+  // retire vs assignment: refused; a fresh retire on the current record works
+  c.global.__bizRespActBeforeWrite=async()=>{const ax=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});assert.equal(ax.status,200);};
+  const rtT=await f.bizRespAct(respT,'retire',{});
+  assert.equal(rtT.status,409);assert.equal(rtT.body.code,'resp_changed','a retire racing an assignment refuses instead of erasing it');
+  const recT4=await f.getJ('fm:biz:resp:'+respT);
+  assert.equal(recT4.status,'active','the refused retire never landed');
+  assert.equal(recT4.assignment&&recT4.assignment.botId,gT.agent.id,'the newer assignment is preserved after the refused retire');
  });
 
  console.log('biz-delegation-regression: all assertions passed');
