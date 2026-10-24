@@ -1,20 +1,19 @@
 /* Alter app shell service worker.
-   Caches static shell files as an offline fallback; the network always wins when online.
-   /api is always live network: no work state, approval or receipt is ever served from cache. */
-const CACHE = 'alter-shell-v20';
+   Offline fallback for navigation and brand assets only. Code (/js/*, /styles/*, /brand.js)
+   is NEVER intercepted: a stale installed worker can never serve stale code, and the browser
+   HTTP cache (max-age=0, must-revalidate on this deployment) always revalidates it.
+   /api, /oauth and /receipt are always live network: no work state, approval or receipt is
+   ever served from cache. */
+const CACHE = 'alter-shell-v21';
 const SHELL = [
-  '/hq', '/app.html', '/brand.js', '/manifest.webmanifest',
-  '/styles/tokens.css', '/styles/app.css',
-  '/js/core.js', '/js/floor.js', '/js/inbox.js', '/js/inspector.js', '/js/connect.js', '/js/pop.js',
-  '/js/cmdk.js', '/js/card.js', '/js/receipt-doc.js', '/js/business.js', '/js/receipts.js', '/js/share.js', '/js/app.js',
-  '/styles/components/dock.css', '/styles/components/bot-status.css', '/styles/components/estimate.css', '/styles/components/bot-work.css', '/styles/components/meeting.css', '/styles/components/receipt-ship.css', '/styles/components/reconnect-flag.css',
-  '/js/components/motion.js', '/styles/components/motion.css', '/js/components/dock.js', '/js/components/bot-status.js', '/js/components/estimate.js', '/js/components/bot-work.js', '/js/components/meeting.js', '/js/components/receipt-ship.js', '/js/components/reconnect-flag.js',
+  '/hq', '/app.html', '/manifest.webmanifest',
   '/brand/favicon.svg', '/brand/alter-icon-light-180.png', '/brand/alter-icon-light-512.png'
 ];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
+  // Purge every older cache (including pre-v21 shells that cached code), then take control.
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
@@ -25,11 +24,18 @@ self.addEventListener('fetch', e => {
     e.respondWith(fetch(e.request, { cache: 'no-cache' }).catch(() => caches.match('/hq')));
     return;
   }
-  // Network-first: always the newest files when online, cache only as the offline fallback.
-  e.respondWith(
-    fetch(e.request, { cache: 'no-cache' }).then(res => {
-      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
-      return res;
-    }).catch(() => caches.match(e.request))
-  );
+  // Code and styles: never intercepted - always live network, even offline (the offline
+  // fallback page is navigation-only; a code file is never served from any cache by us).
+  if (u.pathname.startsWith('/js/') || u.pathname.startsWith('/styles/') || u.pathname === '/brand.js') return;
+  // Brand images and the manifest: network-first, cache only as the offline fallback.
+  if (u.pathname.startsWith('/brand/') || u.pathname === '/manifest.webmanifest') {
+    e.respondWith(
+      fetch(e.request, { cache: 'no-cache' }).then(res => {
+        if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
+        return res;
+      }).catch(() => caches.match(e.request))
+    );
+    return;
+  }
+  // Anything else: live network, not intercepted.
 });
