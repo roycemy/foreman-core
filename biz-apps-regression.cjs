@@ -47,7 +47,10 @@ const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},
    return reply({messages:[{id:'m1',threadId:'t1'},{id:'m2',threadId:'t2'}],resultSizeEstimate:2});}
   if(u.includes('/messages/m1'))return reply({id:'m1',threadId:'t1',snippet:'Hi - can you send the estimate when',labelIds:['UNREAD','INBOX'],payload:{headers:[{name:'From',value:'Dana Customer <dana@example.com>'},{name:'Subject',value:'Estimate for the fence repair'},{name:'Date',value:'Fri, 23 Oct 2026 18:02:11 -0400'}]}});
   if(u.includes('/messages/m2'))return reply({id:'m2',threadId:'t2',snippet:'Following up on the quote you sent',labelIds:['INBOX'],payload:{headers:[{name:'From',value:'Sam Owner <sam@example.com>'},{name:'Subject',value:'Re: Deck estimate'},{name:'Date',value:'Thu, 22 Oct 2026 09:14:00 -0400'}]}});
-  if(u==='https://gmail.googleapis.com/gmail/v1/users/me/drafts'&&o.method==='POST'){const d=JSON.parse(o.body);E.__DRAFT=d.message.raw;return reply({id:'draft_9',message:{id:'msg_9',labelIds:['DRAFT']}});}
+  if(u==='https://gmail.googleapis.com/gmail/v1/users/me/drafts'&&o.method==='POST'){
+   if(E.__G_DRAFT_THROW)throw new Error('socket hang up');
+   if(E.__G_DRAFT_BADJSON)return {ok:true,status:200,headers:{get:()=>null},json:async()=>{throw new Error('unreadable body');}};
+   const d=JSON.parse(o.body);E.__DRAFT=d.message.raw;return reply({id:'draft_9',message:{id:'msg_9',labelIds:['DRAFT']}});}
   throw new Error('unexpected fetch: '+u);
  }};
 require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
@@ -556,6 +559,26 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_exchange_uncertain'}}),'uncertain');
   assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_profile_failed'}}),'uncertain','a post-exchange profile failure is never presented as a clean failure');
   assert.equal(f.bizAppCallbackMarker({status:400,body:{code:'app_state_invalid'}}),'failed');
+  // HOLD 2:21 item 3: an unreadable success or no answer at creation is UNCONFIRMED, never a false failure
+  E.__G_DRAFT_BADJSON=1;
+  const dBad=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi'},cid0);
+  assert.equal(dBad.status,502);assert.equal(dBad.body.code,'app_draft_unconfirmed','an unreadable success is unconfirmed, never a false failure');
+  assert.ok(!/did not create/.test(dBad.body.error),'the copy never claims Google refused a draft it may have created');
+  assert.ok(/check the drafts folder/i.test(dBad.body.error),'the owner checks Gmail before retrying so nothing is duplicated');
+  delete E.__G_DRAFT_BADJSON;
+  E.__G_DRAFT_THROW=1;
+  const dThr=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi'},cid0);
+  assert.equal(dThr.status,502);assert.equal(dThr.body.code,'app_draft_unconfirmed','no answer at all is unconfirmed, never a false failure');
+  delete E.__G_DRAFT_THROW;
+  // HOLD 2:21 item 4: the landing marker classifies lifecycle fields, not just two codes
+  assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_no_refresh_token',grantStatus:'revoke_unconfirmed'}}),'uncertain','a grant-retaining failure is uncertain');
+  assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_scope_missing',grantStatus:'possibly_issued'}}),'uncertain');
+  assert.equal(f.bizAppCallbackMarker({status:409,body:{code:'app_connect_lease_lost',grantStatus:'revoke_unconfirmed',grantTracked:true}}),'uncertain');
+  assert.equal(f.bizAppCallbackMarker({status:409,body:{code:'app_race_lost',grantStatus:'revoke_unconfirmed'}}),'uncertain');
+  assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_profile_failed',grantStatus:'revoke_unconfirmed',grantTracked:false}}),'uncertain','an untracked attempt without a confirmed resolution is uncertain');
+  assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_profile_failed',grantStatus:'revoked',grantTracked:false}}),'failed','an untracked attempt WITH a confirmed revocation is resolved');
+  assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_exchange_uncertain',grantStatus:'unknown'}}),'uncertain');
+  assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_exchange_failed',grantStatus:'discarded'}}),'failed','a definitive rejection stays a clean failure');
 
   // 13f. key loss mid-lifecycle: the undecryptable credential is PRESERVED as unresolved
   // recovery material, disclosed with the manual path, and revoked when the key returns

@@ -2704,8 +2704,16 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
   }
   const mime = 'To: ' + tos.join(', ') + '\r\nSubject: ' + subject + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text;
   const raw = Buffer.from(mime, 'utf8').toString('base64url');
-  const res = await fetch(c.apiBase + '/drafts', { method: 'POST', headers: { Authorization: 'Bearer ' + at.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { raw, ...(body.threadId ? { threadId: String(body.threadId) } : {}) } }) });
+  let res = null;
+  try {
+    res = await fetch(c.apiBase + '/drafts', { method: 'POST', headers: { Authorization: 'Bearer ' + at.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { raw, ...(body.threadId ? { threadId: String(body.threadId) } : {}) } }), signal: AbortSignal.timeout(20000) });
+  } catch {
+    // No answer at all: the create may have landed. Never claim failure - the owner checks
+    // Gmail before retrying so the draft is not duplicated.
+    return { status: 502, body: { error: 'Google did not answer - the draft may have been created. Check the drafts folder in Gmail before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed' } };
+  }
   const dj = await res.json().catch(() => null);
+  if (res.ok && (!dj || !dj.id)) return { status: 502, body: { error: 'Google answered but the draft could not be confirmed (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed' } }; // an unreadable SUCCESS is unconfirmed, never "not created"
   if (!res.ok || !dj || !dj.id) return { status: 502, body: { error: 'Google did not create the draft (' + bizClean((dj && dj.error && dj.error.message) || res.status) + ').', code: 'app_draft_failed' } };
   await bizLog('app_draft_created', { provider: p, draftId: dj.id, to: tos.join(', ') }, at.snap.f0);
   return { status: 200, body: { provider: p, draftId: dj.id, account: at.rec.email || null, to: tos, subject, note: 'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.' } };
@@ -2719,9 +2727,11 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
 // landing marker the app announces. The card itself always carries the exact state.
 function bizAppCallbackMarker(out) {
   if (out && out.status === 200) return 'connected';
-  const code = out && out.body && out.body.code;
+  const b = (out && out.body) || {}, code = b.code, gs = b.grantStatus;
   if (code === 'app_consent_declined') return 'declined';
-  if (code === 'app_exchange_uncertain' || code === 'app_profile_failed') return 'uncertain'; // a grant may exist at the provider - recovery wording, never 'failed cleanly'
+  if (gs === 'possibly_issued' || gs === 'awaiting_exchange' || gs === 'revoke_unconfirmed' || gs === 'undecryptable' || gs === 'unknown') return 'uncertain'; // an unresolved grant is uncertain however the exchange itself ended (no_refresh_token / scope_missing / lease_lost / race_lost all carry it)
+  if (b.grantTracked === false && gs !== 'revoked' && gs !== 'discarded') return 'uncertain'; // a grant attempt with no durable handle and no confirmed resolution
+  if (gs == null && b.grantTracked == null && (code === 'app_exchange_uncertain' || code === 'app_profile_failed')) return 'uncertain'; // pre-lifecycle payloads: conservative
   return 'failed';
 }
 async function bizAppDisconnect(p, expectedVersion) {

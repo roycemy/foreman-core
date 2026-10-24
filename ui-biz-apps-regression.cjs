@@ -19,10 +19,10 @@ function appFor(mode){
   if(mode==='connectable'||mode==='gone')return {...base,connected:false,status:'not_connected'};
   return null; // omit: status unavailable
 }
-let mode='connected-unconfigured',ident='A',disconnCalls=[],draftCalls=[],oauthHits=0,connectGo=null,disconnGo=null;
+let mode='connected-unconfigured',ident='A',disconnCalls=[],draftCalls=[],oauthHits=0,connectGo=null,disconnGo=null,draftGo=null,withSystems=false;
 function stateFor(){
   if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[],proposals:[],responsibilities:[],log:[],opPending:null};
-  const s={engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[{id:'src_1',kind:'doc',title:'How we work',version:2,text:'Refunds over $50 need Royce.',updatedAt:'2026-10-23T00:00:00Z'}],proposals:[],responsibilities:[],log:[],opPending:null};
+  const s={engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[{id:'src_1',kind:'doc',title:'How we work',version:2,text:'Refunds over $50 need Royce.',updatedAt:'2026-10-23T00:00:00Z'}],proposals:[],responsibilities:withSystems?[{id:'resp_1',title:'Customer reply desk',summary:'Draft replies',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:['src_1'],systems:['Email inbox','QuickBooks'],runs:[]}]:[],log:[],opPending:null};
   const g=appFor(mode);if(g)s.apps={gmail:g};
   return s;
 }
@@ -31,10 +31,14 @@ const server=http.createServer((req,res)=>{
   const json=(o,st)=>{res.statusCode=st||200;res.setHeader('content-type','application/json');res.end(JSON.stringify(o));};
   if(u.pathname==='/__ident'){ident=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__mode'){mode=u.searchParams.get('to');return json({ok:true});}
+  if(u.pathname==='/__systems'){withSystems=u.searchParams.get('on')==='1';return json({ok:true});}
   if(u.pathname==='/__park-connect'){connectGo='park';return json({ok:true});}
   if(u.pathname==='/__park-disconnect'){disconnGo='park';return json({ok:true});}
   if(u.pathname==='/__disconnect-parked'){return json({parked:typeof disconnGo==='function'});}
   if(u.pathname==='/__disconnect-release'){const g=disconnGo;disconnGo=null;if(typeof g==='function')g();return json({ok:true});}
+  if(u.pathname==='/__park-draft'){draftGo='park';return json({ok:true});}
+  if(u.pathname==='/__draft-parked'){return json({parked:typeof draftGo==='function'});}
+  if(u.pathname==='/__draft-release'){const g=draftGo;draftGo=null;if(typeof g==='function')g();return json({ok:true});}
   if(u.pathname==='/__parked'){return json({parked:typeof connectGo==='function'});}
   if(u.pathname==='/__connect-release'){const g=connectGo;connectGo=null;if(typeof g==='function')g();return json({ok:true});}
   if(u.pathname==='/__oauth-fake'){oauthHits++;res.setHeader('content-type','text/html');return res.end('<title>fake oauth</title>should never load');}
@@ -49,7 +53,8 @@ const server=http.createServer((req,res)=>{
       return json({authorizationUrl:'http://127.0.0.1:'+PORT+'/__oauth-fake?state=synthetic'});});
     return;}
   if(u.pathname==='/api/business/apps/gmail/drafts'&&req.method==='POST'){
-    let b='';req.on('data',d=>b+=d);req.on('end',()=>{
+    let b='';req.on('data',d=>b+=d);req.on('end',async()=>{
+      if(draftGo==='park'){await new Promise(r=>{draftGo=r;});}
       let body={};try{body=JSON.parse(b||'{}')}catch(e){}
       draftCalls.push({body,ident});
       return json({provider:'gmail',draftId:'draft_9',account:'royce@northbend.example',to:[body.to],subject:body.subject||'',note:'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.'});});
@@ -213,7 +218,17 @@ let PORT=0;
  assert(await ev(`location.hash==='#business'`),'the marker is cleared so a refresh never re-announces');
  await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
  await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-declined'},sessionId);
- assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Google declined the sign-in - nothing was connected')`),'a declined consent says so honestly');
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('the existing connection is unchanged')`),'a declined NEW consent over a live connection never claims nothing was connected');
+ t=await toastText();
+ assert(!t.includes('nothing was connected'),'the live connection is never denied by a declined new sign-in');
+ await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
+ await ctl('/__mode?to=connectable');
+ await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-declined'},sessionId);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Google declined the sign-in - nothing was connected')`),'with no connection, a declined consent says so honestly');
+ await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
+ await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-failed'},sessionId);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('could not be finished - nothing was connected')`),'a failed sign-in with no connection says so honestly');
+ await ctl('/__mode?to=connected');
 
  // 9. parked success over a replacement: the old grant's fate is never announced over the new card
  await ctl('/__mode?to=connected');await reload(`!!document.querySelector('#bz-app-disconnect')`);
@@ -251,6 +266,39 @@ let PORT=0;
  assert.equal(draftCalls[0].body.subject,'Re: Estimate for the fence repair','the exact subject goes through');
  assert.equal(draftCalls[0].body.text,'Hi Dana - attached is the estimate.','the exact words go through');
 
+ // 13. Back from the review keeps every typed word
+ await ev(`document.querySelector('#bz-app-draft').click();'open'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the composer opens');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-subject').value='Re: Estimate for the fence repair';document.querySelector('#bz-draft-text').value='Hi Dana - the gate brace is 180.';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-back]')`),'the review step opens');
+ await ev(`document.querySelector('#modal.on [data-draft-back]').click();'back'`);
+ assert(await poll(`(document.querySelector('#modal.on #bz-draft-text')||{value:''}).value==='Hi Dana - the gate brace is 180.'`),'Back restores the exact words');
+ assert(await poll(`(document.querySelector('#modal.on #bz-draft-to')||{value:''}).value==='dana@example.com'`),'Back restores the recipient');
+ assert(await poll(`(document.querySelector('#modal.on #bz-draft-subject')||{value:''}).value==='Re: Estimate for the fence repair'`),'Back restores the subject');
+
+ // 14. a stale draft success never closes a newer composer nor claims over a replacement
+ await ctl('/__park-draft');
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review again'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review reopens');
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create'`);
+ {const t0=Date.now();let ok=false;while(Date.now()-t0<5000){const p=await new Promise((res,rej)=>{http.get('http://127.0.0.1:'+PORT+'/__draft-parked',r=>{let d='';r.on('data',ch=>d+=ch);r.on('end',()=>res(JSON.parse(d).parked));}).on('error',rej);});if(p){ok=true;break;}await new Promise(r=>setTimeout(r,100));}assert(ok,'the draft create parked server-side');}
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`); // the owner closes the review mid-request
+ await ev(`document.querySelector('#bz-app-draft').click();'new composer'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'a new composer opens');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='sam@example.com';document.querySelector('#bz-draft-text').value='NEWWORDS';return 1})()`);
+ await ctl('/__mode?to=connected2'); // a replacement connection lands meanwhile (same owner)
+ await ctl('/__draft-release');
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('connection changed meanwhile')`),'the late success says where the draft went, not over the replacement');
+ t=await toastText();
+ assert(t.includes('royce@northbend.example'),'the late success names the reviewed account');
+ assert(!t.includes('exactly these words'),'the stale success copy never lands over a replacement');
+ assert(await poll(`(document.querySelector('#modal.on #bz-draft-text')||{value:''}).value==='NEWWORDS'`),'the newer composer is untouched');
+ assert(await poll(`(document.querySelector('#modal.on #bz-draft-to')||{value:''}).value==='sam@example.com'`),'the newer composer keeps its recipient');
+ assert.equal(draftCalls.length,2,'exactly one new draft call');
+ assert.equal(draftCalls[1].body.expectedVersion,'gen-AAA','the parked create stayed bound to the reviewed version');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+
  // 11. identity switch before create: the draft is never posted as the new identity
  await reload(`!!document.querySelector('#bz-app-draft')`);
  await ev(`document.querySelector('#bz-app-draft').click();'open'`);
@@ -261,10 +309,22 @@ let PORT=0;
  await flip('B');
  await ev(`(()=>{const b=document.querySelector('#modal [data-draft-create]');if(b)b.click();return 1})()`);
  await new Promise(r=>setTimeout(r,700));
- assert.equal(draftCalls.length,1,'the old identity\'s review never creates a draft under the new one');
+ assert.equal(draftCalls.length,2,'the old identity\'s review never creates a draft under the new one');
  await ev(`(()=>{const m=document.getElementById('modal');if(m&&m.classList.contains('on'))m.classList.remove('on');return 1})()`);
  await flip('A');
 
+ // 12. integration honesty: a live connection's systems leave the "until those connect" line
+ await ctl('/__systems?on=1');
+ await ctl('/__mode?to=connected');await reload(`!!document.querySelector('#bz-app-disconnect')`);
+ t=await bizText();
+ const mention=t.split('Your proposals mention:')[1]||'';
+ assert(mention.includes('QuickBooks'),'uncovered systems are still named');
+ assert(!mention.includes('Email inbox'),'a connected system is never asked for as an import');
+ await ctl('/__mode?to=connectable');await reload(`!!document.querySelector('#bz-app-connect')`);
+ t=await bizText();
+ assert((t.split('Your proposals mention:')[1]||'').includes('Email inbox'),'the same system IS named while unconnected');
+ await ctl('/__systems?on=0');
+
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz apps: stored connection renders unmasked with exact account + removal (unconfigured + needs_reconnect), unknown status makes no absence claims, removal echoes the reviewed connection version, identity switch mid-confirm/mid-connect/mid-draft discards the action (no POST, no redirect, no draft), stale-version refusal surfaces, prior-grant-unconfirmed toast never claims all-removed, OAuth landing markers announce once from live state, a replacement mid-removal gets a neutral line, the draft review names the exact account+recipients+subject+words - pixels at /downloads/apps-*-{390,desktop}.png.');
+ console.log('PASS ui biz apps: stored connection renders unmasked with exact account + removal (unconfigured + needs_reconnect), unknown status makes no absence claims, removal echoes the reviewed connection version, identity switch mid-confirm/mid-connect/mid-draft discards the action (no POST, no redirect, no draft), stale-version refusal surfaces, prior-grant-unconfirmed toast never claims all-removed, OAuth landing markers announce once from live state, a replacement mid-removal gets a neutral line, the draft review names the exact account+recipients+subject+words, Back keeps every typed word, a stale draft success never closes a newer composer nor claims over a replacement, declined/failed landings never deny a live connection - pixels at /downloads/apps-*-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{cp.kill();}catch(_){/*noop*/}try{server.close();}catch(_){/*noop*/}process.exit(1)});
