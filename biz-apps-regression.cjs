@@ -368,6 +368,60 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
    assert.equal((await f.r(['KEYS','fm:biz:apptomb:*'])).length,0,'no encrypted credential is resurrected after the purge');
    assert.equal(await f.getJ('fm:biz:app:gmail'),null,'no connection record either');
   }
+  // 13g. REVIEWER REPRO: a crash after the token reply leaves a durable possibly_issued marker
+  {
+   const g1=await connect();
+   c.global.__bizAppCrashBeforeFill=true;
+   let crashed=false;
+   try { await f.bizAppCallback('gmail',{state:g1.nonce,code:'authcode1'},'https://test.local',g1.cookie); } catch (e) { crashed=true; }
+   assert.ok(crashed,'the crash seam fired after the exchange');
+   let tomb=await f.getJ('fm:biz:apptomb:gmail');
+   let att=(tomb.attempts||[]).find(a=>a.status==='awaiting_exchange');
+   assert.ok(att&&!att.enc,'the reserved slot survives with no credential handle');
+   // ten minutes later (simulated): the stale slot reconciles into possibly_issued
+   tomb.attempts=tomb.attempts.map(a=>({...a,at:new Date(Date.now()-700000).toISOString()}));
+   await f.setJ('fm:biz:apptomb:gmail',tomb);
+   await f.bizAppConnect('gmail','https://test.local').catch(()=>{}); // any ledger read normalizes; connect may 503 unconfigured - irrelevant here
+   tomb=await f.getJ('fm:biz:apptomb:gmail');
+   att=(tomb.attempts||[]).find(a=>a.id===att.id);
+   const st=await f.bizAppStatus('gmail');
+   assert.equal(st.grantStatus,'revoke_unconfirmed','the possibly-issued grant is honestly surfaced');
+   assert.ok(/Google account/.test(st.grantNote||''),'the note points at manual recovery in the Google account');
+   // a disconnect preserves the marker (nothing to revoke, but never dropped or mislabeled)
+   const g2=await connect();await f.bizAppCallback('gmail',{state:g2.nonce,code:'authcode1'},'https://test.local',g2.cookie);
+   const dg=await f.bizAppDisconnect('gmail');
+   assert.equal(dg.body.grantStatus,'revoked');
+   assert.equal(dg.body.priorGrant,'revoke_unconfirmed','the unknown grant keeps the overall outcome honest');
+   tomb=await f.getJ('fm:biz:apptomb:gmail');
+   assert.ok((tomb.attempts||[]).some(a=>a.status==='possibly_issued'),'the possibly_issued marker is preserved, not dropped');
+   // and it is never evicted for capacity: fill the ledger to 8 with it included
+   E.__G_REVOKE_FAIL='1';
+   for (let i = 0; (await f.getJ('fm:biz:apptomb:gmail')).attempts.filter(a=>a.enc&&(a.status==='revoke_unconfirmed'||a.status==='pending')).length + 1 < 8; i++) {
+     E.__G_RT='1//g'+i; const q=await connect();await f.bizAppCallback('gmail',{state:q.nonce,code:'authcode1'},'https://test.local',q.cookie);
+     await f.bizAppDisconnect('gmail');
+   }
+   delete E.__G_RT;
+   const q9=await connect();
+   const cb9=await f.bizAppCallback('gmail',{state:q9.nonce,code:'authcode1'},'https://test.local',q9.cookie);
+   assert.equal(cb9.status,409,'a possibly_issued marker counts against capacity - never evicted');
+   assert.equal(cb9.body.code,'app_tomb_full');
+   delete E.__G_REVOKE_FAIL;
+   await f.bizAppDisconnect('gmail'); // drain
+   await f.r(['DEL','fm:biz:apptomb:gmail']);
+  }
+  // 13h. a fill that lands nowhere (attempt gone) is never treated as durable
+  {
+   const h1=await connect();
+   E.__G_EXCHANGE_HOLD='1';
+   const pcb=f.bizAppCallback('gmail',{state:h1.nonce,code:'authcode1'},'https://test.local',h1.cookie);
+   await new Promise(r2=>setTimeout(r2,20));
+   await f.r(['DEL','fm:biz:apptomb:gmail']); // the reserved slot vanishes before the fill
+   delete E.__G_EXCHANGE_HOLD; E.__G_EXCHANGE_GO();
+   const cb=await pcb;
+   assert.equal(cb.status,200,'the connection itself can still complete');
+   assert.equal(cb.body.grantTracked,false,'but it is honestly untracked - no durable handle existed at fill time');
+   await f.bizAppDisconnect('gmail');
+  }
   // 13b. a parked sync completing mid-disconnect: local state is gone BEFORE the network
   const cE=await connect();await f.bizAppCallback('gmail',{state:cE.nonce,code:'authcode1'},'https://test.local',cE.cookie);
   await f.bizAppSync('gmail');
