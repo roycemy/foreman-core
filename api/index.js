@@ -92,12 +92,15 @@ function memEval(script, n, keys, argv) {
       if (cur !== argv[2]) return -2;
       mem.kv.set(keys[3], argv[3]); mem.kv.set(keys[4], argv[4]); return 1;
     }
-    case BIZ_APP_DEL: {
+    case BIZ_APP_KILL: {
       if ((mem.kv.get(keys[5]) || '0') !== argv[1]) return -1;
       const cur = mem.kv.has(keys[3]) ? String(mem.kv.get(keys[3])) : '__absent__';
       if (cur !== argv[2]) return -2;
       mem.kv.delete(keys[3]); mem.kv.delete(keys[4]); mem.lists.delete(keys[4]);
-      mem.kv.set(keys[5], argv[3]); return 1;
+      mem.kv.set(keys[5], argv[3]); mem.kv.set(keys[6], argv[4]);
+      const prefix = String(argv[5]).replace(/\*$/, '');
+      for (const k of [...mem.kv.keys()]) if (k.startsWith(prefix)) mem.kv.delete(k);
+      return 1;
     }
     case BIZ_FENCE_SADD: { const s = new Set(mem.kv.get(keys[3]) || []); s.add(argv[1]); mem.kv.set(keys[3], [...s]); return 1; }
     case BIZ_FENCE_SREM: { mem.kv.set(keys[3], (mem.kv.get(keys[3]) || []).filter(v => v !== argv[1])); return 1; }
@@ -256,7 +259,7 @@ const BIZ_STATE_TAKE = "local v=redis.call('GET',KEYS[1]); if v then redis.call(
 // 0 = fence conflict (retryable), -1 = epoch lost (disconnect/purge interleaved), -2 = record changed.
 const BIZ_APP_PUT = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local g=redis.call('GET',KEYS[5]) or '0'; if g~=ARGV[2] then return -1 end; local cur=redis.call('GET',KEYS[4]); if cur==false then cur='__absent__' end; if cur~=ARGV[3] then return -2 end; redis.call('SET',KEYS[4],ARGV[4]); return 1";
 const BIZ_APP_PUT2 = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local g=redis.call('GET',KEYS[6]) or '0'; if g~=ARGV[2] then return -1 end; local cur=redis.call('GET',KEYS[4]); if cur==false then cur='__absent__' end; if cur~=ARGV[3] then return -2 end; redis.call('SET',KEYS[4],ARGV[4]); redis.call('SET',KEYS[5],ARGV[5]); return 1";
-const BIZ_APP_DEL = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local g=redis.call('GET',KEYS[6]) or '0'; if g~=ARGV[2] then return -1 end; local cur=redis.call('GET',KEYS[4]); if cur==false then cur='__absent__' end; if cur~=ARGV[3] then return -2 end; redis.call('DEL',KEYS[4]); redis.call('DEL',KEYS[5]); redis.call('SET',KEYS[6],ARGV[4]); return 1";
+const BIZ_APP_KILL = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local g=redis.call('GET',KEYS[6]) or '0'; if g~=ARGV[2] then return -1 end; local cur=redis.call('GET',KEYS[4]); if cur==false then cur='__absent__' end; if cur~=ARGV[3] then return -2 end; redis.call('DEL',KEYS[4]); redis.call('DEL',KEYS[5]); redis.call('SET',KEYS[6],ARGV[4]); redis.call('SET',KEYS[7],ARGV[5]); local ks=redis.call('KEYS',ARGV[6]); for _,k in ipairs(ks) do redis.call('DEL',k) end; return 1";
 const BIZ_FENCE_SADD = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call(\'SADD\',KEYS[4],ARGV[2]); return 1";
 const BIZ_FENCE_SREM = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call(\'SREM\',KEYS[4],ARGV[2]); return 1";
 const BIZ_FENCE_LPUSH = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call('LPUSH',KEYS[4],ARGV[2]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[3])-1); return 1";
@@ -2282,21 +2285,37 @@ async function bizProfileSet(body) {
 //     (POST /drafts creates a DRAFT-label message only)
 //   RFC 7009 token revocation (https://datatracker.ietf.org/doc/html/rfc7009): the token goes
 //     in the POST BODY - never in a URL, where it would land in logs.
+//   RFC 6749 section 6 (https://datatracker.ietf.org/doc/html/rfc6749#section-6): an omitted
+//     scope in a refresh response means the grant is UNCHANGED; a returned scope replaces it.
 //
 // Security model (each property has a suite case):
 //   - The OAuth state nonce is written with a real store TTL (PX), consumed ATOMICALLY
-//     (GET+DEL in one Lua), and bound to the initiating browser session by an HttpOnly
-//     cookie holding a verifier whose SHA-256 lives in the state record: a consent completed
-//     in a different browser/account can never attach its mailbox to this workspace.
-//   - Every credential write is a compare-and-set on (workspace fence, connector epoch,
-//     exact current record) captured BEFORE any Google network call: a disconnect or purge
-//     landing mid-exchange/refresh/sync makes the late write fail, the just-received tokens
-//     are revoked best-effort, and nothing resurrects.
-//   - Credentials (and the stored inbox snapshot, which contains body-derived snippets) are
+//     (GET+DEL in one Lua), and bound at INITIATION to: the browser session (HttpOnly cookie
+//     verifier, SHA-256 in the record), the signed-in principal (hash of the session email -
+//     a shared browser cannot carry one account's sign-in into another account's consent),
+//     the origin, and the workspace fence + connector epoch at start time. A disconnect or
+//     purge after initiation invalidates the callback's final write.
+//   - Every credential write is a compare-and-set on (fence, connector epoch, exact current
+//     record). Disconnect is LOCAL-FIRST: one atomic step removes record + snapshot, bumps
+//     the epoch, cancels pending states and writes an encrypted tombstone - so a parked sync
+//     can never update a dead connection, and the stored token (the only handle on the
+//     provider grant) is never dropped before its revocation outcome is known. The network
+//     revocation runs after the local transition and its result is recorded on the
+//     tombstone ('revoked' / 'revoke_unconfirmed' - retryable, surfaced honestly).
+//   - Refreshes are serialized per provider (a SET NX PX lock): two concurrent refreshes can
+//     never both hit Google. A refresh or callback that loses its CAS DISCARDS the fresh
+//     tokens - it never revokes them, because a re-consent may share the live grant.
+//     Revocation only ever targets a grant no live connection can be using.
+//   - Any exception after a token exchange still revokes a fresh, unshared grant (cleanup is
+//     in a catch path, not only the normal returns).
+//   - Credentials and the stored inbox snapshot (which contains body-derived snippets) are
 //     AES-256-GCM encrypted with a DEDICATED key derived only from BIZ_APP_ENC_KEY /
 //     ENC_SECRET. The shared enc() falls back to a public 'dev' key, so it is never used
 //     here: with no real secret configured the connector REFUSES to store anything.
 //   - gmail.compose technically permits sending; this connector contains NO send path.
+//     Drafts carry the owner's EXACT words: over-length input is rejected, never truncated.
+//     A thread reference is only a charset check - the approval review must show the linked
+//     account, the exact recipients and the exact text before anything is created.
 //   - Nothing in the bot/AI/delegation paths reads the stored inbox snapshot; it exists for
 //     the owner UI only. Unconfigured (no Google client credentials) is an honest state.
 const BIZ_APPS = {
@@ -2311,13 +2330,14 @@ const BIZ_APPS = {
     clientSecret: () => process.env.BIZ_GOOGLE_CLIENT_SECRET || ''
   }
 };
-const BIZ_APP_MAIL_KEEP = 25, BIZ_APP_STATE_TTL_MS = 600000;
+const BIZ_APP_MAIL_KEEP = 25, BIZ_APP_STATE_TTL_MS = 600000, BIZ_APP_SUBJECT_MAX = 300, BIZ_APP_TEXT_MAX = 20000;
 // Dedicated credential encryption - see the security model above. No secret, no storage.
 const bizAppKey = () => { const s = process.env.BIZ_APP_ENC_KEY || process.env.ENC_SECRET || ''; return s ? crypto.createHash('sha256').update('foreman-bizapp-v1|' + s).digest() : null; };
 const bizAppEncOk = () => !!bizAppKey();
 const bizAppEnc = t => { const k = bizAppKey(); if (!k) throw new Error('app credential encryption unavailable'); const iv = crypto.randomBytes(12); const c = crypto.createCipheriv('aes-256-gcm', k, iv); const d = Buffer.concat([c.update(String(t), 'utf8'), c.final()]); return [iv, c.getAuthTag(), d].map(b => b.toString('base64')).join('.'); };
 const bizAppDec = t => { const k = bizAppKey(); if (!k) return null; try { const [iv, tag, d] = String(t).split('.').map(x => Buffer.from(x, 'base64')); const c = crypto.createDecipheriv('aes-256-gcm', k, iv); c.setAuthTag(tag); return Buffer.concat([c.update(d), c.final()]).toString('utf8'); } catch { return null; } };
 const bizClean = s => String(s).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 120);
+const bizAppPrincipal = () => String((als.getStore() || {}).email || '');
 function bizAppConfigured(p) { const c = BIZ_APPS[p]; return !!(c && c.clientId() && c.clientSecret()); }
 // The (fence, epoch, exact record) triple every connector write must still match after network.
 async function bizAppSnap(p) {
@@ -2335,9 +2355,10 @@ async function bizAppRevoke(c, token) {
 // Public-safe view of a connection: NEVER carries tokens, secrets, or message content.
 async function bizAppStatus(p) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
-  const mail = await getJ('fm:biz:app:' + p + ':mail');
+  const mail = await getJ('fm:biz:app:' + p + ':mail'), tomb = await getJ('fm:biz:apptomb:' + p);
   const base = { provider: p, label: c.label, configured: bizAppConfigured(p), credentialStorage: bizAppEncOk() ? 'ready' : 'unavailable', scopes: c.scopes,
     syncDisclosure: 'Sync reads sender, subject, date and a short excerpt (the Gmail snippet) of recent inbox messages. The stored snapshot is encrypted at rest, kept for the owner only, and never forwarded to any bot or AI automatically.' };
+  if (tomb && tomb.grantStatus === 'revoke_unconfirmed') base.grantStatus = 'revoke_unconfirmed', base.grantNote = 'Google did not confirm revoking a removed connection - it may still show under third-party access in the Google account; remove it there to be sure.';
   const rec = await getJ('fm:biz:app:' + p);
   if (!rec) return { ...base, connected: false, status: 'not_connected' };
   return { ...base, connected: rec.status === 'connected', status: rec.status, email: rec.email || null, connectedAt: rec.connectedAt || null, lastSyncAt: rec.lastSyncAt || null, lastError: rec.lastError || null, mailCount: mail ? (mail.count || 0) : 0 };
@@ -2346,10 +2367,12 @@ async function bizAppConnect(p, origin) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
   if (!bizAppConfigured(p)) return { status: 503, body: { error: c.label + ' sign-in is not configured on this deployment yet - the Google app credentials still need to be created. Nothing was connected.', code: 'app_not_configured' } };
   if (!bizAppEncOk()) return { status: 503, body: { error: 'Credential storage is not configured safely on this deployment (no app encryption secret set). Nothing was connected.', code: 'app_encryption_unavailable' } };
-  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict();
+  const prin = bizAppPrincipal(); if (!prin) return { status: 401, body: { error: 'Sign in required', code: 'auth' } };
+  const snap = await bizAppSnap(p); if (!snap) return bizFrozenConflict();
   const nonce = crypto.randomBytes(16).toString('hex'), verifier = crypto.randomBytes(24).toString('hex');
-  const st = { provider: p, vh: crypto.createHash('sha256').update(verifier).digest('hex'), at: now(), expires: Date.now() + BIZ_APP_STATE_TTL_MS };
-  if (!await r(['EVAL', BIZ_STATE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:appstate:' + nonce, f0, JSON.stringify(st), String(BIZ_APP_STATE_TTL_MS)])) return bizFenceConflict();
+  // Bound at initiation: session verifier hash, principal hash, origin, fence AND epoch.
+  const st = { provider: p, vh: sha(verifier), ph: sha(prin), origin, f0: snap.f0, gen: snap.gen, hadConnection: !!snap.rec, at: now(), expires: Date.now() + BIZ_APP_STATE_TTL_MS };
+  if (!await r(['EVAL', BIZ_STATE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:appstate:' + nonce, snap.f0, JSON.stringify(st), String(BIZ_APP_STATE_TTL_MS)])) return bizFenceConflict();
   const q = new URLSearchParams({ client_id: c.clientId(), redirect_uri: origin + '/api/business/apps/' + p + '/callback', response_type: 'code', scope: c.scopes.join(' '), access_type: 'offline', prompt: 'consent', state: nonce });
   return { status: 200, body: { authorizationUrl: c.authEndpoint + '?' + q.toString() },
     setCookie: 'fm_bizapp_' + p + '=' + nonce + '.' + verifier + '; Path=/api/business/apps; HttpOnly; Secure; SameSite=Lax; Max-Age=' + Math.floor(BIZ_APP_STATE_TTL_MS / 1000) };
@@ -2362,40 +2385,61 @@ async function bizAppCallback(p, query, origin, cookieHeader) {
   const sRaw = nonce ? await r(['GET', sKey]) : null;
   const st = sRaw ? JSON.parse(sRaw) : null;
   if (!nonce || !st || st.provider !== p || st.expires < Date.now() || !code) return { status: 400, body: { error: 'That sign-in link expired or was already used. Start the connection again.', code: 'app_state_invalid' } };
-  // Session binding BEFORE consuming anything: a mismatched session never burns the state.
+  if (st.origin !== origin) return { status: 400, body: { error: 'That sign-in was started on a different deployment. Start the connection again here.', code: 'app_origin_mismatch' } };
+  // Session + principal binding BEFORE consuming anything: a mismatched completion never
+  // burns the state. A shared browser cannot carry one account's flow into another's.
   const cookieVal = (String(cookieHeader || '').split(';').map(x => x.trim()).find(x => x.startsWith('fm_bizapp_' + p + '=')) || '').split('=').slice(1).join('=');
   const dot = cookieVal.indexOf('.'), cn = dot < 0 ? '' : cookieVal.slice(0, dot), cv = dot < 0 ? '' : cookieVal.slice(dot + 1);
-  if (!cv || cn !== nonce || crypto.createHash('sha256').update(cv).digest('hex') !== st.vh) return { status: 400, body: { error: 'This sign-in was started in a different browser session. Start the connection again from this browser.', code: 'app_session_mismatch' } };
+  if (!cv || cn !== nonce || sha(cv) !== st.vh) return { status: 400, body: { error: 'This sign-in was started in a different browser session. Start the connection again from this browser.', code: 'app_session_mismatch' } };
+  if (sha(bizAppPrincipal()) !== st.ph) return { status: 400, body: { error: 'This sign-in was started by a different signed-in account. Start the connection again.', code: 'app_principal_mismatch' } };
   if (!bizAppEncOk()) return { status: 503, body: { error: 'Credential storage is not configured safely on this deployment (no app encryption secret set). Nothing was connected.', code: 'app_encryption_unavailable' } };
   // Atomic consume: exactly one concurrent callback can ever reach the token exchange.
   const taken = await r(['EVAL', BIZ_STATE_TAKE, 1, sKey]);
   if (taken !== sRaw) return { status: 400, body: { error: 'That sign-in link expired or was already used. Start the connection again.', code: 'app_state_invalid' } };
   const snap = await bizAppSnap(p); if (!snap) return bizFrozenConflict();
-  const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), code, grant_type: 'authorization_code', redirect_uri: origin + '/api/business/apps/' + p + '/callback' }).toString() });
-  const tj = await tok.json().catch(() => null);
-  if (!tok.ok || !tj || !tj.access_token) return { status: 502, body: { error: 'Google did not complete the token exchange (' + bizClean((tj && tj.error) || tok.status) + '). Nothing was connected.', code: 'app_exchange_failed' } };
-  // Verify what was actually granted BEFORE calling anything connected: the offline
-  // credential, the full documented scope set, and a reachable account profile. On any
-  // shortfall the just-received grant is revoked best-effort - never silently kept.
-  const granted = String(tj.scope || '').split(/\s+/), missing = c.scopes.filter(x => !granted.includes(x));
-  if (!tj.refresh_token || missing.length) {
-    const revoked = await bizAppRevoke(c, tj.refresh_token || tj.access_token);
-    return { status: 502, body: { error: !tj.refresh_token ? 'Google did not return an offline credential. Nothing was connected - try the connection again and accept the access screen.' : 'Google granted narrower access than this connection needs (' + missing.join(', ') + '). Nothing was connected.', code: !tj.refresh_token ? 'app_no_refresh_token' : 'app_scope_missing', grantStatus: revoked ? 'revoked' : 'revoke_unconfirmed' } };
+  let fresh = null; // once the exchange succeeds, this grant must ALWAYS be accounted for
+  try {
+    const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), code, grant_type: 'authorization_code', redirect_uri: origin + '/api/business/apps/' + p + '/callback' }).toString() });
+    const tj = await tok.json().catch(() => null);
+    if (!tok.ok || !tj || !tj.access_token) return { status: 502, body: { error: 'Google did not complete the token exchange (' + bizClean((tj && tj.error) || tok.status) + '). Nothing was connected.', code: 'app_exchange_failed' } };
+    fresh = tj;
+    // Verify what was actually granted BEFORE calling anything connected: the offline
+    // credential, the full documented scope set, and a reachable account profile. A fresh,
+    // unshared grant that falls short is revoked best-effort; a grant that may share a live
+    // connection is only discarded - revoking it could kill the working connection.
+    const granted = String(tj.scope || '').split(/\s+/), missing = c.scopes.filter(x => !granted.includes(x));
+    if (!tj.refresh_token || missing.length) {
+      const gs = st.hadConnection ? 'not_revoked' : (await bizAppRevoke(c, tj.refresh_token || tj.access_token)) ? 'revoked' : 'revoke_unconfirmed';
+      return { status: 502, body: { error: !tj.refresh_token ? 'Google did not return an offline credential. Nothing was connected - try the connection again and accept the access screen.' : 'Google granted narrower access than this connection needs (' + missing.join(', ') + '). Nothing was connected.', code: !tj.refresh_token ? 'app_no_refresh_token' : 'app_scope_missing', grantStatus: gs } };
+    }
+    const prof = await fetch(c.apiBase + '/profile', { headers: { Authorization: 'Bearer ' + tj.access_token } });
+    const pj = await prof.json().catch(() => null);
+    if (!prof.ok || !pj || !pj.emailAddress) {
+      const gs = st.hadConnection ? 'not_revoked' : (await bizAppRevoke(c, tj.refresh_token)) ? 'revoked' : 'revoke_unconfirmed';
+      return { status: 502, body: { error: 'Google did not confirm the account profile. Nothing was connected.', code: 'app_profile_failed', grantStatus: gs } };
+    }
+    const rec = { provider: p, status: 'connected', email: pj.emailAddress, scopes: c.scopes,
+      accessToken: bizAppEnc(tj.access_token), accessTokenExpiresAt: Date.now() + (Number(tj.expires_in) || 3600) * 1000,
+      refreshToken: bizAppEnc(tj.refresh_token), connectedAt: now(), lastSyncAt: null, lastError: null };
+    // Initiation fence + epoch: a disconnect/purge after the flow started fails this write.
+    const put = await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, st.f0, st.gen, snap.raw, JSON.stringify(rec)]);
+    if (put !== 1) {
+      const gs = st.hadConnection ? 'not_revoked' : (await bizAppRevoke(c, tj.refresh_token)) ? 'revoked' : 'revoke_unconfirmed';
+      return { status: 409, body: { error: 'The workspace changed while Google was connecting (a delete or disconnect landed). Start the connection again.', code: 'app_race_lost', grantStatus: gs,
+        ...(gs !== 'revoked' ? { note: gs === 'not_revoked' ? 'The existing connection was left untouched; the interrupted grant was discarded. Remove it under third-party access in the Google account if it appears there.' : 'Google did not confirm revoking the interrupted grant - remove it under third-party access in the Google account if it appears there.' } : {}) } };
+    }
+    await bizLog('app_connected', { provider: p, email: rec.email }, st.f0);
+    return { status: 200, body: { connected: true, provider: p, email: rec.email } };
+  } catch (e) {
+    // Exception paths clean up too: a fresh, unshared grant is never leaked by a crash.
+    if (fresh && !st.hadConnection) await bizAppRevoke(c, fresh.refresh_token || fresh.access_token);
+    throw e;
   }
-  const prof = await fetch(c.apiBase + '/profile', { headers: { Authorization: 'Bearer ' + tj.access_token } });
-  const pj = await prof.json().catch(() => null);
-  if (!prof.ok || !pj || !pj.emailAddress) { const revoked = await bizAppRevoke(c, tj.refresh_token); return { status: 502, body: { error: 'Google did not confirm the account profile. Nothing was connected.', code: 'app_profile_failed', grantStatus: revoked ? 'revoked' : 'revoke_unconfirmed' } }; }
-  const rec = { provider: p, status: 'connected', email: pj.emailAddress, scopes: c.scopes,
-    accessToken: bizAppEnc(tj.access_token), accessTokenExpiresAt: Date.now() + (Number(tj.expires_in) || 3600) * 1000,
-    refreshToken: bizAppEnc(tj.refresh_token), connectedAt: now(), lastSyncAt: null, lastError: null };
-  const put = await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, snap.f0, snap.gen, snap.raw, JSON.stringify(rec)]);
-  if (put !== 1) { await bizAppRevoke(c, tj.refresh_token); return { status: 409, body: { error: 'The workspace changed while Google was connecting (a delete or disconnect landed). The just-granted access was revoked again. Start the connection again.', code: 'app_race_lost' } }; }
-  await bizLog('app_connected', { provider: p, email: rec.email }, snap.f0);
-  return { status: 200, body: { connected: true, provider: p, email: rec.email } };
 }
 // A live access token, refreshing when needed. invalid_grant (revoked/expired refresh token,
 // per Google's docs) flips the connection to needs_reconnect honestly - never a retry loop.
-// Every record write CASes the pre-network snapshot; a lost race revokes the fresh tokens.
+// Refreshes are serialized per provider; a CAS loser discards its fresh tokens and revokes
+// NOTHING (a rotated grant may be shared with the winning write).
 async function bizAppAccessToken(p) {
   const snap = await bizAppSnap(p); if (!snap) return { err: bizFrozenConflict() };
   const rec = snap.rec;
@@ -2407,19 +2451,34 @@ async function bizAppAccessToken(p) {
     await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, snap.f0, snap.gen, snap.raw, JSON.stringify(next)]);
     return { err: { status: 409, body: { error: next.lastError, code: 'app_needs_reconnect' } } };
   }
-  const c = BIZ_APPS[p];
-  const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), grant_type: 'refresh_token', refresh_token: rt }).toString() });
-  const tj = await tok.json().catch(() => null);
-  if (!tok.ok || !tj || !tj.access_token) {
-    const invalid = !!(tj && tj.error === 'invalid_grant');
-    const next = { ...rec, status: invalid ? 'needs_reconnect' : rec.status, lastError: invalid ? 'Google revoked or expired the offline credential. Reconnect to continue.' : 'Token refresh failed (' + bizClean((tj && tj.error) || tok.status) + ')' };
-    await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, snap.f0, snap.gen, snap.raw, JSON.stringify(next)]);
-    return { err: { status: invalid ? 409 : 502, body: { error: next.lastError, code: invalid ? 'app_needs_reconnect' : 'app_token_failed' } } };
-  }
-  const next = { ...rec, status: 'connected', accessToken: bizAppEnc(tj.access_token), accessTokenExpiresAt: Date.now() + (Number(tj.expires_in) || 3600) * 1000, ...(tj.refresh_token ? { refreshToken: bizAppEnc(tj.refresh_token) } : {}), lastError: null };
-  const put = await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, snap.f0, snap.gen, snap.raw, JSON.stringify(next)]);
-  if (put !== 1) { await bizAppRevoke(c, tj.refresh_token || tj.access_token); return { err: { status: 409, body: { error: 'The connection changed while its credential was refreshed. Reconnect if the app asks.', code: 'app_race_lost' } } }; }
-  return { token: tj.access_token, rec: next, snap: { f0: snap.f0, gen: snap.gen, raw: JSON.stringify(next), rec: next } };
+  const lock = 'fm:biz:appref:' + p;
+  if (!await r(['SET', lock, rid('ref'), 'NX', 'PX', '30000'])) return { err: { status: 409, body: { error: 'A credential refresh is already in progress. Try again in a moment.', code: 'app_refresh_busy' } } };
+  try {
+    const c = BIZ_APPS[p];
+    const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), grant_type: 'refresh_token', refresh_token: rt }).toString() });
+    const tj = await tok.json().catch(() => null);
+    if (!tok.ok || !tj || !tj.access_token) {
+      const invalid = !!(tj && tj.error === 'invalid_grant');
+      const next = { ...rec, status: invalid ? 'needs_reconnect' : rec.status, lastError: invalid ? 'Google revoked or expired the offline credential. Reconnect to continue.' : 'Token refresh failed (' + bizClean((tj && tj.error) || tok.status) + ')' };
+      await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, snap.f0, snap.gen, snap.raw, JSON.stringify(next)]);
+      return { err: { status: invalid ? 409 : 502, body: { error: next.lastError, code: invalid ? 'app_needs_reconnect' : 'app_token_failed' } } };
+    }
+    // RFC 6749 section 6: omitted scope = unchanged grant. A RETURNED scope that drops any of
+    // this connector's scopes means the grant narrowed - reconnect honestly, do not run on.
+    if (tj.scope) {
+      const sc = String(tj.scope).split(/\s+/), narrowed = (rec.scopes || []).filter(x => !sc.includes(x));
+      if (narrowed.length) {
+        const next = { ...rec, status: 'needs_reconnect', lastError: 'Google narrowed the granted access (' + narrowed.join(', ') + '). Reconnect to continue.' };
+        await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, snap.f0, snap.gen, snap.raw, JSON.stringify(next)]);
+        return { err: { status: 409, body: { error: next.lastError, code: 'app_needs_reconnect' } } };
+      }
+    }
+    const next = { ...rec, status: 'connected', accessToken: bizAppEnc(tj.access_token), accessTokenExpiresAt: Date.now() + (Number(tj.expires_in) || 3600) * 1000, ...(tj.refresh_token ? { refreshToken: bizAppEnc(tj.refresh_token) } : {}), lastError: null };
+    const put = await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, snap.f0, snap.gen, snap.raw, JSON.stringify(next)]);
+    // CAS lost: discard the fresh tokens, revoke NOTHING - the grant may be shared.
+    if (put !== 1) return { err: { status: 409, body: { error: 'The connection changed while its credential was refreshed. Reconnect if the app asks.', code: 'app_race_lost' } } };
+    return { token: tj.access_token, rec: next, snap: { f0: snap.f0, gen: snap.gen, raw: JSON.stringify(next), rec: next } };
+  } finally { await r(['DEL', lock]).catch(() => {}); }
 }
 // Bounded inbox metadata pull for responsibilities that work from the inbox, e.g. the estimate
 // follow-up desk: METADATA format (headers only) plus the API's snippet field. The snippet IS
@@ -2451,8 +2510,11 @@ async function bizAppSync(p) {
   return { status: 200, body: { provider: p, count: out.length, messages: out } };
 }
 // DRAFTS ONLY: creates a Gmail draft the owner reviews and sends themselves. There is no
-// send call anywhere in this connector - that code path does not exist. Recipients are
-// validated strictly and echoed back exactly, so an approval can never hide one.
+// send call anywhere in this connector - that code path does not exist. The owner's words
+// are carried EXACTLY: over-length input is rejected, never silently truncated. The
+// response echoes the linked account, the exact recipients and the exact subject so the
+// approval review shows precisely what will appear in Gmail; a thread reference is a
+// charset check only, not proof of account or recipient relationship.
 const BIZ_APP_CTL = /[\x00-\x1f\x7f]/, BIZ_APP_ADDR = /^[^\s@,<>(){}\[\]:"\\]{1,64}@[^\s@,<>(){}\[\]:"\\]{1,255}$/;
 async function bizAppDraftCreate(p, body) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
@@ -2462,31 +2524,44 @@ async function bizAppDraftCreate(p, body) {
   if (BIZ_APP_CTL.test(to) || BIZ_APP_CTL.test(subject)) return { status: 400, body: { error: 'Recipient and subject must be single plain lines - no line breaks or control characters.', code: 'app_input_invalid' } };
   const tos = to.split(',').map(x => x.trim()).filter(Boolean);
   if (!tos.length || tos.length > 5 || !tos.every(x => BIZ_APP_ADDR.test(x))) return { status: 400, body: { error: 'Each recipient must be one plain email address (up to 5).', code: 'app_input_invalid' } };
+  if (subject.length > BIZ_APP_SUBJECT_MAX) return { status: 400, body: { error: 'The subject is ' + subject.length + ' characters; the limit is ' + BIZ_APP_SUBJECT_MAX + '. Shorten it - nothing was created.', code: 'app_input_invalid' } };
+  if (text.length > BIZ_APP_TEXT_MAX) return { status: 400, body: { error: 'The text is ' + text.length + ' characters; the limit is ' + BIZ_APP_TEXT_MAX + '. Shorten it - nothing was created.', code: 'app_input_invalid' } };
   if (body.threadId != null && !/^[A-Za-z0-9_-]{1,80}$/.test(String(body.threadId))) return { status: 400, body: { error: 'That thread reference is not valid.', code: 'app_input_invalid' } };
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) return { status: 400, body: { error: 'The draft text contains control characters.', code: 'app_input_invalid' } };
   const at = await bizAppAccessToken(p); if (at.err) return at.err;
-  const mime = 'To: ' + tos.join(', ') + '\r\nSubject: ' + subject.slice(0, 300) + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text.slice(0, 20000);
+  const mime = 'To: ' + tos.join(', ') + '\r\nSubject: ' + subject + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text;
   const raw = Buffer.from(mime, 'utf8').toString('base64url');
   const res = await fetch(c.apiBase + '/drafts', { method: 'POST', headers: { Authorization: 'Bearer ' + at.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { raw, ...(body.threadId ? { threadId: String(body.threadId) } : {}) } }) });
   const dj = await res.json().catch(() => null);
   if (!res.ok || !dj || !dj.id) return { status: 502, body: { error: 'Google did not create the draft (' + bizClean((dj && dj.error && dj.error.message) || res.status) + ').', code: 'app_draft_failed' } };
   await bizLog('app_draft_created', { provider: p, draftId: dj.id, to: tos.join(', ') }, at.snap.f0);
-  return { status: 200, body: { provider: p, draftId: dj.id, to: tos, note: 'Draft created in Gmail. Nothing was sent - review and send it there.' } };
+  return { status: 200, body: { provider: p, draftId: dj.id, account: at.rec.email || null, to: tos, subject, note: 'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.' } };
 }
+// LOCAL-FIRST disconnect: one atomic step removes the record + snapshot, bumps the epoch,
+// cancels every pending sign-in and writes an encrypted tombstone - only THEN is the provider
+// revocation attempted, and its outcome is recorded on the tombstone for honest reporting and
+// retry. A parked sync loses its CAS the moment the local step lands, so a completed revoke
+// can never leave a live-looking local connection behind.
 async function bizAppDisconnect(p) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
   const snap = await bizAppSnap(p); if (!snap) return bizFrozenConflict();
-  if (!snap.rec) return { status: 200, body: { disconnected: true, provider: p, grantStatus: 'not_connected' } };
-  // Verified provider revocation BEFORE the local delete: the stored refresh token is the
-  // only handle on the Google grant - it is never dropped silently. Local removal is not
-  // provider revocation; an unconfirmed grant is reported as exactly that.
-  const rt = snap.rec.refreshToken ? bizAppDec(snap.rec.refreshToken) : null;
-  const revoked = rt ? await bizAppRevoke(c, rt) : false;
-  const grantStatus = revoked ? 'revoked' : (rt ? 'revoke_unconfirmed' : 'no_credential');
-  const del = await r(['EVAL', BIZ_APP_DEL, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:app:' + p + ':mail', 'fm:biz:appgen:' + p, snap.f0, snap.gen, snap.raw, rid('appgen')]);
-  if (del !== 1) return { status: 409, body: { error: 'The connection changed while it was being removed. Try the disconnect again.', code: 'app_race_lost', grantStatus } };
+  const rt = snap.rec && snap.rec.refreshToken ? bizAppDec(snap.rec.refreshToken) : null;
+  const tombKey = 'fm:biz:apptomb:' + p, oldTomb = await getJ(tombKey);
+  const tomb = (status0, keepTok) => JSON.stringify({ at: now(), grantStatus: status0, enc: keepTok && rt ? bizAppEnc(rt) : null });
+  const kill = await r(['EVAL', BIZ_APP_KILL, 7, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:app:' + p + ':mail', 'fm:biz:appgen:' + p, tombKey, snap.f0, snap.gen, snap.raw, rid('appgen'), tomb(rt ? 'pending' : (snap.rec ? 'no_credential' : 'not_connected'), true), 'fm:biz:appstate:*']);
+  if (kill !== 1) return { status: 409, body: { error: 'The connection changed while it was being removed. Try the disconnect again.', code: 'app_race_lost' } };
+  const grantStatus = rt ? (await bizAppRevoke(c, rt) ? 'revoked' : 'revoke_unconfirmed') : (snap.rec ? 'no_credential' : 'not_connected');
+  // Record the outcome (the token stays encrypted while unconfirmed, for a later retry). A
+  // resolved outcome NEVER overwrites an older unconfirmed tombstone - that retry handle
+  // survives until the provider confirms or the workspace is purged.
+  const f1 = await bizEntry();
+  if (f1 != null) {
+    const keepOld = grantStatus !== 'revoke_unconfirmed' && oldTomb && oldTomb.grantStatus === 'revoke_unconfirmed' && oldTomb.enc;
+    await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', tombKey, f1, keepOld ? JSON.stringify({ at: oldTomb.at, grantStatus: 'revoke_unconfirmed', enc: oldTomb.enc }) : tomb(grantStatus, grantStatus !== 'revoked')]); // a confirmed revocation drops the stored token
+  }
   await bizLog('app_disconnected', { provider: p, grantStatus }, snap.f0);
-  return { status: 200, body: { disconnected: true, provider: p, grantStatus, ...(grantStatus === 'revoke_unconfirmed' ? { note: 'Local data is removed. Google did not confirm the access revocation - the connection may still show under third-party access in the Google account; remove it there to be sure.' } : {}) } };
+  return { status: 200, body: { disconnected: true, provider: p, grantStatus, pendingCancelled: true,
+    ...(grantStatus === 'revoke_unconfirmed' ? { note: 'Local data is removed. Google did not confirm the access revocation - the connection may still show under third-party access in the Google account; remove it there to be sure.' } : {}) } };
 }
 
 async function bizState() {
@@ -3841,6 +3916,16 @@ async function bizDataPurge(body) {
       }
     }
     await fam('fm:biz:app:*', 'connections');
+    // Tombstones from earlier disconnects: retry any unconfirmed revocation before deletion.
+    for (const k of (await r(['KEYS', 'fm:biz:apptomb:*'])) || []) {
+      if (!k.startsWith(nsKey('fm:biz:apptomb:'))) continue;
+      const tb = await getJ(k.slice(nsKey('').length));
+      if (tb && tb.enc && tb.grantStatus !== 'revoked') {
+        const prov = k.slice(nsKey('fm:biz:apptomb:').length), rt = bizAppDec(tb.enc);
+        if (rt && BIZ_APPS[prov]) { if (await bizAppRevoke(BIZ_APPS[prov], rt)) counts.grantsRevoked++; else counts.grantsUnconfirmed++; }
+      }
+    }
+    await fam('fm:biz:apptomb:*', null);
     await fam('fm:biz:appstate:*', null); // pending OAuth states die with the workspace
     await fam('fm:biz:appgen:*', null);
     stage = 'delegated_jobs';
