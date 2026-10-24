@@ -758,7 +758,8 @@ function publicSnapshotBuild(t,src,fields,budget){
 function publicSuggestions(t){
  const kind=t.biz&&t.biz.kind;
  if(kind==='discover')return {title:'Business discovery scan',summary:'A bot read the business notes I connected and drafted workflow proposals for my review. Nothing was sent or booked; every draft needs my approval.',template:'Read the business notes I connect and draft workflow proposals for my review. Send or book nothing without my approval.'};
- return {title:t.status==='done'?'Completed job':'Job attempt',summary:'',template:''};}
+ const done=t.status==='done';
+ return {title:done?'Completed job':'Job attempt',summary:done?'A bot completed this job. The timeline and cost facts on this page come from the job record.':'A bot attempted this job and stopped without a result. The timeline on this page comes from the job record.',template:'Handle this kind of job for me: read the request, do the work, and bring me the result to review before anything is sent.'};}
 async function publicReceiptReview(taskId,b){
  const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};
  const t=src.j.task,fields={title:b.title,summary:b.summary,template:b.template};

@@ -11,15 +11,17 @@
   BB.openShare = async function (taskId) {
     const t = BB.task(taskId), d = await BB.api('/api/public-receipts/draft?taskId=' + encodeURIComponent(taskId)); if (d.error) return BB.toast(d.error);
     const sg = d.suggestions || { title: '', summary: '', template: '' };
-    const box = BB.modal(`<h3>Share a public receipt</h3><p>Pre-filled from this job - edit anything before you publish. The page below is exactly what anyone with the link will see, and it updates as you type. Keep out client names, private work, contact details, links, file paths, tool details and credentials.</p>
+    const box = BB.modal(`<div class="sh-share">
+      <div class="sh-form"><h3>Share a public receipt</h3><p>Pre-filled from this job - edit anything before you publish. The page beside this form is exactly what anyone with the link will see, and it updates as you type. Keep out client names, private work, contact details, links, file paths, tool details and credentials.</p>
       <div class="stackf"><label class="fld">Public title<input class="in" id="sh-title" maxlength="100"></label>
-      <label class="fld">What the bot did<textarea class="in" id="sh-summary" maxlength="700" style="min-height:80px"></textarea></label>
-      <label class="fld">Reusable job template <small>what "Run this job" copies</small><textarea class="in" id="sh-template" maxlength="1500" style="min-height:100px"></textarea></label>
+      <label class="fld">What the bot did<textarea class="in" id="sh-summary" maxlength="700" style="min-height:64px"></textarea></label>
+      <label class="fld">Reusable job template <small>what "Run this job" copies</small><textarea class="in" id="sh-template" maxlength="1500" style="min-height:76px"></textarea></label>
       <label class="fld">Budget <small>pre-filled from what this job recorded${t && t.modelCostUsd == null ? ' (gateway ledger only; model costs were not reported)' : ''}</small><span class="inline-input">$<input type="number" min="0" step="0.01" id="sh-budget" value="${(d.suggestedBudgetCents / 100).toFixed(2)}" style="width:110px;text-align:left"></span></label></div>
       <ul class="problems" id="sh-problems" hidden></ul><p class="err" id="sh-e" style="color:var(--vermilion-press);font-size:13px;margin-top:8px"></p>
-      <div class="review-frame" style="margin-top:16px"><div class="rc" id="sh-preview"></div></div>
       <label class="consent"><input type="checkbox" id="sh-consent"> I reviewed every word. Anyone with the link may see this snapshot for 30 days or until I revoke it. People who already saw or copied it keep it.</label>
-      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="button" id="sh-publish" disabled>Publish</button></div>`, { label: 'Share a public receipt', wide: true });
+      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="button" id="sh-publish" disabled>Publish</button></div></div>
+      <div class="sh-prev"><div class="review-frame"><div class="rc" id="sh-preview"></div></div></div>
+    </div>`, { label: 'Share a public receipt', wide: true });
     box.querySelector('#sh-title').value = sg.title || '';
     box.querySelector('#sh-summary').value = sg.summary || '';
     box.querySelector('#sh-template').value = sg.template || '';

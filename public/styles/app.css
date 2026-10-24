@@ -678,3 +678,17 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .bz-urlrow{display:flex;align-items:flex-start;gap:8px;margin:6px 0}
 .bz-urlrow .bz-url{word-break:break-all;font-size:12.5px}
 .bz-reviewed{background:rgba(0,0,0,.04);border-radius:8px;padding:8px 10px;font-size:12.5px;white-space:pre-wrap;word-break:break-word}
+
+/* share-a-receipt: form + live exact preview as one compact view (tablet-first) */
+.sh-share{display:grid;gap:14px;margin-top:6px}
+.sh-share h3{margin-top:0}
+.sh-share .stackf{gap:10px;margin-top:12px}
+.sh-share .review-frame{margin-top:0;max-height:38vh}
+.sh-share .review-frame .rc{zoom:.6}
+.sh-share .consent{margin-top:12px}
+.sh-share .acts{margin-top:12px}
+@media (min-width:900px){
+  .sh-share{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+  .sh-share .review-frame{max-height:calc(80vh - 170px)}
+  .sh-share .review-frame .rc{zoom:.68}
+}
