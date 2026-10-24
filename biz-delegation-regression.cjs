@@ -703,5 +703,59 @@ const ISO=ms=>new Date(ms).toISOString();
 
  });
 
+ // === team + owner-approved assignments: the workspace team surface, exact-bot assignment,
+ // ineligible refusal, assigned-gone never substituted, unassign back to automatic ===
+ await f.als.run({ws:'wsteam'},async()=>{
+  c.process.env.ALTER_MODEL_WS+=',wsteam';
+  await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
+  const gT=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const sT=await f.createAgent('Scout','Ops','custom',false,{preset:'balanced'});
+  const pT=await f.createAgent('Paused Pete','Ops','custom',false,{preset:'balanced'});
+  {const a=await f.getJ('fm:agent:'+pT.agent.id);a.paused=true;await f.setJ('fm:agent:'+pT.agent.id,a);}
+  const hT=await f.createAgent('Hosted Harry','Ops','custom',true,{preset:'balanced'});
+  const st0=await f.bizState();
+  const teamIds=(st0.team||[]).map(x=>x.id).sort();
+  assert.deepEqual(teamIds,[gT.agent.id,sT.agent.id].sort(),'the team surface lists only connected, unpaused, self-hosted bots');
+  assert.ok((st0.team||[]).every(x=>x.name&&x.connection),'each team entry names the bot and its live connection state');
+  assert.ok(!(st0.team||[]).some(x=>x.id===pT.agent.id||x.id===hT.agent.id),'paused and hosted bots are never listed as assignable');
+  const s1T=await f.bizSourceAdd({kind:'note',title:'How we work',text:'We answer every customer email within a day.'});
+  c.process.env.__sid=s1T.body.source.id;
+  const pT0=(await f.bizDiscover()).body.proposals[0];
+  const respT=(await f.bizProposalAct(pT0.id,'activate',{})).body.responsibility.id;
+  const bad1=await f.bizRespAct(respT,'assign',{botId:'agent_nonexistent'});
+  assert.equal(bad1.status,409);assert.equal(bad1.body.code,'assign_bot_unavailable','assigning a bot that does not exist is refused');
+  const bad2=await f.bizRespAct(respT,'assign',{botId:pT.agent.id});
+  assert.equal(bad2.status,409);assert.equal(bad2.body.code,'assign_bot_unavailable','assigning a paused bot is refused');
+  assert.ok(/does not create bot accounts/.test(bad2.body.error),'the refusal says honestly that Alter never creates bot accounts');
+  const bad3=await f.bizRespAct(respT,'assign',{botId:hT.agent.id});
+  assert.equal(bad3.status,409),'';
+  const asg=await f.bizRespAct(respT,'assign',{botId:sT.agent.id});
+  assert.equal(asg.status,200);assert.equal(asg.body.responsibility.assignment.botId,sT.agent.id,'the owner assignment lands on the exact bot');
+  assert.equal(asg.body.responsibility.assignment.botName,'Scout','the assignment names the bot');
+  const logT=await f.r(['LRANGE','fm:biz:log',0,9]);
+  assert.ok(logT.some(x=>x.includes('responsibility_assigned')&&x.includes('Scout')),'the assignment is logged');
+  const pvT=await f.bizRespAct(respT,'delegate-preview',{input:'Draft a reply about hours.'});
+  assert.equal(pvT.status,200);assert.equal(pvT.body.delegation.bot.id,sT.agent.id,'the assigned bot runs the work - not the Grok-preferred automatic pick');
+  // assigned-gone: never substituted, named honestly
+  {const a=await f.getJ('fm:agent:'+sT.agent.id);a.paused=true;await f.setJ('fm:agent:'+sT.agent.id,a);}
+  const pvGone=await f.bizRespAct(respT,'delegate-preview',{input:'Draft a reply about hours.'});
+  assert.equal(pvGone.status,409);assert.equal(pvGone.body.code,'delegate_bot_gone','an assigned-but-disconnected bot refuses honestly');
+  assert.ok(/Scout/.test(pvGone.body.error)&&/never substituted/.test(pvGone.body.error),'the refusal names the assigned bot and the no-substitution rule');
+  const runGone=await f.bizRespAct(respT,'run',{input:'Draft a reply about hours.',delegateHash:'whatever'});
+  assert.equal(runGone.status,409);assert.equal(runGone.body.code,'delegate_bot_gone','a run never substitutes the engine or another bot for the assigned bot');
+  assert.equal((await f.listTasks()).filter(t=>t.biz&&t.biz.respId===respT).length,0,'no job was queued to anyone else');
+  const un=await f.bizRespAct(respT,'assign',{botId:null});
+  assert.equal(un.status,200);assert.ok(!un.body.responsibility.assignment,'unassigning returns the responsibility to the automatic pick');
+  const logT2=await f.r(['LRANGE','fm:biz:log',0,9]);
+  assert.ok(logT2.some(x=>x.includes('responsibility_unassigned')),'the unassignment is logged');
+  const pvAuto=await f.bizRespAct(respT,'delegate-preview',{input:'Draft a reply about hours.'});
+  assert.equal(pvAuto.body.delegation.bot.id,gT.agent.id,'after unassign the automatic Grok-preferred pick applies again');
+  // research responsibilities are never assignable to a bot
+  const pR2=(await f.bizDiscover()).body.proposals[0];
+  const respR2=(await f.bizProposalAct(pR2.id,'activate',{research:true})).body.responsibility.id;
+  const asgR=await f.bizRespAct(respR2,'assign',{botId:gT.agent.id});
+  assert.equal(asgR.status,400,'a research responsibility is never assigned to a bot - it reads public pages on the engine path');
+ });
+
  console.log('biz-delegation-regression: all assertions passed');
 })().catch(e=>{console.error(e);process.exit(1);});

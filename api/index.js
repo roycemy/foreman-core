@@ -2054,7 +2054,7 @@ async function routes(req, res, path, body, agentPre) {
     { const dm = path.match(/^\/business\/apps\/gmail\/draft-ops\/(dop_[a-f0-9]+)\/reconcile$/); if (dm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDraftOpReconcile(dm[1])); } }
     if (path === '/business/apps/gmail/drafts' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDraftCreate('gmail', body, body && typeof body.expectedVersion === 'string' ? body.expectedVersion : null)); }
     if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(body && body.confirm === 'CANCEL' ? await bizOpCancel(body) : await bizDataPurge(body)); }
-    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete|candidates|delegate-preview|schedule)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
+    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete|candidates|delegate-preview|schedule|assign)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
     {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
@@ -3022,11 +3022,13 @@ async function bizState() {
   }
   const delegateBot = await bizDelegateBot();
   const delegate = delegateBot ? { id: delegateBot.id, name: String(delegateBot.name || 'bot').slice(0, 40), providerId: delegateBot.providerId || null, connection: await connectionState(delegateBot) } : null;
+  const team = [];
+  for (const a of await bizTeamBots()) team.push({ id: a.id, name: String(a.name || 'bot').slice(0, 40), providerId: a.providerId || null, connection: await connectionState(a) });
   for (const d of discoveries) if ((d.status === 'delegated' || d.status === 'running') && d.taskId) {
     const t = await getJ('fm:task:' + d.taskId);
     d.job = t ? { status: t.status, startedAt: t.startedAt || null, assignee: t.assignee || null } : { status: 'missing' };
   }
-  return { engine, delegate, apps: { gmail: await bizAppStatus('gmail') }, profile, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
+  return { engine, delegate, team, apps: { gmail: await bizAppStatus('gmail') }, profile, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
     responsibilities: resps.map(rp => ({ ...rp, runs: runsByResp[rp.id] || [] })), discoveries,
     opPending, log: (logRaw || []).map(x => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean) };
 }
@@ -3486,6 +3488,20 @@ async function bizDelegateBot() {
   if (grok) return grok;
   return agents.length === 1 ? agents[0] : null;
 }
+// The workspace team: every currently eligible bot. Bots join only by the owner pairing them -
+// Alter never creates or provisions bot accounts, and the UI says so.
+async function bizTeamBots() { return (await listAgents()).filter(a => a.status === 'active' && !a.paused && !a.hosted && !a.harness); }
+// Which bot a responsibility runs on. An explicit owner assignment wins and is never silently
+// substituted: if the assigned bot is not connected right now, the caller gets {gone} and must
+// refuse honestly. With no assignment, the automatic delegate pick applies.
+async function bizRespBot(resp) {
+  const asg = resp && resp.assignment;
+  if (asg && asg.botId) {
+    const bot = (await bizTeamBots()).find(a => a.id === asg.botId) || null;
+    return { bot, assigned: asg, gone: bot ? null : asg };
+  }
+  return { bot: await bizDelegateBot(), assigned: null, gone: null };
+}
 // The exact payload a delegated run would send: the work item plus WHOLE sources the
 // responsibility was proposed from (never every source in the workspace, never a silent
 // partial source - one that does not fit is named as omitted). The owner reviews this
@@ -3869,9 +3885,9 @@ async function bizRespAct(id, op, body) {
     if (resp.research) return { status: 400, body: { error: 'This responsibility reads public pages during runs; those runs use the reasoning engine, not a connected bot.' } };
     const input = String(body.input || '').slice(0, 4000);
     if (!input.trim()) return { status: 400, body: { error: 'Describe or paste the work first' } };
-    const bot = await bizDelegateBot();
-    if (!bot) return { status: 409, body: { error: 'No connected bot to send work to.', code: 'no_delegate_bot' } };
-    return { status: 200, body: { delegation: await bizDelegatePreview(bot, bizDelegatePayload(resp, await bizSources(), input, bot)) } };
+    const rb = await bizRespBot(resp);
+    if (!rb.bot) return { status: 409, body: { error: rb.gone ? 'This responsibility is assigned to ' + (rb.gone.botName || 'a bot') + ', which is not connected. Reassign it or connect that bot first - the reasoning engine is never substituted.' : 'No connected bot to send work to.', code: rb.gone ? 'delegate_bot_gone' : 'no_delegate_bot' } };
+    return { status: 200, body: { delegation: await bizDelegatePreview(rb.bot, bizDelegatePayload(resp, await bizSources(), input, rb.bot)) } };
   }
   if (op === 'schedule') {
     // Scheduled automatic runs for bot-delegated responsibilities. The owner reviews the EXACT
@@ -3891,8 +3907,9 @@ async function bizRespAct(id, op, body) {
     }
     const instruction = String(body && body.instruction || '').slice(0, 4000);
     if (!instruction.trim()) return { status: 400, body: { error: 'Write the standing instruction the bot will get each day first' } };
-    const bot = await bizDelegateBot();
-    if (!bot) return { status: 409, body: { error: 'No connected bot to run this on a schedule. Connect it first.', code: 'no_delegate_bot' } };
+    const rb0 = await bizRespBot(resp);
+    if (!rb0.bot) return { status: 409, body: { error: rb0.gone ? 'This responsibility is assigned to ' + (rb0.gone.botName || 'a bot') + ', which is not connected. Reassign it or connect that bot first - the reasoning engine is never substituted.' : 'No connected bot to run this on a schedule. Connect it first.', code: rb0.gone ? 'delegate_bot_gone' : 'no_delegate_bot' } };
+    const bot = rb0.bot;
     const srcs = await bizSources();
     const payload = bizDelegatePayload(resp, srcs, instruction, bot);
     if (sop === 'preview') return { status: 200, body: { delegation: await bizDelegatePreview(bot, payload) } };
@@ -3905,6 +3922,23 @@ async function bizRespAct(id, op, body) {
     }
     return { status: 400, body: { error: 'preview, enable or disable required' } };
   }
+  if (op === 'assign') {
+    // Owner-approved team assignment: pick the exact connected bot this responsibility runs on,
+    // or clear back to automatic. Only real, currently connected bots are assignable - Alter
+    // never creates or provisions bot accounts.
+    if (resp.research) return { status: 400, body: { error: 'This responsibility reads public pages during runs; those runs use the reasoning engine, not a bot.' } };
+    const botId = body && body.botId != null && body.botId !== '' ? String(body.botId) : null;
+    let assignment = null;
+    if (botId) {
+      const pick = (await bizTeamBots()).find(a => a.id === botId);
+      if (!pick) return { status: 409, body: { error: 'That bot is not connected right now. Pair or reconnect it first - Alter does not create bot accounts.', code: 'assign_bot_unavailable' } };
+      assignment = { botId: pick.id, botName: String(pick.name || 'bot').slice(0, 40), assignedAt: now() };
+    }
+    const next = { ...resp }; if (assignment) next.assignment = assignment; else delete next.assignment;
+    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+    if (!await bizLog(assignment ? 'responsibility_assigned' : 'responsibility_unassigned', { respId: id, title: resp.title, botName: assignment ? assignment.botName : null }, f0)) return bizFenceConflict();
+    return { status: 200, body: { responsibility: next } };
+  }
   if (op === 'run') {
     const deadline = entryDeadline;
     const input = String(body.input || '').slice(0, 4000);
@@ -3914,7 +3948,8 @@ async function bizRespAct(id, op, body) {
       // manual runs here and not for daily check-ins (the tick skips these). A disconnected
       // bot is a clear refusal, not a silent provider switch.
       if (resp.research) return { status: 400, body: { error: 'Reading public pages during runs uses the reasoning engine, not a connected bot.' } };
-      if (!await bizDelegateBot()) return { status: 409, body: { error: 'This responsibility runs on ' + (resp.bot.name || 'the bot') + ', which is not connected. The reasoning engine is never substituted for it.', code: 'delegate_bot_gone' } };
+      const rbG = await bizRespBot(resp);
+      if (!rbG.bot) return { status: 409, body: { error: 'This responsibility runs on ' + ((rbG.gone && rbG.gone.botName) || resp.bot.name || 'the bot') + ', which is not connected. The reasoning engine is never substituted for it.', code: 'delegate_bot_gone' } };
     }
     let approvedUrls, srcsSnapshot;
     if (resp.research) {
@@ -3936,7 +3971,10 @@ async function bizRespAct(id, op, body) {
       approvedUrls = [...new Set(approved)];
     }
     if (!resp.research) {
-      const bot = await bizDelegateBot();
+      const rb = await bizRespBot(resp);
+      // An explicit assignment is never substituted: not by another bot, not by the engine.
+      if (rb.gone) return { status: 409, body: { error: 'This responsibility is assigned to ' + (rb.gone.botName || 'a bot') + ', which is not connected right now. The reasoning engine is never substituted for it.', code: 'delegate_bot_gone' } };
+      const bot = rb.bot;
       // Never silently switch provider: a call carrying a delegation review MUST go to the
       // reviewed bot. If the destination is gone (disconnected or revoked since the review),
       // refuse - the owner reviews the current destination or explicitly runs the engine path.
@@ -4461,8 +4499,9 @@ async function bizDailyTick() {
           const sch = cur.schedule;
           if (cur.status !== 'active' || !sch || !sch.delegateHash || sch.needsReview) { out.skipped++; continue; } // a drift pause holds until the owner re-reviews
           if (sch.lastQueuedAt && Date.now() - Date.parse(sch.lastQueuedAt) < BIZ.DAILY_GAP_MS) { out.skipped++; continue; }
-          const bot = await bizDelegateBot();
-          if (!bot) { await bizLog('schedule_skipped', { respId: resp.id, reason: 'no_bot' }, f0); out.skipped++; continue; }
+          const rbT = await bizRespBot(cur);
+          if (!rbT.bot) { await bizLog('schedule_skipped', { respId: resp.id, reason: rbT.gone ? 'assigned_bot_gone' : 'no_bot' }, f0); out.skipped++; continue; } // an assigned-but-disconnected bot is skipped, never substituted
+          const bot = rbT.bot;
           // Read the raw source records once and build the payload from exactly them: the final
           // gate then binds these byte-exact records, so ANY source write (text, title, anything)
           // between here and the visibility flip refuses the run instead of queueing stale text.
