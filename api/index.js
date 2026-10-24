@@ -2862,7 +2862,7 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
       if (priorSet.length) await bizLog('app_draft_retry_decision', { provider: p, priorOpIds: priorSet.map(o => o.id), to: toN0, subject });
       opSettle = async (status, extra) => r(['EVAL', BIZ_DRAFTOP_SETTLE, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, status === 'unconfirmed' ? JSON.stringify({ ...opRec(), status, settledAt: now(), ...(extra || {}) }) : '', opFp, connTok]); // original fence + exact-record CAS incl. payload ownership; releases the still-owned lock. ok/failed records are resolved: they leave the store (the activity log keeps the outcome); unconfirmed persists until the owner's explicit acknowledgment
       if (global.__bizDraftAfterBegin) { const fn = global.__bizDraftAfterBegin; global.__bizDraftAfterBegin = null; await fn(); } // test-only interleave hook, never set in production
-      if (left() <= 6000) { await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, connTok]).catch(() => {}); return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was created. Try again.', code: 'app_draft_deadline' } }; } // the whole-operation clock: never start the provider effect the budget cannot finish
+      if (left() <= 6000) { await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, connTok]).catch(() => {}); return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was sent to Google. If this attempt appears in the operation list it may stay unresolved until reconciled - it created nothing in Gmail.', code: 'app_draft_deadline' } }; } // the whole-operation clock: never start the provider effect the budget cannot finish; the abort above is best-effort (an expired clock may not reach the store), the durable intent + lock are the sweep's to reconcile
       // Pre-effect gate: the LAST atomic check before anything reaches Google - original epoch,
       // owned lock, exact current app record (still connected), exact in-flight record. A
       // disconnect that completed after the intent stops the create HERE: no stale start.
@@ -2877,8 +2877,8 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
       // remaining budget refuses HERE - the provider call is never started on a lapsed lease,
       // and the fetch timeout is never a clamped 1ms pretend-budget.
       if (left() <= 6000) {
-        await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, connTok]).catch(() => {});
-        return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was created. Try again.', code: 'app_draft_deadline' } };
+        await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, connTok]).catch(() => {}); // best-effort: an expired clock may not reach the store - intent + lock stay for the sweep, never claimed removed
+        return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was sent to Google. If this attempt appears in the operation list it may stay unresolved until reconciled - it created nothing in Gmail.', code: 'app_draft_deadline' } };
       }
       const mime = 'To: ' + tos.join(', ') + '\r\nSubject: ' + subject + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text;
       const raw = Buffer.from(mime, 'utf8').toString('base64url');
@@ -2918,7 +2918,7 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
         // Retry the real settle once (best-effort, still bounded by the clock), name only
         // the local accounting as pending, and kill the retry risk outright.
         await opSettle('ok', { draftId: knownDraft.draftId }).catch(() => {});
-        return { status: 200, body: { ok: true, created: true, provider: p, draftId: knownDraft.draftId, account: knownDraft.account, to: tos, subject, opId, fp: opFp, accountingPending: true, note: 'The draft was created in Gmail - that part is known. Saving the local record hit the time limit, so the operation list reconciles itself. Do NOT create it again - it already exists. Nothing was sent - review and send it in Gmail.' } };
+        return { status: 200, body: { ok: true, created: true, provider: p, draftId: knownDraft.draftId, account: knownDraft.account, to: tos, subject, opId, fp: opFp, accountingPending: true, note: 'The draft was created in Gmail - that part is known. The local record of this attempt could not be confirmed saved, so its operation entry may stay unresolved and can never be linked back to this draft automatically - the Gmail draft is the truth, not that entry. Do NOT create it again - it already exists. Nothing was sent - review and send it in Gmail.' } };
       }
       if (!/abort|timed?out/i.test(msg)) throw e; // genuine bugs still surface (nothing provably created)
       if (begunOk && providerCalled) {
@@ -2927,7 +2927,7 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
       }
       if (begunOk) { // intent reserved but the provider was NEVER called: abort the record honestly with the REAL fence + connection
         await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + (connId || ''), lockKey, revKey, f0, opId, connTok]).catch(() => {});
-        return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was sent to Google. The recorded attempt reconciles itself.', code: 'app_draft_deadline' } };
+        return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was sent to Google. If this attempt appears in the operation list it may stay unresolved until reconciled - it created nothing in Gmail.', code: 'app_draft_deadline' } };
       }
       await unlock();
       return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was created. Try again.', code: 'app_draft_deadline' } };
