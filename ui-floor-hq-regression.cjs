@@ -68,6 +68,15 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(t.includes('2 need you'),'banner surfaces the owner-actionable saved states: needs-review schedule + a mapped bot that is gone');
  assert(await ev(`(()=>{const a=document.getElementById('hqneeds');return a&&a.getAttribute('href')==='#business'&&a.textContent==='2 need you';})()`),'needs-you count links to the Business view');
  await shot('floor-hq-needs.png');
+ // Mobile: banner and needs-you link must fit the viewport, not overflow or wrap off-screen
+ await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:2,mobile:true},sessionId);
+ await new Promise(r=>setTimeout(r,400));
+ assert(await ev(`(()=>{const b=document.getElementById('hqbanner');if(!b||b.hidden)return false;const r=b.getBoundingClientRect();return r.left>=0&&r.right<=window.innerWidth&&r.width<=window.innerWidth;})()`),'mobile: banner fits the viewport width');
+ assert(await ev(`(()=>{const a=document.getElementById('hqneeds');if(!a)return false;const r=a.getBoundingClientRect();return r.width>0&&r.height>0&&r.left>=0&&r.right<=window.innerWidth&&r.top>=0&&r.bottom<=window.innerHeight;})()`),'mobile: needs-you link stays fully on screen');
+ assert(await ev(`(()=>{const b=document.getElementById('hqbanner');return b&&b.textContent.includes('2 need you');})()`),'mobile: needs-you count still rendered');
+ await shot('floor-hq-needs-mobile.png');
+ await send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:1,mobile:false},sessionId);
+ await new Promise(r=>setTimeout(r,300));
  assert(await poll(`(()=>{const p=document.querySelector('#rooms polygon[data-room="ops"] title');return p&&p.textContent==='Estimate follow-up desk';})()`),'room takes the responsibility name');
  assert(await ev(`(()=>{const p=document.querySelector('#rooms polygon[data-room="finance"] title');return p&&p.textContent==='Library';})()`),'unmapped rooms keep their generic names');
  // Tooltip: first responsibility + real run history + the second responsibility sharing the room
