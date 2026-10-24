@@ -2487,12 +2487,14 @@ async function bizAppCallback(p, query, origin, cookieHeader) {
   // every cleanup revocation first re-check lock OWNERSHIP: a lease that lapsed mid-flight
   // means someone else owns the lifecycle now, so we persist nothing and revoke nothing.
   const dl = Date.now() + 55000, left = () => Math.max(1, dl - Date.now());
-  let fresh = null, persisted = false, attTracked = true;
+  let fresh = null, persisted = false, attTracked = true; // a created grant is ledger-accounted, or the gap itself is preserved and surfaced
   // Cleanup-time ownership: revoke ONLY a grant that was never persisted while NO connection
   // record exists right now - initial absence at initiation proves nothing by cleanup time.
-  // The attempt was RESERVED before the exchange and FILLED the moment it returned, so the
-  // grant always has a durable handle; a fenced-out mark means a purge landed - the outcome
-  // is then reported untracked rather than written back over the owner's deletion.
+  // The attempt was RESERVED before the exchange; a confirmed FILL gives the grant a
+  // durable handle. Where no confirmed fill exists the flow is reported untracked, and an
+  // exchange whose outcome is unknown is preserved as possibly_issued - never discarded.
+  // A fenced-out mark means a purge landed - the outcome is then reported untracked
+  // rather than written back over the owner's deletion.
   const cleanupGrant = async () => {
     if (persisted) return 'not_revoked';
     if ((await r(['GET', 'fm:biz:app:' + p])) != null) {
@@ -2509,14 +2511,32 @@ async function bizAppCallback(p, query, origin, cookieHeader) {
   try {
     // Reserve the durable ledger slot BEFORE any grant exists: a full unresolved ledger
     // rejects the sign-in HERE, before Google is asked for anything. The same attempt is
-    // filled the moment the exchange returns - the grant is never handleless, even if the
-    // process dies between the exchange and the commit.
+    // filled the moment the exchange returns; a crash in between leaves the slot, which is
+    // unresolved-uncertain from creation and reconciles to possibly_issued - the exchange
+    // and the store can never be atomic, so the unknown is preserved, never claimed closed.
     const ra = await bizTombAdd(p, snap.f0, attId, '', 'awaiting_exchange').catch(() => -1);
     if (ra === 0) return { status: 409, body: { error: 'Too many older access revocations are still unconfirmed. Run the workspace data purge (it retries them) or try again shortly. Nothing was started.', code: 'app_tomb_full' } };
     if (ra !== 1) return { status: 409, body: { error: 'The workspace changed while the connection was starting. Start the connection again.', code: 'app_race_lost' } };
-    const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), code, grant_type: 'authorization_code', redirect_uri: origin + '/api/business/apps/' + p + '/callback' }).toString(), signal: AbortSignal.timeout(Math.min(20000, left())) }); // bounded by the time left on the 60s connect lease
+    let tok;
+    try {
+      tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), code, grant_type: 'authorization_code', redirect_uri: origin + '/api/business/apps/' + p + '/callback' }).toString(), signal: AbortSignal.timeout(Math.min(20000, left())) }); // bounded by the time left on the 60s connect lease
+    } catch (e) {
+      // A timeout or network failure is NOT a proven rejection - the provider may have
+      // issued the grant. Preserve the unknown immediately; surface manual recovery.
+      await bizTombMark(p, snap.f0, attId, 'possibly_issued').catch(() => {});
+      throw e;
+    }
     const tj = await tok.json().catch(() => null);
-    if (!tok.ok || !tj || !tj.access_token) { await bizTombMark(p, snap.f0, attId, 'discarded').catch(() => {}); return { status: 502, body: { error: 'Google did not complete the token exchange (' + bizClean((tj && tj.error) || tok.status) + '). Nothing was connected.', code: 'app_exchange_failed' } }; }
+    if (!tok.ok || (tj && tj.error)) { // a CONFIRMED provider rejection: discard, nothing was issued
+      await bizTombMark(p, snap.f0, attId, 'discarded').catch(() => {});
+      return { status: 502, body: { error: 'Google did not complete the token exchange (' + bizClean((tj && tj.error) || tok.status) + '). Nothing was connected.', code: 'app_exchange_failed' } };
+    }
+    if (!tj || !tj.access_token) {
+      // An unreadable or empty SUCCESS response is not a proven rejection: the grant may
+      // exist at the provider. Preserve the unknown durably and say so honestly.
+      await bizTombMark(p, snap.f0, attId, 'possibly_issued').catch(() => {});
+      return { status: 502, body: { error: 'Google returned an unreadable response after the sign-in (' + tok.status + '). The connection may have been created at Google - nothing was connected here. Check third-party access in the Google account and remove it there if it appears.', code: 'app_exchange_uncertain', grantStatus: 'unknown' } };
+    }
     fresh = tj;
     // Test-only seam (never set in production), mirroring global.__bizBetween: a crash
     // after the provider's token reply but before the fill.

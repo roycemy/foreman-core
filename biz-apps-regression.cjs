@@ -20,6 +20,8 @@ const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},
    assert.equal(p.get('client_id'),'cid123','token calls carry the configured client id');
    assert.equal(p.get('client_secret'),'sec456','token calls carry the configured client secret');
    if(E.__G_FAIL)return reply({error:E.__G_FAIL},false,400);
+   if(E.__G_EXCHANGE_THROW)throw new Error('exchange socket timeout');
+   if(E.__G_BADJSON)return {ok:true,status:200,json:async()=>{throw new Error('malformed success body')}};
    if(p.get('grant_type')==='authorization_code'){assert.ok(p.get('code'),'exchange carries the code');assert.equal(p.get('redirect_uri'),'https://test.local/api/business/apps/gmail/callback','exchange carries the exact redirect');if(E.__G_EXCHANGE_HOLD)await new Promise(res=>{E.__G_EXCHANGE_GO=res;});return reply({access_token:'ya29.first',refresh_token:E.__G_RT||'1//rt',expires_in:3600,token_type:'Bearer',scope:E.__G_SCOPE_NARROW?'https://www.googleapis.com/auth/gmail.readonly':'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose'});}
    if(p.get('grant_type')==='refresh_token'){if(E.__G_REFRESH_HOLD)await new Promise(res=>{E.__G_REFRESH_GO=res;});assert.equal(p.get('refresh_token'),'1//rt','refresh presents the stored credential');return reply({access_token:'ya29.refreshed',expires_in:3600,token_type:'Bearer',...(E.__G_REFRESH_NARROW?{scope:'https://www.googleapis.com/auth/gmail.readonly'}:{})});}
    throw new Error('unexpected grant');}
@@ -432,6 +434,37 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
    assert.equal(cb.status,200,'the connection itself can still complete');
    assert.equal(cb.body.grantTracked,false,'but it is honestly untracked - no durable handle existed at fill time');
    await f.bizAppDisconnect('gmail');
+  }
+  // 13i. REVIEWER REPRO: an unreadable 200 or a timeout is NOT a proven rejection
+  {
+   const i1=await connect();
+   E.__G_BADJSON='1';
+   const cb=await f.bizAppCallback('gmail',{state:i1.nonce,code:'authcode1'},'https://test.local',i1.cookie);
+   delete E.__G_BADJSON;
+   assert.equal(cb.status,502);assert.equal(cb.body.code,'app_exchange_uncertain','an unreadable success response is uncertain, not failed');
+   assert.equal(cb.body.grantStatus,'unknown');
+   assert.ok(/third-party access/.test(cb.body.error),'the response itself points at manual recovery');
+   let tomb=await f.getJ('fm:biz:apptomb:gmail');
+   assert.ok((tomb.attempts||[]).some(a=>a.status==='possibly_issued'),'the unknown is preserved immediately - not discarded');
+   assert.equal((await f.bizAppStatus('gmail')).grantStatus,'revoke_unconfirmed','and surfaced in status at once');
+   await f.r(['DEL','fm:biz:apptomb:gmail']);
+   const i2=await connect();
+   E.__G_EXCHANGE_THROW='1';
+   let threw=false; try { await f.bizAppCallback('gmail',{state:i2.nonce,code:'authcode1'},'https://test.local',i2.cookie); } catch (e) { threw=true; }
+   delete E.__G_EXCHANGE_THROW;
+   assert.ok(threw,'a timed-out exchange propagates as a failure');
+   tomb=await f.getJ('fm:biz:apptomb:gmail');
+   assert.ok((tomb.attempts||[]).some(a=>a.status==='possibly_issued'),'a timeout is preserved as possibly-issued immediately');
+   assert.equal((await f.bizAppStatus('gmail')).grantStatus,'revoke_unconfirmed');
+   // a CONFIRMED rejection is still discarded
+   await f.r(['DEL','fm:biz:apptomb:gmail']);
+   const i3=await connect();E.__G_FAIL='access_denied';
+   const cb3=await f.bizAppCallback('gmail',{state:i3.nonce,code:'authcode1'},'https://test.local',i3.cookie);
+   delete E.__G_FAIL;
+   assert.equal(cb3.body.code,'app_exchange_failed');
+   tomb=await f.getJ('fm:biz:apptomb:gmail');
+   assert.ok((tomb.attempts||[]).every(a=>a.status==='discarded'),'a confirmed provider rejection is discarded, never kept as unknown');
+   await f.r(['DEL','fm:biz:apptomb:gmail']);
   }
   // 13b. a parked sync completing mid-disconnect: local state is gone BEFORE the network
   const cE=await connect();await f.bizAppCallback('gmail',{state:cE.nonce,code:'authcode1'},'https://test.local',cE.cookie);
