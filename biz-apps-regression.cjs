@@ -49,6 +49,8 @@ const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},
   if(u.includes('/messages/m2'))return reply({id:'m2',threadId:'t2',snippet:'Following up on the quote you sent',labelIds:['INBOX'],payload:{headers:[{name:'From',value:'Sam Owner <sam@example.com>'},{name:'Subject',value:'Re: Deck estimate'},{name:'Date',value:'Thu, 22 Oct 2026 09:14:00 -0400'}]}});
   if(u==='https://gmail.googleapis.com/gmail/v1/users/me/drafts'&&o.method==='POST'){
    if(E.__G_DRAFT_THROW)throw new Error('socket hang up');
+   if(E.__G_DRAFT_503)return reply({error:{message:'backendError'}},false,503);
+   if(E.__G_DRAFT_400)return reply({error:{message:'Invalid recipient'}},false,400);
    if(E.__G_DRAFT_BADJSON)return {ok:true,status:200,headers:{get:()=>null},json:async()=>{throw new Error('unreadable body');}};
    const d=JSON.parse(o.body);E.__DRAFT=d.message.raw;return reply({id:'draft_9',message:{id:'msg_9',labelIds:['DRAFT']}});}
   throw new Error('unexpected fetch: '+u);
@@ -579,6 +581,19 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_profile_failed',grantStatus:'revoked',grantTracked:false}}),'failed','an untracked attempt WITH a confirmed revocation is resolved');
   assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_exchange_uncertain',grantStatus:'unknown'}}),'uncertain');
   assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_exchange_failed',grantStatus:'discarded'}}),'failed','a definitive rejection stays a clean failure');
+  assert.equal(f.bizAppCallbackMarker({status:409,body:{code:'app_race_lost',grantStatus:'pending_retry',grantTracked:true}}),'uncertain','a durable handle awaiting retry is unresolved');
+  assert.equal(f.bizAppCallbackMarker({status:409,body:{code:'app_connect_lease_lost',grantStatus:'not_revoked'}}),'uncertain','a grant left at the provider is unresolved even when the local record is discarded');
+  // HOLD: only an authoritative parsed refusal is "not created"; 5xx/gateway is unconfirmed
+  E.__G_DRAFT_503=1;
+  const d503=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi'},cid0);
+  assert.equal(d503.status,502);assert.equal(d503.body.code,'app_draft_unconfirmed','a 503 says nothing about creation');
+  assert.ok(!/did not create/.test(d503.body.error),'a gateway failure never claims refusal');
+  delete E.__G_DRAFT_503;
+  E.__G_DRAFT_400=1;
+  const d400=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi'},cid0);
+  assert.equal(d400.status,502);assert.equal(d400.body.code,'app_draft_failed','an authoritative parsed refusal is a real failure');
+  assert.ok(/did not create/.test(d400.body.error)&&/Invalid recipient/.test(d400.body.error),'the refusal names the provider reason');
+  delete E.__G_DRAFT_400;
 
   // 13f. key loss mid-lifecycle: the undecryptable credential is PRESERVED as unresolved
   // recovery material, disclosed with the manual path, and revoked when the key returns

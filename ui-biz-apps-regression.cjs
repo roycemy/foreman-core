@@ -15,6 +15,7 @@ function appFor(mode){
   if(mode==='connected-unconfigured')return {...base,configured:false,connected:true,status:'connected',email:'royce@northbend.example',connectedAt:'2026-10-23T00:00:00Z',lastSyncAt:null,lastError:null,mailCount:0,connectionVersion:'gen-AAA'};
   if(mode==='needs-reconnect')return {...base,connected:false,status:'needs_reconnect',email:'royce@northbend.example',connectedAt:'2026-10-20T00:00:00Z',lastSyncAt:'2026-10-22T00:00:00Z',lastError:'The stored credential no longer works.',mailCount:2,connectionVersion:'gen-AAA'};
   if(mode==='connected'||mode==='mismatch')return {...base,connected:true,status:'connected',email:'royce@northbend.example',connectedAt:'2026-10-23T00:00:00Z',lastSyncAt:null,lastError:null,mailCount:0,connectionVersion:'gen-AAA'};
+  if(mode==='unconfirmed')return {...base,connected:true,status:'connected',email:'royce@northbend.example',connectedAt:'2026-10-23T00:00:00Z',lastSyncAt:null,lastError:null,mailCount:0,connectionVersion:'gen-AAA',grantStatus:'revoke_unconfirmed',grantNote:'Check third-party access in the Google account.'};
   if(mode==='connected2')return {...base,connected:true,status:'connected',email:'replacement@example.test',connectedAt:'2026-10-23T01:00:00Z',lastSyncAt:null,lastError:null,mailCount:0,connectionVersion:'gen-BBB'};
   if(mode==='connectable'||mode==='gone')return {...base,connected:false,status:'not_connected'};
   return null; // omit: status unavailable
@@ -224,7 +225,7 @@ let PORT=0;
  await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
  await ctl('/__mode?to=connectable');
  await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-declined'},sessionId);
- assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Google declined the sign-in - nothing was connected')`),'with no connection, a declined consent says so honestly');
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Google declined the new sign-in - nothing was connected')`),'with no connection, a declined consent says so honestly');
  await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
  await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-failed'},sessionId);
  assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('could not be finished - nothing was connected')`),'a failed sign-in with no connection says so honestly');
@@ -313,6 +314,52 @@ let PORT=0;
  await ev(`(()=>{const m=document.getElementById('modal');if(m&&m.classList.contains('on'))m.classList.remove('on');return 1})()`);
  await flip('A');
 
+ // 16. a pending draft create cannot be duplicated via Back/close/reopen - Close is not cancel
+ await ctl('/__mode?to=connected');await reload(`!!document.querySelector('#bz-app-draft')`);
+ await ctl('/__park-draft');
+ await ev(`document.querySelector('#bz-app-draft').click();'open'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the composer opens');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-text').value='same words';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review opens');
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create'`);
+ {const t0=Date.now();let ok=false;while(Date.now()-t0<5000){const p=await new Promise((res,rej)=>{http.get('http://127.0.0.1:'+PORT+'/__draft-parked',r=>{let d='';r.on('data',ch=>d+=ch);r.on('end',()=>res(JSON.parse(d).parked));}).on('error',rej);});if(p){ok=true;break;}await new Promise(r=>setTimeout(r,100));}assert(ok,'the create parked server-side');}
+ assert(await ev(`(document.querySelector('#modal [data-draft-back]')||{disabled:false}).disabled`),'Back is disabled while the create is in flight');
+ assert(await ev(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('does not cancel')`),'the pending state says closing is not cancellation');
+ await ev(`(()=>{const b=document.querySelector('#modal [data-draft-back]');if(b)b.click();return 1})()`);
+ assert(!(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`,1500)),'Back cannot reopen the composer mid-request');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`); // close mid-flight
+ await ev(`document.querySelector('#bz-app-draft').click();'reopen'`);
+ assert(await poll(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('already being created')`),'a reopened composer owns the pending operation');
+ assert(await ev(`(document.querySelector('#modal [data-draft-review]')||{disabled:false}).disabled`),'no second submit while the first is unresolved');
+ const draftsBefore=draftCalls.length;
+ await ctl('/__draft-release');
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Draft created in Gmail')`),'the single create resolves honestly');
+ assert.equal(draftCalls.length,draftsBefore+1,'exactly one POST - no duplicate from Back or reopen');
+ await ev(`document.querySelector('#bz-app-draft').click();'after'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-review]:not([disabled])')`),'the composer re-arms once the outcome is known');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+
+ // 17. landing copy separates a known record from unknown/absent; recovery is unconditional
+ await ctl('/__mode?to=needs-reconnect');
+ await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
+ await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-declined'},sessionId);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('the stored connection is unchanged')`),'a needs-reconnect record is never claimed absent');
+ await ctl('/__mode?to=omit');
+ await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
+ await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-failed'},sessionId);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('the card shows the current state')`),'an unknown status makes no absence claim');
+ t=await toastText();
+ assert(!t.includes('nothing was connected'),'unknown is never reported as absent');
+ await ctl('/__mode?to=connected');
+ await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
+ await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-uncertain'},sessionId);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('third-party access')`),'an uncertain landing always carries the recovery path');
+ t=await toastText();
+ assert(t.includes('the existing connection is unchanged'),'the live connection is named unchanged');
+ assert(!t.includes('if nothing is connected'),'recovery is never gated on absence');
+ await ctl('/__mode?to=connected');
+
  // 12. integration honesty: a live connection's systems leave the "until those connect" line
  await ctl('/__systems?on=1');
  await ctl('/__mode?to=connected');await reload(`!!document.querySelector('#bz-app-disconnect')`);
@@ -325,6 +372,21 @@ let PORT=0;
  assert((t.split('Your proposals mention:')[1]||'').includes('Email inbox'),'the same system IS named while unconnected');
  await ctl('/__systems?on=0');
 
+ // 15. HQ "At a glance" surfaces app states: needs-reconnect and unconfirmed removal are needs, never silent card-only states
+ await ctl('/__mode?to=needs-reconnect');await reload(`!!document.querySelector('#bz-app-connect')`);
+ t=await bizText();
+ assert(t.includes('needs reconnecting'),'a stored connection that needs reconnecting is an HQ need');
+ assert(t.includes('royce@northbend.example'),'the need names the exact account');
+ assert(!t.includes('Nothing needs you right now'),'a real need is never hidden behind an empty glance');
+ await ctl('/__mode?to=unconfirmed');await reload(`!!document.querySelector('#bz-app-disconnect')`);
+ t=await bizText();
+ assert(t.includes('removal was not confirmed'),'an unconfirmed removal is an HQ need');
+ await shot2('apps-hq-needs',`document.querySelector('.bz-hq-needs')`);
+ await ctl('/__mode?to=connected');await reload(`!!document.querySelector('#bz-app-disconnect')`);
+ t=await bizText();
+ assert(!t.includes('needs reconnecting')&&!t.includes('removal was not confirmed'),'a healthy connection adds no app needs');
+ assert(t.includes('Nothing needs you right now'),'an empty glance is honest when nothing needs the owner');
+
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz apps: stored connection renders unmasked with exact account + removal (unconfigured + needs_reconnect), unknown status makes no absence claims, removal echoes the reviewed connection version, identity switch mid-confirm/mid-connect/mid-draft discards the action (no POST, no redirect, no draft), stale-version refusal surfaces, prior-grant-unconfirmed toast never claims all-removed, OAuth landing markers announce once from live state, a replacement mid-removal gets a neutral line, the draft review names the exact account+recipients+subject+words, Back keeps every typed word, a stale draft success never closes a newer composer nor claims over a replacement, declined/failed landings never deny a live connection - pixels at /downloads/apps-*-{390,desktop}.png.');
+ console.log('PASS ui biz apps: stored connection renders unmasked with exact account + removal (unconfigured + needs_reconnect), unknown status makes no absence claims, removal echoes the reviewed connection version, identity switch mid-confirm/mid-connect/mid-draft discards the action (no POST, no redirect, no draft), stale-version refusal surfaces, prior-grant-unconfirmed toast never claims all-removed, OAuth landing markers announce once from live state, a replacement mid-removal gets a neutral line, the draft review names the exact account+recipients+subject+words, Back keeps every typed word, a stale draft success never closes a newer composer nor claims over a replacement, declined/failed landings never deny a live connection, HQ surfaces needs-reconnect/unconfirmed-removal as needs, a pending draft cannot be duplicated via Back/close/reopen, landing copy separates known record from unknown - pixels at /downloads/apps-*-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{cp.kill();}catch(_){/*noop*/}try{server.close();}catch(_){/*noop*/}process.exit(1)});

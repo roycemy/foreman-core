@@ -2713,8 +2713,12 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
     return { status: 502, body: { error: 'Google did not answer - the draft may have been created. Check the drafts folder in Gmail before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed' } };
   }
   const dj = await res.json().catch(() => null);
-  if (res.ok && (!dj || !dj.id)) return { status: 502, body: { error: 'Google answered but the draft could not be confirmed (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed' } }; // an unreadable SUCCESS is unconfirmed, never "not created"
-  if (!res.ok || !dj || !dj.id) return { status: 502, body: { error: 'Google did not create the draft (' + bizClean((dj && dj.error && dj.error.message) || res.status) + ').', code: 'app_draft_failed' } };
+  if (!res.ok) {
+    const ref = dj && dj.error && dj.error.message;
+    if (res.status >= 400 && res.status < 500 && ref) return { status: 502, body: { error: 'Google did not create the draft (' + bizClean(ref) + ').', code: 'app_draft_failed' } }; // an authoritative, parsed refusal only
+    return { status: 502, body: { error: 'Google could not confirm the draft (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed' } }; // a gateway/5xx/unreadable failure says nothing about creation
+  }
+  if (!dj || !dj.id) return { status: 502, body: { error: 'Google answered but the draft could not be confirmed (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed' } };
   await bizLog('app_draft_created', { provider: p, draftId: dj.id, to: tos.join(', ') }, at.snap.f0);
   return { status: 200, body: { provider: p, draftId: dj.id, account: at.rec.email || null, to: tos, subject, note: 'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.' } };
 }
@@ -2729,7 +2733,7 @@ function bizAppCallbackMarker(out) {
   if (out && out.status === 200) return 'connected';
   const b = (out && out.body) || {}, code = b.code, gs = b.grantStatus;
   if (code === 'app_consent_declined') return 'declined';
-  if (gs === 'possibly_issued' || gs === 'awaiting_exchange' || gs === 'revoke_unconfirmed' || gs === 'undecryptable' || gs === 'unknown') return 'uncertain'; // an unresolved grant is uncertain however the exchange itself ended (no_refresh_token / scope_missing / lease_lost / race_lost all carry it)
+  if (gs === 'possibly_issued' || gs === 'awaiting_exchange' || gs === 'revoke_unconfirmed' || gs === 'undecryptable' || gs === 'unknown' || gs === 'pending_retry' || gs === 'not_revoked') return 'uncertain'; // an unresolved grant is uncertain however the exchange itself ended (no_refresh_token / scope_missing / lease_lost / race_lost all carry it)
   if (b.grantTracked === false && gs !== 'revoked' && gs !== 'discarded') return 'uncertain'; // a grant attempt with no durable handle and no confirmed resolution
   if (gs == null && b.grantTracked == null && (code === 'app_exchange_uncertain' || code === 'app_profile_failed')) return 'uncertain'; // pre-lifecycle payloads: conservative
   return 'failed';

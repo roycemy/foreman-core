@@ -5,7 +5,7 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null;
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null, draftPending = null;
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
   // Tenant identity guard: loaded state belongs to the exact identity (account + workspace)
@@ -35,10 +35,14 @@
     if (!m) return;
     history.replaceState(null, '', '#business');
     const g = B && B.apps && B.apps.gmail;
+    // A stored record (connected, needs-reconnect, or otherwise known) is never claimed absent;
+    // an UNKNOWN status makes no absence claim at all.
+    const hasRec = g && (g.connected || g.email || g.connectedAt || (g.status && g.status !== 'not_connected'));
+    const kept = g && g.connected ? 'the existing connection is unchanged.' : hasRec ? 'the stored connection is unchanged.' : null;
     if (m[1] === 'connected') BB.toast(g && g.connected && g.email ? 'Gmail connected as ' + g.email + '.' : 'The Gmail sign-in finished - the card shows the current state.');
-    else if (m[1] === 'declined') BB.toast(g && g.connected ? 'Google declined the new sign-in - the existing connection is unchanged.' : 'Google declined the sign-in - nothing was connected.');
-    else if (m[1] === 'uncertain') BB.toast('Google did not confirm whether the sign-in finished. The card shows the current state - if nothing is connected, check third-party access in the Google account, then try again.');
-    else BB.toast(g && g.connected ? 'The new sign-in could not be finished - the existing connection is unchanged.' : 'The sign-in could not be finished - nothing was connected. Start the connection again.');
+    else if (m[1] === 'declined') BB.toast('Google declined the new sign-in - ' + (kept || (g ? 'nothing was connected.' : 'the card shows the current state.')));
+    else if (m[1] === 'uncertain') BB.toast('Google did not confirm whether the sign-in finished. ' + (kept ? 'The card shows the current state - ' + kept + ' ' : 'The card shows the current state. ') + 'An older attempt may have left access at Google: check third-party access in the Google account and remove anything you do not recognize, then try again.');
+    else BB.toast('The new sign-in could not be finished - ' + (kept || (g ? 'nothing was connected. Start the connection again.' : 'the card shows the current state.')));
   }
   function dropIfStaleTenant() {
     identity(); // bumps the generation when the account or workspace changed
@@ -270,12 +274,17 @@
     const profile = B.profile || null;
     const draftProps = props.filter(p => p.status === 'draft');
     const liveResps = resps.filter(rp => rp.status === 'active'), pausedResps = resps.filter(rp => rp.status === 'paused');
+    const appG = (B.apps && B.apps.gmail) || null;
     const needs = [];
     if (draftProps.length) needs.push({ label: draftProps.length + ' proposal' + (draftProps.length === 1 ? ' is' : 's are') + ' waiting for your review', cta: 'Review', target: '#bz-proposals' });
     if (discLive) needs.push({ label: 'A business scan is still working - its proposals appear here when it finishes' });
     if (discFailed) needs.push({ label: 'The last business scan did not finish. No proposals were drafted from it.' });
     if (B.delegate && B.delegate.connection && B.delegate.connection.status !== 'active') needs.push({ label: B.delegate.name + ' is not connected right now - delegated work waits for it to reconnect' });
     for (const rp of liveResps) if (rp.schedule && rp.schedule.needsReview) needs.push({ label: '"' + rp.title + '" schedule paused - the text it would send changed since your review', cta: 'Review', target: '[data-resp="' + rp.id + '"]' });
+    if (appG && (appG.connected || appG.email || appG.connectedAt || (appG.status && appG.status !== 'not_connected'))) {
+      if (!appG.connected) needs.push({ label: (appG.label || 'Gmail') + (appG.email ? ' (' + appG.email + ')' : '') + ' needs reconnecting - inbox reading and drafts are paused until then', cta: 'Review', target: '#bz-apps-card' });
+      if (appG.grantStatus === 'revoke_unconfirmed') needs.push({ label: 'A ' + (appG.label || 'Gmail') + ' removal was not confirmed - the Google account may still list the connection', cta: 'Review', target: '#bz-apps-card' });
+    }
     const botRespsNoBot = !B.delegate ? liveResps.filter(rp => rp.bot).length : 0;
     if (botRespsNoBot) needs.push({ label: botRespsNoBot + (botRespsNoBot === 1 ? ' responsibility runs' : ' responsibilities run') + ' on a bot, and no bot is connected', cta: 'Connect a bot', target: 'connect' });
     const plate = liveResps.map(rp => {
@@ -298,14 +307,13 @@
     // exists - config or credential-storage problems mask it NEVER, and removal/recovery
     // stays reachable. An unloaded status is UNKNOWN (no absence claims); an unconfirmed
     // removal is surfaced with the manual recovery path.
-    const appG = (B.apps && B.apps.gmail) || null;
     const appsCard = (() => {
       const head = `<div class="bz-sech">App connections</div>`;
       // Only systems WITHOUT a live connection are "until those connect" - a connected app's
       // systems are covered above, so the line never asks the owner to import what is linked.
       const uncovered = systems.filter(x => !(appG && appG.connected && /^email/i.test(x)));
       const fallback = uncovered.length ? `<p class="meta">Your proposals mention: ${uncovered.map(esc).join(', ')}. Until those connect, paste or import their key details as sources.</p>` : '';
-      if (!appG) return `<div class="bz-card">${head}<p class="meta">Connection status could not be loaded - whether an account is connected is unknown.</p>${fallback}</div>`;
+      if (!appG) return `<div class="bz-card" id="bz-apps-card">${head}<p class="meta">Connection status could not be loaded - whether an account is connected is unknown.</p>${fallback}</div>`;
       // The compose scope can technically send; this app has no send endpoint at all, so the
       // honest bound is: only the owner sends, in Gmail. Draft creation writes to Google.
       const scopeLine = (appG.scopes || []).length ? `<p class="meta">Access this connection asks for: ${appG.scopes.map(x => esc(String(x).split('/').pop())).join(', ')} - read recent inbox messages and create drafts stored in your Google account. The compose scope technically allows sending; this app has no send endpoint and never sends.</p>` : '';
@@ -314,7 +322,7 @@
       if (hasConn) {
         const unavail = !appG.configured ? `<p class="meta">Reconnecting is unavailable on this deployment right now - the Google app credentials are not in place. Removal below still works.</p>`
           : appG.credentialStorage !== 'ready' ? `<p class="meta">Reconnecting is unavailable on this deployment right now - credential storage is not configured safely. Removal below still works.</p>` : '';
-        return `<div class="bz-card">${head}${warn}
+        return `<div class="bz-card" id="bz-apps-card">${head}${warn}
         ${appG.connected ? `<div class="bz-row"><div class="t"><b>${esc(appG.label)}</b><small>Connected as ${esc(appG.email || 'unknown account')}${appG.connectedAt ? ' · since ' + BB.when(appG.connectedAt) : ''}${appG.lastSyncAt ? ' · inbox last read ' + BB.when(appG.lastSyncAt) : ' · inbox not read yet'}</small></div>${chip('Connected', 'ok')}</div>`
         : `<div class="bz-row"><div class="t"><b>${esc(appG.label)}${appG.email ? ' - ' + esc(appG.email) : ''}</b><small>${esc(appG.lastError || 'The stored credential no longer works - reconnect to resume.')}</small></div>${chip('Reconnect needed', 'warn')}</div>`}
         ${unavail}
@@ -325,13 +333,13 @@
       }
       // No stored connection (the server's own report): say exactly why connecting is or is
       // not available, without claiming more than the server knows.
-      if (!appG.configured) return `<div class="bz-card">${head}${warn}
+      if (!appG.configured) return `<div class="bz-card" id="bz-apps-card">${head}${warn}
         <p class="meta">${esc(appG.label)} connection is not set up on this deployment yet - the Google app credentials still need to be created, so connecting is unavailable. Today Alter learns from what you paste or import: notes, documents and plain-text files.</p>
         ${scopeLine}${fallback}
         <div class="btns"><button class="b out sm" data-hq-target="#bz-add-form" type="button">Add a source</button></div></div>`;
-      if (appG.credentialStorage !== 'ready') return `<div class="bz-card">${head}${warn}
+      if (appG.credentialStorage !== 'ready') return `<div class="bz-card" id="bz-apps-card">${head}${warn}
         <p class="meta">Credential storage is not configured safely on this deployment, so connecting is unavailable.</p></div>`;
-      return `<div class="bz-card">${head}${warn}
+      return `<div class="bz-card" id="bz-apps-card">${head}${warn}
         <p class="meta">Connect ${esc(appG.label)} so Alter can read recent inbox context for drafts you review. Connecting is your choice and can be removed here anytime.</p>
         ${scopeLine}${fallback}
         ${appG.syncDisclosure ? `<p class="meta">${esc(appG.syncDisclosure)}</p>` : ''}
@@ -423,12 +431,14 @@
       const stamp = identity(), want = appSnap();
       const stillCurrent = () => !(stamp && stamp !== identity()) && (() => { const cur = appSnap(); return want && cur && cur.email === want.email && cur.at === want.at && cur.v === want.v; })();
       const openComposer = (vals) => {
+        const pend = !!(draftPending && draftPending.stamp === stamp); // one in-flight create per reviewed connection, across close/reopen
         const form = BB.modal(`<h3>Draft an email</h3>
         <p class="meta">A draft is created in the connected Google account with exactly your words. Nothing is sent - you review and send it in Gmail.</p>
+        ${pend ? `<p class="meta"><b>A draft is already being created in Gmail from this review - wait for its result before creating another.</b> Closing this window does not cancel it.</p>` : ''}
         <label class="fld">To<input class="in" id="bz-draft-to" maxlength="300" value="${esc(vals.to || '')}" placeholder="dana@example.com"></label>
         <label class="fld">Subject<input class="in" id="bz-draft-subject" maxlength="300" value="${esc(vals.subject || '')}" placeholder="Re: Estimate"></label>
         <label class="fld">Words<textarea class="in" id="bz-draft-text" rows="6" maxlength="20000" placeholder="Hi Dana - ">${esc(vals.text || '')}</textarea></label>
-        <div class="acts"><button class="b ghost" data-close>Cancel</button><button class="b ink" data-draft-review>Review the exact draft</button></div>`, { label: 'Draft an email' });
+        <div class="acts"><button class="b ghost" data-close>Cancel</button><button class="b ink" data-draft-review ${pend ? 'disabled' : ''}>Review the exact draft</button></div>`, { label: 'Draft an email' });
         form.querySelector('[data-draft-review]').onclick = () => {
           if (!stillCurrent()) { BB.closeModal(); load(); return BB.toast('The connection changed - review it and try again.'); }
           const to = form.querySelector('#bz-draft-to').value.trim(), subject = form.querySelector('#bz-draft-subject').value, text = form.querySelector('#bz-draft-text').value;
@@ -440,15 +450,22 @@
           <div><small>To</small><br><b>${esc(to)}</b></div>
           <div><small>Subject</small><br><b>${esc(subject || '(no subject)')}</b></div>
           <div><small>Words, exactly as they will appear</small><br><pre style="white-space:pre-wrap;margin:6px 0 0">${esc(text)}</pre></div></div>
+          <p class="meta" data-draft-live></p>
           <div class="acts"><button class="b ghost" data-draft-back>Back</button><button class="b ink" data-draft-create>Create this draft in Gmail</button></div>`, { label: 'Review the exact draft' });
           const backBtn = document.querySelector('#modal [data-draft-back]'), createBtn = document.querySelector('#modal [data-draft-create]');
           backBtn.onclick = () => openComposer({ to, subject, text }); // Back keeps every typed word
           createBtn.onclick = async () => {
             if (!stillCurrent()) { BB.closeModal(); load(); return BB.toast('The connection changed - review it and try again.'); }
-            createBtn.disabled = true;
+            createBtn.disabled = true; backBtn.disabled = true; // a submitted request cannot be undone: Back/Close never pretend otherwise
+            createBtn.textContent = 'Creating in Gmail...';
+            const liveNote = document.querySelector('#modal [data-draft-live]'); if (liveNote) liveNote.textContent = 'Creating the draft in Gmail - closing this window does not cancel it.';
+            draftPending = { stamp };
             const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v });
+            draftPending = null;
             if (stamp && stamp !== identity()) return; // changed mid-request: discard the stale reply
-            createBtn.disabled = false;
+            createBtn.disabled = false; backBtn.disabled = false;
+            createBtn.textContent = 'Create this draft in Gmail';
+            if (liveNote) liveNote.textContent = '';
             const closeIfOurs = () => { if (document.contains(createBtn)) BB.closeModal(); }; // never close a modal that is not this review
             await load(); // refresh BEFORE judging: a replacement that landed mid-request must not get the success copy
             if (stamp && stamp !== identity()) return;
@@ -471,10 +488,10 @@
       if (!await askConfirm('Disconnect Gmail?', (legacy ? 'This connection was stored before removal tracking existed - disconnecting removes the connection currently stored for ' + (want.email || 'the shown account') + '. ' : '') + 'Alter stops reading the inbox and the stored connection is removed here. Google is asked to revoke its access too.', 'Disconnect')) return;
       if (stamp && stamp !== identity()) return; // the dialog outlived an identity switch: discard, never act as the new identity
       const cur = appSnap();
-      if (!want || !cur || cur.email !== want.email || cur.at !== want.at || cur.v !== want.v) { await load(); return BB.toast('The connection changed - review it and try again.'); }
+      if (!want || !cur || cur.email !== want.email || cur.at !== want.at || cur.v !== want.v) { await load(); if (stamp && stamp !== identity()) return; return BB.toast('The connection changed - review it and try again.'); }
       ad.disabled = true; const j = await api('/apps/gmail/disconnect', 'POST', { expectedVersion: legacy ? 'unversioned' : want.v }); ad.disabled = false;
       if (stamp && stamp !== identity()) return; // changed mid-request: the guard reloads under the new identity - discard the stale reply
-      if (j.error) { await load(); return BB.toast(j.error); }
+      if (j.error) { await load(); if (stamp && stamp !== identity()) return; return BB.toast(j.error); }
       // Refresh FIRST: the announcement must describe the current state, never the removed
       // snapshot. A replacement connected while the removal ran gets a neutral line - the
       // old grant's fate is never announced over the new connection's card.
