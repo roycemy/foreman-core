@@ -124,6 +124,86 @@ function memEval(script, n, keys, argv) {
     if (['revoked', 'not_revoked', 'connected', 'discarded'].includes(a.status)) delete a.enc; // resolved: drop recovery material
     mem.kv.set(keys[0], JSON.stringify(t)); return 1;
   }
+  if (script === BIZ_MANAGED_BEGIN) {
+    // Mirror of the Lua exactly: every validation before any write.
+    if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return ['held'];
+    if (mem.kv.has(keys[2])) return ['pending'];
+    if (mem.kv.has(keys[3])) return ['killed'];
+    const rraw = mem.kv.get(keys[5]); if (rraw == null) return ['gone'];
+    let rp; try { rp = JSON.parse(rraw); } catch { return ['gone']; }
+    if (rp.status !== 'active') return ['inactive'];
+    if (rp.research) return ['research'];
+    if (!rp.bot) return ['nobot'];
+    if (rp.assignment) return ['assigned'];
+    const mg = rp.managed; if (!mg) return ['unapproved'];
+    if (String(mg.grantId) !== argv[5] || String(mg.scopeHash) !== argv[6]) return ['grant_changed'];
+    const mraw = mem.kv.get(keys[6]); if (mraw == null) return ['snapshot_missing'];
+    let snap; try { snap = JSON.parse(mraw); } catch { return ['snapshot_missing']; }
+    if (String(snap.grantId) !== argv[5] || String(snap.scopeHash) !== argv[6]) return ['grant_changed'];
+    if (rp.title !== snap.respFields.title || rp.summary !== snap.respFields.summary || rp.boundary !== snap.respFields.boundary) return ['resp_changed'];
+    const craw = mem.kv.get(keys[4]); if (craw == null || craw !== snap.consentRaw) return ['consent_changed'];
+    const live = (mem.kv.get(keys[7]) || []).slice().sort();
+    const snapids = snap.sources.map(s => s.id).sort();
+    if (live.length !== snapids.length || live.some((v, i) => v !== snapids[i])) return ['sources_changed'];
+    const n = parseInt(argv[11], 10);
+    for (let i = 0; i < n; i++) { const sraw = mem.kv.get(keys[10 + i]); if (sraw == null || sraw !== snap.sources[i].raw) return ['sources_changed']; }
+    const calls = parseInt(mem.kv.get(keys[8]) || '0', 10); if (calls >= parseInt(argv[7], 10)) return ['capped'];
+    const un = (mem.kv.get(keys[9]) || []).slice().sort();
+    const parts = [];
+    for (const aid of un) { const araw = mem.kv.get(argv[13] + aid); if (araw == null) return ['attempt_orphan']; let at; try { at = JSON.parse(araw); } catch { return ['attempt_orphan']; } parts.push(aid + ':' + String(at.requestHash)); }
+    if (parts.join('\n') !== argv[8]) return ['unresolved'];
+    const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
+    mem.kv.set(keys[1], argv[2]);
+    mem.kv.set(keys[2], JSON.stringify({ op: argv[0], id: argv[1], token: argv[2], gen, at: argv[4], opId: argv[9] }));
+    mem.kv.set(keys[8], String(calls + 1));
+    const st = new Set(mem.kv.get(keys[9]) || []); st.add(argv[9]); mem.kv.set(keys[9], [...st]);
+    const at = JSON.parse(argv[10]); at.gen = gen; mem.kv.set(keys[10 + n], JSON.stringify(at));
+    const tl = memList(keys[11 + n]); tl.unshift(argv[9]); mem.lists.set(keys[11 + n], tl.slice(0, 50));
+    return ['ok', gen];
+  }
+  if (script === BIZ_MANAGED_SETTLE) {
+    const pr = mem.kv.get(keys[2]);
+    if (pr == null) {
+      const araw = mem.kv.get(keys[4]);
+      if (araw != null) { try { const at = JSON.parse(araw); if (at.status !== 'started' && String(at.requestHash) === argv[3] && (String(at.receipt) === argv[11] || String(at.receipt) === argv[12])) return ['landed']; } catch {} }
+      return ['lost'];
+    }
+    let pj; try { pj = JSON.parse(pr); } catch { return ['lost']; }
+    if (pj.op !== 'managed-run') return ['lost'];
+    if (pj.token !== argv[0] || String(pj.gen) !== argv[1]) return ['lost'];
+    if ((mem.kv.get(keys[0]) || '0') !== argv[1]) return ['lost'];
+    if (mem.kv.get(keys[1]) !== argv[0]) return ['lost'];
+    const killed = mem.kv.has(keys[3]);
+    mem.kv.set(keys[4], killed ? argv[5] : argv[4]);
+    mem.kv.set(keys[5], (mem.kv.get(keys[5]) || []).filter(v => v !== argv[2]));
+    if (!killed && argv[6] !== '') {
+      mem.kv.set(keys[6], argv[6]);
+      const l = memList(keys[7]); l.unshift(argv[7]);
+      const keep = parseInt(argv[8], 10), extra = l.slice(keep);
+      mem.lists.set(keys[7], l.slice(0, keep));
+      for (const rid2 of extra) mem.kv.delete(argv[13] + rid2);
+    }
+    const lg = memList(keys[8]); lg.unshift(argv[9]); mem.lists.set(keys[8], lg.slice(0, parseInt(argv[10], 10)));
+    mem.kv.delete(keys[2]); mem.kv.delete(keys[1]);
+    return ['ok', killed ? 'withheld' : 'settled'];
+  }
+  if (script === BIZ_MANAGED_RESOLVE) {
+    if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return ['held'];
+    const pr = mem.kv.get(keys[2]);
+    let pj = null; if (pr != null) { try { pj = JSON.parse(pr); } catch { return ['not_managed']; } if (pj.op !== 'managed-run') return ['not_managed']; }
+    const un = (mem.kv.get(keys[3]) || []).slice().sort();
+    const parts = [], raws = {};
+    for (const aid of un) { const araw = mem.kv.get(argv[4] + aid); if (araw == null) return ['orphan']; let at; try { at = JSON.parse(araw); } catch { return ['orphan']; } if (at.status === 'started') { parts.push(aid + ':' + String(at.requestHash)); raws[aid] = at; } }
+    if (parts.join('\n') !== argv[0]) return ['stale'];
+    if (pj) { for (const aid of un) { const at = raws[aid]; if (at && String(at.token) !== String(pj.token)) return ['unbound']; } }
+    const receipts = JSON.parse(argv[5]);
+    const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
+    let done = 0;
+    for (const aid of un) { const at = raws[aid]; if (at) { at.status = 'acknowledged-unknown'; at.receipt = receipts[aid]; at.resolvedAt = argv[3]; mem.kv.set(argv[4] + aid, JSON.stringify(at)); mem.kv.set(keys[3], (mem.kv.get(keys[3]) || []).filter(v => v !== aid)); done++; } }
+    const lg = memList(keys[4]); lg.unshift(argv[1]); mem.lists.set(keys[4], lg.slice(0, parseInt(argv[2], 10)));
+    if (pj) mem.kv.delete(keys[2]);
+    return ['ok', done];
+  }
   const fence = mem.kv.get(keys[0]) || '0';
   if (fence !== argv[0]) return 0; // a purge/delete bump invalidates stale writers
   if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return 0; // a delete/purge freeze excludes ALL writers for its duration
@@ -312,6 +392,7 @@ function memOp(script, keys, argv) {
     const pr = mem.kv.get(keys[2]); const p = pr ? JSON.parse(pr) : null;
     if (!p) return ['none'];
     if (String(p.id) !== argv[0] || p.op !== argv[1] || String(p.opId) !== argv[4]) return ['stale'];
+    if (p.op === 'managed-run') return ['managed']; // generic cancel never clears a provider-pending managed intent
     const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
     mem.kv.delete(keys[2]);
     if (mem.kv.get(keys[1]) === p.token) mem.kv.delete(keys[1]);
@@ -414,8 +495,75 @@ const BIZ_OP_BEGIN = "local p=redis.call('GET',KEYS[3]); local fr=redis.call('GE
 const BIZ_OP_GUARD = "if redis.call('GET',KEYS[2])~=ARGV[1] then return 0 end; local p=redis.call('GET',KEYS[3]); if not p then return 0 end; local pj=cjson.decode(p); if pj.token~=ARGV[1] then return 0 end; if tostring(pj.gen)~=ARGV[2] then return 0 end; local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[2] then return 0 end; ";
 const BIZ_OP_WRITE = BIZ_OP_GUARD + "if ARGV[3]=='set' then redis.call('SET',KEYS[4],ARGV[4]) elseif ARGV[3]=='del' then redis.call('DEL',KEYS[4]) elseif ARGV[3]=='srem' then redis.call('SREM',KEYS[4],ARGV[4]) elseif ARGV[3]=='sadd' then redis.call('SADD',KEYS[4],ARGV[4]) elseif ARGV[3]=='stage' then redis.call('SET',KEYS[3],cjson.encode({op=pj.op,id=pj.id,token=pj.token,gen=pj.gen,at=pj.at,opId=pj.opId,stage=ARGV[4]})) elseif ARGV[3]=='renew' then redis.call('PEXPIRE',KEYS[2],60000) else return 0 end; return 1";
 const BIZ_OP_COMMIT = BIZ_OP_GUARD + "redis.call('LPUSH',KEYS[4],ARGV[3]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[4])-1); redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[2]); return 1";
-const BIZ_OP_CANCEL = "local p=redis.call('GET',KEYS[3]); if not p then return {'none'} end; local pj=cjson.decode(p); if tostring(pj.id)~=ARGV[1] or pj.op~=ARGV[2] or tostring(pj.opId)~=ARGV[5] then return {'stale'} end; redis.call('INCRBY',KEYS[1],1); redis.call('DEL',KEYS[3]); if redis.call('GET',KEYS[2])==pj.token then redis.call('DEL',KEYS[2]) end; redis.call('LPUSH',KEYS[4],ARGV[3]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[4])-1); return {'ok'}";
+const BIZ_OP_CANCEL = "local p=redis.call('GET',KEYS[3]); if not p then return {'none'} end; local pj=cjson.decode(p); if tostring(pj.id)~=ARGV[1] or pj.op~=ARGV[2] or tostring(pj.opId)~=ARGV[5] then return {'stale'} end; if pj.op=='managed-run' then return {'managed'} end; redis.call('INCRBY',KEYS[1],1); redis.call('DEL',KEYS[3]); if redis.call('GET',KEYS[2])==pj.token then redis.call('DEL',KEYS[2]) end; redis.call('LPUSH',KEYS[4],ARGV[3]); redis.call('LTRIM',KEYS[4],0,tonumber(ARGV[4])-1); return {'ok'}";
 const BIZ_OP_RELEASE = "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end; redis.call('DEL',KEYS[1]); return 1";
+
+// ---- Managed execution lifecycle (owner-approved reasoning-engine runs) ----
+// BIZ_MANAGED_BEGIN: ONE all-or-nothing gate. EVERY validation runs before ANY write (a Lua
+// runtime error never rolls back earlier writes), so any refusal is provably zero-effect: no
+// fetch is invoked, no counter is consumed, no attempt exists. Validation: no freeze, no
+// pending intent, no kill; the responsibility's CURRENT bytes still describe an active,
+// non-research, bot-marked, UNASSIGNED responsibility whose managed grant matches this
+// attempt and whose title/summary/boundary still equal the reviewed snapshot; the snapshot
+// record matches the same grant; consent is byte-identical to the reviewed consent raw; the
+// source SET membership AND every source's exact raw bytes equal the snapshot (canonical
+// order = sort by id, defined here and in JS - SET order is never relied on); the daily
+// counter is below the cap (precheck, THEN increment); the unresolved-attempt set equals
+// the reviewed attempt-set string (a normal run needs an empty set; a retry binds the exact
+// set the owner accepted duplicate risk for). Only then: generation bump, freeze lease,
+// durable intent, counter increment, unresolved-set add, and the 'started' attempt with the
+// RETURNED generation injected - one atomic transition.
+const BIZ_MANAGED_BEGIN = "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; if redis.call('EXISTS',KEYS[4])==1 then return {'killed'} end; "
++ "local rraw=redis.call('GET',KEYS[6]); if not rraw then return {'gone'} end; local rok,rp=pcall(cjson.decode,rraw); if not rok then return {'gone'} end; "
++ "if rp.status~='active' then return {'inactive'} end; if rp.research then return {'research'} end; if not rp.bot then return {'nobot'} end; if rp.assignment then return {'assigned'} end; "
++ "local mg=rp.managed; if not mg then return {'unapproved'} end; if tostring(mg.grantId)~=ARGV[6] or tostring(mg.scopeHash)~=ARGV[7] then return {'grant_changed'} end; "
++ "local mraw=redis.call('GET',KEYS[7]); if not mraw then return {'snapshot_missing'} end; local mok,snap=pcall(cjson.decode,mraw); if not mok then return {'snapshot_missing'} end; "
++ "if tostring(snap.grantId)~=ARGV[6] or tostring(snap.scopeHash)~=ARGV[7] then return {'grant_changed'} end; "
++ "if rp.title~=snap.respFields.title or rp.summary~=snap.respFields.summary or rp.boundary~=snap.respFields.boundary then return {'resp_changed'} end; "
++ "local craw=redis.call('GET',KEYS[5]); if not craw or craw~=snap.consentRaw then return {'consent_changed'} end; "
++ "local live=redis.call('SMEMBERS',KEYS[8]); table.sort(live); local snapids={}; for i,s in ipairs(snap.sources) do snapids[i]=s.id end; table.sort(snapids); "
++ "if #live~=#snapids then return {'sources_changed'} end; for i=1,#live do if live[i]~=snapids[i] then return {'sources_changed'} end end; "
++ "local n=tonumber(ARGV[12]); for i=1,n do local sraw=redis.call('GET',KEYS[10+i]); if not sraw or sraw~=snap.sources[i].raw then return {'sources_changed'} end end; "
++ "local calls=tonumber(redis.call('GET',KEYS[9]) or '0'); if calls>=tonumber(ARGV[8]) then return {'capped'} end; "
++ "local un=redis.call('SMEMBERS',KEYS[10]); table.sort(un); local parts={}; for _,aid in ipairs(un) do local araw=redis.call('GET',ARGV[14]..aid); if not araw then return {'attempt_orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok then return {'attempt_orphan'} end; parts[#parts+1]=aid..':'..tostring(at.requestHash) end; "
++ "if table.concat(parts,'\\n')~=ARGV[9] then return {'unresolved'} end; "
++ "local gen=redis.call('INCRBY',KEYS[1],1); redis.call('SET',KEYS[2],ARGV[3],'PX',tonumber(ARGV[4])); redis.call('SET',KEYS[3],cjson.encode({op=ARGV[1],id=ARGV[2],token=ARGV[3],gen=gen,at=ARGV[5],opId=ARGV[10]})); "
++ "redis.call('INCRBY',KEYS[9],1); redis.call('EXPIRE',KEYS[9],tonumber(ARGV[13])); redis.call('SADD',KEYS[10],ARGV[10]); "
++ "local at=cjson.decode(ARGV[11]); at.gen=gen; redis.call('SET',KEYS[11+n],cjson.encode(at)); redis.call('LPUSH',KEYS[12+n],ARGV[10]); redis.call('LTRIM',KEYS[12+n],0,49); return {'ok',gen}";
+// BIZ_MANAGED_SETTLE: ONE guarded atomic terminal transition (no multi-key write sequence, no
+// separate commit). The guard binds freeze ownership + pending token + generation + fence. A
+// kill racing the flight is re-checked in-script: the attempt settles 'withheld' and the draft
+// text is NEVER written (the run record is skipped) - the result is stopped, honestly. With no
+// pending intent the script only reconciles: a terminal attempt carrying one of this exact
+// settle's deterministic receipts (matching attempt id + request hash + outcome class) means a
+// prior identical settle LANDED; anything else is 'lost' - absence never recreates a record.
+const BIZ_MANAGED_SETTLE = "local p=redis.call('GET',KEYS[3]); "
++ "if not p then local araw=redis.call('GET',KEYS[5]); if araw then local aok,at=pcall(cjson.decode,araw); if aok and at.status~='started' and tostring(at.requestHash)==ARGV[4] and (tostring(at.receipt)==ARGV[12] or tostring(at.receipt)==ARGV[13]) then return {'landed'} end end; return {'lost'} end; "
++ "local pj=cjson.decode(p); if pj.op~='managed-run' then return {'lost'} end; if pj.token~=ARGV[1] or tostring(pj.gen)~=ARGV[2] then return {'lost'} end; "
++ "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[2] then return {'lost'} end; if redis.call('GET',KEYS[2])~=ARGV[1] then return {'lost'} end; "
++ "local killed=redis.call('EXISTS',KEYS[4])==1; redis.call('SET',KEYS[5],killed and ARGV[6] or ARGV[5]); redis.call('SREM',KEYS[6],ARGV[3]); "
++ "if (not killed) and ARGV[7]~='' then redis.call('SET',KEYS[7],ARGV[7]); redis.call('LPUSH',KEYS[8],ARGV[8]); local extra=redis.call('LRANGE',KEYS[8],tonumber(ARGV[9]),-1); redis.call('LTRIM',KEYS[8],0,tonumber(ARGV[9])-1); for _,rid in ipairs(extra) do redis.call('DEL',ARGV[14]..rid) end end; "
++ "redis.call('LPUSH',KEYS[9],ARGV[10]); redis.call('LTRIM',KEYS[9],0,tonumber(ARGV[11])-1); redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[2]); return {'ok',killed and 'withheld' or 'settled'}";
+// BIZ_MANAGED_RESOLVE: owner-reviewed acknowledgment of stuck attempts, ONE atomic script. It
+// requires the freeze lease GONE (expiry ends local write ownership only - it never proves the
+// provider stopped; the acknowledgment copy says exactly that). With a durable managed-run
+// intent present every resolved attempt must belong to it (token binding); with NO intent the
+// same review resolves orphaned 'started' attempts (a crash/purge race left them) - ack
+// terminalizes existing records and never recreates anything. The live unresolved set is rebuilt in-script and must equal the
+// reviewed set; every resolved attempt must belong to THIS stuck intent (token binding); only
+// then the generation bumps (the dead holder's guarded writes can never land again), each
+// attempt settles 'acknowledged-unknown' with its deterministic receipt, the intent clears and
+// the log records it. Purged private content is never recreated - attempts it deleted are
+// simply absent ('orphan').
+const BIZ_MANAGED_RESOLVE = "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; "
++ "local p=redis.call('GET',KEYS[3]); local pj=nil; if p then pj=cjson.decode(p); if pj.op~='managed-run' then return {'not_managed'} end end; "
++ "local un=redis.call('SMEMBERS',KEYS[4]); table.sort(un); local parts={}; local raws={}; "
++ "for _,aid in ipairs(un) do local araw=redis.call('GET',ARGV[5]..aid); if not araw then return {'orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok then return {'orphan'} end; if at.status=='started' then parts[#parts+1]=aid..':'..tostring(at.requestHash); raws[aid]=at end end; "
++ "if table.concat(parts,'\\n')~=ARGV[1] then return {'stale'} end; "
++ "if pj then for _,aid in ipairs(un) do local at=raws[aid]; if at and tostring(at.token)~=tostring(pj.token) then return {'unbound'} end end end; "
++ "local receipts=cjson.decode(ARGV[6]); local gen=redis.call('INCRBY',KEYS[1],1); local done=0; "
++ "for _,aid in ipairs(un) do local at=raws[aid]; if at then at.status='acknowledged-unknown'; at.receipt=receipts[aid]; at.resolvedAt=ARGV[4]; redis.call('SET',ARGV[5]..aid,cjson.encode(at)); redis.call('SREM',KEYS[4],aid); done=done+1 end end; "
++ "redis.call('LPUSH',KEYS[5],ARGV[2]); redis.call('LTRIM',KEYS[5],0,tonumber(ARGV[3])-1); if pj then redis.call('DEL',KEYS[3]) end; return {'ok',done}";
 // Coherent entry snapshot for non-delete actions: fence generation + absence of freeze AND
 // pending intent read in one atomic call, so no check-then-write gap at entry.
 const BIZ_ENTRY = "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; return {'ok', redis.call('GET',KEYS[1]) or '0'}";
@@ -2055,7 +2203,7 @@ async function routes(req, res, path, body, agentPre) {
     { const dm = path.match(/^\/business\/apps\/gmail\/draft-ops\/(dop_[a-f0-9]+)\/reconcile$/); if (dm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDraftOpReconcile(dm[1])); } }
     if (path === '/business/apps/gmail/drafts' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDraftCreate('gmail', body, body && typeof body.expectedVersion === 'string' ? body.expectedVersion : null)); }
     if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(body && body.confirm === 'CANCEL' ? await bizOpCancel(body) : await bizDataPurge(body)); }
-    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete|candidates|delegate-preview|schedule|assign)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
+    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete|candidates|delegate-preview|schedule|assign|managed)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
     {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
@@ -2152,6 +2300,11 @@ const BIZ = {
   DAILY_GAP_MS: 20 * 3600e3,
   STUCK_HELD_MS: 2 * 60 * 1000, // liveness timeout for recovering a held job; correctness never depends on it
   CALLS_PER_DAY: 200, SRC_PROMPT_CHARS: 16000,
+  // Managed execution (owner-approved reasoning-engine runs for bot-marked, unassigned
+  // responsibilities). The deadline fits INSIDE the platform function limit (maxDuration 30,
+  // the same 5s margin the rest of the app budgets with); the op lease stays 60s, so a
+  // platform-killed handler leaves a stuck attempt the resolve flow owns - never a lost one.
+  MANAGED_SOURCES_MAX: 6, MANAGED_PROMPT_REV: 1, MANAGED_DEADLINE_MS: 25000, MANAGED_FETCH_CAP_MS: 20000, MANAGED_SETTLE_RESERVE_MS: 5000, MANAGED_ATTEMPTS_KEEP: 50,
   RUN_BUDGET_MS: 27000, FINALIZE_MS: 5000, MAX_FETCHES_PER_RUN: 4, MAX_CONTACTS_PER_RUN: 8, FETCH_ROUNDS: 2, PAGE_PROMPT_CHARS: 3000, MAX_CITES_PER_RUN: 8,
   BOUNDARY: 'Drafts only. Nothing is sent, posted, purchased or connected. The owner reviews every output.'
 };
@@ -3087,6 +3240,8 @@ async function bizState() {
   }
   const delegateBot = await bizDelegateBot();
   const delegate = delegateBot ? { id: delegateBot.id, name: String(delegateBot.name || 'bot').slice(0, 40), providerId: delegateBot.providerId || null, connection: await connectionState(delegateBot) } : null;
+  const munresCounts = {};
+  for (const rp of resps) { if (rp.managed) munresCounts[rp.id] = (await r(['SCARD', 'fm:biz:munres:' + rp.id])) || 0; }
   const team = [];
   for (const a of await bizTeamRoster()) team.push({ id: a.id, name: String(a.name || 'bot').slice(0, 40), providerId: a.providerId || null, connection: await connectionState(a) });
   for (const d of discoveries) if ((d.status === 'delegated' || d.status === 'running') && d.taskId) {
@@ -3094,7 +3249,7 @@ async function bizState() {
     d.job = t ? { status: t.status, startedAt: t.startedAt || null, assignee: t.assignee || null } : { status: 'missing' };
   }
   return { engine, delegate, team, apps: { gmail: await bizAppStatus('gmail') }, profile, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
-    responsibilities: resps.map(rp => ({ ...rp, fp: respFps[rp.id] || null, runs: runsByResp[rp.id] || [] })), discoveries,
+    responsibilities: resps.map(rp => ({ ...rp, fp: respFps[rp.id] || null, runs: runsByResp[rp.id] || [], managedUnresolved: munresCounts[rp.id] || 0 })), discoveries,
     opPending, log: (logRaw || []).map(x => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean) };
 }
 
@@ -3956,9 +4111,299 @@ async function bizRespRunBump(respId, at, f0) {
   }
   return 0;
 }
+// ---------- Managed execution: owner-approved reasoning-engine runs ----------
+// Scope: bot-marked, non-research, UNASSIGNED responsibilities only, explicitly approved per
+// responsibility. A distinct approved work mode - never a silent fallback for a missing,
+// revoked or disconnected assigned bot (an assignment set clears the grant in the same CAS;
+// clearing never revives it). Manual runs only: schedules never read rp.managed.
+function bizStable(v) { if (Array.isArray(v)) return '[' + v.map(bizStable).join(',') + ']'; if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + bizStable(v[k])).join(',') + '}'; return JSON.stringify(v); }
+function bizManagedSnapshot(resp, pairs, consentRaw, e) {
+  const sources = pairs.map(p => ({ id: p.id, raw: p.raw })).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const snap = { v: 1, grantId: rid('mgrant'), approvedAt: now(), promptRev: BIZ.MANAGED_PROMPT_REV,
+    provider: { baseUrl: e.base, model: e.model, maxTokens: 1800, temperature: 0.2 },
+    consentRaw, sources, respFields: { title: resp.title, summary: resp.summary, boundary: resp.boundary } };
+  snap.scopeHash = sha(bizStable({ v: snap.v, promptRev: snap.promptRev, provider: snap.provider, consentRaw: snap.consentRaw, sources: snap.sources, respFields: snap.respFields }));
+  return snap;
+}
+// The exact provider request: built ONLY from the immutable reviewed snapshot plus the
+// owner-typed input - never from a fresh source read - so what was reviewed is what is sent.
+function bizManagedBody(snap, input) {
+  const respLike = { title: snap.respFields.title, summary: snap.respFields.summary, boundary: snap.respFields.boundary };
+  const srcsLike = snap.sources.map(s => { const j = JSON.parse(s.raw); return { id: j.id, version: j.version, title: j.title, text: j.text }; });
+  const messages = bizRunPrompt(respLike, srcsLike, input, 'manual');
+  return { bodyString: JSON.stringify({ model: snap.provider.model, max_tokens: snap.provider.maxTokens, temperature: snap.provider.temperature, messages }), messages, srcsLike };
+}
+function bizManagedRenderRun(snap, built, input, requestHash) {
+  return { requestHash, destination: snap.provider.baseUrl + '/chat/completions', provider: snap.provider, systemText: built.messages[0].content,
+    sources: built.srcsLike.map(s => ({ id: s.id, title: s.title, block: String(s.text || '').slice(0, 4000), truncated: String(s.text || '').length > 4000 })),
+    input, note: 'Exactly this request is sent if you confirm. Source blocks are truncated to 4000 characters each - exactly what the provider receives.' };
+}
+function bizManagedRenderApprove(snap) {
+  let consent = null; try { const c = JSON.parse(snap.consentRaw); consent = { host: c.host, model: c.model, at: c.at }; } catch {}
+  return { scopeHash: snap.scopeHash, grantId: snap.grantId, promptRev: snap.promptRev, provider: snap.provider, consent,
+    sources: snap.sources.map(s => { let t = null, ch = 0; try { const j = JSON.parse(s.raw); t = j.title; ch = String(j.text || '').length; } catch {} return { id: s.id, title: t, chars: ch }; }),
+    respFields: snap.respFields, approvedAt: snap.approvedAt };
+}
+const bizManagedReceipt = (attemptId, status, requestHash, outcomeCore) => sha(attemptId + '|' + status + '|' + requestHash + '|' + bizStable(outcomeCore === undefined ? null : outcomeCore));
+// The unresolved-attempt set, for review display and precheck only - the scripts rebuild and
+// compare it atomically, so a stale preview refuses honestly instead of deciding on old data.
+async function bizManagedUnresolved(id) {
+  const ids = ((await r(['SMEMBERS', 'fm:biz:munres:' + id])) || []).slice().sort();
+  if (!ids.length) return { set: '', attempts: [] };
+  const raws = await r(['MGET', ...ids.map(a => 'fm:biz:matt:' + a)]);
+  const attempts = [];
+  for (let i = 0; i < ids.length; i++) { try { const a = JSON.parse(raws[i]); if (a && a.status === 'started') attempts.push(a); } catch {} }
+  return { set: attempts.map(a => a.id + ':' + a.requestHash).join('\n'), attempts };
+}
+const bizManagedRenderAttempts = attempts => attempts.map(a => ({ id: a.id, startedAt: a.startedAt, requestHash: a.requestHash, input: a.input ? String(a.input).slice(0, 200) : null, provider: a.provider || null }));
+function bizManagedEnvProblem(e) {
+  if (!e.key) return { status: 503, body: { error: 'The reasoning engine is not connected yet.', code: 'engine_not_configured' } };
+  if (!e.allow.includes(wsId())) return { status: 503, body: { error: 'The reasoning engine is not enabled for this workspace.', code: 'engine_not_enabled' } };
+  let pu; try { pu = new URL(e.base); } catch { return { status: 503, body: { error: 'The reasoning engine endpoint is not allowed.', code: 'engine_bad_endpoint' } }; }
+  if (pu.protocol !== 'https:' || bizHostBlocked(pu.hostname)) return { status: 503, body: { error: 'The reasoning engine endpoint must be a public HTTPS address.', code: 'engine_bad_endpoint' } };
+  if (!bizAllowedEngineHosts().includes(pu.hostname.toLowerCase())) return { status: 503, body: { error: 'The reasoning engine endpoint is not one of the vetted provider origins.', code: 'engine_bad_endpoint' } };
+  return { pu };
+}
+async function bizManagedApprove(id, resp, respRaw0, body, f0, previewOnly) {
+  if (f0 == null) return bizFrozenConflict();
+  if (resp.research) return { status: 400, body: { error: 'This responsibility reads public pages during runs; those runs already use the reviewed engine path.', code: 'managed_not_eligible' } };
+  if (!resp.bot) return { status: 400, body: { error: 'Managed execution is for bot-marked responsibilities only - this one already runs on the reviewed engine path.', code: 'managed_not_eligible' } };
+  if (resp.status !== 'active') return { status: 409, body: { error: 'This responsibility is ' + resp.status } };
+  if (resp.assignment) return { status: 409, body: { error: 'This responsibility is assigned to ' + (resp.assignment.botName || 'a bot') + '. Managed execution never substitutes for an explicit assignment.', code: 'managed_assigned' } };
+  const e = bizEngineEnv();
+  const env = bizManagedEnvProblem(e); if (env.status) return env;
+  const consentRaw = await r(['GET', 'fm:biz:consent']);
+  if (!consentRaw) return { status: 409, body: { error: 'Allow the reasoning provider for this workspace first, then approve managed runs.', code: 'engine_no_consent' } };
+  const ids = (await r(['SMEMBERS', 'fm:biz:sources'])) || [];
+  if (ids.length > BIZ.MANAGED_SOURCES_MAX) return { status: 409, body: { error: 'Managed approval covers an exact, bounded source set - this workspace has ' + ids.length + ' sources and the managed limit is ' + BIZ.MANAGED_SOURCES_MAX + '. Remove sources first, or run this responsibility another way.', code: 'managed_too_many_sources', count: ids.length } };
+  const raws = ids.length ? await r(['MGET', ...ids.map(i => 'fm:biz:src:' + i)]) : [];
+  const pairs = [];
+  for (let i = 0; i < ids.length; i++) { if (!raws[i]) return { status: 409, body: { error: 'Sources changed while loading - reload and try again.', code: 'sources_changed' } }; pairs.push({ id: ids[i], raw: raws[i] }); }
+  const snap = bizManagedSnapshot(resp, pairs, consentRaw, e);
+  const render = bizManagedRenderApprove(snap);
+  if (previewOnly) return { status: 200, body: { managedPreview: render } };
+  if (String(body && body.scopeHash || '') !== snap.scopeHash) return { status: 409, body: { error: 'The managed setup changed since you reviewed it - review the current snapshot, then approve.', code: 'managed_scope_stale', managedPreview: render } };
+  // The snapshot record lands first, so a responsibility pointing at it never lacks it. A
+  // crash between the two leaves an unreferenced snapshot (never runnable: the gate requires
+  // rp.managed), overwritten by the next approval and removed by purge.
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:mg:' + id, f0, JSON.stringify(snap)])) return bizFenceConflict();
+  const next = { ...resp, managed: { grantId: snap.grantId, scopeHash: snap.scopeHash, approvedAt: snap.approvedAt } };
+  const cas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]);
+  if (cas === -1) return { status: 404, body: { error: 'not found' } };
+  if (cas !== 1) { if (!respRaw0) return bizFenceConflict(); return { status: 409, body: { error: 'This responsibility changed while you were approving managed runs - reload and review it. Nothing was overwritten.', code: 'resp_changed' } }; }
+  if (!await bizLog('managed_approved', { respId: id, title: resp.title, scopeHash: snap.scopeHash, sources: snap.sources.length, provider: { baseUrl: snap.provider.baseUrl, model: snap.provider.model } }, f0)) return bizFenceConflict();
+  return { status: 200, body: { responsibility: next } };
+}
+async function bizManagedRevoke(id, resp, respRaw0, f0) {
+  if (f0 == null) return bizFrozenConflict();
+  if (!resp.managed) return { status: 200, body: { responsibility: resp } };
+  const next = { ...resp }; delete next.managed;
+  const cas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]);
+  if (cas === -1) return { status: 404, body: { error: 'not found' } };
+  if (cas !== 1) { if (!respRaw0) return bizFenceConflict(); return { status: 409, body: { error: 'This responsibility changed while you were revoking managed runs - reload and review it. Nothing was overwritten.', code: 'resp_changed' } }; }
+  // The snapshot record is deleted AFTER the responsibility stopped referencing it; a conflict
+  // leaves an unreferenced record (never runnable) that the next approval or purge removes.
+  await r(['EVAL', BIZ_FENCE_DEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:mg:' + id, await bizFence()]).catch(() => 0);
+  if (!await bizLog('managed_revoked', { respId: id, title: resp.title }, f0)) return bizFenceConflict();
+  return { status: 200, body: { responsibility: next } };
+}
+async function bizManagedLoadRunContext(id, resp) {
+  if (!resp.managed) return { problem: { status: 409, body: { error: 'Managed execution is not approved for this responsibility.', code: 'managed_unapproved' } } };
+  if (resp.status !== 'active') return { problem: { status: 409, body: { error: 'This responsibility is ' + resp.status, code: 'managed_inactive' } } };
+  const snapRaw = await r(['GET', 'fm:biz:mg:' + id]);
+  let snap = null; try { snap = snapRaw ? JSON.parse(snapRaw) : null; } catch { snap = null; }
+  if (!snap) return { problem: { status: 409, body: { error: 'The managed approval record is missing. Approve managed runs again.', code: 'managed_snapshot_missing' } } };
+  if (snap.grantId !== resp.managed.grantId || snap.scopeHash !== resp.managed.scopeHash) return { problem: { status: 409, body: { error: 'The managed approval changed - reload and review the current approval.', code: 'managed_grant_changed' } } };
+  if (snap.promptRev !== BIZ.MANAGED_PROMPT_REV) return { problem: { status: 409, body: { error: 'The managed run rules changed since this approval. Review and approve managed runs again.', code: 'managed_prompt_rev_changed' } } };
+  return { snap };
+}
+async function bizManagedReview(id, resp, body) {
+  const input = String(body && body.input || '').slice(0, 4000);
+  if (!input.trim()) return { status: 400, body: { error: 'Describe or paste the work first' } };
+  const ctx = await bizManagedLoadRunContext(id, resp); if (ctx.problem) return ctx.problem;
+  const built = bizManagedBody(ctx.snap, input);
+  const un = await bizManagedUnresolved(id);
+  return { status: 200, body: { managedReview: bizManagedRenderRun(ctx.snap, built, input, sha(built.bodyString)), unresolved: bizManagedRenderAttempts(un.attempts), attemptSet: un.set } };
+}
+// Guarded atomic terminal settle with EXACT lost-response reconciliation: a retry writes the
+// identical deterministic content under the same ownership; a terminal attempt matches only on
+// attempt id + request hash + one of this settle's own receipts (a withheld/acknowledged
+// receipt never equals a known-result one); an absent record recreates nothing.
+async function bizManagedSettleRun(ctx, respId, attempt0, outcome, runRec) {
+  const receipt = bizManagedReceipt(attempt0.id, outcome.status, attempt0.requestHash, outcome);
+  const term = { ...attempt0, gen: ctx.gen, status: outcome.status, receipt, settledAt: now(), httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, usage: outcome.usage || null, note: outcome.note || null };
+  const wReceipt = bizManagedReceipt(attempt0.id, 'withheld', attempt0.requestHash, null);
+  const withheld = { ...term, status: 'withheld', receipt: wReceipt, note: 'killed' };
+  const logEntry = JSON.stringify({ id: rid('bizlog'), at: now(), kind: 'managed_run', respId, attemptId: attempt0.id, outcome: outcome.status, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, model: attempt0.provider.model, usage: outcome.usage || null });
+  const call = () => r(['EVAL', BIZ_MANAGED_SETTLE, 9, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:kill', 'fm:biz:matt:' + attempt0.id, 'fm:biz:munres:' + respId, runRec ? 'fm:biz:run:' + runRec.id : 'fm:biz:run:none', 'fm:biz:runs:' + respId, 'fm:biz:log', ctx.token, String(ctx.gen), attempt0.id, attempt0.requestHash, JSON.stringify(term), JSON.stringify(withheld), runRec ? JSON.stringify(runRec) : '', runRec ? runRec.id : '', String(BIZ.RUNS_KEEP), logEntry, String(BIZ.LOG_KEEP), receipt, wReceipt, nsKey('fm:biz:run:')]);
+  let res = null;
+  try { res = await call(); } catch (e) { res = null; }
+  if (Array.isArray(res) && res[0] === 'ok') return { ok: true, withheld: res[1] === 'withheld' };
+  if (Array.isArray(res) && res[0] === 'landed') return { ok: true, landed: true };
+  if (Array.isArray(res) && res[0] === 'lost') return { lost: true };
+  const araw = await r(['GET', 'fm:biz:matt:' + attempt0.id]).catch(() => null);
+  if (!araw) return { unknown: 'no-record' }; // purged or never landed: recreate nothing, claim nothing
+  let a = null; try { a = JSON.parse(araw); } catch {}
+  if (a && a.status !== 'started' && a.requestHash === attempt0.requestHash && (a.receipt === receipt || a.receipt === wReceipt)) return { ok: true, landed: true, withheld: a.status === 'withheld' };
+  if (a && a.status === 'started') {
+    const p = await getJ('fm:biz:op_pending').catch(() => null);
+    if (p && p.op === 'managed-run' && p.token === ctx.token && String(p.gen) === String(ctx.gen)) {
+      let res2 = null;
+      try { res2 = await call(); } catch (e) { return { unknown: true }; }
+      if (Array.isArray(res2) && (res2[0] === 'ok' || res2[0] === 'landed')) return { ok: true, withheld: res2[1] === 'withheld', retried: true };
+      return { unknown: true };
+    }
+    return { lost: true }; // another operation now owns the workspace - nothing more may be written
+  }
+  return { unknown: true };
+}
+const BIZ_MANAGED_BEGIN_REFUSALS = {
+  held: { status: 409, body: { error: 'Another workspace operation is finishing. Wait a moment and reload.', code: 'workspace_changed' } },
+  pending: { status: 409, body: { error: 'Another workspace operation is pending. Finish or resolve it first.', code: 'operation_pending' } },
+  killed: { status: 403, body: { error: 'Workspace is paused', code: 'workspace_paused' } },
+  gone: { status: 404, body: { error: 'not found' } },
+  inactive: { status: 409, body: { error: 'This responsibility is no longer active. The run was refused before any provider contact.', code: 'managed_inactive' } },
+  research: { status: 400, body: { error: 'This responsibility reads public pages during runs; managed runs do not apply.', code: 'managed_not_eligible' } },
+  nobot: { status: 400, body: { error: 'Managed execution is for bot-marked responsibilities only.', code: 'managed_not_eligible' } },
+  assigned: { status: 409, body: { error: 'This responsibility was assigned to a bot - managed execution never substitutes for an explicit assignment. The run was refused before any provider contact.', code: 'managed_assigned' } },
+  unapproved: { status: 409, body: { error: 'Managed execution is not approved for this responsibility.', code: 'managed_unapproved' } },
+  grant_changed: { status: 409, body: { error: 'The managed approval changed since this request was built. Reload and review.', code: 'managed_grant_changed' } },
+  snapshot_missing: { status: 409, body: { error: 'The managed approval record is missing. Approve managed runs again.', code: 'managed_snapshot_missing' } },
+  resp_changed: { status: 409, body: { error: 'This responsibility changed since managed runs were approved. Review and approve again. The run was refused before any provider contact.', code: 'resp_changed' } },
+  consent_changed: { status: 409, body: { error: 'The provider consent changed since managed runs were approved. Review the provider consent and approve again. The run was refused before any provider contact.', code: 'managed_consent_changed' } },
+  sources_changed: { status: 409, body: { error: 'The sources changed since managed runs were approved. Review and approve again against the current sources. The run was refused before any provider contact.', code: 'managed_sources_changed' } },
+  capped: { status: 429, body: { error: 'Daily reasoning limit reached for this workspace. Try again tomorrow.', code: 'engine_daily_cap' } },
+  unresolved: { status: 409, body: { error: 'A managed attempt with an unknown outcome appeared since your review. Review it before running again.', code: 'managed_attempt_review' } },
+  attempt_orphan: { status: 503, body: { error: 'A managed attempt record is missing its detail. Nothing was run; reload and resolve the attempts shown.', code: 'managed_attempt_orphan' } }
+};
+async function bizManagedConfirm(id, resp, body) {
+  const input = String(body && body.input || '').slice(0, 4000);
+  if (!input.trim()) return { status: 400, body: { error: 'Describe or paste the work first' } };
+  const lctx = await bizManagedLoadRunContext(id, resp); if (lctx.problem) return lctx.problem;
+  const snap = lctx.snap;
+  const built = bizManagedBody(snap, input);
+  const requestHash = sha(built.bodyString);
+  if (String(body.requestHash || '') !== requestHash) return { status: 409, body: { error: 'Review the exact request this run would send first.', code: 'managed_review_required', managedReview: bizManagedRenderRun(snap, built, input, requestHash) } };
+  const un = await bizManagedUnresolved(id);
+  const attemptSet = String(body.attemptSet || '');
+  if (un.set !== attemptSet) return { status: 409, body: { error: 'There are managed attempts with unknown outcomes you have not reviewed. Review them first.', code: 'managed_attempt_review', unresolved: bizManagedRenderAttempts(un.attempts), attemptSet: un.set } };
+  if (un.set && body.acceptDuplicateRisk !== true) return { status: 409, body: { error: 'Earlier attempt(s) may still have been processed and billed by the provider - a finished local wait never proves they were not. Running again can produce a SECOND charge and duplicate processing. Confirm again accepting that risk, or resolve the earlier attempts first.', code: 'managed_duplicate_risk', unresolved: bizManagedRenderAttempts(un.attempts), attemptSet: un.set } };
+  const e = bizEngineEnv();
+  const env = bizManagedEnvProblem(e); if (env.status) return env;
+  // The process environment is fixed for this deployment's lifetime: this comparison proves
+  // the provider identity matches the approval on THIS deployment. Overlapping deployments
+  // have their own processes; the gate binds the attempt to the approved provider identity,
+  // never to a live environment read.
+  if (e.base !== snap.provider.baseUrl || e.model !== snap.provider.model) return { status: 409, body: { error: 'The provider configuration changed since managed runs were approved (' + snap.provider.model + ' at ' + snap.provider.baseUrl + '). Review and approve again against the current configuration.', code: 'managed_config_changed' } };
+  // One inherited absolute deadline, anchored at handler entry BEFORE any store wait and below
+  // the platform function limit; the settle reserve is enforced before the call may start.
+  const parentDl = (als.getStore() || {}).issuerDeadline;
+  const deadline = Math.min(Date.now() + BIZ.MANAGED_DEADLINE_MS, parentDl ? parentDl - 2000 : Infinity);
+  const attemptId = rid('mrun'), token = rid('freeze');
+  const day = now().slice(0, 10);
+  const attempt0 = { id: attemptId, respId: id, kind: 'managed', status: 'started', requestHash, scopeHash: snap.scopeHash, grantId: snap.grantId, token, gen: null, input: input.slice(0, 4000), provider: { baseUrl: snap.provider.baseUrl, model: snap.provider.model }, startedAt: now() };
+  const keys = ['fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:kill', 'fm:biz:consent', 'fm:biz:resp:' + id, 'fm:biz:mg:' + id, 'fm:biz:sources', 'fm:biz:calls:' + day, 'fm:biz:munres:' + id, ...snap.sources.map(s => 'fm:biz:src:' + s.id), 'fm:biz:matt:' + attemptId, 'fm:biz:mattl:' + id];
+  const argv = ['managed-run', id, token, '60000', now(), snap.grantId, snap.scopeHash, String(BIZ.CALLS_PER_DAY), attemptSet, attemptId, JSON.stringify(attempt0), String(snap.sources.length), '172800', nsKey('fm:biz:matt:')];
+  let beginRes = null;
+  try { beginRes = await r(['EVAL', BIZ_MANAGED_BEGIN, keys.length, ...keys, ...argv]); } catch (e2) { beginRes = null; }
+  let gen = null;
+  if (!Array.isArray(beginRes)) {
+    // The gate response was lost: the begin may have LANDED. Reconcile against the durable
+    // intent - provably ours (op + responsibility + token + attempt) means adopt; anything
+    // else means do not fetch and do not claim either way.
+    const p = await getJ('fm:biz:op_pending').catch(() => null);
+    if (p && p.op === 'managed-run' && String(p.id) === String(id) && p.token === token && String(p.opId) === String(attemptId)) gen = String(p.gen);
+    else return { status: 503, body: { error: 'The run may or may not have registered - its gate response was lost. Nothing was sent to the provider from this request. Reload and review the responsibility before retrying.', code: 'managed_begin_unknown' } };
+  } else if (beginRes[0] === 'ok') gen = String(beginRes[1]);
+  else return BIZ_MANAGED_BEGIN_REFUSALS[beginRes[0]] || { status: 503, body: { error: 'storage error' } };
+  const ctx = { token, gen };
+  // Post-gate remaining-time refusal: never start a provider call the budget cannot settle.
+  const fetchMs = Math.min(BIZ.MANAGED_FETCH_CAP_MS, deadline - Date.now() - BIZ.MANAGED_SETTLE_RESERVE_MS);
+  if (fetchMs < 1000) {
+    await bizManagedSettleRun(ctx, id, attempt0, { status: 'refused-no-call', note: 'deadline' }, null);
+    return { status: 200, body: { managedOutcome: { class: 'refused-no-call', attemptId, billing: 'not-contacted', message: 'The run stopped before any provider contact - this attempt made no call and nothing was billed for it.' } } };
+  }
+  // The provider call: the byte-identical reviewed body, consent-bound destination, redirects
+  // refused. A kill appearing mid-flight aborts the LOCAL wait best-effort - that never proves
+  // the provider stopped processing or billing, so the outcome stays honestly unknown.
+  const ctrl = new AbortController();
+  const killWatch = setInterval(() => { r(['GET', 'fm:kill']).then(v => { if (v) ctrl.abort(new Error('managed kill observed')); }).catch(() => {}); }, 500);
+  let fres = null, ferr = null;
+  try {
+    fres = await fetch(snap.provider.baseUrl + '/chat/completions', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + e.key }, body: built.bodyString, signal: AbortSignal.any([AbortSignal.timeout(fetchMs), ctrl.signal]) });
+  } catch (err) { ferr = err; }
+  clearInterval(killWatch);
+  let outcome, runRec = null;
+  if (ferr) {
+    // A thrown fetch never proves whether bytes left: unknown, may be billed, no auto-retry.
+    outcome = { status: 'started-unknown', note: 'fetch_error' };
+  } else {
+    const httpStatus = fres.status;
+    let j = null; try { j = await fres.json(); } catch {}
+    if (httpStatus === 200) {
+      const text = String((j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
+      const parsed = bizJson(text);
+      if (parsed && parsed.draft) {
+        const srcIds = new Set(snap.sources.map(s => s.id));
+        outcome = { status: 'known-result', usage: usageOf(j) || null };
+        runRec = { id: rid('run'), respId: id, kind: 'managed', at: now(), input: input.slice(0, 4000), output: String(parsed.draft).slice(0, 8000), blockedStep: parsed.blocked_step ? String(parsed.blocked_step).slice(0, 300) : null, sourcesUsed: (Array.isArray(parsed.sources_used) ? parsed.sources_used : []).filter(x => srcIds.has(String(x))).slice(0, 20), model: snap.provider.model, usage: usageOf(j) || null, status: 'done', jsonOk: true, backend: 'managed-engine', attemptId, httpStatus };
+      } else {
+        outcome = { status: 'unknown', httpStatus, note: 'unreadable_200' }; // a 200 without a readable draft is unknown, never clean
+      }
+    } else if (httpStatus >= 400 && httpStatus < 500 && j && j.error && (j.error.message || j.error.type)) {
+      outcome = { status: 'provider-refused', httpStatus, note: String(j.error.message || j.error.type).slice(0, 300) };
+    } else {
+      // Any other HTTP response - above all 5xx/gateway - is recorded verbatim with its
+      // uncertainty: it does NOT prove the request was rejected or went unprocessed.
+      outcome = { status: 'provider-ambiguous', httpStatus };
+    }
+  }
+  if (!runRec) runRec = { id: rid('run'), respId: id, kind: 'managed', at: now(), input: input.slice(0, 4000), output: null, blockedStep: null, sourcesUsed: [], model: snap.provider.model, usage: null, status: outcome.status === 'provider-refused' ? 'refused' : outcome.status === 'provider-ambiguous' ? 'ambiguous' : 'unknown', jsonOk: false, backend: 'managed-engine', attemptId, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus };
+  const st = await bizManagedSettleRun(ctx, id, attempt0, outcome, runRec);
+  if (st.lost) return { status: 503, body: { error: 'The workspace changed while the run was finishing - the result was NOT saved. The provider may have processed and billed the call. The attempt stays recorded as unresolved; review it in run history.', code: 'managed_settle_lost', attemptId } };
+  if (st.unknown) return { status: 503, body: { error: st.unknown === 'no-record' ? 'The run finished but its record is gone (a purge or ownership change removed it) - nothing was recreated. The provider may have processed and billed the call.' : 'The run finished but its save may or may not have registered. The provider may have processed and billed the call. Reload and review the attempt in run history before doing anything else.', code: 'managed_settle_unknown', attemptId } };
+  if (st.withheld) return { status: 200, body: { managedOutcome: { class: 'withheld', attemptId, billing: 'unknown-possible', message: 'The workspace kill switch stopped this run after the provider call started - the result was not saved. The call may have been processed and billed.' } } };
+  const billing = outcome.status === 'known-result' ? 'provider-metered' : outcome.status === 'provider-refused' ? 'refused-by-provider' : 'unknown-possible';
+  const message = outcome.status === 'known-result' ? 'Run complete.'
+    : outcome.status === 'provider-refused' ? 'The provider refused the request (HTTP ' + outcome.httpStatus + ')' + (outcome.note ? ': ' + outcome.note : '') + '. No result was produced; the provider\'s own accounting determines any charge.'
+    : outcome.status === 'unknown' ? 'The provider answered HTTP 200 but no readable result came back. The call may be billed; the attempt is recorded as unknown.'
+    : outcome.status === 'provider-ambiguous' ? 'The provider returned HTTP ' + outcome.httpStatus + '. That does not prove the request was rejected - it may have been processed and billed. The attempt is recorded with exactly what was observed.'
+    : 'The provider call started but its outcome is unknown - the request may have been processed and may be billed. Nothing was saved as a result. The attempt is recorded in run history; resolving or retrying it is your explicit call, and retrying can produce a second charge.';
+  return { status: 200, body: { managedOutcome: { class: outcome.status, attemptId, run: runRec, billing, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, message } } };
+}
+async function bizManagedResolve(id, body) {
+  const un = await bizManagedUnresolved(id);
+  const reviewedSet = String(body && body.reviewedSet || '');
+  if (!un.attempts.length) return { status: 409, body: { error: 'There are no unresolved managed attempts.', code: 'nothing_pending' } };
+  if (un.set !== reviewedSet) return { status: 409, body: { error: 'The unresolved attempts changed since you reviewed them. Review the current list.', code: 'managed_resolve_stale', unresolved: bizManagedRenderAttempts(un.attempts), attemptSet: un.set } };
+  const receipts = {}; for (const a of un.attempts) receipts[a.id] = bizManagedReceipt(a.id, 'acknowledged-unknown', a.requestHash, null);
+  const logEntry = JSON.stringify({ id: rid('bizlog'), at: now(), kind: 'managed_resolved', respId: id, attempts: un.attempts.map(a => a.id) });
+  const res = await r(['EVAL', BIZ_MANAGED_RESOLVE, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:munres:' + id, 'fm:biz:log', un.set, logEntry, String(BIZ.LOG_KEEP), now(), nsKey('fm:biz:matt:'), JSON.stringify(receipts)]).catch(() => null);
+  if (!Array.isArray(res)) return { status: 503, body: { error: 'The resolution may or may not have registered - its response was lost. Reload and review the attempts before doing anything else.', code: 'managed_resolve_unknown' } };
+  if (res[0] === 'held') return { status: 409, body: { error: 'A managed run is still finishing (its local write lease is active). Wait a moment and reload. An expired lease ends only local write ownership - it never proves the provider stopped.', code: 'managed_held' } };
+  if (res[0] === 'not_managed') return { status: 409, body: { error: 'The pending operation is not a managed run.', code: 'operation_pending' } };
+  if (res[0] === 'stale') return { status: 409, body: { error: 'The unresolved attempts changed since you reviewed them. Review the current list.', code: 'managed_resolve_stale', unresolved: bizManagedRenderAttempts((await bizManagedUnresolved(id)).attempts), attemptSet: (await bizManagedUnresolved(id)).set } };
+  if (res[0] === 'orphan') return { status: 503, body: { error: 'A managed attempt record is missing its detail. Nothing was changed; a full data purge removes these records.', code: 'managed_attempt_orphan' } };
+  if (res[0] === 'unbound') return { status: 503, body: { error: 'A managed attempt does not belong to the stuck operation it was listed under. Nothing was changed; a full data purge removes these records.', code: 'managed_attempt_unbound' } };
+  return { status: 200, body: { resolved: res[1], note: 'Marked as acknowledged-unknown. The provider may still have processed and billed these attempts - their records stay in run history.' } };
+}
+async function bizManagedAct(id, resp, respRaw0, body, f0) {
+  const sop = String(body && body.op || '');
+  if (sop === 'approve-preview') return bizManagedApprove(id, resp, respRaw0, body, f0, true);
+  if (sop === 'approve') return bizManagedApprove(id, resp, respRaw0, body, f0, false);
+  if (sop === 'revoke') return bizManagedRevoke(id, resp, respRaw0, f0);
+  if (sop === 'review') return bizManagedReview(id, resp, body);
+  if (sop === 'confirm') return bizManagedConfirm(id, resp, body);
+  if (sop === 'resolve') return bizManagedResolve(id, body);
+  return { status: 400, body: { error: 'approve-preview, approve, revoke, review, confirm or resolve required' } };
+}
 async function bizRespAct(id, op, body) {
   const f0 = op === 'delete' ? null : await bizEntry(); // one atomic snapshot before the record read; threaded into runs so a delete during the read invalidates persistence
-  if (op !== 'delete' && f0 == null) return bizFrozenConflict();
+  // 'managed' is exempt from the entry-snapshot refusal: its sub-actions carry their own
+  // atomic gates (begin/settle/resolve scripts), and resolve must stay REACHABLE while a
+  // managed intent is stuck pending - that is exactly the state it exists to clear. The
+  // sub-actions that write the responsibility (approve/revoke) re-check the snapshot below.
+  if (op !== 'delete' && op !== 'managed' && f0 == null) return bizFrozenConflict();
   const entryDeadline = Date.now() + BIZ.RUN_BUDGET_MS; // absolute, before any storage read
   // ONE raw read: the reviewed object AND every compare-and-set below derive from the SAME
   // bytes. A second read could observe a newer record while the object stayed older - the
@@ -3966,6 +4411,7 @@ async function bizRespAct(id, op, body) {
   const respRaw0 = await r(['GET', 'fm:biz:resp:' + id]);
   const resp = respRaw0 ? JSON.parse(respRaw0) : null;
   if (!resp && op !== 'delete') return { status: 404, body: { error: 'not found' } }; // delete handles a missing record below: an idempotent retry may still owe intent close + index cleanup
+  if (op === 'managed') return bizManagedAct(id, resp, respRaw0, body, f0);
   if (op === 'candidates') {
     if (!resp.research) return { status: 400, body: { error: 'This responsibility does not read public pages' } };
     const input = String(body.input || '').slice(0, 4000);
@@ -4037,6 +4483,10 @@ async function bizRespAct(id, op, body) {
       assignment = { botId: pick.id, botName: String(pick.name || 'bot').slice(0, 40), assignedAt: now() };
     }
     const next = { ...resp }; if (assignment) next.assignment = assignment; else delete next.assignment;
+    // A set assignment closes managed execution in the same CAS: the responsibility now has an
+    // explicit owner-reviewed destination, and managed never substitutes for it. Clearing an
+    // assignment later never revives the grant (it is already gone).
+    if (assignment && next.managed) delete next.managed;
     if (global.__bizAssignBeforeWrite) { const fn = global.__bizAssignBeforeWrite; global.__bizAssignBeforeWrite = null; await fn(); } // test-only interleave hook, never set in production
     // Owned exact CAS against the ENTRY bytes: the record must still be byte-identical to
     // what was reviewed. A concurrent schedule enable, source-driven edit, pause or status
@@ -4047,6 +4497,7 @@ async function bizRespAct(id, op, body) {
       if (!respRaw0) return bizFenceConflict();
       return { status: 409, body: { error: 'This responsibility changed while you were assigning - reload and review it before assigning. Nothing was overwritten.', code: 'resp_changed' } };
     }
+    if (assignment && resp.managed) await r(['EVAL', BIZ_FENCE_DEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:mg:' + id, await bizFence()]).catch(() => 0); // unreferenced after the CAS; a conflict leaves an unrunnable orphan the next approve or purge removes
     if (!await bizLog(assignment ? 'responsibility_assigned' : 'responsibility_unassigned', { respId: id, title: resp.title, botName: assignment ? assignment.botName : null }, f0)) return bizFenceConflict();
     return { status: 200, body: { responsibility: next } };
   }
@@ -4151,6 +4602,12 @@ async function bizRespAct(id, op, body) {
         const gone = await failDelegatedTask(t.id, 'Responsibility deleted by owner');
         if (gone && gone.assignee) await event(gone.assignee, 'blocked', 'Job cancelled: its responsibility was deleted', { kind: 'BLOCKED', taskId: t.id });
       }
+      stage = 'managed';
+      const mattIds = new Set([...(await r(['LRANGE', 'fm:biz:mattl:' + id, 0, -1])) || [], ...(await r(['SMEMBERS', 'fm:biz:munres:' + id])) || []]);
+      for (const aid of mattIds) await bizOpWrite(ctx, 'del', 'fm:biz:matt:' + aid);
+      await bizOpWrite(ctx, 'del', 'fm:biz:mattl:' + id);
+      await bizOpWrite(ctx, 'del', 'fm:biz:munres:' + id);
+      await bizOpWrite(ctx, 'del', 'fm:biz:mg:' + id);
       stage = 'record';
       await bizOpWrite(ctx, 'del', 'fm:biz:runs:' + id);
       await bizOpWrite(ctx, 'del', 'fm:biz:resp:' + id);
@@ -4445,7 +4902,7 @@ async function bizDataPurge(body) {
     if (pendNow && pendNow.op === 'purge') return bizOpNeedsReview();
   }
   const ctx = await bizOpBegin('purge', null, !retry, retry ? body.opId : undefined); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
-  const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0, scans: 0, connections: 0, grantsRevoked: 0, grantsUnconfirmed: 0, draftOps: 0 };
+  const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0, scans: 0, connections: 0, grantsRevoked: 0, grantsUnconfirmed: 0, draftOps: 0, managedAttempts: 0 };
   let stage = 'start';
   try {
     bizFault('purge:begin');
@@ -4462,6 +4919,7 @@ async function bizDataPurge(body) {
     bizFault('purge:props');
     stage = 'responsibilities'; await fam('fm:biz:resp:*', 'responsibilities');
     stage = 'runs'; await fam('fm:biz:run:*', 'runs'); await fam('fm:biz:runs:*', null);
+    stage = 'managed'; await fam('fm:biz:mg:*', null); await fam('fm:biz:matt:*', 'managedAttempts'); await fam('fm:biz:mattl:*', null); await fam('fm:biz:munres:*', null);
     bizFault('purge:runs');
     stage = 'scans'; await fam('fm:biz:disc:*', 'scans');
     stage = 'apps';
@@ -4532,6 +4990,7 @@ async function bizOpCancel(body) {
   if (!Array.isArray(res)) return { status: 503, body: { error: 'storage error' } };
   if (res[0] === 'none') return { status: 409, body: { error: 'No delete is pending', code: 'nothing_pending' } };
   if (res[0] === 'stale') return { status: 409, body: { error: 'That delete already finished or was replaced. Reload to see the current state.', code: 'op_stale' } };
+  if (res[0] === 'managed') return { status: 409, body: { error: 'A managed run cannot be cancelled from here - its provider call may already be in flight, and cancelling locally would not stop it. It finishes on its own within about a minute; if it gets stuck, resolve it from the responsibility\'s run history.', code: 'managed_cancel_refused' } };
   return { status: 200, body: { cancelled: true, note: 'Records already deleted stay deleted; everything else is kept. Work has resumed.' } };
 }
 async function bizDailyTick() {
