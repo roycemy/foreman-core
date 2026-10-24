@@ -102,6 +102,18 @@ async function pubGet(path){let out;const res={headers:{},setHeader(k,v){this.he
  const rv3=await call('POST','/public-receipts/review',{...draft,taskId:t.id,seenHash:seenHashFor(drT.j.baseSnapshot,draft,null)});assert.equal(rv3.code,200,JSON.stringify(rv3.j));const p3=await call('POST','/public-receipts/publish',{reviewId:rv3.j.reviewId,hash:rv3.j.hash,confirmed:true,audience:'public'});assert.equal(p3.code,201);
  const rec=await f.getJ('gl:publicReceipt:'+p3.j.token);rec.expiresAt=new Date(Date.now()-1000).toISOString();await f.setJ('gl:publicReceipt:'+p3.j.token,rec);assert.equal((await pubGet('/public-receipts/'+p3.j.token)).code,404);
  assert.equal((await call('POST','/public-receipts/review',{...draft,taskId:t2.id})).code,404);
+ // identity binding: a draft/review belongs to the exact account+workspace it was made under; the same
+ // workspace under another account (or no account stamp) cannot publish it - the flow must be re-reviewed
+ const t8=await f.newTask({title:'Estimate follow-up desk',assignee:bot.id});await gw(live,'GET','/tasks/next');await gw(live,'POST','/tasks/'+t8.id+'/complete',{result:'ok',model_cost_usd:0.02});
+ const dr8=await call('GET','/public-receipts/draft?taskId='+t8.id);assert.equal(dr8.code,200);
+ assert.ok(dr8.j.identity&&dr8.j.identity.ws==='vnexttest'&&dr8.j.identity.email===null,JSON.stringify(dr8.j.identity));
+ const sh8=seenHashFor(dr8.j.baseSnapshot,draft,null);
+ const rvA=await f.als.run({ws:'vnexttest',email:'a@example.com'},()=>call('POST','/public-receipts/review',{...draft,taskId:t8.id,seenHash:sh8}));assert.equal(rvA.code,200,JSON.stringify(rvA.j));
+ const pB=await f.als.run({ws:'vnexttest',email:'b@example.com'},()=>call('POST','/public-receipts/publish',{reviewId:rvA.j.reviewId,hash:rvA.j.hash,confirmed:true,audience:'public'}));assert.equal(pB.code,409);assert.ok(/account or workspace changed/i.test(pB.j.error),JSON.stringify(pB.j));
+ const pA=await f.als.run({ws:'vnexttest',email:'a@example.com'},()=>call('POST','/public-receipts/publish',{reviewId:rvA.j.reviewId,hash:rvA.j.hash,confirmed:true,audience:'public'}));assert.equal(pA.code,201,JSON.stringify(pA.j));
+ const rvN=await call('POST','/public-receipts/review',{...draft,taskId:t8.id,seenHash:sh8});assert.equal(rvN.code,200,JSON.stringify(rvN.j));
+ const pK=await f.als.run({ws:'vnexttest',email:'a@example.com'},()=>call('POST','/public-receipts/publish',{reviewId:rvN.j.reviewId,hash:rvN.j.hash,confirmed:true,audience:'public'}));assert.equal(pK.code,409);
+ const pN=await call('POST','/public-receipts/publish',{reviewId:rvN.j.reviewId,hash:rvN.j.hash,confirmed:true,audience:'public'});assert.equal(pN.code,201);
  // prefill kinds: responsibility runs are job-specific from the owner-approved synopsis and boundary (detector-guarded, never the raw title or result); discovery claims stay recorded-only
  await f.setJ('fm:biz:resp:resp_share1',{id:'resp_share1',title:'Estimate follow-up desk',summary:'Track sent estimates and draft reminder messages for ones with no response.',boundary:'Read and draft only; the owner approves every output; nothing is sent.',status:'active',createdAt:new Date().toISOString(),runsCount:1});
  const t4=await f.newTask({title:'Estimate follow-up desk',assignee:bot.id});await gw(live,'GET','/tasks/next');await gw(live,'POST','/tasks/'+t4.id+'/complete',{result:'drafted 3 reminders',model_cost_usd:0.1});
@@ -110,21 +122,38 @@ async function pubGet(path){let out;const res={headers:{},setHeader(k,v){this.he
  assert.ok(dr4.j.suggestions.summary.includes('Track sent estimates and draft reminder messages'),dr4.j.suggestions.summary);
  assert.ok(dr4.j.suggestions.template.includes('Do this approved responsibility:')&&dr4.j.suggestions.template.includes('Boundary:'),dr4.j.suggestions.template);
  assert.ok(!JSON.stringify(dr4.j.suggestions).includes('drafted 3 reminders'));
+ assert.equal(dr4.j.suggestions.fromResponsibility,true);
  // a private synopsis is detector-guarded out and the job falls back to the explicit generic text
  await f.setJ('fm:biz:resp:resp_share2',{id:'resp_share2',title:'x',summary:'Call jane@acme.com about the estimates',boundary:'read only',status:'active',createdAt:new Date().toISOString(),runsCount:1});
  const t5=await f.newTask({title:'Some job',assignee:bot.id});await gw(live,'GET','/tasks/next');await gw(live,'POST','/tasks/'+t5.id+'/complete',{result:'ok'});
  const rec5=await f.getJ('fm:task:'+t5.id);rec5.biz={respId:'resp_share2',runId:'run_share2',botId:bot.id,sourceIds:[]};await f.setJ('fm:task:'+t5.id,rec5);
  const dr5=await call('GET','/public-receipts/draft?taskId='+t5.id);assert.equal(dr5.code,200);assert.equal(dr5.j.suggestions.tailored,false);assert.ok(!JSON.stringify(dr5.j.suggestions).includes('jane@'));
- // discovery scans: recorded-outcome claims only - no categorical "nothing was sent/booked" for a bot-run or failed scan
+ // discovery scans: wording is derived from the valid saved proposal count in the disc record - never a
+ // bot-narrated count, never a categorical "nothing was sent/booked" claim, never proposals from thin air
  const t6=await f.newTask({title:'Business scan',assignee:bot.id});await gw(live,'GET','/tasks/next');await gw(live,'POST','/tasks/'+t6.id+'/complete',{result:'4 proposals'});
  const rec6=await f.getJ('fm:task:'+t6.id);rec6.biz={kind:'discover',discId:'disc_share',botId:bot.id,sourceIds:[]};await f.setJ('fm:task:'+t6.id,rec6);
+ await f.setJ('fm:biz:disc:disc_share',{id:'disc_share',status:'done',proposals:4,createdAt:new Date().toISOString()});
  const dr6=await call('GET','/public-receipts/draft?taskId='+t6.id);assert.equal(dr6.code,200);assert.equal(dr6.j.suggestions.tailored,true);
- assert.ok(!/Nothing was sent or booked|every draft needs my approval/i.test(dr6.j.suggestions.summary),dr6.j.suggestions.summary);
+ assert.ok(/drafted 4 workflow proposals for my review/.test(dr6.j.suggestions.summary),dr6.j.suggestions.summary);
  assert.ok(/No proposal starts without my approval/.test(dr6.j.suggestions.summary));
+ assert.ok(!/Nothing was sent or booked|every draft needs my approval/i.test(dr6.j.suggestions.summary),dr6.j.suggestions.summary);
+ // zero valid saved proposals (e.g. a malformed/ungrounded bot answer) is stated as zero, not "drafted proposals"
+ const t6z=await f.newTask({title:'Business scan',assignee:bot.id});await gw(live,'GET','/tasks/next');await gw(live,'POST','/tasks/'+t6z.id+'/complete',{result:'malformed JSON'});
+ const rec6z=await f.getJ('fm:task:'+t6z.id);rec6z.biz={kind:'discover',discId:'disc_share_zero',botId:bot.id,sourceIds:[]};await f.setJ('fm:task:'+t6z.id,rec6z);
+ await f.setJ('fm:biz:disc:disc_share_zero',{id:'disc_share_zero',status:'done',proposals:0,note:'bot answer unusable',createdAt:new Date().toISOString()});
+ const dr6z=await call('GET','/public-receipts/draft?taskId='+t6z.id);assert.equal(dr6z.code,200);
+ assert.ok(/produced no proposals to review/.test(dr6z.j.suggestions.summary),dr6z.j.suggestions.summary);
+ assert.ok(!/drafted|No proposal starts/.test(dr6z.j.suggestions.summary),dr6z.j.suggestions.summary);
+ // a missing disc record says nothing about proposals at all
+ const t6n=await f.newTask({title:'Business scan',assignee:bot.id});await gw(live,'GET','/tasks/next');await gw(live,'POST','/tasks/'+t6n.id+'/complete',{result:'done'});
+ const rec6n=await f.getJ('fm:task:'+t6n.id);rec6n.biz={kind:'discover',discId:'disc_share_gone',botId:bot.id,sourceIds:[]};await f.setJ('fm:task:'+t6n.id,rec6n);
+ const dr6n=await call('GET','/public-receipts/draft?taskId='+t6n.id);assert.equal(dr6n.code,200);
+ assert.ok(/finished a discovery scan of the business notes I connected\./.test(dr6n.j.suggestions.summary),dr6n.j.suggestions.summary);
+ assert.ok(!/proposal/i.test(dr6n.j.suggestions.summary),dr6n.j.suggestions.summary);
  const t7=await f.newTask({title:'Failed scan',assignee:bot.id});await gw(live,'GET','/tasks/next');
  const rec7=await f.getJ('fm:task:'+t7.id);rec7.status='failed';rec7.finishedAt=new Date().toISOString();rec7.result='bot error';rec7.biz={kind:'discover',discId:'disc_share_f',botId:bot.id,sourceIds:[]};await f.setJ('fm:task:'+t7.id,rec7);
  const dr7=await call('GET','/public-receipts/draft?taskId='+t7.id);assert.equal(dr7.code,200);assert.ok(/stopped without a result/.test(dr7.j.suggestions.summary));assert.ok(!/Nothing was sent or booked/i.test(dr7.j.suggestions.summary));
- console.log('PASS public receipts: explicit generic + synopsis-grounded prefill, exact review rejects secrets/contacts/links/paths/tool details/IDs/private names, visible-hash binding, allowlisted payload, explicit audience, source-change guard, fingerprint, copy-only (no clone), revoke, expiry');
+ console.log('PASS public receipts: explicit generic + synopsis-grounded prefill with source flags, exact review rejects secrets/contacts/links/paths/tool details/IDs/private names, visible-hash binding, exact account+workspace identity binding on review/publish, recorded proposal-count wording, allowlisted payload, explicit audience, source-change guard, fingerprint, copy-only (no clone), revoke, expiry');
 });
 await f.als.run({ws:'elsewhere'},async()=>{assert.equal((await call('GET','/jobs/x')).code,404);});
 await f.als.run({ws:'elsewhere'},async()=>{assert.equal((await call('GET','/public-receipts')).j.receipts.length,0);});

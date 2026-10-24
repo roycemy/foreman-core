@@ -754,29 +754,42 @@ function publicSnapshotBuild(t,src,fields,budget){
   steps:publicSteps(t,src.j.requests,src.j.receipts,src.j.children),
   provenance:'Outcome and model costs are reported by the bot, not verified. Title, description and template were reviewed and approved by the owner. Elapsed is wall-clock time, not active work time. The gateway ledger covers retained linked actions only; it is not provider spending or a complete job cost.'};}
 // Pre-filled starting points for the share form (the owner edits before publishing). Suggestions are fixed,
-// server-written strings built from coarse recorded facts (job kind, done/failed) and, for runs of an approved
-// responsibility, the owner-approved synopsis and boundary - never the raw job title, bot names or result text,
-// and never claims about bot behavior the job record does not show. Anything else gets an explicit generic
-// fallback the form labels as generic. `fixed` marks every string as server-written; a future branch that
-// interpolates job data MUST leave it unset so the detector blanking in publicReceiptDraft applies to it.
+// server-written strings built from coarse recorded facts (job kind, done/failed, valid saved proposal count).
+// Responsibility runs also draw on the responsibility's summary and boundary - those are PRIVATE work
+// instructions the owner approved as a responsibility definition, NOT text approved for public disclosure;
+// they pass the same (finite, conservative) detector here, the form labels their source, and the owner's
+// public consent remains the exact visible snapshot they review and publish - never the responsibility
+// approval. Never the raw job title, bot names or result text, and never claims about bot behavior the job
+// record does not show. Anything else gets an explicit generic fallback the form labels as generic. `fixed`
+// marks every string as server-written; a future branch that interpolates job data MUST leave it unset so
+// the detector blanking in publicReceiptDraft applies to it.
 async function publicSuggestions(t,names){
  const kind=t.biz&&t.biz.kind,done=t.status==='done';
  const clean=(v,max)=>{const s=String(v||'').trim().slice(0,max);return s&&publicText(s,900)&&!publicProblems({text:s},names||[]).length?s:null;};
- if(kind==='discover')return {tailored:true,fixed:true,title:'Business discovery scan',
-  summary:done?'A bot finished a discovery scan of the business notes I connected and drafted workflow proposals for my review. No proposal starts without my approval. Timeline and cost facts on this page come from the job record.':'A bot attempted a discovery scan of the business notes I connected and stopped without a result. Timeline facts on this page come from the job record.',
-  template:'Read the business notes I connect and draft workflow proposals for my review. Send or book nothing without my approval.'};
+ if(kind==='discover'){
+  // Only the valid saved proposal count grounds the outcome wording; a scan whose answer was malformed or
+  // ungrounded produced zero, and a missing record says nothing about proposals at all.
+  let n=null;try{const disc=t.biz.discId&&await getJ('fm:biz:disc:'+t.biz.discId);if(disc&&disc.status==='done'&&Number.isSafeInteger(disc.proposals))n=disc.proposals;}catch(e){}
+  const what=n==null?'A bot finished a discovery scan of the business notes I connected.':n>0?'A bot finished a discovery scan of the business notes I connected and drafted '+n+' workflow proposal'+(n===1?'':'s')+' for my review. No proposal starts without my approval.':'A bot finished a discovery scan of the business notes I connected and produced no proposals to review.';
+  return {tailored:true,fixed:true,title:'Business discovery scan',
+   summary:done?what+' Timeline and cost facts on this page come from the job record.':'A bot attempted a discovery scan of the business notes I connected and stopped without a result. Timeline facts on this page come from the job record.',
+   template:'Read the business notes I connect and draft workflow proposals for my review. Send or book nothing without my approval.'};
+ }
  if(t.biz&&t.biz.respId){
   let resp=null;try{resp=await getJ('fm:biz:resp:'+t.biz.respId);}catch(e){}
   if(resp){
    const lead=done?'A bot finished a run of an approved responsibility in my workspace.':'A bot attempted a run of an approved responsibility in my workspace and stopped without a result.';
    const syn=clean(resp.summary,560),bnd=clean(resp.boundary,280);
-   if(syn)return {tailored:true,fixed:true,title:done?'Completed responsibility run':'Responsibility run without result',
+   if(syn)return {tailored:true,fixed:true,fromResponsibility:true,title:done?'Completed responsibility run':'Responsibility run without result',
     summary:lead+' What it covers: '+syn,
     template:'Do this approved responsibility: '+syn+(bnd?' Boundary: '+bnd:'')};
    return {tailored:false,fixed:true,title:done?'Completed responsibility run':'Responsibility run without result',summary:lead+' The timeline and cost facts on this page come from the job record.',template:'Read my request, do the work, and bring the result to me to review. Send, post, purchase or book nothing without my approval.'};
   }
  }
  return {tailored:false,fixed:true,title:done?'Completed job':'Job attempt',summary:done?'A bot completed this job. The timeline and cost facts on this page come from the job record.':'A bot attempted this job and stopped without a result. The timeline on this page comes from the job record.',template:'Read my request, do the work, and bring the result to me to review. Send, post, purchase or book nothing without my approval.'};}
+// The exact owner identity (account + workspace) a receipt draft/review was made under. Workspace keys are
+// already namespaced, but two accounts can share one workspace: the review binds BOTH, and publish must match.
+const ownerIdentity=()=>{const st=als.getStore()||{};return {email:st.email||null,ws:wsId()};};
 async function publicReceiptReview(taskId,b){
  const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};
  const t=src.j.task,fields={title:b.title,summary:b.summary,template:b.template};
@@ -792,7 +805,7 @@ async function publicReceiptReview(taskId,b){
  // so the same dialog refreshes and gets reviewed again.
  if(b.seenHash!==hash)return {status:409,body:{error:'The job changed since this preview was made. The preview has been refreshed with the current snapshot - review it and publish again.',code:'snapshot_changed',snapshot,hash}};
  const reviewId=crypto.randomBytes(18).toString('hex'),expiresAt=new Date(Date.now()+600000).toISOString();
- await setJ('fm:publicReview:'+reviewId,{snapshot,hash,taskId,sourceHash:src.hash,expiresAt});await r(['EXPIRE','fm:publicReview:'+reviewId,600]);
+ await setJ('fm:publicReview:'+reviewId,{snapshot,hash,taskId,sourceHash:src.hash,identity:ownerIdentity(),expiresAt});await r(['EXPIRE','fm:publicReview:'+reviewId,600]);
  return {status:200,body:{reviewId,expiresAt,snapshot,hash,suggestedBudgetCents:suggestedBudgetCents(t,src.j.receipts),audience:'Anyone with the link, for '+PUBLIC_TTL_DAYS+' days or until you revoke it. People who already saw or copied it keep what they saw.'}};}
 // Pre-filled share form: budget from what the job recorded, fixed server-written suggestions (scoped to the approved
 // the owner watches the exact public page update while editing. Publishing still requires review + publish, unchanged.
@@ -803,10 +816,11 @@ async function publicReceiptDraft(taskId){
  const suggestions=await publicSuggestions(t,names);
  if(!suggestions.fixed)for(const k of ['title','summary','template'])if(publicProblems({[k]:suggestions[k]},names).length)suggestions[k]='';
  const baseSnapshot=publicSnapshotBuild(t,src,suggestions,budget);
- return {status:200,body:{suggestedBudgetCents:budget,suggestions,baseSnapshot,baseHash:sha(JSON.stringify(baseSnapshot))}};}
+ return {status:200,body:{suggestedBudgetCents:budget,suggestions,baseSnapshot,baseHash:sha(JSON.stringify(baseSnapshot)),identity:ownerIdentity()}};}
 async function publicReceiptPublish(b){
  if(b.confirmed!==true||b.audience!=='public'||typeof b.reviewId!=='string'||!/^[a-f0-9]{36}$/.test(b.reviewId))return {status:400,body:{error:'Review the exact snapshot and confirm its public audience'}};
  const k='fm:publicReview:'+b.reviewId,review=await getJ(k);if(!review||Date.parse(review.expiresAt)<=Date.now())return {status:409,body:{error:'Review expired; review again'}};
+  const who=ownerIdentity();if(!review.identity||review.identity.email!==who.email||review.identity.ws!==who.ws)return {status:409,body:{error:'The account or workspace changed since this review. Review the snapshot again under the current account.'}};
  if(b.hash!==review.hash)return {status:409,body:{error:'This is not the snapshot you reviewed. Review again'}};
  return withJobLock('public:'+b.reviewId,async()=>{const live=await getJ(k);if(!live||live.published)return {status:409,body:{error:'Already published or unavailable'}};
   const src=await publicSource(live.taskId);if(!src||src.hash!==live.sourceHash)return {status:409,body:{error:'The job changed since your review. Review again'}};
@@ -1639,7 +1653,7 @@ module.exports = async (req, res) => {
     if (!sess) return res.status(401).json({ error: 'auth', message: 'Sign in required' });
     if(path.startsWith('/botlink/'))return await botLinkOwnerRoutes(req,res,path,body,sess);
     if (path === '/funnel') { const f = await als.run({ ws: sess.ws }, () => funnel(sess.ws === 'legacy' ? null : sess.ws)); return /format=html/.test(req.url || '') ? res.setHeader('Content-Type', 'text/html; charset=utf-8').status(200).send(funnelHtml(f)) : res.json(f); }
-    return await als.run({ ws: sess.ws }, () => routes(req, res, path, body, null));
+    return await als.run({ ws: sess.ws, email: sess.email }, () => routes(req, res, path, body, null));
   } catch (e) { return sendStoreError(res,e); }
 };
 async function routes(req, res, path, body, agentPre) {

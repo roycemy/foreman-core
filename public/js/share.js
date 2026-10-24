@@ -1,18 +1,27 @@
-/* Black Box vNext · sharing a receipt (the PR #33 boundary). The form opens pre-filled with fixed server-written
-   suggestions - job-specific from the owner-approved synopsis for responsibility runs and discovery scans, an explicit
-   generic fallback (labeled as such) otherwise - and the exact public page renders live beside the fields (same renderer
-   as the public page). The owner edits, confirms the public audience, then publishes. Publish binds to the exact visible
+/* Black Box vNext · sharing a receipt (the PR #33 boundary). The form opens pre-filled with server-written starting
+   text - discovery scans and responsibility runs get job-specific text (recorded scan outcome counts; the responsibility's
+   own summary/boundary, labeled in the form as private work instructions), unknown jobs get an explicit generic fallback
+   (also labeled) - and the exact public page renders live beside the fields (same renderer as the public page). The owner edits, confirms the public audience, then publishes. Publish binds to the exact visible
    snapshot: the client sends its hash with the review, the server refuses a stale or missing one and returns the current
-   snapshot for an in-dialog refresh, and any edit, consent change or close while a check is in flight cancels the
-   continuation. Detector gate, review+publish and consent are unchanged. Links expire in 30 days and can be revoked.
+   snapshot for an in-dialog refresh, and any edit, consent change, close or identity (account/workspace) change while a
+   check is in flight discards the continuation; the review record itself is bound to the exact owner identity server-side,
+   and publish must match it. Text sourced from an approved responsibility is labeled as private work instructions:
+   approving a responsibility never approves making it public - consent here is the only public approval. Detector gate,
+   review+publish and consent are unchanged. Links expire in 30 days and can be revoked.
    There is no "clone after sign-in": a public receipt can only be copied as text. */
 (function () {
   'use strict';
   const BB = window.BB, $ = BB.$, esc = BB.esc;
   const KIND = { secret: 'a credential or secret', 'internal id': 'an internal ID', contact: 'contact details', link: 'a link or domain', 'file path': 'a file path or file name', 'tool detail': 'a tool or API detail', 'private name': 'a bot name or private job title' };
   const FIELD = { title: 'Public title', summary: 'Description', template: 'Job template' };
+  // Exact identity (account + workspace) the dialog was opened under. Any change - sign-out, account
+  // switch, fresh workspace, or a late first load - discards the draft continuation and blocks publish:
+  // one identity's receipt flow never completes under another.
+  const idAt = () => (BB.who && (String(BB.who.email || '') + '|' + String(BB.who.workspace || ''))) || null;
   BB.openShare = async function (taskId) {
+    const openId = idAt();
     const t = BB.task(taskId), d = await BB.api('/api/public-receipts/draft?taskId=' + encodeURIComponent(taskId)); if (d.error) return BB.toast(d.error);
+    if (idAt() !== openId) return; // identity changed while the draft loaded: never paint it under another identity
     const sg = d.suggestions || { title: '', summary: '', template: '' };
     const box = BB.modal(`<div class="sh-share">
       <div class="sh-body">
@@ -31,6 +40,7 @@
     box.querySelector('#sh-summary').value = sg.summary || '';
     box.querySelector('#sh-template').value = sg.template || '';
     if (!sg.tailored) box.querySelector('.sh-form p').insertAdjacentHTML('afterend', '<p class="meta">This job did not come with an approved description, so this starting text is generic - rewrite it to say what the job actually did before you publish.</p>');
+    if (sg.fromResponsibility) box.querySelector('.sh-form p').insertAdjacentHTML('afterend', '<p class="meta">This starting text comes from your approved responsibility, which is a private work instruction. Approving a responsibility does not approve making it public - check the text for names and details before you publish.</p>');
     const norm = v => v.trim().replace(/\s+\n/g, '\n');
     const cur = () => { const s = JSON.parse(JSON.stringify(d.baseSnapshot)); s.title = norm(box.querySelector('#sh-title').value); s.summary = norm(box.querySelector('#sh-summary').value); s.template = norm(box.querySelector('#sh-template').value); const b = box.querySelector('#sh-budget').value.trim(); s.budgetCents = b === '' ? null : Math.round(Number(b) * 100); return s; };
     const sha256 = async str => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)))].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -50,8 +60,8 @@
       // The dialog is live while the server checks: only continue when this exact dialog is still open
       // with the same fields, the same consent and the same visible snapshot the owner just reviewed.
       const open = () => pb.isConnected && document.querySelector('#modal').classList.contains('on');
-      const intentIntact = () => open() && publishSeq === seq && box.querySelector('#sh-consent') && box.querySelector('#sh-consent').checked;
-      if (!open()) return;
+      const intentIntact = () => open() && publishSeq === seq && idAt() === openId && box.querySelector('#sh-consent') && box.querySelector('#sh-consent').checked;
+      if (!open() || idAt() !== openId) return; // closed, or the identity changed: discard, never paint or post under another identity
       if (j.error) {
         pb.disabled = false;
         if (j.code === 'snapshot_changed' && j.snapshot) { d.baseSnapshot = j.snapshot; paint(); er.textContent = j.error; }
