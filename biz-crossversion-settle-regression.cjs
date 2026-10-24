@@ -23,6 +23,7 @@ async function oldCodeTerminal(taskId,status,result){
 (async()=>{
  await f.als.run({ws:'wscvx'},async()=>{
   const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  {const a=await f.getJ('fm:agent:'+g.agent.id);a.connectionMode='gateway';await f.setJ('fm:agent:'+g.agent.id,a);await f.setJ('fm:gatewaySeen:'+g.agent.id,{epoch:a.oauthEpoch||0,seenAt:new Date().toISOString()});} // a real connection proof: delegation eligibility is connected-only
   const s1=(await f.bizSourceAdd({kind:'note',title:'How we communicate',text:S1})).body.source;
   const s2=(await f.bizSourceAdd({kind:'note',title:'Estimates',text:S2})).body.source;
 
@@ -100,6 +101,7 @@ async function oldCodeTerminal(taskId,status,result){
   const inWs=(ws,fn)=>f.als.run({ws},fn);
   const seedScan=async(fx,t1,t2)=>{
     const g=await fx.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+    {const a=await fx.getJ('fm:agent:'+g.agent.id);a.connectionMode='gateway';await fx.setJ('fm:agent:'+g.agent.id,a);await fx.setJ('fm:gatewaySeen:'+g.agent.id,{epoch:a.oauthEpoch||0,seenAt:new Date().toISOString()});} // a real connection proof: delegation eligibility is connected-only
     const a1=(await fx.bizSourceAdd({kind:'note',title:'How we communicate',text:S1})).body.source;
     const a2=(await fx.bizSourceAdd({kind:'note',title:'Estimates',text:S2})).body.source;
     const pv=await fx.bizDiscoveryDelegatePreview();

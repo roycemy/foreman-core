@@ -19,7 +19,11 @@ const ISO=ms=>new Date(ms).toISOString();
 (async()=>{
  c.process.env.ALTER_MODEL_KEY='k';c.process.env.ALTER_MODEL_WS='wsdel,wslegacy,wsres,wsorph,wsrace';
 
- await f.als.run({ws:'wsdel'},async()=>{
+ // A real connection proof for a bot: gateway mode + a seen marker at the current epoch.
+// Delegation/team eligibility is connected-only; an unconnected bot never resolves as available.
+const connect=async ag=>{const a=await f.getJ('fm:agent:'+ag.agent.id);a.connectionMode='gateway';await f.setJ('fm:agent:'+ag.agent.id,a);await f.setJ('fm:gatewaySeen:'+ag.agent.id,{epoch:a.oauthEpoch||0,seenAt:new Date().toISOString()});};
+
+await f.als.run({ws:'wsdel'},async()=>{
   await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
 
   // --- no bot connected: preview refuses honestly, runs fall back to the engine unchanged
@@ -39,7 +43,7 @@ const ISO=ms=>new Date(ms).toISOString();
   assert.equal(engRun.body.run.output,'engine draft');assert.equal(engRun.body.run.backend,undefined,'no bot: engine backend, unchanged behavior');
 
   // --- one Grok bot connects: delegation becomes the run path (Grokbot-first)
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(g);
   const agent=g.agent;
 
   // preview: exact payload, linked sources only, destination identity + hash
@@ -182,7 +186,7 @@ const ISO=ms=>new Date(ms).toISOString();
  // --- a legacy responsibility with no recorded sourceIds delegates the work text alone
  await f.als.run({ws:'wslegacy'},async()=>{
   await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
-  const g2=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g2=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(g2);
   const sL=await f.bizSourceAdd({kind:'note',title:'L',text:'Legacy source text. we answer every customer email within a day'});
   c.process.env.__sid=sL.body.source.id;
   const pL=(await f.bizDiscover()).body.proposals[0];
@@ -195,12 +199,12 @@ const ISO=ms=>new Date(ms).toISOString();
 
  // --- two non-Grok bots: no automatic choice; one non-Grok bot: unambiguous
  await f.als.run({ws:'wstwo'},async()=>{
-  await f.createAgent('Bot A','Ops','custom',false,{preset:'balanced'});
-  await f.createAgent('Bot B','Ops','custom',false,{preset:'balanced'});
+  await connect(await f.createAgent('Bot A','Ops','custom',false,{preset:'balanced'}));
+  await connect(await f.createAgent('Bot B','Ops','custom',false,{preset:'balanced'}));
   assert.equal(await f.bizDelegateBot(),null,'two non-Grok bots: no silent pick');
  });
  await f.als.run({ws:'wsone'},async()=>{
-  const one=await f.createAgent('Solo','Ops','custom',false,{preset:'balanced'});
+  const one=await f.createAgent('Solo','Ops','custom',false,{preset:'balanced'});await connect(one);
   const pick=await f.bizDelegateBot();
   assert.equal(pick&&pick.id,one.agent.id,'a single connected bot of any provider is unambiguous');
  });
@@ -226,7 +230,7 @@ const ISO=ms=>new Date(ms).toISOString();
  // payload accuracy (whole sources / fixed rules), refused creation leaving nothing behind ===
  await f.als.run({ws:'wsorph'},async()=>{
   await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
-  const g2=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});const ag2=g2.agent;
+  const g2=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(g2);const ag2=g2.agent;
   const so=await f.bizSourceAdd({kind:'note',title:'Ops',text:'We answer every customer email within a day. Refunds over $50 need Royce.'});
   c.process.env.__sid=so.body.source.id;
   const po=(await f.bizDiscover()).body.proposals[0];
@@ -316,7 +320,7 @@ const ISO=ms=>new Date(ms).toISOString();
  // --- refused creation leaves nothing behind (abandon path, stale fence)
  await f.als.run({ws:'wsrace'},async()=>{
   await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
-  await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  await connect(await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'}));
   const sr=await f.bizSourceAdd({kind:'note',title:'R',text:'We answer every customer email within a day.'});
   c.process.env.__sid=sr.body.source.id;
   const pr=(await f.bizDiscover()).body.proposals[0];
@@ -346,7 +350,7 @@ const ISO=ms=>new Date(ms).toISOString();
  await f.als.run({ws:'wssched'},async()=>{
   c.process.env.ALTER_MODEL_WS+=',wssched';
   await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(g);
   const sr=await f.bizSourceAdd({kind:'note',title:'Estimates',text:'We answer every customer email within a day. We send estimates within two days. Follow up on day three.'});
   c.process.env.__sid=sr.body.source.id;
   const p=(await f.bizDiscover()).body.proposals[0];
@@ -713,6 +717,7 @@ const ISO=ms=>new Date(ms).toISOString();
   const pT=await f.createAgent('Paused Pete','Ops','custom',false,{preset:'balanced'});
   {const a=await f.getJ('fm:agent:'+pT.agent.id);a.paused=true;await f.setJ('fm:agent:'+pT.agent.id,a);}
   const hT=await f.createAgent('Hosted Harry','Ops','custom',true,{preset:'balanced'});
+  await connect(gT); await connect(sT);
   const st0=await f.bizState();
   const teamIds=(st0.team||[]).map(x=>x.id).sort();
   assert.deepEqual(teamIds,[gT.agent.id,sT.agent.id].sort(),'the team surface lists only connected, unpaused, self-hosted bots');
@@ -729,6 +734,20 @@ const ISO=ms=>new Date(ms).toISOString();
   assert.ok(/does not create bot accounts/.test(bad2.body.error),'the refusal says honestly that Alter never creates bot accounts');
   const bad3=await f.bizRespAct(respT,'assign',{botId:hT.agent.id});
   assert.equal(bad3.status,409),'';
+  const uT=await f.createAgent('Unpaired Uma','Ops','custom',false,{preset:'balanced'}); // real bot, never connected: no gateway, no grants
+  const stU=await f.bizState();
+  const uEntry=(stU.team||[]).find(x=>x.id===uT.agent.id);
+  assert.ok(uEntry,'the team surface still lists a paired-but-unconnected bot - it is never hidden');
+  assert.equal(uEntry.connection.status,'awaiting_bot','its live connection state is shown honestly');
+  const badU=await f.bizRespAct(respT,'assign',{botId:uT.agent.id});
+  assert.equal(badU.status,409);assert.equal(badU.body.code,'assign_bot_unavailable','an unconnected bot is never assignable even though it is on the roster');
+  {const aG=await f.getJ('fm:agent:'+gT.agent.id);aG.paused=true;await f.setJ('fm:agent:'+gT.agent.id,aG);
+   const aS=await f.getJ('fm:agent:'+sT.agent.id);aS.paused=true;await f.setJ('fm:agent:'+sT.agent.id,aS);
+   const pvNone=await f.bizRespAct(respT,'delegate-preview',{input:'Draft a reply about hours.'});
+   assert.equal(pvNone.status,409);assert.equal(pvNone.body.code,'no_delegate_bot','an unconnected roster bot never resolves as the available delegate');
+   assert.equal(await f.bizDelegateBot(),null,'the automatic pick is null, never the unconnected bot');
+   aG.paused=false;await f.setJ('fm:agent:'+gT.agent.id,aG);
+   aS.paused=false;await f.setJ('fm:agent:'+sT.agent.id,aS);}
   const asg=await f.bizRespAct(respT,'assign',{botId:sT.agent.id});
   assert.equal(asg.status,200);assert.equal(asg.body.responsibility.assignment.botId,sT.agent.id,'the owner assignment lands on the exact bot');
   assert.equal(asg.body.responsibility.assignment.botName,'Scout','the assignment names the bot');
@@ -755,6 +774,15 @@ const ISO=ms=>new Date(ms).toISOString();
   const respR2=(await f.bizProposalAct(pR2.id,'activate',{research:true})).body.responsibility.id;
   const asgR=await f.bizRespAct(respR2,'assign',{botId:gT.agent.id});
   assert.equal(asgR.status,400,'a research responsibility is never assigned to a bot - it reads public pages on the engine path');
+  // assignment write is an owned exact-record CAS: a concurrent edit during the assignment refuses, nothing is overwritten
+  c.global.__bizAssignBeforeWrite=async()=>{const cur=await f.getJ('fm:biz:resp:'+respT);cur.boundary='edited concurrently - never send anything';await f.setJ('fm:biz:resp:'+respT,cur);}; // test-only interleave, consumed once
+  const race=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});
+  assert.equal(race.status,409);assert.equal(race.body.code,'resp_changed','a concurrent edit refuses the assignment instead of being overwritten');
+  const afterRace=await f.getJ('fm:biz:resp:'+respT);
+  assert.equal(afterRace.boundary,'edited concurrently - never send anything','the newer concurrent edit is preserved');
+  assert.ok(!afterRace.assignment,'the refused assignment never landed');
+  const asg2=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});
+  assert.equal(asg2.status,200,'a fresh assignment on the current record still works');
  });
 
  console.log('biz-delegation-regression: all assertions passed');

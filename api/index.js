@@ -3081,7 +3081,7 @@ async function bizState() {
   const delegateBot = await bizDelegateBot();
   const delegate = delegateBot ? { id: delegateBot.id, name: String(delegateBot.name || 'bot').slice(0, 40), providerId: delegateBot.providerId || null, connection: await connectionState(delegateBot) } : null;
   const team = [];
-  for (const a of await bizTeamBots()) team.push({ id: a.id, name: String(a.name || 'bot').slice(0, 40), providerId: a.providerId || null, connection: await connectionState(a) });
+  for (const a of await bizTeamRoster()) team.push({ id: a.id, name: String(a.name || 'bot').slice(0, 40), providerId: a.providerId || null, connection: await connectionState(a) });
   for (const d of discoveries) if ((d.status === 'delegated' || d.status === 'running') && d.taskId) {
     const t = await getJ('fm:task:' + d.taskId);
     d.job = t ? { status: t.status, startedAt: t.startedAt || null, assignee: t.assignee || null } : { status: 'missing' };
@@ -3540,15 +3540,24 @@ const BIZ_DELEGATE = { MAX_SOURCES: 6, BRIEF_CHARS: 1500, CONTEXT_CHARS: 3900, I
 // preferred; exactly one connected bot of any provider is unambiguous. Several non-Grok bots
 // is no safe automatic choice - no silent pick, the owner connects or names one first.
 async function bizDelegateBot() {
-  const agents = (await listAgents()).filter(a => a.status === 'active' && !a.paused && !a.hosted && !a.harness);
+  const agents = await bizTeamBots(); // connected-only: an unconnected bot never resolves as available
   if (!agents.length) return null;
   const grok = agents.find(a => a.providerId === 'grok');
   if (grok) return grok;
   return agents.length === 1 ? agents[0] : null;
 }
-// The workspace team: every currently eligible bot. Bots join only by the owner pairing them -
-// Alter never creates or provisions bot accounts, and the UI says so.
-async function bizTeamBots() { return (await listAgents()).filter(a => a.status === 'active' && !a.paused && !a.hosted && !a.harness); }
+// The workspace roster: every real bot the owner paired, connected or not - the HQ team
+// surface shows each with its live connection state. Bots join only by the owner pairing
+// them - Alter never creates or provisions bot accounts, and the UI says so.
+async function bizTeamRoster() { return (await listAgents()).filter(a => a.status === 'active' && !a.paused && !a.hosted && !a.harness); }
+// The assignable/run-capable team: roster bots whose LIVE connection state is active right
+// now. A bot that is merely unpaused (awaiting_bot, needs_reauth, verification_pending,
+// revoked) is never assignable and never resolves as an available delegate.
+async function bizTeamBots() {
+  const out = [];
+  for (const a of await bizTeamRoster()) { const cs = await connectionState(a); if (cs.status === 'active') out.push(a); }
+  return out;
+}
 // Which bot a responsibility runs on. An explicit owner assignment wins and is never silently
 // substituted: if the assigned bot is not connected right now, the caller gets {gone} and must
 // refuse honestly. With no assignment, the automatic delegate pick applies.
@@ -3986,6 +3995,7 @@ async function bizRespAct(id, op, body) {
     // never creates or provisions bot accounts.
     if (resp.research) return { status: 400, body: { error: 'This responsibility reads public pages during runs; those runs use the reasoning engine, not a bot.' } };
     const botId = body && body.botId != null && body.botId !== '' ? String(body.botId) : null;
+    const respRaw0 = await r(['GET', 'fm:biz:resp:' + id]); // the exact record under review - no awaits between the read above and here on this path
     let assignment = null;
     if (botId) {
       const pick = (await bizTeamBots()).find(a => a.id === botId);
@@ -3993,7 +4003,16 @@ async function bizRespAct(id, op, body) {
       assignment = { botId: pick.id, botName: String(pick.name || 'bot').slice(0, 40), assignedAt: now() };
     }
     const next = { ...resp }; if (assignment) next.assignment = assignment; else delete next.assignment;
-    if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+    if (global.__bizAssignBeforeWrite) { const fn = global.__bizAssignBeforeWrite; global.__bizAssignBeforeWrite = null; await fn(); } // test-only interleave hook, never set in production
+    // Owned exact CAS: the record must still be byte-identical to what was reviewed. A
+    // concurrent schedule enable, source-driven edit, pause or status change wins; the
+    // assignment refuses and names the drift instead of overwriting the newer state.
+    const cas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]);
+    if (cas === -1) return { status: 404, body: { error: 'not found' } };
+    if (cas !== 1) {
+      if (!respRaw0) return bizFenceConflict();
+      return { status: 409, body: { error: 'This responsibility changed while you were assigning - reload and review it before assigning. Nothing was overwritten.', code: 'resp_changed' } };
+    }
     if (!await bizLog(assignment ? 'responsibility_assigned' : 'responsibility_unassigned', { respId: id, title: resp.title, botName: assignment ? assignment.botName : null }, f0)) return bizFenceConflict();
     return { status: 200, body: { responsibility: next } };
   }

@@ -8,6 +8,8 @@
 // enrolling the workspace in daily engine check-ins. No engine call is made anywhere in
 // this path; the bot side is driven through the real claimTask/completeTask call path.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
+// a real connection proof: delegation eligibility is connected-only
+const connect=async(f,ag)=>{const a=await f.getJ('fm:agent:'+ag.agent.id);a.connectionMode='gateway';await f.setJ('fm:agent:'+ag.agent.id,a);await f.setJ('fm:gatewaySeen:'+ag.agent.id,{epoch:a.oauthEpoch||0,seenAt:new Date().toISOString()});};
 const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizProposalAct,bizRespAct,bizDailyTick,bizDataPurge,bizState,bizDiscoveryDelegatePreview,bizDiscoverDelegateRun,bizDiscoverPayload,bizSettleDiscovery,bizMakeProposals,bizProposals,bizSources,createAgent,claimTask,completeTask,stopTask,newTask,listTasks,setJ,getJ,r,als};';
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:(u,o)=>{throw new Error('the bot discovery path must never call the engine or any network: '+u);}};
@@ -18,7 +20,7 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
 
 (async()=>{
  await f.als.run({ws:'wsdisc'},async()=>{
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(f,g);
   const agent=g.agent;
   const s1=(await f.bizSourceAdd({kind:'note',title:'How we communicate',text:S1})).body.source;
   const s2=(await f.bizSourceAdd({kind:'note',title:'Estimates',text:S2})).body.source;
@@ -106,7 +108,7 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
 
  // --- unreadable bot answer: honest empty result, no fabricated proposals
  await f.als.run({ws:'wsdisc2'},async()=>{
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(f,g);
   await f.bizSourceAdd({kind:'note',title:'N',text:S1});
   const pv=await f.bizDiscoveryDelegatePreview();
   const run=await f.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash});
@@ -121,7 +123,7 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
 
  // --- source edited mid-scan: quotes from the old text no longer verify
  await f.als.run({ws:'wsdisc3'},async()=>{
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(f,g);
   const s=(await f.bizSourceAdd({kind:'note',title:'N',text:S1})).body.source;
   const pv=await f.bizDiscoveryDelegatePreview();
   const run=await f.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash});
@@ -141,7 +143,7 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
 
  // --- bot gone between review and run: explicit refusal, no silent destination switch
  await f.als.run({ws:'wsdisc4'},async()=>{
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(f,g);
   await f.bizSourceAdd({kind:'note',title:'N',text:S1});
   const pv=await f.bizDiscoveryDelegatePreview();
   const ag=await f.getJ('fm:agent:'+g.agent.id);ag.paused=true;await f.setJ('fm:agent:'+g.agent.id,ag);
@@ -152,7 +154,7 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
 
  // --- final-flip race: a delete winning after the fenced writes refuses, never a false sent
  await f.als.run({ws:'wsdisc5'},async()=>{
-  await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  await connect(f,await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'}));
   await f.bizSourceAdd({kind:'note',title:'N',text:S1});
   const pv=await f.bizDiscoveryDelegatePreview();
   c.global.__bizRaceDelete=1; // test-only: deletes the held job between the fenced writes and the flip
@@ -167,7 +169,7 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
 
  // --- source delete mid-scan cancels the job and fails the scan honestly
  await f.als.run({ws:'wsdisc6'},async()=>{
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(f,g);
   const s=(await f.bizSourceAdd({kind:'note',title:'N',text:S1})).body.source;
   const pv=await f.bizDiscoveryDelegatePreview();
   const run=await f.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash});
@@ -183,7 +185,7 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
 
  // --- purge removes scan records, the scan index and the job record
  await f.als.run({ws:'wsdisc7'},async()=>{
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(f,g);
   await f.bizSourceAdd({kind:'note',title:'N',text:S1});
   const pv=await f.bizDiscoveryDelegatePreview();
   const run=await f.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash});
@@ -200,7 +202,7 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
  // --- whitespace-only excerpts never "match"; evidence must come from the REVIEWED
  // snapshot (reviewed ids at unchanged current versions), and summary-only proposals drop
  await f.als.run({ws:'wsdisc8'},async()=>{
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(f,g);
   const s1=(await f.bizSourceAdd({kind:'note',title:'N1',text:S1})).body.source;
   const pv=await f.bizDiscoveryDelegatePreview();
   const run=await f.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash});
@@ -228,7 +230,7 @@ const S2='We send 15 to 20 estimates a month and nobody follows up unless the cu
  // --- edited-since-scan source cannot ground a proposal even when the quote matches the
  // NEW text: validation never poses a changed source as the reviewed one
  await f.als.run({ws:'wsdisc9'},async()=>{
-  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});await connect(f,g);
   const s=(await f.bizSourceAdd({kind:'note',title:'N',text:S1})).body.source;
   const pv=await f.bizDiscoveryDelegatePreview();
   const run=await f.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash});
