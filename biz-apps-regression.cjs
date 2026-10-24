@@ -639,6 +639,10 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   await new Promise(r=>setTimeout(r,150));
   const dup=await f.bizAppDraftCreate('gmail',{to:'other@example.com',text:'x'},cid0);
   assert.equal(dup.status,409);assert.equal(dup.body.code,'app_draft_pending','a second create waits for the in-flight one - the backstop is durable, not a JS flag');
+  const disBusy=await f.bizAppDisconnect('gmail',cid0);
+  assert.equal(disBusy.status,409);assert.equal(disBusy.body.code,'app_disconnect_busy','a disconnect can NEVER complete while a draft holds the shared grant-lifecycle lock');
+  assert.ok(await f.getJ('fm:biz:app:gmail'),'the connection record survives the refused disconnect');
+  assert.equal(await f.r(['SET','fm:biz:appconn:gmail','sneak','NX','PX','60000']),null,'the shared exclusion rejects any other owner mid-effect');
   E.__G_DRAFT_GO();delete E.__G_DRAFT_HOLD;const held=await p1;assert.equal(held.status,200,'the held create completes');
   assert.equal((await f.bizDraftOpList()).filter(o=>o.status==='in_flight').length,0,'a confirmed settle releases the in-flight marker');
   // sweep: an interrupted in-flight operation becomes unconfirmed - unknown outcome, never dropped, never gates forever
@@ -651,19 +655,19 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal((await f.bizDraftOpList()).length,0,'drained for the following tests');
   // The exact interleavings from review, at the guard level
   const fenc=(await f.r(['GET','fm:biz:fence']))||'0';
-  const revK='fm:biz:draftops:rev', lockK='fm:biz:grantlock:gmail';
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua1','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:nope',lockK,revK,fenc,'{}','dop_lua1','vX','','','']),7,'a begin without owning the grant lifecycle lock never attaches an intent');
+  const revK='fm:biz:draftops:rev', lockK='fm:biz:appconn:gmail';
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua1','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:nope',lockK,revK,fenc,'{}','dop_lua1','vX','','','','dop_lua1']),7,'a begin without owning the shared lifecycle lock never attaches an intent');
   await f.r(['SET',lockK,'dop_lua1']);
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua1','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:nope',lockK,revK,fenc,'{}','dop_lua1','vX','','','']),3,'a begin against a missing app record is refused atomically');
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua2','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:gmail',lockK,revK,'0','{}','dop_lua2',cid0,'','','']),0,'a pre-begin request carrying a stale fence never attaches an intent');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua1','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:nope',lockK,revK,fenc,'{}','dop_lua1','vX','','','','dop_lua1']),3,'a begin against a missing app record is refused atomically');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua2','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:gmail',lockK,revK,'0','{}','dop_lua2',cid0,'','','','dop_lua2']),0,'a pre-begin request carrying a stale fence never attaches an intent');
   await f.r(['SET',lockK,'dop_lua3']);
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua3','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:gmail',lockK,revK,fenc,'{}','dop_lua3','WRONG_VERSION','','','']),3,'a connection swap between token read and begin is refused atomically');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua3','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:gmail',lockK,revK,fenc,'{}','dop_lua3','WRONG_VERSION','','','','dop_lua3']),3,'a connection swap between token read and begin is refused atomically');
   assert.equal(await f.r(['GET','fm:biz:draftop:dop_lua3']),null,'a refused begin writes nothing');
   const ar9=await f.getJ('fm:biz:app:gmail'); await f.setJ('fm:biz:app:gmail',{...ar9,status:'needs_reconnect'});
   await f.r(['SET',lockK,'dop_lua4']);
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua4','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:app:gmail',lockK,revK,fenc,'{}','dop_lua4',cid0,'','','']),3,'a needs_reconnect record with the SAME connection id is not a usable grant');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua4','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:app:gmail',lockK,revK,fenc,'{}','dop_lua4',cid0,'','','','dop_lua4']),3,'a needs_reconnect record with the SAME connection id is not a usable grant');
   await f.setJ('fm:biz:app:gmail',ar9); await f.r(['DEL',lockK]);
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_SETTLE,8,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_absent','fm:biz:draftops','fm:biz:draftif:none',lockK,revK,fenc,'dop_absent','','']),3,'a settle never recreates an absent record');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_SETTLE,8,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_absent','fm:biz:draftops','fm:biz:draftif:none',lockK,revK,fenc,'dop_absent','','','']),3,'a settle never recreates an absent record');
   await f.setJ('fm:biz:draftop:dop_ack1',{id:'dop_ack1',at:new Date().toISOString(),connectionVersion:cid0,status:'in_flight',fence:fenc});
   assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_ACK,7,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_ack1','fm:biz:draftops','fm:biz:draftif:'+cid0,revK,fenc,'dop_ack1','']),5,'an in-flight operation is never undone by an acknowledgment');
   assert.ok(await f.getJ('fm:biz:draftop:dop_ack1'),'the in-flight record survives the refused acknowledgment');
@@ -679,7 +683,7 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal(dcA.body.code,'app_changed','the refusal names the connection change, honestly before any effect');
   assert.equal(E.__DRAFT_POSTS||0,posts0,'the provider was NEVER called from the stale snapshots');
   assert.equal((await f.bizDraftOpList()).filter(o=>(o.to||[])[0]==='lee@example.com').length,0,'the refused pre-effect create leaves nothing behind - nothing to check in Gmail');
-  assert.equal(await f.r(['GET','fm:biz:grantlock:gmail']),null,'the aborted create released the lifecycle lock');
+  assert.equal(await f.r(['GET','fm:biz:appconn:gmail']),null,'the aborted create released the shared lifecycle lock');
   await f.r(['SET','fm:biz:app:gmail',appRaw9]); // restore the exact record for the following tests
   // the fence-bump twin: a purge/completion moving the epoch after the intent stops the start
   c.global.__bizDraftAfterBegin=async()=>{ await f.r(['SET','fm:biz:fence','999999999']); };
@@ -688,7 +692,16 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal(dcB.status,409,'an epoch move before the provider call refuses the create');
   assert.equal(E.__DRAFT_POSTS||0,posts1,'the epoch-moved request never reached the provider');
   await f.r(['SET','fm:biz:fence',fenc]); // restore the epoch
-  { const stray=(await f.bizDraftOpList()).find(o=>(o.to||[])[0]==='lee@example.com'); if(stray){ await f.r(['DEL','fm:biz:draftop:'+stray.id]); await f.r(['SREM','fm:biz:draftops',stray.id]); } await f.r(['DEL','fm:biz:draftif:'+cid0]); await f.r(['DEL','fm:biz:grantlock:gmail']); } // the fence-conflicted intent is cleaned up by hand here; production leaves it to the sweep
+  { const stray=(await f.bizDraftOpList()).find(o=>(o.to||[])[0]==='lee@example.com'); if(stray){ await f.r(['DEL','fm:biz:draftop:'+stray.id]); await f.r(['SREM','fm:biz:draftops',stray.id]); } await f.r(['DEL','fm:biz:draftif:'+cid0]); await f.r(['DEL','fm:biz:appconn:gmail']); } // the fence-conflicted intent is cleaned up by hand here; production leaves it to the sweep
+  // ONE clock bounds the whole operation: token read, reservation, provider call, settle
+  c.global.__bizDraftOpBudgetMs=1; // test-only: the budget is already outrun after the token read
+  const posts2=E.__DRAFT_POSTS||0;
+  const dl=await f.bizAppDraftCreate('gmail',{to:'max@example.com',text:'deadline'},cid0);
+  assert.equal(dl.status,409);assert.equal(dl.body.code,'app_draft_deadline','the whole-operation deadline stops the create honestly');
+  assert.equal(E.__DRAFT_POSTS||0,posts2,'the deadline-stopped create never reached the provider');
+  assert.equal((await f.bizDraftOpList()).filter(o=>(o.to||[])[0]==='max@example.com').length,0,'the deadline-stopped create left nothing behind');
+  assert.equal(await f.r(['GET','fm:biz:appconn:gmail']),null,'the deadline-stopped create released the shared lock');
+  delete c.global.__bizDraftOpBudgetMs;
   // a KNOWN provider-200 outcome stays known-created even when the connection changes mid-flight
   E.__G_DRAFT_KILLAPP=1;
   const k1=await f.bizAppDraftCreate('gmail',{to:'kim@example.com',text:'known outcome stands'},cid0);
@@ -721,18 +734,18 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.ok((sneak.body.ops||[]).includes('dop_sneak'),'the refusal names the new unknown attempt');
   // the same validation atomically inside the reservation itself
   await f.r(['SET','fm:biz:grantlock:gmail','dop_lua5']);
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua5','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:app:gmail','fm:biz:grantlock:gmail','fm:biz:draftops:rev',fenc2,'{}','dop_lua5',cid0,'',m1.body.fp,'']),6,'the reservation atomically refuses an unresolved op outside the reviewed set');
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua5','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:app:gmail','fm:biz:grantlock:gmail','fm:biz:draftops:rev',fenc2,'{}','dop_lua5',cid0,[m1.body.opId,m2.body.opId,'dop_sneak'].sort().join(','),m1.body.fp,'999999999']),8,'the reservation atomically refuses a stale reviewed revision');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua5','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:app:gmail','fm:biz:grantlock:gmail','fm:biz:draftops:rev',fenc2,'{}','dop_lua5',cid0,'',m1.body.fp,'','dop_lua5']),6,'the reservation atomically refuses an unresolved op outside the reviewed set');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua5','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:app:gmail','fm:biz:grantlock:gmail','fm:biz:draftops:rev',fenc2,'{}','dop_lua5',cid0,[m1.body.opId,m2.body.opId,'dop_sneak'].sort().join(','),m1.body.fp,'999999999','dop_lua5']),8,'the reservation atomically refuses a stale reviewed revision');
   const revNow=String(await f.r(['GET','fm:biz:draftops:rev'])||'0');
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua5','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:app:gmail','fm:biz:grantlock:gmail','fm:biz:draftops:rev',fenc2,'{}','dop_lua5',cid0,[m1.body.opId,m2.body.opId,'dop_sneak'].sort().join(','),m1.body.fp,revNow]),1,'the exact reviewed set at the exact revision reserves the intent');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,9,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua5','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:app:gmail','fm:biz:grantlock:gmail','fm:biz:draftops:rev',fenc2,'{}','dop_lua5',cid0,[m1.body.opId,m2.body.opId,'dop_sneak'].sort().join(','),m1.body.fp,revNow,'dop_lua5']),1,'the exact reviewed set at the exact revision reserves the intent');
   assert.ok(await f.getJ('fm:biz:draftop:dop_lua5'),'the reservation wrote the durable intent');
-  await f.r(['DEL','fm:biz:draftop:dop_lua5']);await f.r(['SREM','fm:biz:draftops','dop_lua5']);await f.r(['DEL','fm:biz:draftif:'+cid0]);await f.r(['DEL','fm:biz:grantlock:gmail']);
+  await f.r(['DEL','fm:biz:draftop:dop_lua5']);await f.r(['SREM','fm:biz:draftops','dop_lua5']);await f.r(['DEL','fm:biz:draftif:'+cid0]);await f.r(['DEL','fm:biz:appconn:gmail']);
   delete E.__G_DRAFT_503;
   await f.bizDraftOpReconcile('dop_sneak');await f.bizDraftOpReconcile(m1.body.opId);await f.bizDraftOpReconcile(m2.body.opId);
   assert.equal((await f.bizDraftOpList()).length,0,'drained after the decision-set tests');
   // full-record CAS: a swapped payload fingerprint is never settled by the original writer
   await f.setJ('fm:biz:draftop:dop_swap',{id:'dop_swap',at:new Date().toISOString(),connectionVersion:cid0,status:'in_flight',fence:fenc2,fp:'ORIGINAL_FP'});
-  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_SETTLE,8,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_swap','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:grantlock:gmail','fm:biz:draftops:rev',fenc2,'dop_swap','','OTHER_FP']),4,'a settle presenting a different payload fingerprint than the record is refused');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_SETTLE,8,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_swap','fm:biz:draftops','fm:biz:draftif:'+cid0,'fm:biz:appconn:gmail','fm:biz:draftops:rev',fenc2,'dop_swap','','OTHER_FP','']),4,'a settle presenting a different payload fingerprint than the record is refused');
   const swapRec=await f.getJ('fm:biz:draftop:dop_swap');assert.equal(swapRec.status,'in_flight','the refused settle never touched the record');
   await f.r(['DEL','fm:biz:draftop:dop_swap']);
 
