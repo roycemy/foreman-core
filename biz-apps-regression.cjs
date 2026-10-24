@@ -33,10 +33,11 @@ const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},
    return reply({},true,200);}
   assert.ok(!String(u).includes('1//rt')&&!String(u).includes('ya29.'),'no token ever appears in any URL');
   if(u==='https://gmail.googleapis.com/gmail/v1/users/me/profile'){
+   if(E.__G_PROFILE_HOLD)await new Promise(res=>{E.__G_PROFILE_GO=res;}); // a parked profile check, released by the test
    if(E.__G_PROFILE_THROW)throw new Error('profile socket reset');
    if(E.__G_PROFILE_FAIL)return reply({error:{message:'profile boom'}},false,500);
    if(E.__RACE_APPGEN)await F.setJ('fm:biz:appgen:gmail','zzz-'+calls.length+'-'+Date.now()); // a disconnect/purge lands mid-callback
-   assert.ok(/^Bearer ya29\./.test(calls[calls.length-1].auth),'profile call is authed');
+   assert.ok(/^Bearer ya29\./.test(o&&o.headers&&o.headers.Authorization),'profile call is authed');
    return reply({emailAddress:'royce@northbend.example',messagesTotal:42});}
   if(u.startsWith('https://gmail.googleapis.com/gmail/v1/users/me/messages?')){
    if(E.__RACE_DISCONNECT)await F.bizAppDisconnect('gmail'); // a completed disconnect lands mid-sync
@@ -328,6 +329,44 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
    const un=(await f.getJ('fm:biz:apptomb:gmail')).attempts.filter(a=>a.enc&&a.status==='pending');
    assert.equal(un.length,1,'the interrupted grant keeps a durable handle for a later retry');
    await f.r(['DEL','fm:biz:apptomb:gmail']); await f.r(['DEL','fm:biz:appconn:gmail']);
+  }
+  // 13e. REVIEWER REPRO: a full unresolved ledger rejects a sign-in BEFORE any grant exists
+  {
+   E.__G_REVOKE_FAIL='1';
+   for (let i = 0; i < 8; i++) {
+     E.__G_RT='1//r'+i;
+     const q=await connect();await f.bizAppCallback('gmail',{state:q.nonce,code:'authcode1'},'https://test.local',q.cookie);
+     const dq=await f.bizAppDisconnect('gmail');
+     assert.equal(dq.body.grantStatus,'revoke_unconfirmed');
+   }
+   delete E.__G_RT;
+   const exch0=calls.filter(x=>x.u==='https://oauth2.googleapis.com/token'&&/authorization_code/.test(x.body||'')).length;
+   const q9=await connect();
+   const cb9=await f.bizAppCallback('gmail',{state:q9.nonce,code:'authcode1'},'https://test.local',q9.cookie);
+   assert.equal(cb9.status,409);assert.equal(cb9.body.code,'app_tomb_full','capacity is checked BEFORE the exchange');
+   assert.equal(calls.filter(x=>x.u==='https://oauth2.googleapis.com/token'&&/authorization_code/.test(x.body||'')).length,exch0,'Google was never asked for a ninth grant');
+   delete E.__G_REVOKE_FAIL;
+   const drain=await f.bizAppDisconnect('gmail'); // no live credential: a drain-only disconnect is always allowed
+   assert.equal(drain.body.priorGrant,'revoked','all 8 older grants are retried and confirmed');
+   assert.equal((await f.getJ('fm:biz:apptomb:gmail')).attempts.filter(a=>a.enc).length,0,'the ledger drains fully');
+  }
+  // 13f. REVIEWER REPRO: a purge mid-callback must not be followed by a tombstone resurrection
+  {
+   const u1=await connect();
+   E.__G_PROFILE_HOLD='1';
+   const pcb=f.bizAppCallback('gmail',{state:u1.nonce,code:'authcode1'},'https://test.local',u1.cookie); // exchanged + filled, parked at the profile check
+   await new Promise(r2=>setTimeout(r2,20));
+   const pg=await f.bizDataPurge({confirm:'DELETE'});
+   assert.ok(pg&&(pg.status===200||pg.ok!==false),'the purge runs');
+   E.__G_PROFILE_FAIL='1'; E.__G_REVOKE_FAIL='1'; // the reviewer's exact scenario: profile AND revoke both fail after the purge
+   delete E.__G_PROFILE_HOLD; E.__G_PROFILE_GO();
+   const cb=await pcb;
+   delete E.__G_PROFILE_FAIL; delete E.__G_REVOKE_FAIL;
+   assert.equal(cb.status,502);assert.equal(cb.body.code,'app_profile_failed');
+   assert.equal(cb.body.grantStatus,'revoke_unconfirmed');
+   assert.equal(cb.body.grantTracked,false,'the outcome is honestly untracked after the purge');
+   assert.equal((await f.r(['KEYS','fm:biz:apptomb:*'])).length,0,'no encrypted credential is resurrected after the purge');
+   assert.equal(await f.getJ('fm:biz:app:gmail'),null,'no connection record either');
   }
   // 13b. a parked sync completing mid-disconnect: local state is gone BEFORE the network
   const cE=await connect();await f.bizAppCallback('gmail',{state:cE.nonce,code:'authcode1'},'https://test.local',cE.cookie);
