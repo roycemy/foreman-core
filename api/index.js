@@ -753,13 +753,30 @@ function publicSnapshotBuild(t,src,fields,budget){
   approvals:src.j.requests.filter(q=>['approved','executed','failed'].includes(q.status)).length,
   steps:publicSteps(t,src.j.requests,src.j.receipts,src.j.children),
   provenance:'Outcome and model costs are reported by the bot, not verified. Title, description and template were reviewed and approved by the owner. Elapsed is wall-clock time, not active work time. The gateway ledger covers retained linked actions only; it is not provider spending or a complete job cost.'};}
-// Pre-filled starting points for the share form (the owner edits before publishing). Generic on purpose: no job titles, bot
-// names or result text are copied in, and every suggestion passes the same private-detail detector; a flagged field falls back to blank.
-function publicSuggestions(t){
- const kind=t.biz&&t.biz.kind;
- if(kind==='discover')return {title:'Business discovery scan',summary:'A bot read the business notes I connected and drafted workflow proposals for my review. Nothing was sent or booked; every draft needs my approval.',template:'Read the business notes I connect and draft workflow proposals for my review. Send or book nothing without my approval.'};
- const done=t.status==='done';
- return {title:done?'Completed job':'Job attempt',summary:done?'A bot completed this job. The timeline and cost facts on this page come from the job record.':'A bot attempted this job and stopped without a result. The timeline on this page comes from the job record.',template:'Handle this kind of job for me: read the request, do the work, and bring me the result to review before anything is sent.'};}
+// Pre-filled starting points for the share form (the owner edits before publishing). Suggestions are fixed,
+// server-written strings built from coarse recorded facts (job kind, done/failed) and, for runs of an approved
+// responsibility, the owner-approved synopsis and boundary - never the raw job title, bot names or result text,
+// and never claims about bot behavior the job record does not show. Anything else gets an explicit generic
+// fallback the form labels as generic. `fixed` marks every string as server-written; a future branch that
+// interpolates job data MUST leave it unset so the detector blanking in publicReceiptDraft applies to it.
+async function publicSuggestions(t,names){
+ const kind=t.biz&&t.biz.kind,done=t.status==='done';
+ const clean=(v,max)=>{const s=String(v||'').trim().slice(0,max);return s&&publicText(s,900)&&!publicProblems({text:s},names||[]).length?s:null;};
+ if(kind==='discover')return {tailored:true,fixed:true,title:'Business discovery scan',
+  summary:done?'A bot finished a discovery scan of the business notes I connected and drafted workflow proposals for my review. No proposal starts without my approval. Timeline and cost facts on this page come from the job record.':'A bot attempted a discovery scan of the business notes I connected and stopped without a result. Timeline facts on this page come from the job record.',
+  template:'Read the business notes I connect and draft workflow proposals for my review. Send or book nothing without my approval.'};
+ if(t.biz&&t.biz.respId){
+  let resp=null;try{resp=await getJ('fm:biz:resp:'+t.biz.respId);}catch(e){}
+  if(resp){
+   const lead=done?'A bot finished a run of an approved responsibility in my workspace.':'A bot attempted a run of an approved responsibility in my workspace and stopped without a result.';
+   const syn=clean(resp.summary,560),bnd=clean(resp.boundary,280);
+   if(syn)return {tailored:true,fixed:true,title:done?'Completed responsibility run':'Responsibility run without result',
+    summary:lead+' What it covers: '+syn,
+    template:'Do this approved responsibility: '+syn+(bnd?' Boundary: '+bnd:'')};
+   return {tailored:false,fixed:true,title:done?'Completed responsibility run':'Responsibility run without result',summary:lead+' The timeline and cost facts on this page come from the job record.',template:'Read my request, do the work, and bring the result to me to review. Send, post, purchase or book nothing without my approval.'};
+  }
+ }
+ return {tailored:false,fixed:true,title:done?'Completed job':'Job attempt',summary:done?'A bot completed this job. The timeline and cost facts on this page come from the job record.':'A bot attempted this job and stopped without a result. The timeline on this page comes from the job record.',template:'Read my request, do the work, and bring the result to me to review. Send, post, purchase or book nothing without my approval.'};}
 async function publicReceiptReview(taskId,b){
  const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};
  const t=src.j.task,fields={title:b.title,summary:b.summary,template:b.template};
@@ -769,17 +786,22 @@ async function publicReceiptReview(taskId,b){
  const names=[...(await listAgents()).map(a=>a.name),t.title,...src.j.children.map(k=>k.title)];
  const problems=publicProblems(fields,names);
  if(problems.length)return {status:400,body:{error:'Remove private details before sharing: '+problems.map(p=>p.kind+' in '+p.field).join(', ')+'.',problems}};
- const snapshot=publicSnapshotBuild(t,src,fields,budget);
+ const snapshot=publicSnapshotBuild(t,src,fields,budget),hash=sha(JSON.stringify(snapshot));
+ // Publish binds to the exact snapshot the owner has on screen: the client sends the hash of its visible
+ // snapshot; anything else (job changed, stale or missing preview) is refused with the current snapshot
+ // so the same dialog refreshes and gets reviewed again.
+ if(b.seenHash!==hash)return {status:409,body:{error:'The job changed since this preview was made. The preview has been refreshed with the current snapshot - review it and publish again.',code:'snapshot_changed',snapshot,hash}};
  const reviewId=crypto.randomBytes(18).toString('hex'),expiresAt=new Date(Date.now()+600000).toISOString();
- await setJ('fm:publicReview:'+reviewId,{snapshot,hash:sha(JSON.stringify(snapshot)),taskId,sourceHash:src.hash,expiresAt});await r(['EXPIRE','fm:publicReview:'+reviewId,600]);
- return {status:200,body:{reviewId,expiresAt,snapshot,hash:sha(JSON.stringify(snapshot)),suggestedBudgetCents:suggestedBudgetCents(t,src.j.receipts),audience:'Anyone with the link, for '+PUBLIC_TTL_DAYS+' days or until you revoke it. People who already saw or copied it keep what they saw.'}};}
-// Pre-filled share form: budget from what the job recorded, generic detector-checked suggestions, and the base snapshot so
+ await setJ('fm:publicReview:'+reviewId,{snapshot,hash,taskId,sourceHash:src.hash,expiresAt});await r(['EXPIRE','fm:publicReview:'+reviewId,600]);
+ return {status:200,body:{reviewId,expiresAt,snapshot,hash,suggestedBudgetCents:suggestedBudgetCents(t,src.j.receipts),audience:'Anyone with the link, for '+PUBLIC_TTL_DAYS+' days or until you revoke it. People who already saw or copied it keep what they saw.'}};}
+// Pre-filled share form: budget from what the job recorded, fixed server-written suggestions (scoped to the approved
 // the owner watches the exact public page update while editing. Publishing still requires review + publish, unchanged.
 async function publicReceiptDraft(taskId){
  const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};
- const t=src.j.task,budget=suggestedBudgetCents(t,src.j.receipts),suggestions=publicSuggestions(t);
+ const t=src.j.task,budget=suggestedBudgetCents(t,src.j.receipts);
  const names=[...(await listAgents()).map(a=>a.name),t.title,...src.j.children.map(k=>k.title)];
- for(const k of Object.keys(suggestions))if(publicProblems({[k]:suggestions[k]},names).length)suggestions[k]='';
+ const suggestions=await publicSuggestions(t,names);
+ if(!suggestions.fixed)for(const k of ['title','summary','template'])if(publicProblems({[k]:suggestions[k]},names).length)suggestions[k]='';
  const baseSnapshot=publicSnapshotBuild(t,src,suggestions,budget);
  return {status:200,body:{suggestedBudgetCents:budget,suggestions,baseSnapshot,baseHash:sha(JSON.stringify(baseSnapshot))}};}
 async function publicReceiptPublish(b){

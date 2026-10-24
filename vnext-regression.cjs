@@ -49,9 +49,13 @@ async function pubGet(path){let out;const res={headers:{},setHeader(k,v){this.he
  const hand=await gw(live,'POST','/act',{action:'work.handoff',params:{task_id:t3.id,to:'Other',title:'Acme secret subproject',brief:'private'},task_id:t3.id});assert.equal(hand.j.status,'completed');
  await gw(live,'POST','/tasks/'+t3.id+'/complete',{result:'RAW RESULT: Acme launch plan for jane@acme.com',model_cost_usd:0.84});
  const draft={taskId:t3.id,title:'A launch page in an afternoon',summary:'A bot drafted three hero lines for a product launch page. The owner approved one save step.',template:'Write three short hero lines for a product launch page.\nAsk for the audience and tone before writing anything.'};
- // blank fields are rejected: nothing is prefilled from the private job
+ // blank fields are rejected; the prefill for an unknown job is an explicit generic fallback with nothing copied from the private job
  assert.equal((await call('POST','/public-receipts/review',{taskId:t3.id,title:'',summary:'',template:''})).code,400);
- const dr=await call('GET','/public-receipts/draft?taskId='+t3.id);assert.equal(dr.code,200);assert.equal(dr.j.title,'');assert.equal(dr.j.summary,'');assert.equal(dr.j.template,'');
+ const dr=await call('GET','/public-receipts/draft?taskId='+t3.id);assert.equal(dr.code,200);
+ assert.equal(dr.j.suggestions.tailored,false);
+ for(const k of ['title','summary','template']){assert.ok(dr.j.suggestions[k].length>0,k);for(const leak of ['Acme','jane@','brief.md','sk-live','/home/'])assert.ok(!dr.j.suggestions[k].includes(leak),k+' leaks '+leak);}
+ assert.ok(dr.j.baseSnapshot&&dr.j.baseHash);
+ const seenHashFor=(base,fields,budget)=>f.sha(JSON.stringify({...base,title:fields.title,summary:fields.summary,template:fields.template,budgetCents:budget==null?null:budget}));
  assert.equal(dr.j.suggestedBudgetCents,84);// gateway ledger 0¢ (no network in tests, so the fetch failed and cost nothing; handoff is 0¢) + 0.84 model costs = 84¢
  // exact pre-share review rejects secrets, contacts, URLs, file paths, tool details, internal IDs and private names
  const bad={secret:['sk-live-abcdef123','fmk_0123456789abcdef','xai-AbCdEf123456','Bearer abc.def','api key: hunter2','password=hunter2','AKIAABCDEFGHIJKLMNOP','eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0NTY3','a'.repeat(40)],
@@ -63,8 +67,11 @@ async function pubGet(path){let out;const res={headers:{},setHeader(k,v){this.he
   const r=await call('POST','/public-receipts/review',{...draft,[field]:v.slice(0,field==='title'?100:700)});
   assert.equal(r.code,400,kind+' not rejected in '+field+': '+v);assert.ok(r.j.problems.some(p=>p.field===field&&p.kind===kind),kind+' not named for '+field+': '+v+' -> '+JSON.stringify(r.j.problems));}
  assert.equal((await call('POST','/public-receipts/review',{...draft,budgetCents:-1})).code,400);
+ // review binds publish to the exact visible snapshot: a missing or stale seen hash is refused with the current snapshot for an in-dialog refresh
+ const noSeen=await call('POST','/public-receipts/review',{...draft,budgetCents:84});assert.equal(noSeen.code,409);assert.equal(noSeen.j.code,'snapshot_changed');assert.ok(noSeen.j.snapshot&&/^[a-f0-9]{64}$/.test(noSeen.j.hash));
+ assert.equal((await call('POST','/public-receipts/review',{...draft,budgetCents:84,seenHash:'0'.repeat(64)})).code,409);
  // the reviewed snapshot is allowlisted: no bot names, child titles, step notes, raw results, params or IDs
- const rv=await call('POST','/public-receipts/review',{...draft,budgetCents:84});assert.equal(rv.code,200,JSON.stringify(rv.j));const snap=rv.j.snapshot,sj=JSON.stringify(snap);
+ const rv=await call('POST','/public-receipts/review',{...draft,budgetCents:84,seenHash:seenHashFor(dr.j.baseSnapshot,draft,84)});assert.equal(rv.code,200,JSON.stringify(rv.j));const snap=rv.j.snapshot,sj=JSON.stringify(snap);
  assert.deepEqual(Object.keys(snap),['version','title','summary','template','budgetCents','outcome','elapsedSeconds','reportedModelCostUsd','externalCost','ledgerCents','trackedActions','approvals','steps','provenance']);
  for(const leak of ['Bot','Other','Acme','acme','Secret','secret','RAW RESULT','jane@','/home/','brief.md','web.fetch','work.handoff','task_','agent_','req_','rcpt_','Opened','http'])assert.ok(!sj.includes(leak),'public snapshot leaks '+leak);
  for(const s of snap.steps){assert.deepEqual(Object.keys(s).filter(k=>!['at','code','n'].includes(k)),[]);assert.ok(['assigned','claimed','actions','approved','denied','blocked','handoff','part_done','delivered','stopped'].includes(s.code));}
@@ -83,7 +90,7 @@ async function pubGet(path){let out;const res={headers:{},setHeader(k,v){this.he
  for(const leak of ['Other wrote','Acme','RAW RESULT','jane@',bot.name+' ','task_'])assert.ok(!page.b.includes(leak),'page leaks '+leak);
  const doc=fs.readFileSync(require('path').join(__dirname,'public/js/receipt-doc.js'),'utf8');assert.ok(!/Verified receipt/.test(doc));assert.ok(/does not prove the work itself, its timing or its cost/.test(doc));
  // a source change after review blocks publishing
- const rv2=await call('POST','/public-receipts/review',draft);const live3=await f.getJ('fm:task:'+t3.id);live3.result='changed';await f.setJ('fm:task:'+t3.id,live3);
+ const rv2=await call('POST','/public-receipts/review',{...draft,seenHash:seenHashFor(dr.j.baseSnapshot,draft,null)});assert.equal(rv2.code,200,JSON.stringify(rv2.j));const live3=await f.getJ('fm:task:'+t3.id);live3.result='changed';await f.setJ('fm:task:'+t3.id,live3);
  assert.equal((await call('POST','/public-receipts/publish',{reviewId:rv2.j.reviewId,hash:rv2.j.hash,confirmed:true,audience:'public'})).code,409);
  // "Run this job" never creates anything server-side: the old clone route is gone
  assert.equal((await call('POST','/receipts/clone',{token:pub.token})).code,404);assert.equal((await call('POST','/jobs/'+t3.id+'/shares',{headline:'x'})).code,404);
@@ -91,10 +98,33 @@ async function pubGet(path){let out;const res={headers:{},setHeader(k,v){this.he
  await f.als.run({ws:'elsewhere'},async()=>assert.equal((await call('POST','/public-receipts/'+pub.token+'/revoke')).code,404));
  assert.equal((await call('GET','/public-receipts?taskId='+t3.id)).j.receipts.length,1);
  assert.equal((await call('POST','/public-receipts/'+pub.token+'/revoke')).code,200);assert.equal((await pubGet('/public-receipts/'+pub.token)).code,404);
- const rv3=await call('POST','/public-receipts/review',{...draft,taskId:t.id});const p3=await call('POST','/public-receipts/publish',{reviewId:rv3.j.reviewId,hash:rv3.j.hash,confirmed:true,audience:'public'});assert.equal(p3.code,201);
+ const drT=await call('GET','/public-receipts/draft?taskId='+t.id);assert.equal(drT.code,200);
+ const rv3=await call('POST','/public-receipts/review',{...draft,taskId:t.id,seenHash:seenHashFor(drT.j.baseSnapshot,draft,null)});assert.equal(rv3.code,200,JSON.stringify(rv3.j));const p3=await call('POST','/public-receipts/publish',{reviewId:rv3.j.reviewId,hash:rv3.j.hash,confirmed:true,audience:'public'});assert.equal(p3.code,201);
  const rec=await f.getJ('gl:publicReceipt:'+p3.j.token);rec.expiresAt=new Date(Date.now()-1000).toISOString();await f.setJ('gl:publicReceipt:'+p3.j.token,rec);assert.equal((await pubGet('/public-receipts/'+p3.j.token)).code,404);
  assert.equal((await call('POST','/public-receipts/review',{...draft,taskId:t2.id})).code,404);
- console.log('PASS public receipts: blank owner fields, exact review rejects secrets/contacts/links/paths/tool details/IDs/private names, allowlisted payload, explicit audience, source-change guard, fingerprint, copy-only (no clone), revoke, expiry');
+ // prefill kinds: responsibility runs are job-specific from the owner-approved synopsis and boundary (detector-guarded, never the raw title or result); discovery claims stay recorded-only
+ await f.setJ('fm:biz:resp:resp_share1',{id:'resp_share1',title:'Estimate follow-up desk',summary:'Track sent estimates and draft reminder messages for ones with no response.',boundary:'Read and draft only; the owner approves every output; nothing is sent.',status:'active',createdAt:new Date().toISOString(),runsCount:1});
+ const t4=await f.newTask({title:'Estimate follow-up desk',assignee:bot.id});await gw(live,'GET','/tasks/next');await gw(live,'POST','/tasks/'+t4.id+'/complete',{result:'drafted 3 reminders',model_cost_usd:0.1});
+ const rec4=await f.getJ('fm:task:'+t4.id);rec4.biz={respId:'resp_share1',runId:'run_share1',botId:bot.id,sourceIds:[]};await f.setJ('fm:task:'+t4.id,rec4);
+ const dr4=await call('GET','/public-receipts/draft?taskId='+t4.id);assert.equal(dr4.code,200);assert.equal(dr4.j.suggestions.tailored,true);
+ assert.ok(dr4.j.suggestions.summary.includes('Track sent estimates and draft reminder messages'),dr4.j.suggestions.summary);
+ assert.ok(dr4.j.suggestions.template.includes('Do this approved responsibility:')&&dr4.j.suggestions.template.includes('Boundary:'),dr4.j.suggestions.template);
+ assert.ok(!JSON.stringify(dr4.j.suggestions).includes('drafted 3 reminders'));
+ // a private synopsis is detector-guarded out and the job falls back to the explicit generic text
+ await f.setJ('fm:biz:resp:resp_share2',{id:'resp_share2',title:'x',summary:'Call jane@acme.com about the estimates',boundary:'read only',status:'active',createdAt:new Date().toISOString(),runsCount:1});
+ const t5=await f.newTask({title:'Some job',assignee:bot.id});await gw(live,'GET','/tasks/next');await gw(live,'POST','/tasks/'+t5.id+'/complete',{result:'ok'});
+ const rec5=await f.getJ('fm:task:'+t5.id);rec5.biz={respId:'resp_share2',runId:'run_share2',botId:bot.id,sourceIds:[]};await f.setJ('fm:task:'+t5.id,rec5);
+ const dr5=await call('GET','/public-receipts/draft?taskId='+t5.id);assert.equal(dr5.code,200);assert.equal(dr5.j.suggestions.tailored,false);assert.ok(!JSON.stringify(dr5.j.suggestions).includes('jane@'));
+ // discovery scans: recorded-outcome claims only - no categorical "nothing was sent/booked" for a bot-run or failed scan
+ const t6=await f.newTask({title:'Business scan',assignee:bot.id});await gw(live,'GET','/tasks/next');await gw(live,'POST','/tasks/'+t6.id+'/complete',{result:'4 proposals'});
+ const rec6=await f.getJ('fm:task:'+t6.id);rec6.biz={kind:'discover',discId:'disc_share',botId:bot.id,sourceIds:[]};await f.setJ('fm:task:'+t6.id,rec6);
+ const dr6=await call('GET','/public-receipts/draft?taskId='+t6.id);assert.equal(dr6.code,200);assert.equal(dr6.j.suggestions.tailored,true);
+ assert.ok(!/Nothing was sent or booked|every draft needs my approval/i.test(dr6.j.suggestions.summary),dr6.j.suggestions.summary);
+ assert.ok(/No proposal starts without my approval/.test(dr6.j.suggestions.summary));
+ const t7=await f.newTask({title:'Failed scan',assignee:bot.id});await gw(live,'GET','/tasks/next');
+ const rec7=await f.getJ('fm:task:'+t7.id);rec7.status='failed';rec7.finishedAt=new Date().toISOString();rec7.result='bot error';rec7.biz={kind:'discover',discId:'disc_share_f',botId:bot.id,sourceIds:[]};await f.setJ('fm:task:'+t7.id,rec7);
+ const dr7=await call('GET','/public-receipts/draft?taskId='+t7.id);assert.equal(dr7.code,200);assert.ok(/stopped without a result/.test(dr7.j.suggestions.summary));assert.ok(!/Nothing was sent or booked/i.test(dr7.j.suggestions.summary));
+ console.log('PASS public receipts: explicit generic + synopsis-grounded prefill, exact review rejects secrets/contacts/links/paths/tool details/IDs/private names, visible-hash binding, allowlisted payload, explicit audience, source-change guard, fingerprint, copy-only (no clone), revoke, expiry');
 });
 await f.als.run({ws:'elsewhere'},async()=>{assert.equal((await call('GET','/jobs/x')).code,404);});
 await f.als.run({ws:'elsewhere'},async()=>{assert.equal((await call('GET','/public-receipts')).j.receipts.length,0);});
