@@ -1344,6 +1344,12 @@ const PUBLIC_ORIGIN='https://www.alterhq.app';
 // production's older, unreviewed routes against the same store. OAuth/MCP client metadata
 // and invite links intentionally keep the canonical origin in all environments.
 const PAIR_ORIGIN=()=>process.env.VERCEL_ENV==='preview'&&process.env.VERCEL_BRANCH_URL?'https://'+process.env.VERCEL_BRANCH_URL:PUBLIC_ORIGIN;
+/* Runner console origin allowlist: prod origins always; on preview deployments also the
+   Vercel-provided branch/deployment hostnames (env-set, never request-derived), so a
+   preview-served runner page passes while arbitrary Host/Origin spoofing still 403s. */
+const RUNNER_ORIGINS=[OAUTH_ORIGIN,PUBLIC_ORIGIN];
+if(process.env.VERCEL_ENV==='preview'){for(const h of [process.env.VERCEL_BRANCH_URL,process.env.VERCEL_URL])if(h)RUNNER_ORIGINS.push('https://'+h);}
+const runnerOriginOk=o=>RUNNER_ORIGINS.includes(o);
 const originOk=o=>o===OAUTH_ORIGIN||o===PUBLIC_ORIGIN;
 const originFor=req=>/^(www\.)?alterhq\.app$/.test(String(req&&req.headers&&req.headers.host||''))?PUBLIC_ORIGIN:OAUTH_ORIGIN;
 const validRedirect=u=>{try{const x=new URL(u);return !x.username&&!x.password&&!x.hash&&(x.protocol==='https:'||x.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(x.hostname));}catch{return false;}};
@@ -1493,9 +1499,9 @@ async function runnerRoutes(req,res,path,body){
  res.setHeader('Cache-Control','no-store');
  const m=path.match(/^\/runner\/(agent_[a-f0-9]+)\/(.*)$/);if(!m)return res.status(404).json({error:'Runner not found'});
  const id=m[1],action=m[2],sess=await runnerSession(req,id);if(!sess)return res.status(401).json({error:'Runner session unavailable. Pair this bot again.'});
- if(req.headers.origin&&!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
+ if(req.headers.origin&&!runnerOriginOk(req.headers.origin))return res.status(403).json({error:'origin'});
  if(req.headers['sec-fetch-site']==='cross-site')return res.status(403).json({error:'cross-site'});
- if(req.method!=='GET'&&(!originOk(req.headers.origin)||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
+ if(req.method!=='GET'&&(!runnerOriginOk(req.headers.origin)||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
  if(action==='session'&&req.method==='GET'){
   // Validation above checks exact bot, epoch, gateway key, expiry and request origin.
   // Preserve the token and CSRF value so simultaneous tabs do not invalidate each other.
