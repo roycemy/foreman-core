@@ -465,7 +465,15 @@
       let j = await api('/proposals/' + b.dataset.pActivate + '/activate', 'POST', research ? { research: true } : {});
       if (j.error === 'stale_evidence' && await askConfirm('Sources changed since this was drafted', (j.message || 'Review it against the current sources.') + ' Start it anyway?', 'Start anyway')) j = await api('/proposals/' + b.dataset.pActivate + '/activate', 'POST', { confirmStale: true, ...(research ? { research: true } : {}) });
       b.disabled = false; if (j.error) return BB.toast(j.message || j.error);
-      BB.toast('Started. Bring it work below.'); await load();
+      await load();
+      // Provisioning: a bot-mapped responsibility with no connected bot cannot run yet - say so
+      // at activation and offer the existing connect flow, rather than failing later at run time.
+      const needsBot = !!(j.responsibility && j.responsibility.bot);
+      const botReady = B && B.delegate && B.delegate.connection && B.delegate.connection.status === 'active';
+      if (needsBot && !botReady) {
+        const go = await askConfirm('"' + title + '" is started', 'It runs on a connected bot, and none is connected right now. Connect one so work can go to it - nothing runs until then.', 'Connect a bot');
+        if (go) BB.openConnect();
+      } else BB.toast('Started. Bring it work below.');
     });
     $$('[data-toggle-resp]', V).forEach(el => el.onclick = () => { openResp[el.dataset.toggleResp] = !openResp[el.dataset.toggleResp]; paint(); });
     $$('[data-run]', V).forEach(b => b.onclick = async () => {
