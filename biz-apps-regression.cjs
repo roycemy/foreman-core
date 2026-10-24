@@ -8,7 +8,7 @@
 // injection rejection, purge invalidating pending states and revoking grants.
 // Stubbed provider only - no real network, no real account, no live-Google proof.
 const fs=require('fs'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizAppConnect,bizAppCallback,bizAppStatus,bizAppSync,bizAppDraftCreate,bizAppDisconnect,bizDataPurge,bizState,getJ,setJ,r,als,BIZ_APPS};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizAppConnect,bizAppCallback,bizAppCallbackMarker,bizAppStatus,bizAppSync,bizAppDraftCreate,bizAppDisconnect,bizDataPurge,bizState,getJ,setJ,r,als,BIZ_APPS};';
 const calls=[];let F=null;
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,URLSearchParams,Buffer,crypto:require('crypto'),AbortSignal,setTimeout,clearTimeout,
  fetch:async(u,o)=>{
@@ -541,6 +541,51 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal(dBoth.body.grantStatus,'revoke_unconfirmed');assert.equal(dBoth.body.priorGrant,'revoke_unconfirmed','an unresolved prior grant is named in the response');
   assert.ok(/Google account/.test(dBoth.body.note||''),'the recovery path is included');
   const dDrain=await f.bizAppDisconnect('gmail',null);assert.equal(dDrain.status,200,'drain-only removal stays allowed'); // no live record: cleans pending states
+
+  // 13e. draft creation is bound to the reviewed connection + callback landing markers
+  const cd0=await connect();await f.bizAppCallback('gmail',{state:cd0.nonce,code:'authcode1'},'https://test.local',cd0.cookie);
+  const cid0=(await f.getJ('fm:biz:app:gmail')).connectionId;
+  const dNoV=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi'},null);
+  assert.equal(dNoV.status,409);assert.equal(dNoV.body.code,'app_version_required','an unbound draft is refused');
+  const dStV=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi'},'conn_stale');
+  assert.equal(dStV.status,409);assert.equal(dStV.body.code,'app_version_mismatch','a stale review is refused - nothing drafted into a replacement');
+  const dOkV=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',subject:'Re: x',text:'hi'},cid0);
+  assert.equal(dOkV.status,200);assert.ok(dOkV.body.draftId,'the reviewed connection drafts');
+  assert.equal(f.bizAppCallbackMarker({status:200}),'connected');
+  assert.equal(f.bizAppCallbackMarker({status:400,body:{code:'app_consent_declined'}}),'declined');
+  assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_exchange_uncertain'}}),'uncertain');
+  assert.equal(f.bizAppCallbackMarker({status:502,body:{code:'app_profile_failed'}}),'uncertain','a post-exchange profile failure is never presented as a clean failure');
+  assert.equal(f.bizAppCallbackMarker({status:400,body:{code:'app_state_invalid'}}),'failed');
+
+  // 13f. key loss mid-lifecycle: the undecryptable credential is PRESERVED as unresolved
+  // recovery material, disclosed with the manual path, and revoked when the key returns
+  await f.bizAppSync('gmail');
+  const savedKey=E.BIZ_APP_ENC_KEY;delete E.BIZ_APP_ENC_KEY;
+  const dUn=await f.bizAppDisconnect('gmail',cid0);
+  assert.equal(dUn.status,200);assert.equal(dUn.body.grantStatus,'undecryptable','an unreadable credential is never claimed revoked or closed');
+  assert.ok(/could not be read/.test(dUn.body.note||'')&&/Google account/.test(dUn.body.note||''),'the manual recovery path is disclosed');
+  let tombU=await f.getJ('fm:biz:apptomb:gmail');
+  const attU=(tombU.attempts||[]).find(a=>a.status==='undecryptable');
+  assert.ok(attU&&attU.enc,'the original encrypted credential is preserved as unresolved material');
+  assert.equal(await f.getJ('fm:biz:app:gmail'),null,'local data is still removed');
+  assert.equal((await f.bizAppStatus('gmail')).grantStatus,'revoke_unconfirmed','the unresolved grant stays visible in status');
+  E.BIZ_APP_ENC_KEY=savedKey; // the matching secret returns
+  const dRec=await f.bizAppDisconnect('gmail',null); // drain-only: retries the preserved handle
+  assert.equal(dRec.status,200);
+  tombU=await f.getJ('fm:biz:apptomb:gmail');
+  assert.ok((tombU.attempts||[]).some(a=>a.id===attU.id&&a.status==='revoked'&&!a.enc),'the preserved credential revokes once the secret is restored');
+
+  // 13g. a pre-versioning record: refused on stale/unbound values, removable on the explicit
+  // unversioned marker only
+  const cl0=await connect();await f.bizAppCallback('gmail',{state:cl0.nonce,code:'authcode1'},'https://test.local',cl0.cookie);
+  const recL=await f.getJ('fm:biz:app:gmail');delete recL.connectionId;await f.setJ('fm:biz:app:gmail',recL);
+  assert.equal((await f.bizAppStatus('gmail')).connectionVersion,null,'a legacy record exposes no version');
+  assert.equal((await f.bizAppDisconnect('gmail',null)).body.code,'app_version_required');
+  assert.equal((await f.bizAppDisconnect('gmail','conn_anything')).body.code,'app_version_mismatch','no value binds a versionless record');
+  assert.ok(await f.getJ('fm:biz:app:gmail'),'the legacy record survives both refusals');
+  const dLeg=await f.bizAppDisconnect('gmail','unversioned');
+  assert.equal(dLeg.status,200,'the explicit unversioned marker removes it');
+  assert.equal(await f.getJ('fm:biz:app:gmail'),null);
 
   // 14. purge: revokes grants, kills pending states and the epoch, counts honestly
   const c9=await connect(); // a pending state that is never completed

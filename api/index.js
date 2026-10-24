@@ -1978,10 +1978,10 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/business/discover/delegate-run' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscoverDelegateRun(body)); }
     { const bm = path.match(/^\/business\/proposals\/(prop_\w+)\/(edit|reject|activate)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProposalAct(bm[1], bm[2], body)); } }
     if (path === '/business/apps/gmail/connect' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); const ao = await bizAppConnect('gmail', origin); if (ao && ao.setCookie) res.setHeader('Set-Cookie', ao.setCookie); return send(ao); }
-    if (path === '/business/apps/gmail/callback' && req.method === 'GET') { const aq = Object.fromEntries(new URL(req.url, 'https://local.invalid').searchParams); return send(await bizAppCallback('gmail', aq, origin, String(req.headers.cookie || ''))); }
+    if (path === '/business/apps/gmail/callback' && req.method === 'GET') { const aq = Object.fromEntries(new URL(req.url, 'https://local.invalid').searchParams); const out = await bizAppCallback('gmail', aq, origin, String(req.headers.cookie || '')); res.statusCode = 302; res.setHeader('Location', origin + '/hq#business/app-' + bizAppCallbackMarker(out)); return res.end(); }
     if (path === '/business/apps/gmail/disconnect' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDisconnect('gmail', body && typeof body.expectedVersion === 'string' ? body.expectedVersion : null)); }
     if (path === '/business/apps/gmail/sync' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppSync('gmail')); }
-    if (path === '/business/apps/gmail/drafts' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDraftCreate('gmail', body)); }
+    if (path === '/business/apps/gmail/drafts' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDraftCreate('gmail', body, body && typeof body.expectedVersion === 'string' ? body.expectedVersion : null)); }
     if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(body && body.confirm === 'CANCEL' ? await bizOpCancel(body) : await bizDataPurge(body)); }
     { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete|candidates|delegate-preview|schedule)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
@@ -2683,7 +2683,7 @@ async function bizAppSync(p) {
 // approval review shows precisely what will appear in Gmail; a thread reference is a
 // charset check only, not proof of account or recipient relationship.
 const BIZ_APP_CTL = /[\x00-\x1f\x7f]/, BIZ_APP_ADDR = /^[^\s@,<>(){}\[\]:"\\]{1,64}@[^\s@,<>(){}\[\]:"\\]{1,255}$/;
-async function bizAppDraftCreate(p, body) {
+async function bizAppDraftCreate(p, body, expectedVersion) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
   const to = String((body && body.to) || '').trim(), subject = String((body && body.subject) || ''), text = String((body && body.text) || '');
   if (!to || !text.trim()) return { status: 400, body: { error: 'A draft needs a recipient and text.', code: 'app_input_invalid' } };
@@ -2696,6 +2696,12 @@ async function bizAppDraftCreate(p, body) {
   if (body.threadId != null && !/^[A-Za-z0-9_-]{1,80}$/.test(String(body.threadId))) return { status: 400, body: { error: 'That thread reference is not valid.', code: 'app_input_invalid' } };
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) return { status: 400, body: { error: 'The draft text contains control characters.', code: 'app_input_invalid' } };
   const at = await bizAppAccessToken(p); if (at.err) return at.err;
+  // Same owner binding as removal: the exact words go to the EXACT account reviewed on
+  // screen - a replacement reconnect since the review is never drafted into silently.
+  if (expectedVersion !== undefined) {
+    if (expectedVersion === null) return { status: 409, body: { error: 'Reload this page and review the connection before drafting - this review is out of date. Nothing was created.', code: 'app_version_required' } };
+    if (!at.rec.connectionId || String(expectedVersion) !== String(at.rec.connectionId)) return { status: 409, body: { error: 'The connection changed since this page was loaded - reload and review the account before drafting. Nothing was created.', code: 'app_version_mismatch' } };
+  }
   const mime = 'To: ' + tos.join(', ') + '\r\nSubject: ' + subject + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text;
   const raw = Buffer.from(mime, 'utf8').toString('base64url');
   const res = await fetch(c.apiBase + '/drafts', { method: 'POST', headers: { Authorization: 'Bearer ' + at.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { raw, ...(body.threadId ? { threadId: String(body.threadId) } : {}) } }) });
@@ -2709,6 +2715,15 @@ async function bizAppDraftCreate(p, body) {
 // revocation attempted, and its outcome is recorded on the tombstone for honest reporting and
 // retry. A parked sync loses its CAS the moment the local step lands, so a completed revoke
 // can never leave a live-looking local connection behind.
+// The OAuth return lands as a browser navigation: map the outcome to an honest one-shot
+// landing marker the app announces. The card itself always carries the exact state.
+function bizAppCallbackMarker(out) {
+  if (out && out.status === 200) return 'connected';
+  const code = out && out.body && out.body.code;
+  if (code === 'app_consent_declined') return 'declined';
+  if (code === 'app_exchange_uncertain' || code === 'app_profile_failed') return 'uncertain'; // a grant may exist at the provider - recovery wording, never 'failed cleanly'
+  return 'failed';
+}
 async function bizAppDisconnect(p, expectedVersion) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
   const snap = await bizAppSnap(p); if (!snap) return bizFrozenConflict();
@@ -2719,14 +2734,18 @@ async function bizAppDisconnect(p, expectedVersion) {
   // versioning: fail-closed here - the drain/purge paths remove it instead.
   if (expectedVersion !== undefined && snap.rec) {
     if (expectedVersion === null) return { status: 409, body: { error: 'Reload this page and review the connection before disconnecting - this confirmation is out of date. Nothing was removed.', code: 'app_version_required' } };
-    if (!snap.rec.connectionId || String(expectedVersion) !== String(snap.rec.connectionId)) return { status: 409, body: { error: 'The connection changed since this page was loaded - reload and review it before disconnecting. Nothing was removed.', code: 'app_version_mismatch' } };
+    if (!snap.rec.connectionId) {
+      // Predates removal tracking: removable only by the EXPLICIT unversioned marker (the UI
+      // names the account and says exactly what that means) - never by an empty or stale value.
+      if (expectedVersion !== 'unversioned') return { status: 409, body: { error: 'This connection predates removal tracking - reload and review the account before disconnecting. Nothing was removed.', code: 'app_version_mismatch' } };
+    } else if (String(expectedVersion) !== String(snap.rec.connectionId)) return { status: 409, body: { error: 'The connection changed since this page was loaded - reload and review it before disconnecting. Nothing was removed.', code: 'app_version_mismatch' } };
   }
   const rt = snap.rec && snap.rec.refreshToken ? bizAppDec(snap.rec.refreshToken) : null;
   const tombKey = 'fm:biz:apptomb:' + p, oldAttempts = bizTombUnresolved(await getJ(tombKey));
   // Fail-closed backpressure: the ledger is capped at 8 and unresolved handles are never
   // evicted, so a full ledger REFUSES the disconnect (nothing is removed) until the older
   // grants are resolved (a purge retries them) - no failure path can lose a grant's handle.
-  if (rt && oldAttempts.length >= 8) return { status: 409, body: { error: 'Too many older access revocations are still unconfirmed. Run the workspace data purge (it retries them) or try again shortly. Nothing was removed.', code: 'app_tomb_full' } }; // a drain-only disconnect (no live credential) is always allowed
+  if ((rt || (snap.rec && snap.rec.refreshToken)) && oldAttempts.length >= 8) return { status: 409, body: { error: 'Too many older access revocations are still unconfirmed. Run the workspace data purge (it retries them) or try again shortly. Nothing was removed.', code: 'app_tomb_full' } }; // a drain-only disconnect (no live credential) is always allowed
   // The connect lock serializes the WHOLE grant lifecycle - local removal, the current
   // grant's revocation AND retries of older unresolved grants - against sign-ins: a
   // callback can never complete between the local kill and a delayed revoke, so a
@@ -2741,13 +2760,14 @@ async function bizAppDisconnect(p, expectedVersion) {
     const attempts = oldAttempts.map(a => ({ id: a.id, enc: a.enc, status: a.status, at: a.at }));
     let curId = null;
     if (rt) { curId = rid('att'); attempts.push({ id: curId, enc: bizAppEnc(rt), status: 'pending', at: now() }); }
+    else if (snap.rec && snap.rec.refreshToken) attempts.push({ id: curId = rid('att'), enc: snap.rec.refreshToken, status: 'undecryptable', at: now() }); // the ORIGINAL encrypted credential is kept as unresolved recovery material - it revokes on a later removal/purge if the matching secret is restored; the grant is never claimed closed
     else if (snap.rec) attempts.push({ id: rid('att'), enc: null, status: 'no_credential', at: now() });
     const killTomb = JSON.stringify({ v: 2, at: now(), attempts });
     const kill = await r(['EVAL', BIZ_APP_KILL, 7, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:app:' + p + ':mail', 'fm:biz:appgen:' + p, tombKey, snap.f0, snap.gen, snap.raw, rid('appgen'), killTomb, 'fm:biz:appstate:*']);
     if (kill !== 1) return { status: 409, body: { error: 'The connection changed while it was being removed. Try the disconnect again.', code: 'app_race_lost' } };
     // Current grant: revoke, bounded by the lease and gated on still owning it, then record
     // the outcome on its attempt. A lost lease leaves the durable pending handle for retry.
-    let grantStatus = snap.rec ? (rt ? 'pending' : 'no_credential') : 'not_connected';
+    let grantStatus = snap.rec ? (rt ? 'pending' : (snap.rec.refreshToken ? 'undecryptable' : 'no_credential')) : 'not_connected';
     if (rt) {
       const ok = (left() > 4000 && await bizLockOwned(connLock, connTok)) ? await bizAppRevoke(c, rt, Math.min(20000, left())) : false;
       grantStatus = ok ? 'revoked' : 'revoke_unconfirmed';
@@ -2775,10 +2795,11 @@ async function bizAppDisconnect(p, expectedVersion) {
       return a;
     });
     await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', tombKey, snap.f0, killTomb, JSON.stringify({ v: 2, at: now(), attempts: finalAttempts })]);
-    const prior = oldAttempts.length ? (oldAttempts.every(a => outcomes[a.id] === 'revoked') ? 'revoked' : 'revoke_unconfirmed') : null;
+    const prior = oldAttempts.length ? (oldAttempts.every(a => outcomes[a.id] === 'revoked') ? 'revoked' : oldAttempts.some(a => outcomes[a.id] === 'undecryptable') ? 'undecryptable' : 'revoke_unconfirmed') : null;
     await bizLog('app_disconnected', { provider: p, grantStatus, ...(prior ? { priorGrant: prior } : {}) }, snap.f0);
     return { status: 200, body: { disconnected: true, provider: p, grantStatus, pendingCancelled: true, ...(prior ? { priorGrant: prior } : {}),
-      ...(grantStatus === 'revoke_unconfirmed' || prior === 'revoke_unconfirmed' ? { note: 'Local data is removed. Google did not confirm revoking every grant - the connection may still show under third-party access in the Google account; remove it there to be sure.' } : {}) } };
+      ...(grantStatus === 'revoke_unconfirmed' || prior === 'revoke_unconfirmed' ? { note: 'Local data is removed. Google did not confirm revoking every grant - the connection may still show under third-party access in the Google account; remove it there to be sure.' }
+        : grantStatus === 'undecryptable' || prior === 'undecryptable' ? { note: 'Local data is removed. The stored credential could not be read (the encryption secret changed), so Google could not be asked to revoke - the connection may still show under third-party access in the Google account; remove it there to be sure. The credential stays encrypted and the revocation is retried if the matching secret is restored.' } : {}) } };
   } finally { await r(['EVAL', BIZ_LOCK_REL, 1, connLock, connTok]).catch(() => {}); } // token-owned release
 }
 

@@ -25,8 +25,20 @@
     loading = false;
     if (stamp !== identity()) return; // ownership changed mid-flight (including unknown -> known at first auth): discard - the sync/route handler already cleared the DOM and will reload under the resolved identity
     inflightId = null;
-    if (j && !j.error) { B = j; loadedId = stamp; loadErr = null; } else if (!B) loadErr = (j && j.error) || 'Could not load the Business view. Try again.';
+    if (j && !j.error) { B = j; loadedId = stamp; loadErr = null; appLanding(); } else if (!B) loadErr = (j && j.error) || 'Could not load the Business view. Try again.';
     paint();
+  }
+  // OAuth return landing: the callback redirects to #business/app-<outcome>. Announce it once,
+  // from the LIVE state where possible, then clear the marker so a refresh never re-announces.
+  function appLanding() {
+    const m = location.hash.match(/^#business\/app-(connected|declined|uncertain|failed)$/);
+    if (!m) return;
+    history.replaceState(null, '', '#business');
+    const g = B && B.apps && B.apps.gmail;
+    if (m[1] === 'connected') BB.toast(g && g.connected && g.email ? 'Gmail connected as ' + g.email + '.' : 'The Gmail sign-in finished - the card shows the current state.');
+    else if (m[1] === 'declined') BB.toast('Google declined the sign-in - nothing was connected.');
+    else if (m[1] === 'uncertain') BB.toast('Google did not confirm whether the sign-in finished. The card shows the current state - if nothing is connected, check third-party access in the Google account, then try again.');
+    else BB.toast('The sign-in could not be finished - nothing was connected. Start the connection again.');
   }
   function dropIfStaleTenant() {
     identity(); // bumps the generation when the account or workspace changed
@@ -293,7 +305,7 @@
       if (!appG) return `<div class="bz-card">${head}<p class="meta">Connection status could not be loaded - whether an account is connected is unknown.</p>${fallback}</div>`;
       // The compose scope can technically send; this app has no send endpoint at all, so the
       // honest bound is: only the owner sends, in Gmail. Draft creation writes to Google.
-      const scopeLine = (appG.scopes || []).length ? `<p class="meta">Access this connection asks for: ${appG.scopes.map(x => esc(String(x).split('/').pop())).join(', ')} - read recent inbox messages and create drafts stored in your Google account. The compose scope can technically send; this app has no send endpoint, so only you send, in Gmail.</p>` : '';
+      const scopeLine = (appG.scopes || []).length ? `<p class="meta">Access this connection asks for: ${appG.scopes.map(x => esc(String(x).split('/').pop())).join(', ')} - read recent inbox messages and create drafts stored in your Google account. The compose scope technically allows sending; this app has no send endpoint and never sends.</p>` : '';
       const warn = appG.grantStatus === 'revoke_unconfirmed' ? `<div class="bz-row"><div class="t"><b>A removal was not confirmed</b><small>${esc(appG.grantNote || 'Check third-party access in the Google account and remove the connection there to be sure.')}</small></div>${chip('Check Google account', 'warn')}</div>` : '';
       const hasConn = !!(appG.connected || appG.email || appG.connectedAt || (appG.status && appG.status !== 'not_connected'));
       if (hasConn) {
@@ -305,7 +317,7 @@
         ${unavail}
         ${scopeLine}
         ${appG.syncDisclosure ? `<p class="meta">${esc(appG.syncDisclosure)}</p>` : ''}
-        <div class="btns">${!appG.connected && appG.configured && appG.credentialStorage === 'ready' ? `<button class="b ink sm" id="bz-app-connect" type="button">Reconnect ${esc(appG.label)}</button>` : ''}<button class="b out sm" id="bz-app-disconnect" type="button">Disconnect</button></div>
+        <div class="btns">${!appG.connected && appG.configured && appG.credentialStorage === 'ready' ? `<button class="b ink sm" id="bz-app-connect" type="button">Reconnect ${esc(appG.label)}</button>` : ''}${appG.connected ? `<button class="b ink sm" id="bz-app-draft" type="button">Draft an email</button>` : ''}<button class="b out sm" id="bz-app-disconnect" type="button">Disconnect</button></div>
         <p class="meta" id="bz-app-msg"></p></div>`;
       }
       // No stored connection (the server's own report): say exactly why connecting is or is
@@ -404,20 +416,63 @@
       if (j.error) return BB.toast(j.error);
       if (j.authorizationUrl) window.location.assign(j.authorizationUrl); // Google's consent screen; the return lands on the callback
     };
+    const dr = $('#bz-app-draft', V); if (dr) dr.onclick = () => {
+      const stamp = identity(), want = appSnap();
+      const stillCurrent = () => !(stamp && stamp !== identity()) && (() => { const cur = appSnap(); return want && cur && cur.email === want.email && cur.at === want.at && cur.v === want.v; })();
+      const form = BB.modal(`<h3>Draft an email</h3>
+        <p class="meta">A draft is created in the connected Google account with exactly your words. Nothing is sent - you review and send it in Gmail.</p>
+        <label class="fld">To<input class="in" id="bz-draft-to" maxlength="300" placeholder="dana@example.com"></label>
+        <label class="fld">Subject<input class="in" id="bz-draft-subject" maxlength="300" placeholder="Re: Estimate"></label>
+        <label class="fld">Words<textarea class="in" id="bz-draft-text" rows="6" maxlength="20000" placeholder="Hi Dana - "></textarea></label>
+        <div class="acts"><button class="b ghost" data-close>Cancel</button><button class="b ink" data-draft-review>Review the exact draft</button></div>`, { label: 'Draft an email' });
+      form.querySelector('[data-draft-review]').onclick = () => {
+        if (!stillCurrent()) { BB.closeModal(); load(); return BB.toast('The connection changed - review it and try again.'); }
+        const to = form.querySelector('#bz-draft-to').value.trim(), subject = form.querySelector('#bz-draft-subject').value, text = form.querySelector('#bz-draft-text').value;
+        if (!to || !text.trim()) return BB.toast('A draft needs a recipient and text.');
+        const g = B.apps.gmail;
+        const review = BB.modal(`<h3>Review the exact draft</h3>
+          <p class="meta">This creates a draft - nothing is sent.</p>
+          <div class="bz-log"><div><small>From (the connected account)</small><br><b>${esc(g.email || 'unknown account')}</b></div>
+          <div><small>To</small><br><b>${esc(to)}</b></div>
+          <div><small>Subject</small><br><b>${esc(subject || '(no subject)')}</b></div>
+          <div><small>Words, exactly as they will appear</small><br><pre style="white-space:pre-wrap;margin:6px 0 0">${esc(text)}</pre></div></div>
+          <div class="acts"><button class="b ghost" data-close>Back</button><button class="b ink" data-draft-create>Create this draft in Gmail</button></div>`, { label: 'Review the exact draft' });
+        review.querySelector('[data-draft-create]').onclick = async () => {
+          if (!stillCurrent()) { BB.closeModal(); load(); return BB.toast('The connection changed - review it and try again.'); }
+          const b = review.querySelector('[data-draft-create]'); b.disabled = true;
+          const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v });
+          if (stamp && stamp !== identity()) return; // changed mid-request: discard the stale reply
+          b.disabled = false;
+          if (j.error) { BB.closeModal(); await load(); return BB.toast(j.error); }
+          BB.closeModal();
+          BB.toast(j.note || 'Draft created in Gmail - nothing was sent.');
+          await load();
+        };
+      };
+    };
     const ad = $('#bz-app-disconnect', V); if (ad) ad.onclick = async () => {
       const stamp = identity(), want = appSnap();
-      if (!await askConfirm('Disconnect Gmail?', 'Alter stops reading the inbox and the stored connection is removed here. Google is asked to revoke its access too.', 'Disconnect')) return;
+      // A connection stored before removal tracking has no version to bind: say exactly what
+      // that means and remove only on the explicit unversioned marker.
+      const legacy = want && !want.v;
+      if (!await askConfirm('Disconnect Gmail?', (legacy ? 'This connection was stored before removal tracking existed - disconnecting removes the connection currently stored for ' + (want.email || 'the shown account') + '. ' : '') + 'Alter stops reading the inbox and the stored connection is removed here. Google is asked to revoke its access too.', 'Disconnect')) return;
       if (stamp && stamp !== identity()) return; // the dialog outlived an identity switch: discard, never act as the new identity
       const cur = appSnap();
       if (!want || !cur || cur.email !== want.email || cur.at !== want.at || cur.v !== want.v) { await load(); return BB.toast('The connection changed - review it and try again.'); }
-      ad.disabled = true; const j = await api('/apps/gmail/disconnect', 'POST', { expectedVersion: want.v }); ad.disabled = false;
+      ad.disabled = true; const j = await api('/apps/gmail/disconnect', 'POST', { expectedVersion: legacy ? 'unversioned' : want.v }); ad.disabled = false;
       if (stamp && stamp !== identity()) return; // changed mid-request: the guard reloads under the new identity - discard the stale reply
       if (j.error) { await load(); return BB.toast(j.error); }
-      // Honest removal: a confirmed current grant does NOT imply older grants are gone.
-      const unconfirmed = j.grantStatus === 'revoke_unconfirmed' || j.priorGrant === 'revoke_unconfirmed';
-      if (j.grantStatus === 'revoked' && !unconfirmed) BB.toast('Disconnected - Google confirmed the access removal.');
-      else BB.toast('Disconnected here. ' + (j.note || (unconfirmed ? 'Google did not confirm removing every grant - check third-party access in the Google account and remove the connection there to be sure.' : '')));
+      // Refresh FIRST: the announcement must describe the current state, never the removed
+      // snapshot. A replacement connected while the removal ran gets a neutral line - the
+      // old grant's fate is never announced over the new connection's card.
       await load();
+      const after = appSnap();
+      if (after && after.v && after.v !== want.v) return BB.toast('The older connection was removed. A different connection is active now - the card shows it.');
+      const who = want.email ? ' ' + want.email : '';
+      // Honest removal: a confirmed current grant does NOT imply older grants are gone.
+      const unconfirmed = j.grantStatus === 'revoke_unconfirmed' || j.grantStatus === 'undecryptable' || j.priorGrant === 'revoke_unconfirmed' || j.priorGrant === 'undecryptable';
+      if (j.grantStatus === 'revoked' && !unconfirmed) BB.toast('Disconnected' + who + ' - Google confirmed the access removal.');
+      else BB.toast('Disconnected' + who + ' here. ' + (j.note || (unconfirmed ? 'Google did not confirm removing every grant - check third-party access in the Google account and remove the connection there to be sure.' : '')));
     };
     const ps = $('#bz-prof-save', V); if (ps) ps.onclick = async () => {
       ps.disabled = true; const j = await api('/profile', 'POST', { name: $('#bz-prof-name', V).value, blurb: $('#bz-prof-blurb', V).value }); ps.disabled = false;

@@ -15,10 +15,11 @@ function appFor(mode){
   if(mode==='connected-unconfigured')return {...base,configured:false,connected:true,status:'connected',email:'royce@northbend.example',connectedAt:'2026-10-23T00:00:00Z',lastSyncAt:null,lastError:null,mailCount:0,connectionVersion:'gen-AAA'};
   if(mode==='needs-reconnect')return {...base,connected:false,status:'needs_reconnect',email:'royce@northbend.example',connectedAt:'2026-10-20T00:00:00Z',lastSyncAt:'2026-10-22T00:00:00Z',lastError:'The stored credential no longer works.',mailCount:2,connectionVersion:'gen-AAA'};
   if(mode==='connected'||mode==='mismatch')return {...base,connected:true,status:'connected',email:'royce@northbend.example',connectedAt:'2026-10-23T00:00:00Z',lastSyncAt:null,lastError:null,mailCount:0,connectionVersion:'gen-AAA'};
+  if(mode==='connected2')return {...base,connected:true,status:'connected',email:'replacement@example.test',connectedAt:'2026-10-23T01:00:00Z',lastSyncAt:null,lastError:null,mailCount:0,connectionVersion:'gen-BBB'};
   if(mode==='connectable'||mode==='gone')return {...base,connected:false,status:'not_connected'};
   return null; // omit: status unavailable
 }
-let mode='connected-unconfigured',ident='A',disconnCalls=[],oauthHits=0,connectGo=null;
+let mode='connected-unconfigured',ident='A',disconnCalls=[],draftCalls=[],oauthHits=0,connectGo=null,disconnGo=null;
 function stateFor(){
   if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[],proposals:[],responsibilities:[],log:[],opPending:null};
   const s={engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[{id:'src_1',kind:'doc',title:'How we work',version:2,text:'Refunds over $50 need Royce.',updatedAt:'2026-10-23T00:00:00Z'}],proposals:[],responsibilities:[],log:[],opPending:null};
@@ -31,6 +32,9 @@ const server=http.createServer((req,res)=>{
   if(u.pathname==='/__ident'){ident=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__mode'){mode=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__park-connect'){connectGo='park';return json({ok:true});}
+  if(u.pathname==='/__park-disconnect'){disconnGo='park';return json({ok:true});}
+  if(u.pathname==='/__disconnect-parked'){return json({parked:typeof disconnGo==='function'});}
+  if(u.pathname==='/__disconnect-release'){const g=disconnGo;disconnGo=null;if(typeof g==='function')g();return json({ok:true});}
   if(u.pathname==='/__parked'){return json({parked:typeof connectGo==='function'});}
   if(u.pathname==='/__connect-release'){const g=connectGo;connectGo=null;if(typeof g==='function')g();return json({ok:true});}
   if(u.pathname==='/__oauth-fake'){oauthHits++;res.setHeader('content-type','text/html');return res.end('<title>fake oauth</title>should never load');}
@@ -44,12 +48,19 @@ const server=http.createServer((req,res)=>{
       if(connectGo==='park'){await new Promise(r=>{connectGo=r;});}
       return json({authorizationUrl:'http://127.0.0.1:'+PORT+'/__oauth-fake?state=synthetic'});});
     return;}
-  if(u.pathname==='/api/business/apps/gmail/disconnect'&&req.method==='POST'){
+  if(u.pathname==='/api/business/apps/gmail/drafts'&&req.method==='POST'){
     let b='';req.on('data',d=>b+=d);req.on('end',()=>{
+      let body={};try{body=JSON.parse(b||'{}')}catch(e){}
+      draftCalls.push({body,ident});
+      return json({provider:'gmail',draftId:'draft_9',account:'royce@northbend.example',to:[body.to],subject:body.subject||'',note:'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.'});});
+    return;}
+  if(u.pathname==='/api/business/apps/gmail/disconnect'&&req.method==='POST'){
+    let b='';req.on('data',d=>b+=d);req.on('end',async()=>{
+      if(disconnGo==='park'){await new Promise(r=>{disconnGo=r;});}
       let body={};try{body=JSON.parse(b||'{}')}catch(e){}
       disconnCalls.push({body,ident});
       if(mode==='mismatch')return json({error:'The connection changed since this page was loaded - reload and review it before disconnecting. Nothing was removed.',code:'app_version_mismatch'},409);
-      mode='gone';
+      if(mode==='connected')mode='gone'; // a mode changed while the response was parked (a replacement) stays
       return json({disconnected:true,provider:'gmail',grantStatus:'revoked',priorGrant:'revoke_unconfirmed',pendingCancelled:true,note:'Local data is removed. Google did not confirm revoking every grant - the connection may still show under third-party access in the Google account; remove it there to be sure.'});});
     return;}
   if(u.pathname.startsWith('/api/'))return json({});
@@ -120,7 +131,8 @@ let PORT=0;
  assert(t.includes('Reconnecting is unavailable'),'the config problem is named without masking the connection');
  assert(!t.includes('not set up on this deployment yet'),'config-missing copy never claims there is nothing to remove');
  assert(await ev(`!!document.querySelector('#bz-app-disconnect')`),'removal stays reachable');
- assert(t.includes('The compose scope can technically send; this app has no send endpoint'),'scope copy bounds the send claim honestly');
+ assert(t.includes('The compose scope technically allows sending; this app has no send endpoint and never sends'),'scope copy bounds the send claim honestly');
+ assert(!t.includes('only you send'),'no promise that only the owner can ever send via the granted scope');
  assert(!t.includes('Nothing is ever sent'),'no categorical no-send claim');
  assert(t.includes(DISC.slice(0,40)),'the sync disclosure shows on the connected card');
  await shot2('apps-connected-unconfigured',`document.querySelector('#bz-app-disconnect')`);
@@ -151,6 +163,7 @@ let PORT=0;
  t=await toastText();
  assert.equal(disconnCalls.length,1,'exactly one removal call');
  assert.equal(disconnCalls[0].body.expectedVersion,'gen-AAA','the removal echoes the exact reviewed connection version');
+ assert(t.includes('royce@northbend.example'),'the confirmation names the reviewed account');
  assert(t.includes('Google did not confirm revoking every grant'),'the unconfirmed PRIOR grant is surfaced');
  assert(t.includes('remove it there to be sure'),'the manual recovery path is named');
  assert(!t.includes('Google confirmed the access removal'),'a confirmed current grant never implies older grants are gone');
@@ -192,6 +205,66 @@ let PORT=0;
  assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('The connection changed')`),'the server refusal is surfaced');
  assert.equal(disconnCalls.length,1,'the refusal came from the server, not a client skip');
 
+ // 8. OAuth landing: the callback redirect marker announces once, from the live state, then cleans itself
+ await ctl('/__mode?to=connected');
+ await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
+ await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-connected'},sessionId);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Gmail connected as royce@northbend.example')`),'the landing names the connected account from live state');
+ assert(await ev(`location.hash==='#business'`),'the marker is cleared so a refresh never re-announces');
+ await send('Page.navigate',{url:'about:blank'},sessionId);await new Promise(r=>setTimeout(r,300));
+ await send('Page.navigate',{url:'http://127.0.0.1:'+PORT+'/#business/app-declined'},sessionId);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Google declined the sign-in - nothing was connected')`),'a declined consent says so honestly');
+
+ // 9. parked success over a replacement: the old grant's fate is never announced over the new card
+ await ctl('/__mode?to=connected');await reload(`!!document.querySelector('#bz-app-disconnect')`);
+ await ctl('/__park-disconnect');
+ await ev(`document.querySelector('#bz-app-disconnect').click();'click'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-yes]')`),'the confirm dialog opens');
+ await ev(`document.querySelector('#modal.on [data-yes]').click();'yes'`);
+ {const t0=Date.now();let ok=false;while(Date.now()-t0<5000){const p=await new Promise((res,rej)=>{http.get('http://127.0.0.1:'+PORT+'/__disconnect-parked',r=>{let d='';r.on('data',ch=>d+=ch);r.on('end',()=>res(JSON.parse(d).parked));}).on('error',rej);});if(p){ok=true;break;}await new Promise(r=>setTimeout(r,100));}assert(ok,'the removal parked server-side');}
+ await ctl('/__mode?to=connected2'); // another tab connected the replacement meanwhile
+ await ctl('/__disconnect-release');
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('A different connection is active now')`),'a replacement landed mid-removal gets a neutral announcement');
+ t=await toastText();
+ assert(!t.includes('Google confirmed the access removal'),'the old grant\'s confirmation is never announced over the replacement');
+ assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('Connected as replacement@example.test')`),'the card shows the current connection');
+
+ // 10. draft review: the exact account + recipients + subject + words are reviewed before create
+ await ctl('/__mode?to=connected');await reload(`!!document.querySelector('#bz-app-draft')`);
+ await ev(`document.querySelector('#bz-app-draft').click();'open'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the composer opens');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-subject').value='Re: Estimate for the fence repair';document.querySelector('#bz-draft-text').value='Hi Dana - attached is the estimate.';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review step opens');
+ t=await ev(`(document.getElementById('modal')||{textContent:''}).textContent`);
+ assert(t.includes('royce@northbend.example'),'the review names the exact linked account');
+ assert(t.includes('dana@example.com'),'the review names the exact recipients');
+ assert(t.includes('Re: Estimate for the fence repair'),'the review names the exact subject');
+ assert(t.includes('Hi Dana - attached is the estimate.'),'the review shows the exact words');
+ assert(t.includes('nothing is sent')||t.includes('Nothing is sent'),'the review states nothing is sent');
+ await shot2('apps-draft-review',`document.querySelector('#modal.on [data-draft-create]')`);
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create'`);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Draft created in Gmail with exactly these words')`),'the result echoes the draft, never a send');
+ assert.equal(draftCalls.length,1,'exactly one draft call');
+ assert.equal(draftCalls[0].body.expectedVersion,'gen-AAA','the draft echoes the reviewed connection version');
+ assert.equal(draftCalls[0].body.to,'dana@example.com','the exact recipients go through');
+ assert.equal(draftCalls[0].body.subject,'Re: Estimate for the fence repair','the exact subject goes through');
+ assert.equal(draftCalls[0].body.text,'Hi Dana - attached is the estimate.','the exact words go through');
+
+ // 11. identity switch before create: the draft is never posted as the new identity
+ await reload(`!!document.querySelector('#bz-app-draft')`);
+ await ev(`document.querySelector('#bz-app-draft').click();'open'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the composer opens');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-text').value='Hi again';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review step opens');
+ await flip('B');
+ await ev(`(()=>{const b=document.querySelector('#modal [data-draft-create]');if(b)b.click();return 1})()`);
+ await new Promise(r=>setTimeout(r,700));
+ assert.equal(draftCalls.length,1,'the old identity\'s review never creates a draft under the new one');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m&&m.classList.contains('on'))m.classList.remove('on');return 1})()`);
+ await flip('A');
+
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz apps: stored connection renders unmasked with exact account + removal (unconfigured + needs_reconnect), unknown status makes no absence claims, removal echoes the reviewed connection version, identity switch mid-confirm/mid-connect discards the action (no POST, no redirect), stale-version refusal surfaces, prior-grant-unconfirmed toast never claims all-removed - pixels at /downloads/apps-*-{390,desktop}.png.');
+ console.log('PASS ui biz apps: stored connection renders unmasked with exact account + removal (unconfigured + needs_reconnect), unknown status makes no absence claims, removal echoes the reviewed connection version, identity switch mid-confirm/mid-connect/mid-draft discards the action (no POST, no redirect, no draft), stale-version refusal surfaces, prior-grant-unconfirmed toast never claims all-removed, OAuth landing markers announce once from live state, a replacement mid-removal gets a neutral line, the draft review names the exact account+recipients+subject+words - pixels at /downloads/apps-*-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{cp.kill();}catch(_){/*noop*/}try{server.close();}catch(_){/*noop*/}process.exit(1)});
