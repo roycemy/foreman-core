@@ -432,7 +432,10 @@
       if (!nonRetired.length && !ownerless.length) return '';
       const rows = nonRetired.map(rp => {
         const o = ownerOf(rp), block = blockLine(o);
-        return `<div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>${rp.status === 'paused' ? 'Paused · ' : ''}${esc(ownerLine(o))}</small><small>${esc(rowState(rp))}</small></div>${ownerChip(o)}<button class="b ghost sm" data-hq-target="[data-resp=&quot;${esc(rp.id)}&quot;]" type="button">Open</button></div>`
+        // An assignment-shaped block gets its recovery right on the row: the same reviewed,
+        // fingerprint-bound chooser the responsibility card uses, never a separate path.
+        const assignCta = (o.gone || o.nopick) ? `<button class="b out sm" data-team-assign="${esc(rp.id)}" type="button">${o.nopick ? 'Assign a bot' : 'Reassign'}</button>` : '';
+        return `<div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>${rp.status === 'paused' ? 'Paused · ' : ''}${esc(ownerLine(o))}</small><small>${esc(rowState(rp))}</small></div>${ownerChip(o)}${assignCta}<button class="b ghost sm" data-hq-target="[data-resp=&quot;${esc(rp.id)}&quot;]" type="button">Open</button></div>`
           + (block ? `<p class="bz-blocked">${esc(block)}</p>` : '');
       }).join('');
       const unassigned = ownerless.length ? `<p class="meta">Also paired, with nothing handed off yet: ${ownerless.map(t => esc(t.name)).join(', ')} - assign a responsibility from its card below.</p>` : '';
@@ -905,6 +908,16 @@
       // Cancel keeps the typed work: restore the reviewed text into the input box.
       const pa = pendingApproval; pendingApproval = null; paint();
       if (pa) { const ta = $('[data-run-input="' + pa.respId + '"]', V); if (ta) ta.value = pa.input; }
+    });
+    // Team-row recovery: open the SAME reviewed chooser (fingerprint + identity + generation
+    // bound at creation) inside the responsibility's own card - never a second assign path.
+    $$('[data-team-assign]', V).forEach(b => b.onclick = () => {
+      const rp = (B.responsibilities || []).find(x => x.id === b.dataset.teamAssign);
+      if (!rp) return;
+      if (assigningResp && assigningResp.respId === rp.id) { assigningResp = null; assignGen++; paint(); return; }
+      assigningResp = { respId: rp.id, fp: rp.fp || null, stamp: identity(), gen: ++assignGen };
+      openResp[rp.id] = true; paint();
+      const el = document.querySelector('[data-resp="' + rp.id + '"]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
     $$('[data-resp-assign]', V).forEach(b => b.onclick = () => {
       if (assigningResp && assigningResp.respId === b.dataset.respAssign) { assigningResp = null; assignGen++; paint(); return; }

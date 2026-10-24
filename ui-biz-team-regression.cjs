@@ -38,9 +38,10 @@ const RESP_AUTOPICK={id:'resp_5',title:'Client update drafts',summary:'s',bounda
   runs:[{id:'run_5',kind:'work',status:'done',at:'2026-10-23T18:00:00Z',output:'draft text',bot:{id:'agent_1',name:'Grokbot'}}]}; // unassigned non-research: automatic pick
 const RESP_BOTONLY={id:'resp_6',title:'Supplier nudges',summary:'s',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],bot:{id:'agent_2',name:'Quill',providerId:'anthropic'},fp:'f6',runs:[]};
 const RESP_PLAIN={id:'resp_7',title:'Seasonal checklist',summary:'s',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],fp:'f7',runs:[]};
+let C_RESPS=null; // mutable copy so an assignment save can land like the real server
 function bizState(ident){
   if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,team:[],sources:SRC,proposals:[],responsibilities:[],log:[],opPending:null};
-  if(ident==='C')return {engine:{configured:false,enabled:false,consent:null},profile:{name:'Two Bot Shop',blurb:'',updatedAt:'2026-10-23T00:00:00Z'},delegate:null,team:TEAM_C,sources:SRC,proposals:[],responsibilities:[RESP_BOTONLY,RESP_PLAIN],log:[],opPending:null};
+  if(ident==='C'){if(!C_RESPS)C_RESPS=JSON.parse(JSON.stringify([RESP_BOTONLY,RESP_PLAIN]));return {engine:{configured:false,enabled:false,consent:null},profile:{name:'Two Bot Shop',blurb:'',updatedAt:'2026-10-23T00:00:00Z'},delegate:null,team:TEAM_C,sources:SRC,proposals:[],responsibilities:C_RESPS,log:[],opPending:null};}
   return {engine:{configured:false,enabled:false,consent:null},profile:{name:'North Bend Contracting',blurb:'Demo',updatedAt:'2026-10-23T00:00:00Z'},
     delegate:{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}},team:TEAM,
     sources:SRC,proposals:[],
@@ -56,6 +57,16 @@ const server=http.createServer((req,res)=>{
   if(u.pathname==='/api/money')return json({requests:[]});
   if(u.pathname==='/api/cards')return json({proposals:[],bots:[],ledger:[]});
   if(u.pathname==='/api/business/state')return json(bizState(ident));
+  if(u.pathname==='/api/business/responsibilities/resp_6/assign'&&req.method==='POST'){
+    let body='';req.on('data',d=>body+=d);req.on('end',()=>{
+      const b=JSON.parse(body||'{}');
+      const rp=C_RESPS&&C_RESPS.find(x=>x.id==='resp_6');
+      if(!rp)return json({error:'not found'});
+      if(b.reviewedFp!==rp.fp)return json({error:'changed'});
+      rp.assignment=b.botId?{botId:b.botId,botName:(TEAM_C.find(t=>t.id===b.botId)||{}).name,assignedAt:new Date().toISOString()}:undefined;
+      return json({responsibility:rp});
+    });return;
+  }
   if(u.pathname.startsWith('/api/'))return json({});
   if(u.pathname==='/'||u.pathname==='/app.html'||u.pathname==='/index.html'){res.setHeader('content-type','text/html');return res.end(fs.readFileSync('public/app.html'));}
   const fp=path.join('public',u.pathname);
@@ -131,6 +142,9 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  // Unassigned paired bots: one secondary closing line, only the truly unassigned
  assert(await ev(`(()=>{const m=[...document.querySelectorAll('#bz-team p.meta')].map(p=>p.textContent).join('|');return m.includes('Also paired, with nothing handed off yet: Scout')&&!m.includes('Grokbot')&&!m.includes('Quill');})()`),'the unassigned line names only truly unassigned bots');
 
+ // Assignment-shaped blocks carry their recovery on the row
+ assert(await ev(`(()=>{const rows=[...document.querySelectorAll('#bz-team .bz-row')];const g=rows.find(r=>r.textContent.includes('Permit tracker'));return !!g.querySelector('[data-team-assign="resp_3"]')&&g.querySelector('[data-team-assign="resp_3"]').textContent==='Reassign';})()`),'disappeared-owner row carries Reassign');
+
  // Open navigates to the responsibility's own card
  await ev(`[...document.querySelectorAll('#bz-team [data-hq-target]')].find(b=>b.getAttribute('data-hq-target')==='[data-resp="resp_3"]').click();'go'`);
  assert(await poll(`!!document.querySelector('[data-run-input="resp_3"]')`),'Open expands that responsibility card');
@@ -159,6 +173,16 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(await ev(`(${rowTxt})('Seasonal checklist').includes('Runs on the reasoning engine')`),'plain responsibility with no pick falls to the engine');
  assert(t.includes('runs and daily check-ins are off until setup finishes'),'engine off state in C');
  assert(await ev(`(()=>{const m=[...document.querySelectorAll('#bz-team p.meta')].map(p=>p.textContent).join('|');return m.includes('Quill')&&m.includes('Scout');})()`),'both unassigned paired bots named in C');
+
+ // Team-row recovery: the row's Assign a bot opens the SAME reviewed chooser inside the
+ // responsibility's own card; saving through it lands like any assignment save.
+ assert(await ev(`(()=>{const rows=[...document.querySelectorAll('#bz-team .bz-row')];const r6=rows.find(r=>r.textContent.includes('Supplier nudges'));const b=r6&&r6.querySelector('[data-team-assign="resp_6"]');if(!b||b.textContent!=='Assign a bot')return false;b.click();return true;})()`),'no-pick row carries Assign a bot');
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_6"]')`),'the reviewed chooser opens inside the responsibility card');
+ assert(await ev(`(()=>{const r=[...document.querySelectorAll('[data-assign-bot]')];return r.length===3&&r.some(x=>x.value==='agent_4')&&r.some(x=>x.value==='');})()`),'chooser lists the paired bots plus the automatic pick');
+ await ev(`[...document.querySelectorAll('[data-assign-bot]')].find(x=>x.value==='agent_4').click();'pick'`);
+ await ev(`document.querySelector('[data-assign-save="resp_6"]').click();'save'`);
+ assert(await poll(`(()=>{const rows=[...document.querySelectorAll('#bz-team .bz-row')];const r6=rows.find(r=>r.textContent.includes('Supplier nudges'));return r6&&r6.textContent.includes('Assigned to Scout');})()`),'the saved assignment repaints the team row with the exact new owner');
+ assert(await ev(`(()=>{const rows=[...document.querySelectorAll('#bz-team .bz-row')];const r6=rows.find(r=>r.textContent.includes('Supplier nudges'));return !r6.querySelector('[data-team-assign]');})()`),'the recovery CTA clears once assigned');
 
  // Identity flip: another workspace's empty state never paints A's team
  await ev(`fetch('/__ident?to=B');'flip'`);
