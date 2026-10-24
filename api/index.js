@@ -125,10 +125,20 @@ function memEval(script, n, keys, argv) {
     mem.kv.set(keys[0], JSON.stringify(t)); return 1;
   }
   if (script === BIZ_MANAGED_BEGIN) {
-    // Mirror of the Lua exactly: every validation before any write.
+    // Mirror of the Lua exactly: argument and type validation first, then content checks, then
+    // one write phase. (mem keeps sets as arrays in kv and lists in lists - mty maps that.)
+    const mty = k => mem.lists.has(k) ? 'list' : (mem.kv.has(k) ? (Array.isArray(mem.kv.get(k)) ? 'set' : 'string') : 'none');
+    const ckt = (k, t) => { const ty = mty(k); return ty === 'none' || ty === t; };
+    const n0 = parseInt(argv[11], 10);
+    if (!Number.isFinite(n0) || n0 < 0 || !Number.isFinite(parseInt(argv[3], 10)) || !Number.isFinite(parseInt(argv[7], 10)) || !Number.isFinite(parseInt(argv[12], 10))) return ['bad_args'];
+    let atj0; try { atj0 = JSON.parse(argv[10]); } catch { return ['bad_args']; }
+    if (!atj0 || typeof atj0 !== 'object' || Array.isArray(atj0)) return ['bad_args'];
     if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return ['held'];
     if (mem.kv.has(keys[2])) return ['pending'];
     if (mem.kv.has(keys[3])) return ['killed'];
+    for (const [i, t] of [[0, 'string'], [1, 'string'], [2, 'string'], [4, 'string'], [5, 'string'], [6, 'string'], [7, 'set'], [8, 'string'], [9, 'set']]) if (!ckt(keys[i], t)) return ['corrupt'];
+    for (let i = 0; i < n0; i++) if (!ckt(keys[10 + i], 'string')) return ['corrupt'];
+    if (!ckt(keys[10 + n0], 'string') || !ckt(keys[11 + n0], 'list') || !ckt(keys[12 + n0], 'set')) return ['corrupt'];
     const rraw = mem.kv.get(keys[5]); if (rraw == null) return ['gone'];
     let rp; try { rp = JSON.parse(rraw); } catch { return ['gone']; }
     if (rp.status !== 'active') return ['inactive'];
@@ -145,27 +155,32 @@ function memEval(script, n, keys, argv) {
     const live = (mem.kv.get(keys[7]) || []).slice().sort();
     const snapids = snap.sources.map(s => s.id).sort();
     if (live.length !== snapids.length || live.some((v, i) => v !== snapids[i])) return ['sources_changed'];
-    const n = parseInt(argv[11], 10);
-    for (let i = 0; i < n; i++) { const sraw = mem.kv.get(keys[10 + i]); if (sraw == null || sraw !== snap.sources[i].raw) return ['sources_changed']; }
+    for (let i = 0; i < n0; i++) { const sraw = mem.kv.get(keys[10 + i]); if (sraw == null || sraw !== snap.sources[i].raw) return ['sources_changed']; }
     const calls = parseInt(mem.kv.get(keys[8]) || '0', 10); if (calls >= parseInt(argv[7], 10)) return ['capped'];
     const un = (mem.kv.get(keys[9]) || []).slice().sort();
     const parts = [];
-    for (const aid of un) { const araw = mem.kv.get(argv[13] + aid); if (araw == null) return ['attempt_orphan']; let at; try { at = JSON.parse(araw); } catch { return ['attempt_orphan']; } parts.push(aid + ':' + String(at.requestHash)); }
+    for (const aid of un) { if (!ckt(argv[13] + aid, 'string')) return ['corrupt']; const araw = mem.kv.get(argv[13] + aid); if (araw == null) return ['attempt_orphan']; let at; try { at = JSON.parse(araw); } catch { return ['attempt_orphan']; } parts.push(aid + ':' + String(at.requestHash)); }
     if (parts.join('\n') !== argv[8]) return ['unresolved'];
     const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
     mem.kv.set(keys[1], argv[2]);
     mem.kv.set(keys[2], JSON.stringify({ op: argv[0], id: argv[1], token: argv[2], gen, at: argv[4], opId: argv[9] }));
     mem.kv.set(keys[8], String(calls + 1));
     const st = new Set(mem.kv.get(keys[9]) || []); st.add(argv[9]); mem.kv.set(keys[9], [...st]);
-    const at = JSON.parse(argv[10]); at.gen = gen; mem.kv.set(keys[10 + n], JSON.stringify(at));
-    const tl = memList(keys[11 + n]); tl.unshift(argv[9]); mem.lists.set(keys[11 + n], tl.slice(0, 50));
+    const mt = new Set(mem.kv.get(keys[12 + n0]) || []); mt.add(argv[9]); mem.kv.set(keys[12 + n0], [...mt]); // durable all-attempts inventory, never trimmed
+    atj0.gen = gen; mem.kv.set(keys[10 + n0], JSON.stringify(atj0));
+    const tl = memList(keys[11 + n0]); tl.unshift(argv[9]); mem.lists.set(keys[11 + n0], tl.slice(0, 50));
     return ['ok', gen];
   }
   if (script === BIZ_MANAGED_SETTLE) {
+    const mty = k => mem.lists.has(k) ? 'list' : (mem.kv.has(k) ? (Array.isArray(mem.kv.get(k)) ? 'set' : 'string') : 'none');
+    const ckt = (k, t) => { const ty = mty(k); return ty === 'none' || ty === t; };
+    try { JSON.parse(argv[4]); JSON.parse(argv[5]); if (argv[6] !== '') JSON.parse(argv[6]); } catch { return ['bad_args']; }
+    if (!Number.isFinite(parseInt(argv[8], 10)) || !Number.isFinite(parseInt(argv[10], 10))) return ['bad_args'];
+    for (const [i, t] of [[0, 'string'], [1, 'string'], [2, 'string'], [4, 'string'], [5, 'set'], [7, 'list'], [8, 'list']]) if (!ckt(keys[i], t)) return ['corrupt'];
     const pr = mem.kv.get(keys[2]);
     if (pr == null) {
       const araw = mem.kv.get(keys[4]);
-      if (araw != null) { try { const at = JSON.parse(araw); if (at.status !== 'started' && String(at.requestHash) === argv[3] && (String(at.receipt) === argv[11] || String(at.receipt) === argv[12])) return ['landed']; } catch {} }
+      if (araw != null) { try { const at = JSON.parse(araw); if (at.status !== 'started' && String(at.id) === argv[2] && String(at.token) === argv[0] && String(at.gen) === argv[1] && String(at.requestHash) === argv[3] && (String(at.receipt) === argv[11] || String(at.receipt) === argv[12])) return ['landed', String(at.status)]; } catch {} }
       return ['lost'];
     }
     let pj; try { pj = JSON.parse(pr); } catch { return ['lost']; }
@@ -173,9 +188,12 @@ function memEval(script, n, keys, argv) {
     if (pj.token !== argv[0] || String(pj.gen) !== argv[1]) return ['lost'];
     if ((mem.kv.get(keys[0]) || '0') !== argv[1]) return ['lost'];
     if (mem.kv.get(keys[1]) !== argv[0]) return ['lost'];
+    const araw2 = mem.kv.get(keys[4]); if (araw2 == null) return ['lost'];
+    let at2; try { at2 = JSON.parse(araw2); } catch { return ['lost']; }
+    if (at2.status !== 'started' || String(at2.id) !== argv[2] || String(at2.token) !== argv[0] || String(at2.gen) !== argv[1] || String(at2.requestHash) !== argv[3]) return ['lost'];
     const killed = mem.kv.has(keys[3]);
     mem.kv.set(keys[4], killed ? argv[5] : argv[4]);
-    mem.kv.set(keys[5], (mem.kv.get(keys[5]) || []).filter(v => v !== argv[2]));
+    if (!killed && argv[14] === '1') mem.kv.set(keys[5], (mem.kv.get(keys[5]) || []).filter(v => v !== argv[2])); // clean outcomes only: unknown-effect attempts keep blocking until owner review
     if (!killed && argv[6] !== '') {
       mem.kv.set(keys[6], argv[6]);
       const l = memList(keys[7]); l.unshift(argv[7]);
@@ -188,21 +206,56 @@ function memEval(script, n, keys, argv) {
     return ['ok', killed ? 'withheld' : 'settled'];
   }
   if (script === BIZ_MANAGED_RESOLVE) {
+    const mty = k => mem.lists.has(k) ? 'list' : (mem.kv.has(k) ? (Array.isArray(mem.kv.get(k)) ? 'set' : 'string') : 'none');
+    const ckt = (k, t) => { const ty = mty(k); return ty === 'none' || ty === t; };
+    let receipts; try { receipts = JSON.parse(argv[5]); } catch { return ['bad_args']; }
+    if (!receipts || typeof receipts !== 'object' || Array.isArray(receipts)) return ['bad_args'];
+    if (!Number.isFinite(parseInt(argv[2], 10))) return ['bad_args'];
+    for (const [i, t] of [[0, 'string'], [1, 'string'], [2, 'string'], [3, 'set'], [4, 'list']]) if (!ckt(keys[i], t)) return ['corrupt'];
     if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return ['held'];
     const pr = mem.kv.get(keys[2]);
     let pj = null; if (pr != null) { try { pj = JSON.parse(pr); } catch { return ['not_managed']; } if (pj.op !== 'managed-run') return ['not_managed']; }
     const un = (mem.kv.get(keys[3]) || []).slice().sort();
     const parts = [], raws = {};
-    for (const aid of un) { const araw = mem.kv.get(argv[4] + aid); if (araw == null) return ['orphan']; let at; try { at = JSON.parse(araw); } catch { return ['orphan']; } if (at.status === 'started') { parts.push(aid + ':' + String(at.requestHash)); raws[aid] = at; } }
+    for (const aid of un) { if (!ckt(argv[4] + aid, 'string')) return ['corrupt']; const araw = mem.kv.get(argv[4] + aid); if (araw == null) return ['orphan']; let at; try { at = JSON.parse(araw); } catch { return ['orphan']; } if (['started', 'started-unknown', 'unknown', 'provider-ambiguous', 'withheld'].includes(String(at.status))) { parts.push(aid + ':' + String(at.requestHash)); raws[aid] = at; } }
     if (parts.join('\n') !== argv[0]) return ['stale'];
     if (pj) { for (const aid of un) { const at = raws[aid]; if (at && String(at.token) !== String(pj.token)) return ['unbound']; } }
-    const receipts = JSON.parse(argv[5]);
     const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
     let done = 0;
     for (const aid of un) { const at = raws[aid]; if (at) { at.status = 'acknowledged-unknown'; at.receipt = receipts[aid]; at.resolvedAt = argv[3]; mem.kv.set(argv[4] + aid, JSON.stringify(at)); mem.kv.set(keys[3], (mem.kv.get(keys[3]) || []).filter(v => v !== aid)); done++; } }
     const lg = memList(keys[4]); lg.unshift(argv[1]); mem.lists.set(keys[4], lg.slice(0, parseInt(argv[2], 10)));
     if (pj) mem.kv.delete(keys[2]);
     return ['ok', done];
+  }
+  if (script === BIZ_MANAGED_GRANT) {
+    const mty = k => mem.lists.has(k) ? 'list' : (mem.kv.has(k) ? (Array.isArray(mem.kv.get(k)) ? 'set' : 'string') : 'none');
+    for (const i of [0, 1, 2, 3, 4]) { const ty = mty(keys[i]); if (ty !== 'none' && ty !== 'string') return ['corrupt']; }
+    if ((mem.kv.get(keys[0]) || '0') !== argv[0]) return ['fence'];
+    if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return ['held'];
+    if (mem.kv.has(keys[2])) return ['pending'];
+    const old = mem.kv.get(keys[3]); if (old == null) return ['notfound'];
+    if (old !== argv[1]) return ['conflict'];
+    mem.kv.set(keys[4], argv[3]); mem.kv.set(keys[3], argv[2]); // snapshot first, then the pointer - one atomic pair
+    return ['ok'];
+  }
+  if (script === BIZ_MANAGED_UNGRANT) {
+    const mty = k => mem.lists.has(k) ? 'list' : (mem.kv.has(k) ? (Array.isArray(mem.kv.get(k)) ? 'set' : 'string') : 'none');
+    for (const i of [0, 1, 2, 3, 4]) { const ty = mty(keys[i]); if (ty !== 'none' && ty !== 'string') return ['corrupt']; }
+    if ((mem.kv.get(keys[0]) || '0') !== argv[0]) return ['fence'];
+    if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return ['held'];
+    if (mem.kv.has(keys[2])) return ['pending'];
+    const old = mem.kv.get(keys[3]); if (old == null) return ['notfound'];
+    if (old !== argv[1]) return ['conflict'];
+    mem.kv.set(keys[3], argv[2]);
+    const mg = mem.kv.get(keys[4]); if (mg != null) { try { const d = JSON.parse(mg); if (String(d.grantId) === argv[3]) mem.kv.delete(keys[4]); } catch {} } // compare-delete: never removes a newer grant
+    return ['ok'];
+  }
+  if (script === BIZ_MANAGED_MGDEL) {
+    if ((mem.kv.get(keys[0]) || '0') !== argv[0]) return 0;
+    if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return 0;
+    if (mem.kv.has(keys[2])) return 0;
+    const mg = mem.kv.get(keys[3]); if (mg != null) { try { const d = JSON.parse(mg); if (String(d.grantId) === argv[1]) { mem.kv.delete(keys[3]); return 1; } } catch {} }
+    return 0;
   }
   const fence = mem.kv.get(keys[0]) || '0';
   if (fence !== argv[0]) return 0; // a purge/delete bump invalidates stale writers
@@ -513,7 +566,16 @@ const BIZ_OP_RELEASE = "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end;
 // set the owner accepted duplicate risk for). Only then: generation bump, freeze lease,
 // durable intent, counter increment, unresolved-set add, and the 'started' attempt with the
 // RETURNED generation injected - one atomic transition.
-const BIZ_MANAGED_BEGIN = "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; if redis.call('EXISTS',KEYS[4])==1 then return {'killed'} end; "
+const BIZ_MANAGED_BEGIN = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
++ "local n=tonumber(ARGV[12]); if not n or n<0 or not tonumber(ARGV[4]) or not tonumber(ARGV[8]) or not tonumber(ARGV[13]) then return {'bad_args'} end; "
++ "local atok,atj=pcall(cjson.decode,ARGV[11]); if not atok or type(atj)~='table' then return {'bad_args'} end; "
++ "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; if redis.call('EXISTS',KEYS[4])==1 then return {'killed'} end; "
++ "local tspec={{1,'string'},{2,'string'},{3,'string'},{5,'string'},{6,'string'},{7,'string'},{8,'set'},{9,'string'},{10,'set'}}; "
++ "for _,p in ipairs(tspec) do local ty=mty(KEYS[p[1]]); if ty~='none' and ty~=p[2] then return {'corrupt'} end end; "
++ "for i=1,n do local ty=mty(KEYS[10+i]); if ty~='none' and ty~='string' then return {'corrupt'} end end; "
++ "local ty=mty(KEYS[11+n]); if ty~='none' and ty~='string' then return {'corrupt'} end; "
++ "ty=mty(KEYS[12+n]); if ty~='none' and ty~='list' then return {'corrupt'} end; "
++ "ty=mty(KEYS[13+n]); if ty~='none' and ty~='set' then return {'corrupt'} end; "
 + "local rraw=redis.call('GET',KEYS[6]); if not rraw then return {'gone'} end; local rok,rp=pcall(cjson.decode,rraw); if not rok then return {'gone'} end; "
 + "if rp.status~='active' then return {'inactive'} end; if rp.research then return {'research'} end; if not rp.bot then return {'nobot'} end; if rp.assignment then return {'assigned'} end; "
 + "local mg=rp.managed; if not mg then return {'unapproved'} end; if tostring(mg.grantId)~=ARGV[6] or tostring(mg.scopeHash)~=ARGV[7] then return {'grant_changed'} end; "
@@ -523,13 +585,13 @@ const BIZ_MANAGED_BEGIN = "if redis.call('EXISTS',KEYS[2])==1 then return {'held
 + "local craw=redis.call('GET',KEYS[5]); if not craw or craw~=snap.consentRaw then return {'consent_changed'} end; "
 + "local live=redis.call('SMEMBERS',KEYS[8]); table.sort(live); local snapids={}; for i,s in ipairs(snap.sources) do snapids[i]=s.id end; table.sort(snapids); "
 + "if #live~=#snapids then return {'sources_changed'} end; for i=1,#live do if live[i]~=snapids[i] then return {'sources_changed'} end end; "
-+ "local n=tonumber(ARGV[12]); for i=1,n do local sraw=redis.call('GET',KEYS[10+i]); if not sraw or sraw~=snap.sources[i].raw then return {'sources_changed'} end end; "
++ "for i=1,n do local sraw=redis.call('GET',KEYS[10+i]); if not sraw or sraw~=snap.sources[i].raw then return {'sources_changed'} end end; "
 + "local calls=tonumber(redis.call('GET',KEYS[9]) or '0'); if calls>=tonumber(ARGV[8]) then return {'capped'} end; "
-+ "local un=redis.call('SMEMBERS',KEYS[10]); table.sort(un); local parts={}; for _,aid in ipairs(un) do local araw=redis.call('GET',ARGV[14]..aid); if not araw then return {'attempt_orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok then return {'attempt_orphan'} end; parts[#parts+1]=aid..':'..tostring(at.requestHash) end; "
++ "local un=redis.call('SMEMBERS',KEYS[10]); table.sort(un); local parts={}; for _,aid in ipairs(un) do local aty=mty(ARGV[14]..aid); if aty~='none' and aty~='string' then return {'corrupt'} end; local araw=redis.call('GET',ARGV[14]..aid); if not araw then return {'attempt_orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok then return {'attempt_orphan'} end; parts[#parts+1]=aid..':'..tostring(at.requestHash) end; "
 + "if table.concat(parts,'\\n')~=ARGV[9] then return {'unresolved'} end; "
 + "local gen=redis.call('INCRBY',KEYS[1],1); redis.call('SET',KEYS[2],ARGV[3],'PX',tonumber(ARGV[4])); redis.call('SET',KEYS[3],cjson.encode({op=ARGV[1],id=ARGV[2],token=ARGV[3],gen=gen,at=ARGV[5],opId=ARGV[10]})); "
-+ "redis.call('INCRBY',KEYS[9],1); redis.call('EXPIRE',KEYS[9],tonumber(ARGV[13])); redis.call('SADD',KEYS[10],ARGV[10]); "
-+ "local at=cjson.decode(ARGV[11]); at.gen=gen; redis.call('SET',KEYS[11+n],cjson.encode(at)); redis.call('LPUSH',KEYS[12+n],ARGV[10]); redis.call('LTRIM',KEYS[12+n],0,49); return {'ok',gen}";
++ "redis.call('INCRBY',KEYS[9],1); redis.call('EXPIRE',KEYS[9],tonumber(ARGV[13])); redis.call('SADD',KEYS[10],ARGV[10]); redis.call('SADD',KEYS[13+n],ARGV[10]); "
++ "atj.gen=gen; redis.call('SET',KEYS[11+n],cjson.encode(atj)); redis.call('LPUSH',KEYS[12+n],ARGV[10]); redis.call('LTRIM',KEYS[12+n],0,49); return {'ok',gen}";
 // BIZ_MANAGED_SETTLE: ONE guarded atomic terminal transition (no multi-key write sequence, no
 // separate commit). The guard binds freeze ownership + pending token + generation + fence. A
 // kill racing the flight is re-checked in-script: the attempt settles 'withheld' and the draft
@@ -537,11 +599,21 @@ const BIZ_MANAGED_BEGIN = "if redis.call('EXISTS',KEYS[2])==1 then return {'held
 // pending intent the script only reconciles: a terminal attempt carrying one of this exact
 // settle's deterministic receipts (matching attempt id + request hash + outcome class) means a
 // prior identical settle LANDED; anything else is 'lost' - absence never recreates a record.
-const BIZ_MANAGED_SETTLE = "local p=redis.call('GET',KEYS[3]); "
-+ "if not p then local araw=redis.call('GET',KEYS[5]); if araw then local aok,at=pcall(cjson.decode,araw); if aok and at.status~='started' and tostring(at.requestHash)==ARGV[4] and (tostring(at.receipt)==ARGV[12] or tostring(at.receipt)==ARGV[13]) then return {'landed'} end end; return {'lost'} end; "
-+ "local pj=cjson.decode(p); if pj.op~='managed-run' then return {'lost'} end; if pj.token~=ARGV[1] or tostring(pj.gen)~=ARGV[2] then return {'lost'} end; "
+const BIZ_MANAGED_SETTLE = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
++ "local t1=pcall(cjson.decode,ARGV[5]); if not t1 then return {'bad_args'} end; "
++ "local t2=pcall(cjson.decode,ARGV[6]); if not t2 then return {'bad_args'} end; "
++ "if ARGV[7]~='' then local t3=pcall(cjson.decode,ARGV[7]); if not t3 then return {'bad_args'} end end; "
++ "if not tonumber(ARGV[9]) or not tonumber(ARGV[11]) then return {'bad_args'} end; "
++ "local tspec={{1,'string'},{2,'string'},{3,'string'},{5,'string'},{6,'set'},{8,'list'},{9,'list'}}; "
++ "for _,p in ipairs(tspec) do local ty=mty(KEYS[p[1]]); if ty~='none' and ty~=p[2] then return {'corrupt'} end end; "
++ "local p=redis.call('GET',KEYS[3]); "
++ "if not p then local araw=redis.call('GET',KEYS[5]); if araw then local aok,at=pcall(cjson.decode,araw); if aok and at.status~='started' and tostring(at.id)==ARGV[3] and tostring(at.token)==ARGV[1] and tostring(at.gen)==ARGV[2] and tostring(at.requestHash)==ARGV[4] and (tostring(at.receipt)==ARGV[12] or tostring(at.receipt)==ARGV[13]) then return {'landed',tostring(at.status)} end end; return {'lost'} end; "
++ "local pok,pj=pcall(cjson.decode,p); if not pok then return {'lost'} end; if pj.op~='managed-run' then return {'lost'} end; if pj.token~=ARGV[1] or tostring(pj.gen)~=ARGV[2] then return {'lost'} end; "
 + "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[2] then return {'lost'} end; if redis.call('GET',KEYS[2])~=ARGV[1] then return {'lost'} end; "
-+ "local killed=redis.call('EXISTS',KEYS[4])==1; redis.call('SET',KEYS[5],killed and ARGV[6] or ARGV[5]); redis.call('SREM',KEYS[6],ARGV[3]); "
++ "local araw2=redis.call('GET',KEYS[5]); if not araw2 then return {'lost'} end; local aok2,at2=pcall(cjson.decode,araw2); if not aok2 then return {'lost'} end; "
++ "if at2.status~='started' or tostring(at2.id)~=ARGV[3] or tostring(at2.token)~=ARGV[1] or tostring(at2.gen)~=ARGV[2] or tostring(at2.requestHash)~=ARGV[4] then return {'lost'} end; "
++ "local killed=redis.call('EXISTS',KEYS[4])==1; redis.call('SET',KEYS[5],killed and ARGV[6] or ARGV[5]); "
++ "if (not killed) and ARGV[15]=='1' then redis.call('SREM',KEYS[6],ARGV[3]) end; "
 + "if (not killed) and ARGV[7]~='' then redis.call('SET',KEYS[7],ARGV[7]); redis.call('LPUSH',KEYS[8],ARGV[8]); local extra=redis.call('LRANGE',KEYS[8],tonumber(ARGV[9]),-1); redis.call('LTRIM',KEYS[8],0,tonumber(ARGV[9])-1); for _,rid in ipairs(extra) do redis.call('DEL',ARGV[14]..rid) end end; "
 + "redis.call('LPUSH',KEYS[9],ARGV[10]); redis.call('LTRIM',KEYS[9],0,tonumber(ARGV[11])-1); redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[2]); return {'ok',killed and 'withheld' or 'settled'}";
 // BIZ_MANAGED_RESOLVE: owner-reviewed acknowledgment of stuck attempts, ONE atomic script. It
@@ -555,15 +627,49 @@ const BIZ_MANAGED_SETTLE = "local p=redis.call('GET',KEYS[3]); "
 // attempt settles 'acknowledged-unknown' with its deterministic receipt, the intent clears and
 // the log records it. Purged private content is never recreated - attempts it deleted are
 // simply absent ('orphan').
-const BIZ_MANAGED_RESOLVE = "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; "
-+ "local p=redis.call('GET',KEYS[3]); local pj=nil; if p then pj=cjson.decode(p); if pj.op~='managed-run' then return {'not_managed'} end end; "
+const BIZ_MANAGED_RESOLVE = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
++ "local rok,receipts=pcall(cjson.decode,ARGV[6]); if not rok or type(receipts)~='table' then return {'bad_args'} end; "
++ "if not tonumber(ARGV[3]) then return {'bad_args'} end; "
++ "local tspec={{1,'string'},{2,'string'},{3,'string'},{4,'set'},{5,'list'}}; "
++ "for _,p in ipairs(tspec) do local ty=mty(KEYS[p[1]]); if ty~='none' and ty~=p[2] then return {'corrupt'} end end; "
++ "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; "
++ "local p=redis.call('GET',KEYS[3]); local pj=nil; if p then local pok,pjj=pcall(cjson.decode,p); if not pok then return {'not_managed'} end; pj=pjj; if pj.op~='managed-run' then return {'not_managed'} end end; "
 + "local un=redis.call('SMEMBERS',KEYS[4]); table.sort(un); local parts={}; local raws={}; "
-+ "for _,aid in ipairs(un) do local araw=redis.call('GET',ARGV[5]..aid); if not araw then return {'orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok then return {'orphan'} end; if at.status=='started' then parts[#parts+1]=aid..':'..tostring(at.requestHash); raws[aid]=at end end; "
++ "for _,aid in ipairs(un) do local aty=mty(ARGV[5]..aid); if aty~='none' and aty~='string' then return {'corrupt'} end; local araw=redis.call('GET',ARGV[5]..aid); if not araw then return {'orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok then return {'orphan'} end; local us=tostring(at.status); if us=='started' or us=='started-unknown' or us=='unknown' or us=='provider-ambiguous' or us=='withheld' then parts[#parts+1]=aid..':'..tostring(at.requestHash); raws[aid]=at end end; "
 + "if table.concat(parts,'\\n')~=ARGV[1] then return {'stale'} end; "
 + "if pj then for _,aid in ipairs(un) do local at=raws[aid]; if at and tostring(at.token)~=tostring(pj.token) then return {'unbound'} end end end; "
-+ "local receipts=cjson.decode(ARGV[6]); local gen=redis.call('INCRBY',KEYS[1],1); local done=0; "
++ "local gen=redis.call('INCRBY',KEYS[1],1); local done=0; "
 + "for _,aid in ipairs(un) do local at=raws[aid]; if at then at.status='acknowledged-unknown'; at.receipt=receipts[aid]; at.resolvedAt=ARGV[4]; redis.call('SET',ARGV[5]..aid,cjson.encode(at)); redis.call('SREM',KEYS[4],aid); done=done+1 end end; "
 + "redis.call('LPUSH',KEYS[5],ARGV[2]); redis.call('LTRIM',KEYS[5],0,tonumber(ARGV[3])-1); if pj then redis.call('DEL',KEYS[3]) end; return {'ok',done}";
+// Atomic managed-grant write: the snapshot record AND the responsibility's managed pointer
+// land in ONE guarded compare-and-set against the exact reviewed responsibility bytes, so two
+// concurrent approvals can never split the pair (a losing approval neither overwrites the
+// responsibility nor strands the winner's snapshot). Distinct outcomes: notfound / conflict /
+// fence-held-pending / ok.
+const BIZ_MANAGED_GRANT = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
++ "local tspec={{1,'string'},{2,'string'},{3,'string'},{4,'string'},{5,'string'}}; "
++ "for _,p in ipairs(tspec) do local ty=mty(KEYS[p[1]]); if ty~='none' and ty~=p[2] then return {'corrupt'} end end; "
++ "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return {'fence'} end; "
++ "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; "
++ "local old=redis.call('GET',KEYS[4]); if not old then return {'notfound'} end; if old~=ARGV[2] then return {'conflict'} end; "
++ "redis.call('SET',KEYS[5],ARGV[4]); redis.call('SET',KEYS[4],ARGV[3]); return {'ok'}";
+// Atomic managed revoke: the responsibility update and the snapshot removal land together,
+// and the snapshot is deleted ONLY when it is still the exact grant being revoked - a newer
+// approval's grant is never removed by a stale revoke.
+const BIZ_MANAGED_UNGRANT = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
++ "local tspec={{1,'string'},{2,'string'},{3,'string'},{4,'string'},{5,'string'}}; "
++ "for _,p in ipairs(tspec) do local ty=mty(KEYS[p[1]]); if ty~='none' and ty~=p[2] then return {'corrupt'} end end; "
++ "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return {'fence'} end; "
++ "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; "
++ "local old=redis.call('GET',KEYS[4]); if not old then return {'notfound'} end; if old~=ARGV[2] then return {'conflict'} end; "
++ "redis.call('SET',KEYS[4],ARGV[3]); "
++ "local mg=redis.call('GET',KEYS[5]); if mg then local mok,d=pcall(cjson.decode,mg); if mok and tostring(d.grantId)==ARGV[4] then redis.call('DEL',KEYS[5]) end end; "
++ "return {'ok'}";
+// Compare-delete for managed snapshots: removes the record ONLY when it is still the exact
+// grant the caller cleared (an assignment that closed managed mode). A newer approval's grant
+// is never deleted; a conflict leaves an unreferenced, unrunnable record for the next
+// approval or purge.
+const BIZ_MANAGED_MGDEL = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local mg=redis.call('GET',KEYS[4]); if mg then local mok,d=pcall(cjson.decode,mg); if mok and tostring(d.grantId)==ARGV[2] then redis.call('DEL',KEYS[4]); return 1 end end; return 0";
 // Coherent entry snapshot for non-delete actions: fence generation + absence of freeze AND
 // pending intent read in one atomic call, so no check-then-write gap at entry.
 const BIZ_ENTRY = "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; return {'ok', redis.call('GET',KEYS[1]) or '0'}";
@@ -3367,7 +3473,7 @@ async function bizSourceDel(id, body) {
   // Idempotent retry: when an earlier attempt died after removing the record, the durable intent
   // is still set and this call finishes the remaining stages (index cleanup is part of them).
   const ctx = await bizOpBegin('source_delete', id, false, body && body.opId); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
-  let scrubbed = 0, researchScrubbed = 0, stage = 'start';
+  let scrubbed = 0, researchScrubbed = 0, mgScrubbed = 0, stage = 'start';
   try {
     bizFault('sourcedel:begin');
     stage = 'scrub';
@@ -3380,13 +3486,22 @@ async function bizSourceDel(id, body) {
       if (changed) { scrubbed++; await bizOpWrite(ctx, 'set', 'fm:biz:prop:' + p.id, JSON.stringify({ ...p, evidence })); }
     }
     for (const fn of bizSourceScrubbers) researchScrubbed += (await fn(id, s, ctx)) || 0;
+    // Managed-approval snapshots hold VERBATIM raw copies of every bound source. A deleted
+    // source's copy must leave with it: the affected snapshots are deleted outright, which
+    // also invalidates the grant (the run gate refuses snapshot_missing) until the owner
+    // re-approves against the current sources. No verbatim deleted content is retained.
+    for (const k of (await r(['KEYS', 'fm:biz:mg:*'])) || []) {
+      if (!k.startsWith(nsKey('fm:biz:mg:'))) continue;
+      const snap = await getJ(k.slice(nsKey('').length)).catch(() => null);
+      if (snap && Array.isArray(snap.sources) && snap.sources.some(x => x && x.id === id)) { await bizOpWrite(ctx, 'del', k.slice(nsKey('').length)); mgScrubbed++; }
+    }
     bizFault('sourcedel:scrubbed');
     stage = 'record';
     await bizOpWrite(ctx, 'del', 'fm:biz:src:' + id);
     await bizOpWrite(ctx, 'srem', 'fm:biz:sources', id);
     stage = 'close';
     bizFault('sourcedel:close');
-    const committed = await bizOpCommit(ctx, 'source_deleted', { sourceId: id, title: s ? s.title : null, proposalsScrubbed: scrubbed, researchUrlsScrubbed: researchScrubbed || undefined, derivedRetained: true });
+    const committed = await bizOpCommit(ctx, 'source_deleted', { sourceId: id, title: s ? s.title : null, proposalsScrubbed: scrubbed, researchUrlsScrubbed: researchScrubbed || undefined, managedScrubbed: mgScrubbed || undefined, derivedRetained: true });
     if (committed === 'refused') return await bizOpCloseRefused(ctx, 'Deletion', { proposalsScrubbed: scrubbed });
     if (committed === 'unknown') return { status: 503, body: { error: 'Deletion finished its record changes, but the final confirmation was lost - the close may or may not have registered. Reload to check before retrying.', code: 'delete_close_unknown', proposalsScrubbed: scrubbed } };
   } catch (e) {
@@ -3395,7 +3510,7 @@ async function bizSourceDel(id, body) {
     if (stage === 'start') return { status: 503, body: { error: 'Deletion did not start (' + (e.code === 'store_quota' ? 'database limit' : 'storage error') + '). Nothing was deleted.', code: 'delete_not_started' } };
     return { status: 503, body: { error: 'Deletion paused partway at ' + stage + ' (' + (e.code === 'store_quota' ? 'database limit' : 'storage error') + '). ' + (stage === 'scrub' ? 'The source is NOT deleted; some derived quotes may already be scrubbed.' : 'The source record may or may not be deleted; derived quotes are scrubbed.') + ' The delete intent is recorded and new work is held - retry to finish.', code: 'delete_incomplete', proposalsScrubbed: scrubbed } };
   }
-  return { status: 200, body: { deleted: true, retried: s ? undefined : true, proposalsScrubbed: scrubbed, researchUrlsScrubbed: researchScrubbed || undefined, derivedRetained: true, auditLogged: true } };
+  return { status: 200, body: { deleted: true, retried: s ? undefined : true, proposalsScrubbed: scrubbed, researchUrlsScrubbed: researchScrubbed || undefined, managedScrubbed: mgScrubbed || undefined, derivedRetained: true, auditLogged: true } };
 }
 
 function bizDiscoverPrompt(srcs, recentWork) {
@@ -4138,13 +4253,18 @@ function bizManagedRenderRun(snap, built, input, requestHash) {
     sources: built.srcsLike.map(s => ({ id: s.id, title: s.title, block: String(s.text || '').slice(0, 4000), truncated: String(s.text || '').length > 4000 })),
     input, note: 'Exactly this request is sent if you confirm. Source blocks are truncated to 4000 characters each - exactly what the provider receives.' };
 }
-function bizManagedRenderApprove(snap) {
+function bizManagedRenderApprove(snap, reviewedFp) {
   let consent = null; try { const c = JSON.parse(snap.consentRaw); consent = { host: c.host, model: c.model, at: c.at }; } catch {}
-  return { scopeHash: snap.scopeHash, grantId: snap.grantId, promptRev: snap.promptRev, provider: snap.provider, consent,
+  return { scopeHash: snap.scopeHash, reviewedFp: reviewedFp || null, grantId: snap.grantId, promptRev: snap.promptRev, provider: snap.provider, consent,
     sources: snap.sources.map(s => { let t = null, ch = 0; try { const j = JSON.parse(s.raw); t = j.title; ch = String(j.text || '').length; } catch {} return { id: s.id, title: t, chars: ch }; }),
     respFields: snap.respFields, approvedAt: snap.approvedAt };
 }
 const bizManagedReceipt = (attemptId, status, requestHash, outcomeCore) => sha(attemptId + '|' + status + '|' + requestHash + '|' + bizStable(outcomeCore === undefined ? null : outcomeCore));
+// Billing-uncertain outcomes: a clean finish (known result, or refused before any provider
+// contact) leaves the unresolved set at settle; everything else - transport unknown, unreadable
+// 200, ambiguous provider answer, withheld under kill - KEEPS blocking new runs until the owner
+// reviews and explicitly resolves it. The same list lives in BIZ_MANAGED_RESOLVE.
+const BIZ_MANAGED_UNCERTAIN = ['started', 'started-unknown', 'unknown', 'provider-ambiguous', 'withheld'];
 // The unresolved-attempt set, for review display and precheck only - the scripts rebuild and
 // compare it atomically, so a stale preview refuses honestly instead of deciding on old data.
 async function bizManagedUnresolved(id) {
@@ -4152,10 +4272,10 @@ async function bizManagedUnresolved(id) {
   if (!ids.length) return { set: '', attempts: [] };
   const raws = await r(['MGET', ...ids.map(a => 'fm:biz:matt:' + a)]);
   const attempts = [];
-  for (let i = 0; i < ids.length; i++) { try { const a = JSON.parse(raws[i]); if (a && a.status === 'started') attempts.push(a); } catch {} }
+  for (let i = 0; i < ids.length; i++) { try { const a = JSON.parse(raws[i]); if (a && BIZ_MANAGED_UNCERTAIN.includes(String(a.status))) attempts.push(a); } catch {} }
   return { set: attempts.map(a => a.id + ':' + a.requestHash).join('\n'), attempts };
 }
-const bizManagedRenderAttempts = attempts => attempts.map(a => ({ id: a.id, startedAt: a.startedAt, requestHash: a.requestHash, input: a.input ? String(a.input).slice(0, 200) : null, provider: a.provider || null }));
+const bizManagedRenderAttempts = attempts => attempts.map(a => ({ id: a.id, status: a.status || null, startedAt: a.startedAt, settledAt: a.settledAt || null, httpStatus: a.httpStatus == null ? null : a.httpStatus, requestHash: a.requestHash, input: a.input ? String(a.input).slice(0, 200) : null, provider: a.provider || null }));
 function bizManagedEnvProblem(e) {
   if (!e.key) return { status: 503, body: { error: 'The reasoning engine is not connected yet.', code: 'engine_not_configured' } };
   if (!e.allow.includes(wsId())) return { status: 503, body: { error: 'The reasoning engine is not enabled for this workspace.', code: 'engine_not_enabled' } };
@@ -4174,36 +4294,44 @@ async function bizManagedApprove(id, resp, respRaw0, body, f0, previewOnly) {
   const env = bizManagedEnvProblem(e); if (env.status) return env;
   const consentRaw = await r(['GET', 'fm:biz:consent']);
   if (!consentRaw) return { status: 409, body: { error: 'Allow the reasoning provider for this workspace first, then approve managed runs.', code: 'engine_no_consent' } };
+  // The consent must name the ACTUAL provider being approved (parsed host + model), not merely
+  // exist: stale consent for a different provider never authorizes this one.
+  let consentJ = null; try { consentJ = JSON.parse(consentRaw); } catch { consentJ = null; }
+  if (!consentJ || String(consentJ.host || '').toLowerCase() !== env.pu.hostname.toLowerCase() || String(consentJ.model || '') !== e.model) return { status: 409, body: { error: 'The provider consent on file names ' + (consentJ ? String(consentJ.model || '?') + ' at ' + String(consentJ.host || '?') : 'no provider') + ', but the current provider is ' + e.model + ' at ' + env.pu.hostname + '. Consent to the current provider first.', code: 'engine_consent_mismatch' } };
   const ids = (await r(['SMEMBERS', 'fm:biz:sources'])) || [];
   if (ids.length > BIZ.MANAGED_SOURCES_MAX) return { status: 409, body: { error: 'Managed approval covers an exact, bounded source set - this workspace has ' + ids.length + ' sources and the managed limit is ' + BIZ.MANAGED_SOURCES_MAX + '. Remove sources first, or run this responsibility another way.', code: 'managed_too_many_sources', count: ids.length } };
   const raws = ids.length ? await r(['MGET', ...ids.map(i => 'fm:biz:src:' + i)]) : [];
   const pairs = [];
   for (let i = 0; i < ids.length; i++) { if (!raws[i]) return { status: 409, body: { error: 'Sources changed while loading - reload and try again.', code: 'sources_changed' } }; pairs.push({ id: ids[i], raw: raws[i] }); }
   const snap = bizManagedSnapshot(resp, pairs, consentRaw, e);
-  const render = bizManagedRenderApprove(snap);
+  const render = bizManagedRenderApprove(snap, sha(respRaw0 || ''));
   if (previewOnly) return { status: 200, body: { managedPreview: render } };
+  if (String(body && body.reviewedFp || '') !== sha(respRaw0 || '')) return { status: 409, body: { error: 'Review the current responsibility state first - it changed since your review. Nothing was written.', code: 'managed_review_state' } };
   if (String(body && body.scopeHash || '') !== snap.scopeHash) return { status: 409, body: { error: 'The managed setup changed since you reviewed it - review the current snapshot, then approve.', code: 'managed_scope_stale', managedPreview: render } };
-  // The snapshot record lands first, so a responsibility pointing at it never lacks it. A
-  // crash between the two leaves an unreferenced snapshot (never runnable: the gate requires
-  // rp.managed), overwritten by the next approval and removed by purge.
-  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:mg:' + id, f0, JSON.stringify(snap)])) return bizFenceConflict();
+  // ONE atomic grant: the snapshot record and the responsibility's managed pointer land (or
+  // refuse) together against the exact reviewed bytes - a losing concurrent approval neither
+  // overwrites the responsibility nor strands the winner's snapshot.
   const next = { ...resp, managed: { grantId: snap.grantId, scopeHash: snap.scopeHash, approvedAt: snap.approvedAt } };
-  const cas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]);
-  if (cas === -1) return { status: 404, body: { error: 'not found' } };
-  if (cas !== 1) { if (!respRaw0) return bizFenceConflict(); return { status: 409, body: { error: 'This responsibility changed while you were approving managed runs - reload and review it. Nothing was overwritten.', code: 'resp_changed' } }; }
+  const g = await r(['EVAL', BIZ_MANAGED_GRANT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, 'fm:biz:mg:' + id, f0, respRaw0 || '', JSON.stringify(next), JSON.stringify(snap)]).catch(() => null);
+  if (!Array.isArray(g)) return bizFenceConflict();
+  if (g[0] === 'notfound') return { status: 404, body: { error: 'not found' } };
+  if (g[0] === 'conflict') return { status: 409, body: { error: 'This responsibility changed while you were approving managed runs - reload and review it. Nothing was overwritten.', code: 'resp_changed' } };
+  if (g[0] !== 'ok') return bizFenceConflict();
   if (!await bizLog('managed_approved', { respId: id, title: resp.title, scopeHash: snap.scopeHash, sources: snap.sources.length, provider: { baseUrl: snap.provider.baseUrl, model: snap.provider.model } }, f0)) return bizFenceConflict();
   return { status: 200, body: { responsibility: next } };
 }
-async function bizManagedRevoke(id, resp, respRaw0, f0) {
+async function bizManagedRevoke(id, resp, respRaw0, f0, body) {
   if (f0 == null) return bizFrozenConflict();
   if (!resp.managed) return { status: 200, body: { responsibility: resp } };
+  // Revoking is an owner decision against the exact reviewed state: without the current
+  // fingerprint it refuses rather than removing a grant the owner may not have seen.
+  if (String(body && body.reviewedFp || '') !== sha(respRaw0 || '')) return { status: 409, body: { error: 'Review the current responsibility state first - it changed since your review. Nothing was written.', code: 'managed_review_state' } };
   const next = { ...resp }; delete next.managed;
-  const cas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]);
-  if (cas === -1) return { status: 404, body: { error: 'not found' } };
-  if (cas !== 1) { if (!respRaw0) return bizFenceConflict(); return { status: 409, body: { error: 'This responsibility changed while you were revoking managed runs - reload and review it. Nothing was overwritten.', code: 'resp_changed' } }; }
-  // The snapshot record is deleted AFTER the responsibility stopped referencing it; a conflict
-  // leaves an unreferenced record (never runnable) that the next approval or purge removes.
-  await r(['EVAL', BIZ_FENCE_DEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:mg:' + id, await bizFence()]).catch(() => 0);
+  const g = await r(['EVAL', BIZ_MANAGED_UNGRANT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, 'fm:biz:mg:' + id, f0, respRaw0 || '', JSON.stringify(next), String(resp.managed.grantId || '')]).catch(() => null);
+  if (!Array.isArray(g)) return bizFenceConflict();
+  if (g[0] === 'notfound') return { status: 404, body: { error: 'not found' } };
+  if (g[0] === 'conflict') return { status: 409, body: { error: 'This responsibility changed while you were revoking managed runs - reload and review it. Nothing was overwritten.', code: 'resp_changed' } };
+  if (g[0] !== 'ok') return bizFenceConflict();
   if (!await bizLog('managed_revoked', { respId: id, title: resp.title }, f0)) return bizFenceConflict();
   return { status: 200, body: { responsibility: next } };
 }
@@ -4230,21 +4358,30 @@ async function bizManagedReview(id, resp, body) {
 // attempt id + request hash + one of this settle's own receipts (a withheld/acknowledged
 // receipt never equals a known-result one); an absent record recreates nothing.
 async function bizManagedSettleRun(ctx, respId, attempt0, outcome, runRec) {
-  const receipt = bizManagedReceipt(attempt0.id, outcome.status, attempt0.requestHash, outcome);
+  // Deterministic terminal receipts bind the FULL outcome: status, note, http status, usage,
+  // the run record id AND its output content, and the owning attempt token + generation. A
+  // repeated or different result never shares a receipt; a withheld receipt never equals a
+  // known-result one.
+  const core = (status, note) => ({ status, note: note == null ? null : note, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, usage: status === 'withheld' ? null : (outcome.usage || null), runId: status === 'withheld' ? null : (runRec ? runRec.id : null), output: status === 'withheld' ? null : (runRec ? runRec.output : null), token: attempt0.token, gen: String(ctx.gen) });
+  const receipt = sha(attempt0.id + '|' + attempt0.requestHash + '|' + bizStable(core(outcome.status, outcome.note == null ? null : outcome.note)));
+  const wReceipt = sha(attempt0.id + '|' + attempt0.requestHash + '|' + bizStable(core('withheld', 'killed')));
   const term = { ...attempt0, gen: ctx.gen, status: outcome.status, receipt, settledAt: now(), httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, usage: outcome.usage || null, note: outcome.note || null };
-  const wReceipt = bizManagedReceipt(attempt0.id, 'withheld', attempt0.requestHash, null);
-  const withheld = { ...term, status: 'withheld', receipt: wReceipt, note: 'killed' };
-  const logEntry = JSON.stringify({ id: rid('bizlog'), at: now(), kind: 'managed_run', respId, attemptId: attempt0.id, outcome: outcome.status, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, model: attempt0.provider.model, usage: outcome.usage || null });
-  const call = () => r(['EVAL', BIZ_MANAGED_SETTLE, 9, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:kill', 'fm:biz:matt:' + attempt0.id, 'fm:biz:munres:' + respId, runRec ? 'fm:biz:run:' + runRec.id : 'fm:biz:run:none', 'fm:biz:runs:' + respId, 'fm:biz:log', ctx.token, String(ctx.gen), attempt0.id, attempt0.requestHash, JSON.stringify(term), JSON.stringify(withheld), runRec ? JSON.stringify(runRec) : '', runRec ? runRec.id : '', String(BIZ.RUNS_KEEP), logEntry, String(BIZ.LOG_KEEP), receipt, wReceipt, nsKey('fm:biz:run:')]);
+  const withheld = { ...term, status: 'withheld', receipt: wReceipt, usage: null, note: 'killed' };
+  // A clean finish leaves the retry gate; a billing-uncertain one stays blocking until the
+  // owner reviews and resolves it (the script enforces this atomically).
+  const clean = (outcome.status === 'known-result' || outcome.status === 'refused-no-call') ? '1' : '0';
+  const logEntry = JSON.stringify({ id: rid('bizlog'), at: now(), kind: 'managed_run', respId, attemptId: attempt0.id, outcome: outcome.status, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, model: runRec ? runRec.model : null, requestedModel: attempt0.provider.model, usage: outcome.usage || null });
+  const call = () => r(['EVAL', BIZ_MANAGED_SETTLE, 9, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:kill', 'fm:biz:matt:' + attempt0.id, 'fm:biz:munres:' + respId, runRec ? 'fm:biz:run:' + runRec.id : 'fm:biz:run:none', 'fm:biz:runs:' + respId, 'fm:biz:log', ctx.token, String(ctx.gen), attempt0.id, attempt0.requestHash, JSON.stringify(term), JSON.stringify(withheld), runRec ? JSON.stringify(runRec) : '', runRec ? runRec.id : '', String(BIZ.RUNS_KEEP), logEntry, String(BIZ.LOG_KEEP), receipt, wReceipt, nsKey('fm:biz:run:'), clean]);
   let res = null;
   try { res = await call(); } catch (e) { res = null; }
+  if (global.__bizManagedSettleLoseOnce) { const fn = global.__bizManagedSettleLoseOnce; global.__bizManagedSettleLoseOnce = null; res = null; if (typeof fn === 'function') await fn(); } // test-only lost-response hook, never set in production
   if (Array.isArray(res) && res[0] === 'ok') return { ok: true, withheld: res[1] === 'withheld' };
-  if (Array.isArray(res) && res[0] === 'landed') return { ok: true, landed: true };
+  if (Array.isArray(res) && res[0] === 'landed') return { ok: true, landed: true, withheld: res[1] === 'withheld' }; // the landed record's OWN status: a withheld landing never answers with the output
   if (Array.isArray(res) && res[0] === 'lost') return { lost: true };
   const araw = await r(['GET', 'fm:biz:matt:' + attempt0.id]).catch(() => null);
   if (!araw) return { unknown: 'no-record' }; // purged or never landed: recreate nothing, claim nothing
   let a = null; try { a = JSON.parse(araw); } catch {}
-  if (a && a.status !== 'started' && a.requestHash === attempt0.requestHash && (a.receipt === receipt || a.receipt === wReceipt)) return { ok: true, landed: true, withheld: a.status === 'withheld' };
+  if (a && a.status !== 'started' && String(a.id) === String(attempt0.id) && a.token === ctx.token && String(a.gen) === String(ctx.gen) && a.requestHash === attempt0.requestHash && (a.receipt === receipt || a.receipt === wReceipt)) return { ok: true, landed: true, withheld: a.status === 'withheld' };
   if (a && a.status === 'started') {
     const p = await getJ('fm:biz:op_pending').catch(() => null);
     if (p && p.op === 'managed-run' && p.token === ctx.token && String(p.gen) === String(ctx.gen)) {
@@ -4256,6 +4393,29 @@ async function bizManagedSettleRun(ctx, respId, attempt0, outcome, runRec) {
     return { lost: true }; // another operation now owns the workspace - nothing more may be written
   }
   return { unknown: true };
+}
+// Lost begin-gate response adoption: a partial intent is NEVER equated with a successful
+// begin. Adoption requires the COMPLETE durable transition visible and exactly ours: matching
+// intent (op + responsibility + token + attempt), fence at the intent's generation, the freeze
+// lease held by the token, the started attempt with exact id/token/gen/requestHash, membership
+// in BOTH the unresolved set and the attempt index, and a consumed daily counter. Anything
+// less: no adoption and no provider contact.
+async function bizManagedBeginAdopt(id, token, attemptId, requestHash, day) {
+  const p = await getJ('fm:biz:op_pending').catch(() => null);
+  if (!p || p.op !== 'managed-run' || String(p.id) !== String(id) || p.token !== token || String(p.opId) !== String(attemptId)) return null;
+  const gen = String(p.gen);
+  const fence = await r(['GET', 'fm:biz:fence']).catch(() => null);
+  const freeze = await r(['GET', 'fm:biz:freeze']).catch(() => null);
+  if (fence !== gen || freeze !== token) return null;
+  const araw = await r(['GET', 'fm:biz:matt:' + attemptId]).catch(() => null);
+  let a = null; try { a = araw ? JSON.parse(araw) : null; } catch { a = null; }
+  if (!a || a.status !== 'started' || String(a.id) !== String(attemptId) || a.token !== token || String(a.gen) !== gen || a.requestHash !== requestHash) return null;
+  const un = await r(['SMEMBERS', 'fm:biz:munres:' + id]).catch(() => []);
+  const idx = await r(['LRANGE', 'fm:biz:mattl:' + id, 0, 49]).catch(() => []); // the index is trimmed to 50; a bounded read (never -1)
+  if (!un.includes(attemptId) || !idx.includes(attemptId)) return null;
+  const calls = parseInt((await r(['GET', 'fm:biz:calls:' + day]).catch(() => null)) || '0', 10);
+  if (!(calls >= 1)) return null;
+  return gen;
 }
 const BIZ_MANAGED_BEGIN_REFUSALS = {
   held: { status: 409, body: { error: 'Another workspace operation is finishing. Wait a moment and reload.', code: 'workspace_changed' } },
@@ -4276,7 +4436,7 @@ const BIZ_MANAGED_BEGIN_REFUSALS = {
   unresolved: { status: 409, body: { error: 'A managed attempt with an unknown outcome appeared since your review. Review it before running again.', code: 'managed_attempt_review' } },
   attempt_orphan: { status: 503, body: { error: 'A managed attempt record is missing its detail. Nothing was run; reload and resolve the attempts shown.', code: 'managed_attempt_orphan' } }
 };
-async function bizManagedConfirm(id, resp, body) {
+async function bizManagedConfirm(id, resp, body, mDeadline) {
   const input = String(body && body.input || '').slice(0, 4000);
   if (!input.trim()) return { status: 400, body: { error: 'Describe or paste the work first' } };
   const lctx = await bizManagedLoadRunContext(id, resp); if (lctx.problem) return lctx.problem;
@@ -4295,25 +4455,25 @@ async function bizManagedConfirm(id, resp, body) {
   // have their own processes; the gate binds the attempt to the approved provider identity,
   // never to a live environment read.
   if (e.base !== snap.provider.baseUrl || e.model !== snap.provider.model) return { status: 409, body: { error: 'The provider configuration changed since managed runs were approved (' + snap.provider.model + ' at ' + snap.provider.baseUrl + '). Review and approve again against the current configuration.', code: 'managed_config_changed' } };
-  // One inherited absolute deadline, anchored at handler entry BEFORE any store wait and below
-  // the platform function limit; the settle reserve is enforced before the call may start.
-  const parentDl = (als.getStore() || {}).issuerDeadline;
-  const deadline = Math.min(Date.now() + BIZ.MANAGED_DEADLINE_MS, parentDl ? parentDl - 2000 : Infinity);
+  // One inherited absolute deadline, anchored at handler entry BEFORE any store wait (set in
+  // the managed dispatch and installed as this context's issuerDeadline); the settle reserve
+  // is enforced before the call may start.
+  const deadline = mDeadline;
   const attemptId = rid('mrun'), token = rid('freeze');
   const day = now().slice(0, 10);
   const attempt0 = { id: attemptId, respId: id, kind: 'managed', status: 'started', requestHash, scopeHash: snap.scopeHash, grantId: snap.grantId, token, gen: null, input: input.slice(0, 4000), provider: { baseUrl: snap.provider.baseUrl, model: snap.provider.model }, startedAt: now() };
-  const keys = ['fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:kill', 'fm:biz:consent', 'fm:biz:resp:' + id, 'fm:biz:mg:' + id, 'fm:biz:sources', 'fm:biz:calls:' + day, 'fm:biz:munres:' + id, ...snap.sources.map(s => 'fm:biz:src:' + s.id), 'fm:biz:matt:' + attemptId, 'fm:biz:mattl:' + id];
+  const keys = ['fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:kill', 'fm:biz:consent', 'fm:biz:resp:' + id, 'fm:biz:mg:' + id, 'fm:biz:sources', 'fm:biz:calls:' + day, 'fm:biz:munres:' + id, ...snap.sources.map(s => 'fm:biz:src:' + s.id), 'fm:biz:matt:' + attemptId, 'fm:biz:mattl:' + id, 'fm:biz:matts:' + id];
   const argv = ['managed-run', id, token, '60000', now(), snap.grantId, snap.scopeHash, String(BIZ.CALLS_PER_DAY), attemptSet, attemptId, JSON.stringify(attempt0), String(snap.sources.length), '172800', nsKey('fm:biz:matt:')];
   let beginRes = null;
   try { beginRes = await r(['EVAL', BIZ_MANAGED_BEGIN, keys.length, ...keys, ...argv]); } catch (e2) { beginRes = null; }
+  if (global.__bizManagedBeginLoseOnce) { const fn = global.__bizManagedBeginLoseOnce; global.__bizManagedBeginLoseOnce = null; beginRes = null; if (typeof fn === 'function') await fn(); } // test-only lost-response hook, never set in production
   let gen = null;
   if (!Array.isArray(beginRes)) {
-    // The gate response was lost: the begin may have LANDED. Reconcile against the durable
-    // intent - provably ours (op + responsibility + token + attempt) means adopt; anything
-    // else means do not fetch and do not claim either way.
-    const p = await getJ('fm:biz:op_pending').catch(() => null);
-    if (p && p.op === 'managed-run' && String(p.id) === String(id) && p.token === token && String(p.opId) === String(attemptId)) gen = String(p.gen);
-    else return { status: 503, body: { error: 'The run may or may not have registered - its gate response was lost. Nothing was sent to the provider from this request. Reload and review the responsibility before retrying.', code: 'managed_begin_unknown' } };
+    // The gate response was lost: the begin may have LANDED. Adopt ONLY the complete durable
+    // transition, verified exactly (bizManagedBeginAdopt) - a partial intent is never equated
+    // with a successful begin, and an ambiguous begin never reaches the provider.
+    gen = await bizManagedBeginAdopt(id, token, attemptId, requestHash, day);
+    if (!gen) return { status: 503, body: { error: 'The run may or may not have registered - its gate response was lost. Nothing was sent to the provider from this request. Reload and review the responsibility before retrying.', code: 'managed_begin_unknown' } };
   } else if (beginRes[0] === 'ok') gen = String(beginRes[1]);
   else return BIZ_MANAGED_BEGIN_REFUSALS[beginRes[0]] || { status: 503, body: { error: 'storage error' } };
   const ctx = { token, gen };
@@ -4328,9 +4488,12 @@ async function bizManagedConfirm(id, resp, body) {
   // the provider stopped processing or billing, so the outcome stays honestly unknown.
   const ctrl = new AbortController();
   const killWatch = setInterval(() => { r(['GET', 'fm:kill']).then(v => { if (v) ctrl.abort(new Error('managed kill observed')); }).catch(() => {}); }, 500);
-  let fres = null, ferr = null;
+  let fres = null, ferr = null, j = null;
   try {
     fres = await fetch(snap.provider.baseUrl + '/chat/completions', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + e.key }, body: built.bodyString, signal: AbortSignal.any([AbortSignal.timeout(fetchMs), ctrl.signal]) });
+    // The kill watch runs through the body read too; the read is bounded by the same
+    // AbortSignal.timeout(fetchMs), so the whole flight stays inside the budget.
+    j = await fres.json().catch(() => null);
   } catch (err) { ferr = err; }
   clearInterval(killWatch);
   let outcome, runRec = null;
@@ -4339,36 +4502,36 @@ async function bizManagedConfirm(id, resp, body) {
     outcome = { status: 'started-unknown', note: 'fetch_error' };
   } else {
     const httpStatus = fres.status;
-    let j = null; try { j = await fres.json(); } catch {}
     if (httpStatus === 200) {
       const text = String((j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
       const parsed = bizJson(text);
       if (parsed && parsed.draft) {
         const srcIds = new Set(snap.sources.map(s => s.id));
         outcome = { status: 'known-result', usage: usageOf(j) || null };
-        runRec = { id: rid('run'), respId: id, kind: 'managed', at: now(), input: input.slice(0, 4000), output: String(parsed.draft).slice(0, 8000), blockedStep: parsed.blocked_step ? String(parsed.blocked_step).slice(0, 300) : null, sourcesUsed: (Array.isArray(parsed.sources_used) ? parsed.sources_used : []).filter(x => srcIds.has(String(x))).slice(0, 20), model: snap.provider.model, usage: usageOf(j) || null, status: 'done', jsonOk: true, backend: 'managed-engine', attemptId, httpStatus };
+        // Provenance is what the provider actually said: the response's own model and usage,
+        // null when absent - never the requested config presented as the responder.
+        runRec = { id: rid('run'), respId: id, kind: 'managed', at: now(), input: input.slice(0, 4000), output: String(parsed.draft).slice(0, 8000), blockedStep: parsed.blocked_step ? String(parsed.blocked_step).slice(0, 300) : null, sourcesUsed: (Array.isArray(parsed.sources_used) ? parsed.sources_used : []).filter(x => srcIds.has(String(x))).slice(0, 20), model: j && typeof j.model === 'string' ? j.model.slice(0, 80) : null, usage: usageOf(j) || null, status: 'done', jsonOk: true, backend: 'managed-engine', attemptId, httpStatus };
       } else {
         outcome = { status: 'unknown', httpStatus, note: 'unreadable_200' }; // a 200 without a readable draft is unknown, never clean
       }
-    } else if (httpStatus >= 400 && httpStatus < 500 && j && j.error && (j.error.message || j.error.type)) {
-      outcome = { status: 'provider-refused', httpStatus, note: String(j.error.message || j.error.type).slice(0, 300) };
     } else {
-      // Any other HTTP response - above all 5xx/gateway - is recorded verbatim with its
-      // uncertainty: it does NOT prove the request was rejected or went unprocessed.
+      // ANY non-200 - a generic 4xx included - is observed and recorded, never called a
+      // definitive refusal: no provider-specific contract establishes "no result produced",
+      // so the attempt keeps its uncertainty (and keeps blocking retries until reviewed).
       outcome = { status: 'provider-ambiguous', httpStatus };
+      if (httpStatus >= 400 && httpStatus < 500 && j && j.error && (j.error.message || j.error.type)) outcome.note = 'observed ' + httpStatus + ': ' + String(j.error.message || j.error.type).slice(0, 300);
     }
   }
-  if (!runRec) runRec = { id: rid('run'), respId: id, kind: 'managed', at: now(), input: input.slice(0, 4000), output: null, blockedStep: null, sourcesUsed: [], model: snap.provider.model, usage: null, status: outcome.status === 'provider-refused' ? 'refused' : outcome.status === 'provider-ambiguous' ? 'ambiguous' : 'unknown', jsonOk: false, backend: 'managed-engine', attemptId, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus };
+  if (!runRec) runRec = { id: rid('run'), respId: id, kind: 'managed', at: now(), input: input.slice(0, 4000), output: null, blockedStep: null, sourcesUsed: [], model: null, usage: null, status: outcome.status === 'provider-ambiguous' ? 'ambiguous' : 'unknown', jsonOk: false, backend: 'managed-engine', attemptId, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus };
   const st = await bizManagedSettleRun(ctx, id, attempt0, outcome, runRec);
   if (st.lost) return { status: 503, body: { error: 'The workspace changed while the run was finishing - the result was NOT saved. The provider may have processed and billed the call. The attempt stays recorded as unresolved; review it in run history.', code: 'managed_settle_lost', attemptId } };
   if (st.unknown) return { status: 503, body: { error: st.unknown === 'no-record' ? 'The run finished but its record is gone (a purge or ownership change removed it) - nothing was recreated. The provider may have processed and billed the call.' : 'The run finished but its save may or may not have registered. The provider may have processed and billed the call. Reload and review the attempt in run history before doing anything else.', code: 'managed_settle_unknown', attemptId } };
-  if (st.withheld) return { status: 200, body: { managedOutcome: { class: 'withheld', attemptId, billing: 'unknown-possible', message: 'The workspace kill switch stopped this run after the provider call started - the result was not saved. The call may have been processed and billed.' } } };
-  const billing = outcome.status === 'known-result' ? 'provider-metered' : outcome.status === 'provider-refused' ? 'refused-by-provider' : 'unknown-possible';
+  if (st.withheld) return { status: 200, body: { managedOutcome: { class: 'withheld', attemptId, billing: 'unknown-possible', message: 'The workspace kill switch stopped this run after the provider call started - the result was not saved. The call may have been processed and billed. The attempt blocks new runs until you review it.' } } };
+  const billing = outcome.status === 'known-result' ? 'provider-metered' : 'unknown-possible';
   const message = outcome.status === 'known-result' ? 'Run complete.'
-    : outcome.status === 'provider-refused' ? 'The provider refused the request (HTTP ' + outcome.httpStatus + ')' + (outcome.note ? ': ' + outcome.note : '') + '. No result was produced; the provider\'s own accounting determines any charge.'
-    : outcome.status === 'unknown' ? 'The provider answered HTTP 200 but no readable result came back. The call may be billed; the attempt is recorded as unknown.'
-    : outcome.status === 'provider-ambiguous' ? 'The provider returned HTTP ' + outcome.httpStatus + '. That does not prove the request was rejected - it may have been processed and billed. The attempt is recorded with exactly what was observed.'
-    : 'The provider call started but its outcome is unknown - the request may have been processed and may be billed. Nothing was saved as a result. The attempt is recorded in run history; resolving or retrying it is your explicit call, and retrying can produce a second charge.';
+    : outcome.status === 'unknown' ? 'The provider answered HTTP 200 but no readable result came back. The call may be billed; the attempt is recorded as unknown and blocks new runs until you review it.'
+    : outcome.status === 'provider-ambiguous' ? 'The provider returned HTTP ' + outcome.httpStatus + (outcome.note ? ' (' + outcome.note + ')' : '') + '. That does not prove the request was rejected - it may have been processed and billed. The attempt is recorded with exactly what was observed and blocks new runs until you review it.'
+    : 'The provider call started but its outcome is unknown - the request may have been processed and may be billed. Nothing was saved as a result. The attempt is recorded in run history and blocks new runs until you review it; resolving or retrying it is your explicit call, and retrying can produce a second charge.';
   return { status: 200, body: { managedOutcome: { class: outcome.status, attemptId, run: runRec, billing, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, message } } };
 }
 async function bizManagedResolve(id, body) {
@@ -4387,23 +4550,34 @@ async function bizManagedResolve(id, body) {
   if (res[0] === 'unbound') return { status: 503, body: { error: 'A managed attempt does not belong to the stuck operation it was listed under. Nothing was changed; a full data purge removes these records.', code: 'managed_attempt_unbound' } };
   return { status: 200, body: { resolved: res[1], note: 'Marked as acknowledged-unknown. The provider may still have processed and billed these attempts - their records stay in run history.' } };
 }
-async function bizManagedAct(id, resp, respRaw0, body, f0) {
+async function bizManagedAct(id, resp, respRaw0, body, f0, mDeadline) {
   const sop = String(body && body.op || '');
   if (sop === 'approve-preview') return bizManagedApprove(id, resp, respRaw0, body, f0, true);
   if (sop === 'approve') return bizManagedApprove(id, resp, respRaw0, body, f0, false);
-  if (sop === 'revoke') return bizManagedRevoke(id, resp, respRaw0, f0);
+  if (sop === 'revoke') return bizManagedRevoke(id, resp, respRaw0, f0, body);
   if (sop === 'review') return bizManagedReview(id, resp, body);
-  if (sop === 'confirm') return bizManagedConfirm(id, resp, body);
+  if (sop === 'confirm') return bizManagedConfirm(id, resp, body, mDeadline);
   if (sop === 'resolve') return bizManagedResolve(id, body);
   return { status: 400, body: { error: 'approve-preview, approve, revoke, review, confirm or resolve required' } };
 }
 async function bizRespAct(id, op, body) {
+  // Managed ops anchor ONE inherited absolute deadline at handler entry, BEFORE any store
+  // wait (the entry snapshot and record read included), and run entirely inside it: the ALS
+  // issuerDeadline binds every store call, and the run gate budgets fetch + settle against
+  // the same clock. The managed branch owns its own entry snapshot and record read.
+  if (op === 'managed') {
+    const parentDl0 = (als.getStore() || {}).issuerDeadline;
+    const mDeadline = Math.min(Date.now() + BIZ.MANAGED_DEADLINE_MS, parentDl0 ? parentDl0 - 2000 : Infinity);
+    return als.run({ ...(als.getStore() || {}), issuerDeadline: mDeadline }, async () => {
+      const f0m = await bizEntry();
+      const respRaw0m = await r(['GET', 'fm:biz:resp:' + id]);
+      const respm = respRaw0m ? JSON.parse(respRaw0m) : null;
+      if (!respm) return { status: 404, body: { error: 'not found' } };
+      return bizManagedAct(id, respm, respRaw0m, body, f0m, mDeadline);
+    });
+  }
   const f0 = op === 'delete' ? null : await bizEntry(); // one atomic snapshot before the record read; threaded into runs so a delete during the read invalidates persistence
-  // 'managed' is exempt from the entry-snapshot refusal: its sub-actions carry their own
-  // atomic gates (begin/settle/resolve scripts), and resolve must stay REACHABLE while a
-  // managed intent is stuck pending - that is exactly the state it exists to clear. The
-  // sub-actions that write the responsibility (approve/revoke) re-check the snapshot below.
-  if (op !== 'delete' && op !== 'managed' && f0 == null) return bizFrozenConflict();
+  if (op !== 'delete' && f0 == null) return bizFrozenConflict();
   const entryDeadline = Date.now() + BIZ.RUN_BUDGET_MS; // absolute, before any storage read
   // ONE raw read: the reviewed object AND every compare-and-set below derive from the SAME
   // bytes. A second read could observe a newer record while the object stayed older - the
@@ -4411,7 +4585,6 @@ async function bizRespAct(id, op, body) {
   const respRaw0 = await r(['GET', 'fm:biz:resp:' + id]);
   const resp = respRaw0 ? JSON.parse(respRaw0) : null;
   if (!resp && op !== 'delete') return { status: 404, body: { error: 'not found' } }; // delete handles a missing record below: an idempotent retry may still owe intent close + index cleanup
-  if (op === 'managed') return bizManagedAct(id, resp, respRaw0, body, f0);
   if (op === 'candidates') {
     if (!resp.research) return { status: 400, body: { error: 'This responsibility does not read public pages' } };
     const input = String(body.input || '').slice(0, 4000);
@@ -4497,7 +4670,7 @@ async function bizRespAct(id, op, body) {
       if (!respRaw0) return bizFenceConflict();
       return { status: 409, body: { error: 'This responsibility changed while you were assigning - reload and review it before assigning. Nothing was overwritten.', code: 'resp_changed' } };
     }
-    if (assignment && resp.managed) await r(['EVAL', BIZ_FENCE_DEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:mg:' + id, await bizFence()]).catch(() => 0); // unreferenced after the CAS; a conflict leaves an unrunnable orphan the next approve or purge removes
+    if (assignment && resp.managed) await r(['EVAL', BIZ_MANAGED_MGDEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:mg:' + id, await bizFence(), String(resp.managed.grantId || '')]).catch(() => 0); // compare-delete: removes ONLY the grant this CAS cleared; a newer approval's grant survives, and a conflict leaves an unrunnable orphan the next approve or purge removes
     if (!await bizLog(assignment ? 'responsibility_assigned' : 'responsibility_unassigned', { respId: id, title: resp.title, botName: assignment ? assignment.botName : null }, f0)) return bizFenceConflict();
     return { status: 200, body: { responsibility: next } };
   }
@@ -4603,10 +4776,13 @@ async function bizRespAct(id, op, body) {
         if (gone && gone.assignee) await event(gone.assignee, 'blocked', 'Job cancelled: its responsibility was deleted', { kind: 'BLOCKED', taskId: t.id });
       }
       stage = 'managed';
-      const mattIds = new Set([...(await r(['LRANGE', 'fm:biz:mattl:' + id, 0, -1])) || [], ...(await r(['SMEMBERS', 'fm:biz:munres:' + id])) || []]);
+      // Inventory is the durable NEVER-TRIMMED attempt set plus the display index plus the
+      // unresolved set: attempts aged out of the 50-entry index still leave with the record.
+      const mattIds = new Set([...(await r(['LRANGE', 'fm:biz:mattl:' + id, 0, -1])) || [], ...(await r(['SMEMBERS', 'fm:biz:munres:' + id])) || [], ...(await r(['SMEMBERS', 'fm:biz:matts:' + id])) || []]);
       for (const aid of mattIds) await bizOpWrite(ctx, 'del', 'fm:biz:matt:' + aid);
       await bizOpWrite(ctx, 'del', 'fm:biz:mattl:' + id);
       await bizOpWrite(ctx, 'del', 'fm:biz:munres:' + id);
+      await bizOpWrite(ctx, 'del', 'fm:biz:matts:' + id);
       await bizOpWrite(ctx, 'del', 'fm:biz:mg:' + id);
       stage = 'record';
       await bizOpWrite(ctx, 'del', 'fm:biz:runs:' + id);
@@ -4919,7 +5095,7 @@ async function bizDataPurge(body) {
     bizFault('purge:props');
     stage = 'responsibilities'; await fam('fm:biz:resp:*', 'responsibilities');
     stage = 'runs'; await fam('fm:biz:run:*', 'runs'); await fam('fm:biz:runs:*', null);
-    stage = 'managed'; await fam('fm:biz:mg:*', null); await fam('fm:biz:matt:*', 'managedAttempts'); await fam('fm:biz:mattl:*', null); await fam('fm:biz:munres:*', null);
+    stage = 'managed'; await fam('fm:biz:mg:*', null); await fam('fm:biz:matt:*', 'managedAttempts'); await fam('fm:biz:mattl:*', null); await fam('fm:biz:munres:*', null); await fam('fm:biz:matts:*', null);
     bizFault('purge:runs');
     stage = 'scans'; await fam('fm:biz:disc:*', 'scans');
     stage = 'apps';

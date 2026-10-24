@@ -2,12 +2,15 @@
 // responsibilities): route-level coverage through the real handlers with a stubbed provider
 // fetch and the in-memory store. Approve/review/confirm lifecycle, exact-request binding,
 // snapshot invalidation (source/consent/assignment/pause/config), outcome classes
-// (known-result, started-unknown, provider-ambiguous, provider-refused, unreadable-200,
-// withheld, refused-no-call), kill handling, unresolved-attempt blocking + risk-accepted
-// retry, resolve (stuck intent and orphan), generic-cancel refusal, purge subsumption.
+// (known-result, started-unknown, provider-ambiguous - ANY non-200, generic 4xx included,
+// unreadable-200, withheld, refused-no-call), kill handling, unknown-effect outcomes KEEPING
+// the retry gate until owner resolution, reviewedFp/consent-provider approval binding,
+// atomic grant/ungrant, complete-state begin adoption, lost-settle reconciliation (withheld
+// included), source-delete snapshot scrubbing, aged-index delete inventory, resolve (stuck
+// intent and orphan), generic-cancel refusal, purge subsumption.
 // No real network, no real keys.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizRespAct,bizConsentAct,bizSourceAdd,bizSourceEdit,bizDataPurge,bizOpCancel,bizState,getJ,setJ,r,als,BIZ};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizRespAct,bizConsentAct,bizSourceAdd,bizSourceEdit,bizSourceDel,bizDataPurge,bizOpCancel,bizState,getJ,setJ,r,als,BIZ};';
 const behavior={mode:'draft'};
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,
  fetch:async(u,o)=>{
@@ -31,6 +34,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   const sid=s1.body.source.id;behavior.sid=sid;
   const mkResp=async(id,extra)=>{const rp={id,title:'Reply desk',summary:'Draft replies to customers',boundary:'Drafts only',status:'active',bot:{id:null,name:'Grokbot'},createdAt:new Date().toISOString(),runsCount:0,...(extra||{})};await f.setJ('fm:biz:resp:'+id,rp);await f.r(['SADD','fm:biz:resps',id]);return rp;};
   const respId='resp_m';await mkResp(respId);
+  const resolveAll=async()=>{const rvx=await f.bizRespAct(respId,'managed',{op:'review',input});const set=rvx.body.attemptSet;if(!set)return;const rs=await f.bizRespAct(respId,'managed',{op:'resolve',reviewedSet:set});assert.equal(rs.status,200,'resolve clears: '+set);assert((await f.bizRespAct(respId,'managed',{op:'review',input})).body.attemptSet==='','set clear after resolve');};
 
   // --- eligibility refusals before any approval
   await mkResp('resp_plain',{bot:undefined});
@@ -41,15 +45,27 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   assert.equal((await f.bizRespAct('resp_asg','managed',{op:'approve-preview'})).body.code,'managed_assigned','assigned responsibilities refuse: never a substitute');
   assert.equal((await f.bizRespAct(respId,'managed',{op:'review',input:'x'})).body.code,'managed_unapproved','run review requires approval first');
 
+  // --- consent must name the ACTUAL provider (parsed host + model), not merely exist:
+  // a consent recorded under a previous deployment's config never authorizes this one
+  const consentGood=await f.r(['GET','fm:biz:consent']);
+  await f.r(['SET','fm:biz:consent',JSON.stringify({host:'api.groq.com',model:'some-other-model',at:'2026-10-23T00:00:00Z'})]);
+  const cm=await f.bizRespAct(respId,'managed',{op:'approve-preview'});
+  assert.equal(cm.status,409);assert.equal(cm.body.code,'engine_consent_mismatch','stale consent for another provider never authorizes this one');
+  await f.r(['SET','fm:biz:consent',consentGood]);
+
   // --- approve preview/confirm binding
   const pv=await f.bizRespAct(respId,'managed',{op:'approve-preview'});
   assert.equal(pv.status,200);const scopeHash=pv.body.managedPreview.scopeHash;
   assert.equal(pv.body.managedPreview.provider.model,'openai/gpt-oss-120b');
   assert.equal(pv.body.managedPreview.sources.length,1);assert.equal(pv.body.managedPreview.consent.host,'api.groq.com');
-  const bad=await f.bizRespAct(respId,'managed',{op:'approve',scopeHash:'bogus'});
+  const bad=await f.bizRespAct(respId,'managed',{op:'approve',scopeHash:'bogus',reviewedFp:pv.body.managedPreview.reviewedFp});
   assert.equal(bad.status,409);assert.equal(bad.body.code,'managed_scope_stale');
   assert.equal(await f.r(['GET','fm:biz:mg:'+respId]),null,'a stale approval writes nothing');
-  const ap=await f.bizRespAct(respId,'managed',{op:'approve',scopeHash});
+  assert(pv.body.managedPreview.reviewedFp,'preview carries the reviewed-state fingerprint');
+  const nofp=await f.bizRespAct(respId,'managed',{op:'approve',scopeHash});
+  assert.equal(nofp.status,409);assert.equal(nofp.body.code,'managed_review_state','approve without the reviewed fingerprint refuses');
+  assert.equal(await f.r(['GET','fm:biz:mg:'+respId]),null,'no fingerprint: nothing written');
+  const ap=await f.bizRespAct(respId,'managed',{op:'approve',scopeHash,reviewedFp:pv.body.managedPreview.reviewedFp});
   assert.equal(ap.status,200,'approve lands');assert(ap.body.responsibility.managed.grantId,'grant id recorded');
   const snapRaw=await f.r(['GET','fm:biz:mg:'+respId]);assert(snapRaw,'snapshot record stored');
   const snapObj=JSON.parse(snapRaw);
@@ -107,7 +123,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   assert.equal(cf.status,409);assert.equal(cf.body.code,'managed_sources_changed');assert.equal(behavior.calls,callsBefore,'edited source: no provider call');
   // re-approve against the current sources
   const pv2=await f.bizRespAct(respId,'managed',{op:'approve-preview'});
-  await f.bizRespAct(respId,'managed',{op:'approve',scopeHash:pv2.body.managedPreview.scopeHash});
+  await f.bizRespAct(respId,'managed',{op:'approve',scopeHash:pv2.body.managedPreview.scopeHash,reviewedFp:pv2.body.managedPreview.reviewedFp});
 
   // --- consent withdrawal after approval: refused at the gate
   await f.bizConsentAct(false);
@@ -116,7 +132,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   assert.equal(cf.status,409);assert.equal(cf.body.code,'managed_consent_changed');assert.equal(behavior.calls,callsBefore,'withdrawn consent: no provider call');
   await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
   const pv3=await f.bizRespAct(respId,'managed',{op:'approve-preview'});
-  await f.bizRespAct(respId,'managed',{op:'approve',scopeHash:pv3.body.managedPreview.scopeHash});
+  await f.bizRespAct(respId,'managed',{op:'approve',scopeHash:pv3.body.managedPreview.scopeHash,reviewedFp:pv3.body.managedPreview.reviewedFp});
 
   // --- provider config change: refused before the gate (per-deployment truthfulness)
   c.process.env.ALTER_MODEL_NAME='other-model';
@@ -131,12 +147,29 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   behavior.mode='throw';cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:hashH});
   assert.equal(cf.body.managedOutcome.class,'started-unknown');assert.equal(cf.body.managedOutcome.billing,'unknown-possible','a thrown fetch is honestly unknown');
   assert.equal(cf.body.managedOutcome.run.status,'unknown');assert.equal(cf.body.managedOutcome.run.output,null,'no result saved');
+  assert(cf.body.managedOutcome.message.includes('blocks new runs'),'the unknown outcome names the retry gate');
+  // the reviewer's duplicate-billing repro: an unreviewed retry after an unknown outcome must
+  // NOT make a second provider call
+  assert.equal((await f.r(['SMEMBERS','fm:biz:munres:'+respId])).length,1,'unknown outcome KEEPS the attempt in the retry gate');
+  const callsU=behavior.calls;
+  const dup=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:hashH});
+  assert.equal(dup.status,409);assert.equal(dup.body.code,'managed_attempt_review','unreviewed unknown outcome blocks the retry');
+  assert.equal(behavior.calls,callsU,'NO second provider call without reviewed risk acceptance');
+  await resolveAll();
   behavior.mode='500';cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:hashH});
   assert.equal(cf.body.managedOutcome.class,'provider-ambiguous');assert.equal(cf.body.managedOutcome.httpStatus,500,'5xx recorded verbatim, never called a rejection');
+  assert.equal((await f.r(['SMEMBERS','fm:biz:munres:'+respId])).length,1,'ambiguous outcome keeps the gate');
+  await resolveAll();
   behavior.mode='garbage200';cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:hashH});
   assert.equal(cf.body.managedOutcome.class,'unknown');assert.equal(cf.body.managedOutcome.httpStatus,200,'200 without a readable draft is unknown');
+  assert.equal((await f.r(['SMEMBERS','fm:biz:munres:'+respId])).length,1,'unreadable 200 keeps the gate');
+  await resolveAll();
   behavior.mode='401';cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:hashH});
-  assert.equal(cf.body.managedOutcome.class,'provider-refused');assert.equal(cf.body.managedOutcome.billing,'refused-by-provider');
+  assert.equal(cf.body.managedOutcome.class,'provider-ambiguous','a generic 4xx is NOT a definitive refusal');
+  assert.equal(cf.body.managedOutcome.billing,'unknown-possible','4xx billing stays honestly unknown');
+  assert(cf.body.managedOutcome.message.includes('does not prove'),'4xx copy keeps the uncertainty');
+  assert.equal((await f.r(['SMEMBERS','fm:biz:munres:'+respId])).length,1,'4xx keeps the gate');
+  await resolveAll();
   behavior.mode='draft';
 
   // --- kill switch: before the run, and racing the flight (withheld, draft never persisted)
@@ -153,7 +186,24 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   for(const k of keys){const v=await f.r(['GET',k]).catch(()=>null);if(typeof v==='string')assert(!v.includes('WITHHELD-DRAFT-MARKER'),'withheld draft never persisted ('+k+')');}
   const attW=await f.getJ('fm:biz:matt:'+cf.body.managedOutcome.attemptId);
   assert.equal(attW.status,'withheld');
+  assert((await f.r(['SMEMBERS','fm:biz:munres:'+respId])).includes(cf.body.managedOutcome.attemptId),'withheld KEEPS the retry gate until reviewed');
+  // lost settle response reconciled by the read path: the withheld outcome is PRESERVED -
+  // the response must not answer with the withheld output
+  await f.r(['DEL','fm:kill']); // clear the first flight's kill; the hooked flight sets it again
+  const rvW=await f.bizRespAct(respId,'managed',{op:'review',input});
+  c.global.__bizManagedSettleLoseOnce=true;behavior.mode='kill';
+  cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:hashH,attemptSet:rvW.body.attemptSet,acceptDuplicateRisk:true});
+  assert.equal(cf.body.managedOutcome.class,'withheld','lost withheld settle still answers withheld, never the output');
+  assert(!cf.body.managedOutcome.run,'no run record is exposed on a withheld landing');
+  assert(!JSON.stringify(cf.body).includes('WITHHELD-DRAFT-MARKER'),'withheld text never reaches the response');
   await f.r(['DEL','fm:kill']);
+  await resolveAll();
+  // lost settle response on a clean landing: reconcile adopts the landed record exactly
+  c.global.__bizManagedSettleLoseOnce=true;
+  cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:hashH});
+  assert.equal(cf.status,200);assert.equal(cf.body.managedOutcome.class,'known-result','lost clean settle reconciles to the landed result');
+  assert.equal(cf.body.managedOutcome.run.output,'managed draft text');
+  assert.equal((await f.r(['SMEMBERS','fm:biz:munres:'+respId])).length,0,'clean landing leaves the gate clear');
 
   // --- stuck-attempt blocking + explicit risk-accepted retry
   await f.setJ('fm:biz:matt:mrun_stuck1',{id:'mrun_stuck1',respId,kind:'managed',status:'started',requestHash:'rh_stuck1',token:'tok_dead',gen:9,input:'older work',provider:{baseUrl:'https://api.groq.com/openai/v1',model:'openai/gpt-oss-120b'},startedAt:new Date().toISOString()});
@@ -191,6 +241,50 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   assert.equal(rs.status,200,'stuck-intent resolve lands');assert.equal(await f.r(['GET','fm:biz:op_pending']),null,'stuck intent cleared');
   assert.equal((await f.getJ('fm:biz:matt:mrun_stuck2')).status,'acknowledged-unknown');
 
+  // --- lost begin response: adopt ONLY the complete durable transition
+  c.global.__bizManagedBeginLoseOnce=true;
+  cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:hashH});
+  assert.equal(cf.status,200);assert.equal(cf.body.managedOutcome.class,'known-result','complete landed begin is adopted and runs');
+  const attA=await f.getJ('fm:biz:matt:'+cf.body.managedOutcome.attemptId);
+  assert.equal(String(attA.gen),await f.r(['GET','fm:biz:fence']),'adopted generation is the fence generation');
+  // a partial transition is never equated with a successful begin: no adoption, no fetch
+  c.global.__bizManagedBeginLoseOnce=async()=>{const p=await f.getJ('fm:biz:op_pending');await f.r(['DEL','fm:biz:matt:'+p.opId]);};
+  const callsB=behavior.calls;
+  cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:hashH});
+  assert.equal(cf.status,503);assert.equal(cf.body.code,'managed_begin_unknown','incomplete begin state refuses adoption');
+  assert.equal(behavior.calls,callsB,'ambiguous begin: NO provider contact');
+  const pS=await f.getJ('fm:biz:op_pending');
+  await f.r(['SREM','fm:biz:munres:'+respId,pS.opId]);await f.r(['DEL','fm:biz:op_pending']);await f.r(['DEL','fm:biz:freeze']);
+
+  // --- source delete scrubs managed snapshots (verbatim raw copies leave with the source)
+  await mkResp('resp_s');
+  const pvs=await f.bizRespAct('resp_s','managed',{op:'approve-preview'});
+  const aps=await f.bizRespAct('resp_s','managed',{op:'approve',scopeHash:pvs.body.managedPreview.scopeHash,reviewedFp:pvs.body.managedPreview.reviewedFp});
+  assert.equal(aps.status,200);
+  assert((await f.r(['GET','fm:biz:mg:resp_s'])).includes('Refunds over $50 need the owner'),'snapshot holds a verbatim source copy before delete');
+  const dl=await f.bizSourceDel(sid,{});
+  assert.equal(dl.status,200);assert(dl.body.managedScrubbed>=1,'source delete scrubs managed snapshots: '+JSON.stringify(dl.body));
+  assert.equal(await f.r(['GET','fm:biz:mg:resp_s']),null,'the verbatim copy leaves with the source');
+  assert.equal(await f.r(['GET','fm:biz:mg:'+respId]),null,'every affected snapshot is scrubbed');
+  const rvS=await f.bizRespAct('resp_s','managed',{op:'review',input});
+  assert.equal(rvS.status,409);assert.equal(rvS.body.code,'managed_snapshot_missing','scrubbed grant refuses until re-approval');
+
+  // --- responsibility delete: attempts aged out of the 50-entry index still leave
+  await mkResp('resp_d');
+  const pvd=await f.bizRespAct('resp_d','managed',{op:'approve-preview'});
+  await f.bizRespAct('resp_d','managed',{op:'approve',scopeHash:pvd.body.managedPreview.scopeHash,reviewedFp:pvd.body.managedPreview.reviewedFp});
+  const rvd=await f.bizRespAct('resp_d','managed',{op:'review',input});
+  const cfd=await f.bizRespAct(respId==='resp_d'?'resp_d':'resp_d','managed',{op:'confirm',input,requestHash:rvd.body.managedReview.requestHash});
+  assert.equal(cfd.status,200,'run with zero bound sources proceeds');
+  const attD=cfd.body.managedOutcome.attemptId;
+  assert((await f.r(['SMEMBERS','fm:biz:matts:resp_d'])||[]).includes(attD),'durable attempt inventory carries the attempt');
+  await f.r(['DEL','fm:biz:mattl:resp_d']); // simulate aging beyond the trimmed display index
+  const dd=await f.bizRespAct('resp_d','delete',{});
+  assert.equal(dd.status,200,'responsibility delete completes');
+  assert.equal(await f.r(['GET','fm:biz:matt:'+attD]),null,'attempt aged out of the index is still deleted');
+  assert.equal(await f.r(['GET','fm:biz:matts:resp_d']),null,'durable inventory deleted');
+  assert.equal(await f.r(['GET','fm:biz:mg:resp_d']),null);
+
   // --- purge subsumes managed state: everything managed leaves with the workspace
   await f.setJ('fm:biz:op_pending',{op:'managed-run',id:respId,token:'tok_stuck3',gen:6,at:new Date().toISOString(),opId:'mrun_stuck3'});
   await f.setJ('fm:biz:matt:mrun_stuck3',{id:'mrun_stuck3',respId,kind:'managed',status:'started',requestHash:'rh_stuck3',token:'tok_stuck3',gen:6,input:'stuck work',provider:{baseUrl:'https://api.groq.com/openai/v1',model:'openai/gpt-oss-120b'},startedAt:new Date().toISOString()});
@@ -200,6 +294,7 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   assert(pg.body.counts.managedAttempts>=1,'purge reports managed attempt deletion');
   assert.equal(await f.r(['GET','fm:biz:mg:'+respId]),null);assert.equal(await f.r(['GET','fm:biz:matt:mrun_stuck3']),null);
   assert.equal(await f.r(['GET','fm:biz:munres:'+respId]),null);assert.equal(await f.r(['GET','fm:biz:mattl:'+respId]),null);
+  assert.equal(await f.r(['GET','fm:biz:matts:'+respId]),null,'durable attempt inventory purged');
   assert.equal(await f.r(['GET','fm:biz:resp:'+respId]),null);
 
   console.log('biz-managed-regression: ALL CHECKS PASSED');

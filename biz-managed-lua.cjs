@@ -6,7 +6,7 @@
 // resolve-after-expiry ownership. Requires a redis-server binary.
 const fs=require('fs'),vm=require('vm'),net=require('net'),assert=require('assert');
 const {spawn}=require('child_process');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={BIZ_MANAGED_BEGIN,BIZ_MANAGED_SETTLE,BIZ_MANAGED_RESOLVE,BIZ_OP_CANCEL,BIZ_OP_BEGIN};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={BIZ_MANAGED_BEGIN,BIZ_MANAGED_SETTLE,BIZ_MANAGED_RESOLVE,BIZ_MANAGED_GRANT,BIZ_MANAGED_UNGRANT,BIZ_MANAGED_MGDEL,BIZ_OP_CANCEL,BIZ_OP_BEGIN};';
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,fetch:async()=>{throw new Error('no network in fixture')}};
 vm.runInNewContext(src,c);const f=c.module.exports.t;
 function redis(port){
@@ -32,7 +32,7 @@ function redis(port){
   return {call,close:()=>sock.destroy()};
 }
 const P='fm:biz:';
-const K={fence:P+'fence',freeze:P+'freeze',pend:P+'op_pending',kill:'fm:kill',consent:P+'consent',resp:P+'resp:resp_1',mg:P+'mg:resp_1',sources:P+'sources',counter:P+'calls:2026-10-24',munres:P+'munres:resp_1',src1:P+'src:src_a',src2:P+'src:src_b',log:P+'log',matt:id=>P+'matt:'+id,mattl:P+'mattl:resp_1',run:id=>P+'run:'+id,runs:P+'runs:resp_1'};
+const K={fence:P+'fence',freeze:P+'freeze',pend:P+'op_pending',kill:'fm:kill',consent:P+'consent',resp:P+'resp:resp_1',mg:P+'mg:resp_1',sources:P+'sources',counter:P+'calls:2026-10-24',munres:P+'munres:resp_1',src1:P+'src:src_a',src2:P+'src:src_b',log:P+'log',matt:id=>P+'matt:'+id,mattl:P+'mattl:resp_1',matts:P+'matts:resp_1',run:id=>P+'run:'+id,runs:P+'runs:resp_1'};
 const SRC1=JSON.stringify({id:'src_a',kind:'note',title:'Alpha source',text:'alpha text',version:1});
 const SRC2=JSON.stringify({id:'src_b',kind:'note',title:'Beta source',text:'beta text',version:3});
 const CONSENT=JSON.stringify({host:'api.groq.com',model:'m1',at:'2026-10-24T00:00:00Z'});
@@ -42,7 +42,7 @@ function beginArgv(attId,extra){
   const att={id:attId,respId:'resp_1',kind:'managed',status:'started',requestHash:'rh_'+attId,scopeHash:'scope1',grantId:'mgrant_1',token:'tok_'+attId,gen:null,input:'do work',provider:{baseUrl:SNAP.provider.baseUrl,model:'m1'},startedAt:'2026-10-24T01:00:00Z'};
   return ['managed-run','resp_1','tok_'+attId,'60000','2026-10-24T01:00:00Z','mgrant_1','scope1','200',extra&&extra.attemptSet||'',attId,JSON.stringify(att),'2','172800',P+'matt:'];
 }
-function beginKeys(attId){return [K.fence,K.freeze,K.pend,K.kill,K.consent,K.resp,K.mg,K.sources,K.counter,K.munres,K.src1,K.src2,K.matt(attId),K.mattl];}
+function beginKeys(attId){return [K.fence,K.freeze,K.pend,K.kill,K.consent,K.resp,K.mg,K.sources,K.counter,K.munres,K.src1,K.src2,K.matt(attId),K.mattl,K.matts];}
 async function seed(R){await R.call('FLUSHALL');await R.call('SET',K.consent,CONSENT);await R.call('SET',K.resp,JSON.stringify(RESP));await R.call('SET',K.mg,JSON.stringify(SNAP));await R.call('SADD',K.sources,'src_a','src_b');await R.call('SET',K.src1,SRC1);await R.call('SET',K.src2,SRC2);}
 async function zeroState(R,attId,expectCounter,expectUnresolved){
   assert.equal(await R.call('GET',K.fence),null,'fence untouched');
@@ -51,6 +51,7 @@ async function zeroState(R,attId,expectCounter,expectUnresolved){
   assert.equal(await R.call('GET',K.counter),expectCounter===undefined?null:expectCounter,'counter not consumed');
   assert.equal(await R.call('GET',K.matt(attId)),null,'no attempt record');
   assert.deepEqual((await R.call('SMEMBERS',K.munres)).sort(),expectUnresolved||[],'unresolved set holds only pre-seeded members');
+  assert.deepEqual(await R.call('SMEMBERS',K.matts),[],'durable inventory holds nothing');
 }
 (async()=>{
  const bin=process.argv[2]||'/tmp/redisbuild/redis-stable/src/redis-server';
@@ -62,7 +63,7 @@ async function zeroState(R,attId,expectCounter,expectUnresolved){
  try{
   // --- happy begin: all bindings satisfied, one atomic transition
   await seed(R);
-  let res=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,14,...beginKeys('a1'),...beginArgv('a1'));
+  let res=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('a1'),...beginArgv('a1'));
   assert.equal(res[0],'ok','begin succeeds');assert.equal(res[1],1,'gen returned');
   assert.equal(await R.call('GET',K.fence),'1','fence bumped');
   assert.equal(await R.call('GET',K.freeze),'tok_a1','freeze lease held');
@@ -71,9 +72,10 @@ async function zeroState(R,attId,expectCounter,expectUnresolved){
   const att=JSON.parse(await R.call('GET',K.matt('a1')));assert.equal(att.status,'started');assert.equal(att.gen,1,'returned gen injected into the durable attempt');
   assert.deepEqual(await R.call('SMEMBERS',K.munres),['a1'],'unresolved set carries the attempt');
   assert.equal((await R.call('LRANGE',K.mattl,0,-1))[0],'a1','attempt indexed');
+  assert.deepEqual(await R.call('SMEMBERS',K.matts),['a1'],'durable never-trimmed inventory carries the attempt');
 
   // --- second begin while held: refused, nothing doubled
-  res=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,14,...beginKeys('a2'),...beginArgv('a2'));
+  res=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('a2'),...beginArgv('a2'));
   assert.equal(res[0],'held','a live freeze refuses a second run');
   assert.equal(await R.call('GET',K.counter),'1','no double counter');
 
@@ -84,30 +86,41 @@ async function zeroState(R,attId,expectCounter,expectUnresolved){
   assert.equal(await R.call('GET',K.fence),'1','fence not bumped by refused cancel');
 
   // --- settle with a WRONG token: lost, nothing written
-  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a1'),K.munres,K.run('r1'),K.runs,K.log,'tok_WRONG','1','a1','rh_a1','{}','{}','','','50','le','100','rc1','rc2',P+'run:');
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a1'),K.munres,K.run('r1'),K.runs,K.log,'tok_WRONG','1','a1','rh_a1','{}','{}','','','50','le','100','rc1','rc2',P+'run:','1');
   assert.equal(res[0],'lost','wrong token cannot settle');
   assert.equal(JSON.parse(await R.call('GET',K.matt('a1'))).status,'started','attempt unchanged');
 
   // --- kill racing the flight: settle withholds, the draft is never stored anywhere
   await R.call('SET',K.kill,'1');
   const runJson=JSON.stringify({id:'run_x',respId:'resp_1',output:'DRAFT-SECRET-MARKER',status:'done'});
-  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a1'),K.munres,K.run('run_x'),K.runs,K.log,'tok_a1','1','a1','rh_a1',JSON.stringify({id:'a1',status:'known-result',receipt:'RC_GOOD',requestHash:'rh_a1'}),JSON.stringify({id:'a1',status:'withheld',receipt:'RC_W',requestHash:'rh_a1'}),runJson,'run_x','50','{"kind":"managed_run"}','100','RC_GOOD','RC_W',P+'run:');
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a1'),K.munres,K.run('run_x'),K.runs,K.log,'tok_a1','1','a1','rh_a1',JSON.stringify({id:'a1',status:'known-result',receipt:'RC_GOOD',requestHash:'rh_a1',token:'tok_a1',gen:1}),JSON.stringify({id:'a1',status:'withheld',receipt:'RC_W',requestHash:'rh_a1',token:'tok_a1',gen:1}),runJson,'run_x','50','{"kind":"managed_run"}','100','RC_GOOD','RC_W',P+'run:','1');
   assert.deepEqual(res,['ok','withheld'],'kill at settle withholds');
   assert.equal(await R.call('GET',K.run('run_x')),null,'no run record under kill');
   for(const k of await R.call('KEYS','*')){const v=await R.call('GET',k).catch(()=>null);if(typeof v==='string')assert(!v.includes('DRAFT-SECRET-MARKER'),'draft text never persisted under kill ('+k+')');}
   const attW=JSON.parse(await R.call('GET',K.matt('a1')));assert.equal(attW.status,'withheld');assert.equal(attW.receipt,'RC_W');
   assert.equal(await R.call('GET',K.pend),null,'intent released');assert.equal(await R.call('GET',K.freeze),null,'lease released');
-  assert.equal((await R.call('SMEMBERS',K.munres)).length,0,'resolved out of the unresolved set');
-  // idempotent landed: same settle args after the fact reconcile to landed, not lost
-  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a1'),K.munres,K.run('run_x'),K.runs,K.log,'tok_a1','1','a1','rh_a1',JSON.stringify({id:'a1',status:'known-result',receipt:'RC_GOOD',requestHash:'rh_a1'}),JSON.stringify({id:'a1',status:'withheld',receipt:'RC_W',requestHash:'rh_a1'}),runJson,'run_x','50','{"kind":"managed_run"}','100','RC_GOOD','RC_W',P+'run:');
-  assert.equal(res[0],'landed','a repeated identical settle reconciles as landed');
+  assert.deepEqual(await R.call('SMEMBERS',K.munres),['a1'],'withheld KEEPS the attempt in the retry gate');
+  // idempotent landed: same settle args after the fact reconcile to landed WITH the record's
+  // own withheld status - never reported as a clean landing
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a1'),K.munres,K.run('run_x'),K.runs,K.log,'tok_a1','1','a1','rh_a1',JSON.stringify({id:'a1',status:'known-result',receipt:'RC_GOOD',requestHash:'rh_a1',token:'tok_a1',gen:1}),JSON.stringify({id:'a1',status:'withheld',receipt:'RC_W',requestHash:'rh_a1',token:'tok_a1',gen:1}),runJson,'run_x','50','{"kind":"managed_run"}','100','RC_GOOD','RC_W',P+'run:','1');
+  assert.deepEqual(res,['landed','withheld'],'a repeated identical settle reconciles as landed, withheld preserved');
   assert.equal(await R.call('GET',K.run('run_x')),null,'landed reconcile still writes nothing (withheld stood)');
+  // reconcile refuses when ownership fields differ: same receipts, wrong token in the record
+  await R.call('SET',K.matt('a1'),JSON.stringify({id:'a1',status:'withheld',receipt:'RC_W',requestHash:'rh_a1',token:'tok_OTHER',gen:1}));
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a1'),K.munres,K.run('run_x'),K.runs,K.log,'tok_a1','1','a1','rh_a1','{}','{}','','','50','le','100','RC_GOOD','RC_W',P+'run:','1');
+  assert.equal(res[0],'lost','receipt match with wrong ownership fields never reconciles as landed');
+  await R.call('SET',K.matt('a1'),JSON.stringify(attW));
+  // owner reviews and resolves the withheld attempt (orphan mode: intent already released)
+  res=await R.call('EVAL',f.BIZ_MANAGED_RESOLVE,5,K.fence,K.freeze,K.pend,K.munres,K.log,'a1:rh_a1','le','100','2026-10-24T01:30:00Z',P+'matt:','{"a1":"RC_ACK_W"}');
+  assert.deepEqual(res,['ok',1],'a withheld terminal attempt resolves after review');
+  assert.equal(JSON.parse(await R.call('GET',K.matt('a1'))).status,'acknowledged-unknown');
+  assert.equal((await R.call('SMEMBERS',K.munres)).length,0,'gate clear after resolution');
   await R.call('DEL',K.kill);
 
   // --- refusal battery: each failing check leaves ZERO side effects
   const refuse=async(label,mut,code,expectCounter,expectUnresolved)=>{
     await seed(R);await mut();
-    const r2=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,14,...beginKeys('b_'+label),...beginArgv('b_'+label));
+    const r2=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('b_'+label),...beginArgv('b_'+label));
     assert.equal(r2[0],code,label+' refuses with '+code);
     await zeroState(R,'b_'+label,expectCounter,expectUnresolved);
   };
@@ -127,7 +140,7 @@ async function zeroState(R,attId,expectCounter,expectUnresolved){
   // unresolved set exactly as reviewed: a retry bound to it proceeds
   await seed(R);
   await R.call('SADD',K.munres,'old1');await R.call('SET',K.matt('old1'),JSON.stringify({id:'old1',status:'started',requestHash:'rh_old',token:'tok_old',gen:9}));
-  res=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,14,...beginKeys('a3'),...beginArgv('a3',{attemptSet:'old1:rh_old'}));
+  res=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('a3'),...beginArgv('a3',{attemptSet:'old1:rh_old'}));
   assert.equal(res[0],'ok','a reviewed retry bound to the exact attempt-set proceeds');
   assert.deepEqual((await R.call('SMEMBERS',K.munres)).sort(),['a3','old1'],'both attempts now unresolved');
 
@@ -149,15 +162,15 @@ async function zeroState(R,attId,expectCounter,expectUnresolved){
   const attA=JSON.parse(await R.call('GET',K.matt('a3')));assert.equal(attA.status,'acknowledged-unknown');assert.equal(attA.receipt,'RC_A');
   assert.equal(await R.call('GET',K.pend),null,'stuck intent cleared');
   assert.equal(await R.call('GET',K.fence),'2','generation bumped: the dead holder can never write again');
-  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a3'),K.munres,K.run('run_late'),K.runs,K.log,'tok_a3','1','a3','rh_a3','{}','{}','','','50','le','100','RC_GOOD','RC_W',P+'run:');
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a3'),K.munres,K.run('run_late'),K.runs,K.log,'tok_a3','1','a3','rh_a3','{}','{}','','','50','le','100','RC_GOOD','RC_W',P+'run:','1');
   assert.equal(res[0],'lost','the expired holder\u2019s late settle can never land after resolve');
   assert.equal(JSON.parse(await R.call('GET',K.matt('a3'))).status,'acknowledged-unknown','late settle did not touch the resolved attempt');
 
   // --- concurrent begins: exactly one wins
   await seed(R);
   const [r1,r2]=await Promise.all([
-    R.call('EVAL',f.BIZ_MANAGED_BEGIN,14,...beginKeys('c1'),...beginArgv('c1')),
-    R.call('EVAL',f.BIZ_MANAGED_BEGIN,14,...beginKeys('c2'),...beginArgv('c2'))]);
+    R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('c1'),...beginArgv('c1')),
+    R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('c2'),...beginArgv('c2'))]);
   const oks=[r1,r2].filter(x=>x[0]==='ok');
   assert.equal(oks.length,1,'exactly one begin wins the race');
   assert.equal(await R.call('GET',K.counter),'1','one counter consumed across the race');
@@ -165,14 +178,15 @@ async function zeroState(R,attId,expectCounter,expectUnresolved){
   // --- settle known-result: run record + index + terminal attempt + receipt reconcile
   const win=oks[0]===r1?'c1':'c2';
   const runOk=JSON.stringify({id:'run_ok',respId:'resp_1',kind:'managed',output:'DRAFT-OK',status:'done',attemptId:win});
-  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt(win),K.munres,K.run('run_ok'),K.runs,K.log,'tok_'+win,'1',win,'rh_'+win,JSON.stringify({id:win,status:'known-result',receipt:'RC_K',requestHash:'rh_'+win}),JSON.stringify({id:win,status:'withheld',receipt:'RC_W2',requestHash:'rh_'+win}),runOk,'run_ok','50','{"kind":"managed_run"}','100','RC_K','RC_W2',P+'run:');
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt(win),K.munres,K.run('run_ok'),K.runs,K.log,'tok_'+win,'1',win,'rh_'+win,JSON.stringify({id:win,status:'known-result',receipt:'RC_K',requestHash:'rh_'+win}),JSON.stringify({id:win,status:'withheld',receipt:'RC_W2',requestHash:'rh_'+win}),runOk,'run_ok','50','{"kind":"managed_run"}','100','RC_K','RC_W2',P+'run:','1');
   assert.deepEqual(res,['ok','settled'],'known-result settles');
+  assert.equal((await R.call('SMEMBERS',K.munres)).length,0,'a clean outcome leaves the retry gate');
   assert.equal(JSON.parse(await R.call('GET',K.run('run_ok'))).output,'DRAFT-OK','run record persisted');
   assert.equal((await R.call('LRANGE',K.runs,0,-1))[0],'run_ok','run indexed');
   assert.equal(JSON.parse(await R.call('GET',K.matt(win))).status,'known-result');
   assert((await R.call('LRANGE',K.log,0,-1)).length>=1,'log entry written');
   // receipt mismatch: a terminal attempt with a DIFFERENT receipt is not "landed"
-  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt(win),K.munres,K.run('run_z'),K.runs,K.log,'tok_'+win,'1',win,'rh_'+win,JSON.stringify({id:win,status:'known-result',receipt:'RC_OTHER',requestHash:'rh_'+win}),JSON.stringify({id:win,status:'withheld',receipt:'RC_W3',requestHash:'rh_'+win}),'','','50','le','100','RC_OTHER','RC_W3',P+'run:');
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt(win),K.munres,K.run('run_z'),K.runs,K.log,'tok_'+win,'1',win,'rh_'+win,JSON.stringify({id:win,status:'known-result',receipt:'RC_OTHER',requestHash:'rh_'+win}),JSON.stringify({id:win,status:'withheld',receipt:'RC_W3',requestHash:'rh_'+win}),'','','50','le','100','RC_OTHER','RC_W3',P+'run:','1');
   assert.equal(res[0],'lost','a different outcome for the same attempt never reconciles as landed');
 
   // --- orphan-mode resolve: no intent at all, a crashed/raced 'started' attempt still resolves
@@ -182,6 +196,84 @@ async function zeroState(R,attId,expectCounter,expectUnresolved){
   assert.deepEqual(res,['ok',1],'orphaned started attempt resolves without an intent');
   assert.equal(JSON.parse(await R.call('GET',K.matt('or1'))).status,'acknowledged-unknown');
   assert.equal((await R.call('SMEMBERS',K.munres)).length,0,'orphan retired from the set');
+
+  // --- REVIEWER REPRO: wrongtype index - BEGIN validates BEFORE any write (no partial state)
+  await seed(R);await R.call('SET',K.mattl,'wrongtype');
+  res=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('bad'),...beginArgv('bad'));
+  assert.deepEqual(res,['corrupt'],'wrongtype index refuses as corrupt, never a runtime error');
+  await zeroState(R,'bad'); // fence/freeze/pending/counter/attempt all absent: zero partial mutation
+  await seed(R);await R.call('SET',K.munres,'wrongtype');
+  res=await R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('bad2'),...beginArgv('bad2'));
+  assert.deepEqual(res,['corrupt'],'wrongtype unresolved set refuses before writes');
+  await R.call('DEL',K.munres); // remove the poisoned fixture before the zero-state audit
+  await zeroState(R,'bad2');
+
+  // --- REVIEWER REPRO: settle with the attempt deleted under held ownership - lost, no resurrection
+  await seed(R);await R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('a1'),...beginArgv('a1'));await R.call('DEL',K.matt('a1'));
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a1'),K.munres,K.run('r1'),K.runs,K.log,'tok_a1','1','a1','rh_a1',JSON.stringify({id:'a1',status:'known-result',requestHash:'rh_a1'}),'{}',JSON.stringify({id:'r1',output:'private output'}),'r1','50','le','100','rc1','rc2',P+'run:','1');
+  assert.equal(res[0],'lost','absent original attempt: settle refuses');
+  assert.equal(await R.call('GET',K.matt('a1')),null,'absence never recreates an attempt');
+  assert.equal(await R.call('GET',K.run('r1')),'null'===String(await R.call('GET',K.run('r1')))?null:null,'run not written');
+  assert.equal(await R.call('GET',K.run('r1')),null,'private output never persisted');
+  assert.equal(JSON.parse(await R.call('GET',K.pend)).opId,'a1','intent untouched by the refused settle');
+  // a mismatched original attempt (requestHash) under held ownership also refuses
+  await seed(R);await R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('a9'),...beginArgv('a9'));
+  await R.call('SET',K.matt('a9'),JSON.stringify({id:'a9',status:'started',requestHash:'rh_OTHER',token:'tok_a9',gen:1}));
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a9'),K.munres,K.run('r9'),K.runs,K.log,'tok_a9','1','a9','rh_a9','{}','{}','','','50','le','100','x','y',P+'run:','1');
+  assert.equal(res[0],'lost','mismatched original attempt: settle refuses');
+
+  // --- wrongtype settle targets refuse as corrupt BEFORE any write
+  await seed(R);await R.call('EVAL',f.BIZ_MANAGED_BEGIN,15,...beginKeys('a8'),...beginArgv('a8'));
+  await R.call('SET',K.runs,'wrongtype');
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a8'),K.munres,K.run('r8'),K.runs,K.log,'tok_a8','1','a8','rh_a8','{}','{}','','','50','le','100','x','y',P+'run:','1');
+  assert.equal(res[0],'corrupt','wrongtype run index refuses as corrupt');
+  assert.equal(JSON.parse(await R.call('GET',K.matt('a8'))).status,'started','attempt untouched');
+  assert.equal(JSON.parse(await R.call('GET',K.pend)).opId,'a8','intent intact');
+  await R.call('DEL',K.runs);
+
+  // --- an unknown-effect settle (clean flag 0) KEEPS the retry gate; resolve acks it
+  res=await R.call('EVAL',f.BIZ_MANAGED_SETTLE,9,K.fence,K.freeze,K.pend,K.kill,K.matt('a8'),K.munres,K.run('r8'),K.runs,K.log,'tok_a8','1','a8','rh_a8',JSON.stringify({id:'a8',status:'started-unknown',receipt:'RC_U',requestHash:'rh_a8'}),JSON.stringify({id:'a8',status:'withheld',receipt:'RC_W8',requestHash:'rh_a8'}),'','','50','le','100','RC_U','RC_W8',P+'run:','0');
+  assert.deepEqual(res,['ok','settled'],'unknown-effect outcome settles');
+  assert.deepEqual(await R.call('SMEMBERS',K.munres),['a8'],'unknown-effect outcome STAYS in the retry gate');
+  res=await R.call('EVAL',f.BIZ_MANAGED_RESOLVE,5,K.fence,K.freeze,K.pend,K.munres,K.log,'a8:rh_a8','le','100','2026-10-24T04:00:00Z',P+'matt:','{"a8":"RC_ACK8"}');
+  assert.deepEqual(res,['ok',1],'settled unknown-effect attempt resolves after owner review');
+  assert.equal(JSON.parse(await R.call('GET',K.matt('a8'))).status,'acknowledged-unknown');
+  assert.equal((await R.call('SMEMBERS',K.munres)).length,0);
+
+  // --- GRANT: atomic pair; a stale concurrent approval strands nothing
+  await seed(R);await R.call('DEL',K.resp);await R.call('DEL',K.mg);
+  const respOld=JSON.stringify({id:'resp_1',v:1});
+  await R.call('SET',K.resp,respOld);
+  res=await R.call('EVAL',f.BIZ_MANAGED_GRANT,5,K.fence,K.freeze,K.pend,K.resp,K.mg,'0',respOld,JSON.stringify({id:'resp_1',v:2,managed:{grantId:'g1'}}),JSON.stringify({grantId:'g1',sources:[]}));
+  assert.deepEqual(res,['ok'],'grant lands atomically');
+  res=await R.call('EVAL',f.BIZ_MANAGED_GRANT,5,K.fence,K.freeze,K.pend,K.resp,K.mg,'0',respOld,JSON.stringify({id:'resp_1',v:3,managed:{grantId:'g2'}}),JSON.stringify({grantId:'g2',sources:[]}));
+  assert.deepEqual(res,['conflict'],'stale loser refuses');
+  assert.equal(JSON.parse(await R.call('GET',K.mg)).grantId,'g1','winner snapshot never stranded by the loser');
+  assert.equal(JSON.parse(await R.call('GET',K.resp)).v,2,'winner responsibility intact');
+  res=await R.call('EVAL',f.BIZ_MANAGED_GRANT,5,K.fence,K.freeze,K.pend,K.resp,K.mg,'0','""','x','y');
+  assert.deepEqual(res,['conflict'],'empty old bytes never match');
+  await R.call('DEL',K.resp);
+  res=await R.call('EVAL',f.BIZ_MANAGED_GRANT,5,K.fence,K.freeze,K.pend,K.resp,K.mg,'0','""','x','y');
+  assert.deepEqual(res,['notfound'],'missing responsibility: notfound');
+
+  // --- UNGRANT: compare-delete removes only the revoked grant
+  await seed(R);await R.call('DEL',K.mg);
+  const respG=JSON.stringify({id:'resp_1',managed:{grantId:'g1'}});
+  await R.call('SET',K.resp,respG);await R.call('SET',K.mg,JSON.stringify({grantId:'g1'}));
+  res=await R.call('EVAL',f.BIZ_MANAGED_UNGRANT,5,K.fence,K.freeze,K.pend,K.resp,K.mg,'0',respG,JSON.stringify({id:'resp_1'}),'g1');
+  assert.deepEqual(res,['ok'],'revoke lands');assert.equal(await R.call('GET',K.mg),null,'revoked grant deleted');
+  // a stale revoke against a NEWER grant: responsibility updates, newer snapshot preserved
+  const respG2=JSON.stringify({id:'resp_1',managed:{grantId:'g2'}});
+  await R.call('SET',K.resp,respG2);await R.call('SET',K.mg,JSON.stringify({grantId:'g2'}));
+  res=await R.call('EVAL',f.BIZ_MANAGED_UNGRANT,5,K.fence,K.freeze,K.pend,K.resp,K.mg,'0',respG2,JSON.stringify({id:'resp_1'}),'g1');
+  assert.deepEqual(res,['ok']);assert.equal(JSON.parse(await R.call('GET',K.mg)).grantId,'g2','a stale revoke never deletes the newer grant');
+
+  // --- MGDEL: compare-delete for the assignment-clear path
+  res=await R.call('EVAL',f.BIZ_MANAGED_MGDEL,4,K.fence,K.freeze,K.pend,K.mg,'0','g1');
+  assert.equal(res,0,'mismatched grant id: nothing deleted');
+  assert.equal(JSON.parse(await R.call('GET',K.mg)).grantId,'g2');
+  res=await R.call('EVAL',f.BIZ_MANAGED_MGDEL,4,K.fence,K.freeze,K.pend,K.mg,'0','g2');
+  assert.equal(res,1,'exact grant id deletes');assert.equal(await R.call('GET',K.mg),null);
 
   console.log('biz-managed-lua: ALL REAL-REDIS CHECKS PASSED');
  } finally { R.close(); srv.kill(); }
