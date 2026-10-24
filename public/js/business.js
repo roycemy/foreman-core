@@ -911,14 +911,15 @@
     });
     // Team-row recovery: open the SAME reviewed chooser (fingerprint + identity + generation
     // bound at creation) inside the responsibility's own card - never a second assign path.
-    $$('[data-team-assign]', V).forEach(b => b.onclick = () => {
-      const rp = (B.responsibilities || []).find(x => x.id === b.dataset.teamAssign);
+    $$('[data-team-assign]', V).forEach(b => { const stampAtBind = identity(); b.onclick = () => {
+      if (stampAtBind !== identity()) return; // a node rendered under a previous identity never opens a same-id responsibility for the new one
+      const rp = ((B && B.responsibilities) || []).find(x => x.id === b.dataset.teamAssign);
       if (!rp) return;
       if (assigningResp && assigningResp.respId === rp.id) { assigningResp = null; assignGen++; paint(); return; }
       assigningResp = { respId: rp.id, fp: rp.fp || null, stamp: identity(), gen: ++assignGen };
       openResp[rp.id] = true; paint();
       const el = document.querySelector('[data-resp="' + rp.id + '"]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
+    }; });
     $$('[data-resp-assign]', V).forEach(b => b.onclick = () => {
       if (assigningResp && assigningResp.respId === b.dataset.respAssign) { assigningResp = null; assignGen++; paint(); return; }
       const rp = (B.responsibilities || []).find(x => x.id === b.dataset.respAssign);

@@ -40,6 +40,10 @@ const RESP_BOTONLY={id:'resp_6',title:'Supplier nudges',summary:'s',boundary:'Dr
 const RESP_PLAIN={id:'resp_7',title:'Seasonal checklist',summary:'s',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],fp:'f7',runs:[]};
 let C_RESPS=null; // mutable copy so an assignment save can land like the real server
 function bizState(ident){
+  if(ident==='F')return {engine:{configured:false,enabled:false,consent:null},profile:{name:'North Bend Contracting',blurb:'Demo',updatedAt:'2026-10-23T00:00:00Z'},
+    delegate:{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}},team:TEAM,
+    sources:SRC,proposals:[],
+    responsibilities:[RESP_ASSIGNED,RESP_NEEDSREVIEW,RESP_GONE,RESP_RESEARCH,RESP_AUTOPICK],log:[],opPending:null}; // same shape as A: the same-id trap
   if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,team:[],sources:SRC,proposals:[],responsibilities:[],log:[],opPending:null};
   if(ident==='C'){if(!C_RESPS)C_RESPS=JSON.parse(JSON.stringify([RESP_BOTONLY,RESP_PLAIN]));return {engine:{configured:false,enabled:false,consent:null},profile:{name:'Two Bot Shop',blurb:'',updatedAt:'2026-10-23T00:00:00Z'},delegate:null,team:TEAM_C,sources:SRC,proposals:[],responsibilities:C_RESPS,log:[],opPending:null};}
   return {engine:{configured:false,enabled:false,consent:null},profile:{name:'North Bend Contracting',blurb:'Demo',updatedAt:'2026-10-23T00:00:00Z'},
@@ -56,7 +60,10 @@ const server=http.createServer((req,res)=>{
   if(u.pathname==='/api/state')return json({now:new Date().toISOString(),agents:[AGT]});
   if(u.pathname==='/api/money')return json({requests:[]});
   if(u.pathname==='/api/cards')return json({proposals:[],bots:[],ledger:[]});
-  if(u.pathname==='/api/business/state')return json(bizState(ident));
+  if(u.pathname==='/api/business/state'){
+    if(ident==='F'){setTimeout(()=>json(bizState(ident)),700);return;} // slow: leaves a window where the cleared view holds NO state
+    return json(bizState(ident));
+  }
   if(u.pathname==='/api/business/responsibilities/resp_6/assign'&&req.method==='POST'){
     let body='';req.on('data',d=>body+=d);req.on('end',()=>{
       const b=JSON.parse(body||'{}');
@@ -158,6 +165,25 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  await shot('biz-team-mobile.png');
  await send('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false},sessionId);
 
+ // A retained A-identity team node across an in-page identity flip (the reviewer's repro),
+ // in BOTH post-flip states:
+ await ev(`window.__oldTeamCta=document.querySelector('[data-team-assign="resp_3"]');'stash'`);
+ await ev(`fetch('/__ident?to=F');'flip'`);
+ await ev(`window.BB.who={email:'f@f.test',workspace:'wF'};'flip-who'`);
+ await ev(`location.hash='#floor';'away'`);
+ await new Promise(r=>setTimeout(r,400));
+ await ev(`location.hash='#business';'back'`); // route handler drops A's state (B = null) and starts the slow reload
+ await new Promise(r=>setTimeout(r,250)); // the drop is synchronous with routing; the fetch is still out
+ // 1. while the cleared view holds NO state: must not throw
+ const stale1=await ev(`(()=>{try{window.__oldTeamCta.click();return 'no-throw';}catch(e){return 'threw: '+e.message;}})()`);
+ assert(stale1==='no-throw','a retained A team node on the cleared view must not throw - got '+stale1);
+ assert(!(await ev(`!!document.querySelector('[data-assign-save]')`)),'no chooser from the retained node while cleared');
+ // 2. once the new identity's state (same responsibility ids) HAS loaded: must not open it
+ assert(await poll(`!!document.getElementById('bz-team')`),'flipped identity state loads');
+ const stale2=await ev(`(()=>{try{window.__oldTeamCta.click();return 'no-throw';}catch(e){return 'threw: '+e.message;}})()`);
+ assert(stale2==='no-throw','retained node still must not throw - got '+stale2);
+ assert(!(await ev(`!!document.querySelector('[data-assign-save]')`)),"a retained A node never opens a same-id responsibility under the new identity");
+
  // Workspace C: two connected non-grok bots - no unambiguous automatic pick. A bot-marked
  // responsibility asks for an explicit assignment and never invents a gone owner; a plain
  // responsibility falls to the engine with its setup-off state.
@@ -192,6 +218,7 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(!(await ev(`!!document.getElementById('bz-team')`)),"no team card under another workspace's empty state");
  t=await ev(`(document.getElementById('v-business')||{textContent:''}).textContent`);
  assert(!t.includes('Grokbot')&&!t.includes('Estimate follow-up desk'),"none of A's team data paints under B");
+
 
  cp.kill();server.close();
  console.log('ui-biz-team-regression: PASS');
