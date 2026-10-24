@@ -3940,7 +3940,11 @@ async function bizRespAct(id, op, body) {
   const f0 = op === 'delete' ? null : await bizEntry(); // one atomic snapshot before the record read; threaded into runs so a delete during the read invalidates persistence
   if (op !== 'delete' && f0 == null) return bizFrozenConflict();
   const entryDeadline = Date.now() + BIZ.RUN_BUDGET_MS; // absolute, before any storage read
-  const resp = await getJ('fm:biz:resp:' + id);
+  // ONE raw read: the reviewed object AND every compare-and-set below derive from the SAME
+  // bytes. A second read could observe a newer record while the object stayed older - the
+  // exact loss window a CAS is meant to exclude.
+  const respRaw0 = await r(['GET', 'fm:biz:resp:' + id]);
+  const resp = respRaw0 ? JSON.parse(respRaw0) : null;
   if (!resp && op !== 'delete') return { status: 404, body: { error: 'not found' } }; // delete handles a missing record below: an idempotent retry may still owe intent close + index cleanup
   if (op === 'candidates') {
     if (!resp.research) return { status: 400, body: { error: 'This responsibility does not read public pages' } };
@@ -3968,7 +3972,9 @@ async function bizRespAct(id, op, body) {
     if (sop === 'disable') {
       if (!resp.schedule) return { status: 200, body: { responsibility: resp } };
       const next = { ...resp }; delete next.schedule;
-      if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+      const dcas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]); // exact entry bytes: a concurrent assignment or edit wins, never overwritten
+      if (dcas === -1) return { status: 404, body: { error: 'not found' } };
+      if (dcas !== 1) { if (!respRaw0) return bizFenceConflict(); return { status: 409, body: { error: 'This responsibility changed while you were turning the schedule off - reload and review it. Nothing was overwritten.', code: 'resp_changed' } }; }
       if (!await bizLog('schedule_disabled', { respId: id, title: resp.title }, f0)) return bizFenceConflict();
       return { status: 200, body: { responsibility: next } };
     }
@@ -3983,7 +3989,10 @@ async function bizRespAct(id, op, body) {
     if (sop === 'enable') {
       if (String(body.delegateHash || '') !== payload.hash) return { status: 409, body: { error: 'Review exactly what would be sent each day first.', code: 'delegation_review_required', delegation: await bizDelegatePreview(bot, payload) } };
       const next = { ...resp, schedule: { freq: 'daily', instruction, delegateHash: payload.hash, enabledAt: now(), lastQueuedAt: null, needsReview: null } };
-      if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+      if (global.__bizScheduleBeforeWrite) { const fn = global.__bizScheduleBeforeWrite; global.__bizScheduleBeforeWrite = null; await fn(); } // test-only interleave hook, never set in production
+      const ecas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]); // exact entry bytes: a newer approved assignment (or any drift) wins, never overwritten
+      if (ecas === -1) return { status: 404, body: { error: 'not found' } };
+      if (ecas !== 1) { if (!respRaw0) return bizFenceConflict(); return { status: 409, body: { error: 'This responsibility changed while you were saving the schedule - reload, review the current state and save again. Nothing was overwritten.', code: 'resp_changed' } }; }
       if (!await bizLog('schedule_enabled', { respId: id, title: resp.title, botName: bot.name }, f0)) return bizFenceConflict();
       return { status: 200, body: { responsibility: next } };
     }
@@ -3995,7 +4004,6 @@ async function bizRespAct(id, op, body) {
     // never creates or provisions bot accounts.
     if (resp.research) return { status: 400, body: { error: 'This responsibility reads public pages during runs; those runs use the reasoning engine, not a bot.' } };
     const botId = body && body.botId != null && body.botId !== '' ? String(body.botId) : null;
-    const respRaw0 = await r(['GET', 'fm:biz:resp:' + id]); // the exact record under review - no awaits between the read above and here on this path
     let assignment = null;
     if (botId) {
       const pick = (await bizTeamBots()).find(a => a.id === botId);
@@ -4004,9 +4012,9 @@ async function bizRespAct(id, op, body) {
     }
     const next = { ...resp }; if (assignment) next.assignment = assignment; else delete next.assignment;
     if (global.__bizAssignBeforeWrite) { const fn = global.__bizAssignBeforeWrite; global.__bizAssignBeforeWrite = null; await fn(); } // test-only interleave hook, never set in production
-    // Owned exact CAS: the record must still be byte-identical to what was reviewed. A
-    // concurrent schedule enable, source-driven edit, pause or status change wins; the
-    // assignment refuses and names the drift instead of overwriting the newer state.
+    // Owned exact CAS against the ENTRY bytes: the record must still be byte-identical to
+    // what was reviewed. A concurrent schedule enable, source-driven edit, pause or status
+    // change wins; the assignment refuses and names the drift instead of overwriting it.
     const cas = await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, respRaw0 || '', JSON.stringify(next)]);
     if (cas === -1) return { status: 404, body: { error: 'not found' } };
     if (cas !== 1) {

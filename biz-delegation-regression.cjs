@@ -403,6 +403,16 @@ await f.als.run({ws:'wsdel'},async()=>{
   await f.bizDailyTick();
   assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length,before,'nothing queues after disable');
 
+  // schedule enable vs a concurrent assignment: the exact-raw CAS refuses the stale write and the newer approved assignment is preserved
+  { const pvX=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
+    c.global.__bizScheduleBeforeWrite=async()=>{const ax=await f.bizRespAct(respS,'assign',{botId:g.agent.id});assert.equal(ax.status,200,'the interleaved assignment lands first');}; // test-only interleave, consumed once
+    const enX=await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pvX.body.delegation.hash});
+    assert.equal(enX.status,409);assert.equal(enX.body.code,'resp_changed','a schedule save racing an assignment refuses instead of erasing it');
+    const recX=await f.getJ('fm:biz:resp:'+respS);
+    assert.equal(recX.assignment&&recX.assignment.botId,g.agent.id,'the newer approved assignment is preserved');
+    assert.ok(!recX.schedule,'the refused schedule write never landed');
+    const unX=await f.bizRespAct(respS,'assign',{botId:null});assert.equal(unX.status,200,'cleanup: unassigned again'); }
+
   // --- race hardening: concurrent ticks, emergency stop, and mid-flight owner actions
   const pv3=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
   const en3=await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv3.body.delegation.hash});
