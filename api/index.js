@@ -131,6 +131,18 @@ function memEval(script, n, keys, argv) {
     case BIZ_FENCE_CAS: { const old = mem.kv.get(keys[3]); if (old == null) return -1; if (old !== argv[1]) return 0; mem.kv.set(keys[3], argv[2]); return 1; }
     case BIZ_FENCE_DEL: mem.kv.delete(keys[3]); mem.lists.delete(keys[3]); return 1;
     case BIZ_STATE_SET: mem.kv.set(keys[3], argv[1]); return 1;
+    case BIZ_DRAFTOP_BEGIN: {
+      if (mem.kv.has(keys[5])) return 2; // one in-flight create per tenant+connection version
+      mem.kv.set(keys[5], argv[2]); mem.kv.set(keys[3], argv[1]);
+      const s0 = new Set(mem.kv.get(keys[4]) || []); s0.add(argv[2]); mem.kv.set(keys[4], [...s0]); return 1;
+    }
+    case BIZ_DRAFTOP_SETTLE: {
+      if (mem.kv.get(keys[5]) === argv[1]) mem.kv.delete(keys[5]);
+      if (argv[2] === '') { mem.kv.delete(keys[3]); mem.kv.set(keys[4], (mem.kv.get(keys[4]) || []).filter(v => v !== argv[1])); }
+      else mem.kv.set(keys[3], argv[2]);
+      return 1;
+    }
+    case BIZ_DRAFTOP_ACK: { mem.kv.delete(keys[3]); mem.kv.set(keys[4], (mem.kv.get(keys[4]) || []).filter(v => v !== argv[1])); return 1; }
     case BIZ_APP_PUT_OWNED: {
       if (mem.kv.get(keys[5]) !== argv[4]) return -3;
       if ((mem.kv.get(keys[4]) || '0') !== argv[1]) return -1;
@@ -1981,6 +1993,8 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/business/apps/gmail/callback' && req.method === 'GET') { const aq = Object.fromEntries(new URL(req.url, 'https://local.invalid').searchParams); const out = await bizAppCallback('gmail', aq, origin, String(req.headers.cookie || '')); res.statusCode = 302; res.setHeader('Location', origin + '/hq#business/app-' + bizAppCallbackMarker(out)); return res.end(); }
     if (path === '/business/apps/gmail/disconnect' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDisconnect('gmail', body && typeof body.expectedVersion === 'string' ? body.expectedVersion : null)); }
     if (path === '/business/apps/gmail/sync' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppSync('gmail')); }
+    if (path === '/business/apps/gmail/draft-ops' && req.method === 'GET') { await bizDraftOpSweep(); return send({ status: 200, body: { ops: (await bizDraftOpList()).filter(o => o.status !== 'ok') } }); }
+    { const dm = path.match(/^\/business\/apps\/gmail\/draft-ops\/(dop_[a-f0-9]+)\/reconcile$/); if (dm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDraftOpReconcile(dm[1])); } }
     if (path === '/business/apps/gmail/drafts' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDraftCreate('gmail', body, body && typeof body.expectedVersion === 'string' ? body.expectedVersion : null)); }
     if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(body && body.confirm === 'CANCEL' ? await bizOpCancel(body) : await bizDataPurge(body)); }
     { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete|candidates|delegate-preview|schedule)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
@@ -2683,6 +2697,35 @@ async function bizAppSync(p) {
 // approval review shows precisely what will appear in Gmail; a thread reference is a
 // charset check only, not proof of account or recipient relationship.
 const BIZ_APP_CTL = /[\x00-\x1f\x7f]/, BIZ_APP_ADDR = /^[^\s@,<>(){}\[\]:"\\]{1,64}@[^\s@,<>(){}\[\]:"\\]{1,255}$/;
+// Durable draft operation state: the server owns the intent BEFORE the provider effect, so a
+// reload or crash mid-create never loses an unresolved operation. One in-flight create per
+// tenant+connection version (atomic marker); unconfirmed outcomes persist until the owner's
+// explicit checked-Gmail acknowledgment - never evicted, never cleared by a later success.
+const BIZ_DRAFTOP_BEGIN = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('EXISTS',KEYS[6])==1 then return 2 end; redis.call('SET',KEYS[6],ARGV[3]); redis.call('SET',KEYS[4],ARGV[2]); redis.call('SADD',KEYS[5],ARGV[3]); return 1";
+const BIZ_DRAFTOP_SETTLE = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('GET',KEYS[6])==ARGV[2] then redis.call('DEL',KEYS[6]) end; if ARGV[3]=='' then redis.call('DEL',KEYS[4]); redis.call('SREM',KEYS[5],ARGV[2]); else redis.call('SET',KEYS[4],ARGV[3]); end; return 1";
+const BIZ_DRAFTOP_ACK = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call('DEL',KEYS[4]); redis.call('SREM',KEYS[5],ARGV[2]); return 1";
+const bizDraftFp = (to, subject, text) => crypto.createHash('sha256').update('v1:' + JSON.stringify([to, subject, text])).digest('hex'); // exact payload identity - a collision class like djb2's is not acceptable for effect records
+async function bizDraftOpList() {
+  const ids = await r(['SMEMBERS', 'fm:biz:draftops']); if (!ids.length) return [];
+  const vs = await r(['MGET', ...ids.map(i => 'fm:biz:draftop:' + i)]);
+  return ids.map((id, i) => { try { return vs[i] ? JSON.parse(vs[i]) : null; } catch { return null; } }).filter(Boolean).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+}
+async function bizDraftOpSweep() { // an in-flight record older than the request window means the outcome is UNKNOWN (crash/restart): convert to unconfirmed, never drop, and release its marker so drafting is not gated forever
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const op of await bizDraftOpList()) {
+    if (op.status !== 'in_flight' || Date.parse(op.at) >= cutoff) continue;
+    const next = { ...op, status: 'unconfirmed', settledAt: now(), unknownReason: 'interrupted' };
+    await r(['EVAL', BIZ_DRAFTOP_SETTLE, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + op.id, 'fm:biz:draftops', 'fm:biz:draftif:' + op.connectionVersion, await bizFence(), op.id, JSON.stringify(next)]);
+  }
+}
+async function bizDraftOpGet(id) { const v = await r(['GET', 'fm:biz:draftop:' + id]); try { return v ? JSON.parse(v) : null; } catch { return null; } }
+async function bizDraftOpReconcile(opId) { // the owner's explicit checked-Gmail acknowledgment: the record leaves, never by a success and never silently. This says nothing about whether the draft exists in Gmail.
+  const op = await bizDraftOpGet(opId); if (!op || op.status !== 'unconfirmed') return { status: 404, body: { error: 'That unresolved draft record is not here - it may already be acknowledged.', code: 'draft_op_not_found' } };
+  if (!await r(['EVAL', BIZ_DRAFTOP_ACK, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + op.connectionVersion, await bizFence(), opId])) return bizFenceConflict();
+  await bizLog('app_draft_acknowledged', { provider: 'gmail', opId, to: (op.to || []).join(', '), subject: op.subject || '' });
+  return { status: 200, body: { acknowledged: true, opId } };
+}
+
 async function bizAppDraftCreate(p, body, expectedVersion) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
   const to = String((body && body.to) || '').trim(), subject = String((body && body.subject) || ''), text = String((body && body.text) || '');
@@ -2695,6 +2738,7 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
   if (text.length > BIZ_APP_TEXT_MAX) return { status: 400, body: { error: 'The text is ' + text.length + ' characters; the limit is ' + BIZ_APP_TEXT_MAX + '. Shorten it - nothing was created.', code: 'app_input_invalid' } };
   if (body.threadId != null && !/^[A-Za-z0-9_-]{1,80}$/.test(String(body.threadId))) return { status: 400, body: { error: 'That thread reference is not valid.', code: 'app_input_invalid' } };
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) return { status: 400, body: { error: 'The draft text contains control characters.', code: 'app_input_invalid' } };
+  if (await bizFrozen()) return bizFrozenConflict();
   const at = await bizAppAccessToken(p); if (at.err) return at.err;
   // Same owner binding as removal: the exact words go to the EXACT account reviewed on
   // screen - a replacement reconnect since the review is never drafted into silently.
@@ -2702,6 +2746,13 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
     if (expectedVersion === null) return { status: 409, body: { error: 'Reload this page and review the connection before drafting - this review is out of date. Nothing was created.', code: 'app_version_required' } };
     if (!at.rec.connectionId || String(expectedVersion) !== String(at.rec.connectionId)) return { status: 409, body: { error: 'The connection changed since this page was loaded - reload and review the account before drafting. Nothing was created.', code: 'app_version_mismatch' } };
   }
+  const opId = rid('dop'), opAt = now(), opFp = bizDraftFp(tos.join(', '), subject, text);
+  const opRec = () => ({ id: opId, at: opAt, provider: p, account: (at.rec && at.rec.email) || null, connectionVersion: at.rec.connectionId || null, to: tos, subject, fp: opFp });
+  { const f0 = await bizFence();
+    const begun = await r(['EVAL', BIZ_DRAFTOP_BEGIN, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + at.rec.connectionId, f0, JSON.stringify({ ...opRec(), status: 'in_flight' }), opId]);
+    if (begun === 2) return { status: 409, body: { error: 'A draft is already being created for this connection - wait for its result before creating another. Nothing new was created.', code: 'app_draft_pending' } };
+    if (!begun) return bizFenceConflict(); } // intent is durable BEFORE the provider effect below
+  const opSettle = async (status, extra) => r(['EVAL', BIZ_DRAFTOP_SETTLE, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + at.rec.connectionId, await bizFence(), opId, status === 'unconfirmed' ? JSON.stringify({ ...opRec(), status, settledAt: now(), ...(extra || {}) }) : '']); // ok/failed records are resolved: they leave the store (the activity log keeps the outcome); unconfirmed persists until the owner's explicit acknowledgment
   const mime = 'To: ' + tos.join(', ') + '\r\nSubject: ' + subject + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text;
   const raw = Buffer.from(mime, 'utf8').toString('base64url');
   let res = null;
@@ -2710,17 +2761,20 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
   } catch {
     // No answer at all: the create may have landed. Never claim failure - the owner checks
     // Gmail before retrying so the draft is not duplicated.
-    return { status: 502, body: { error: 'Google did not answer - the draft may have been created. Check the drafts folder in Gmail before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed' } };
+    await opSettle('unconfirmed', { unknownReason: 'no_answer' });
+    return { status: 502, body: { error: 'Google did not answer - the draft may have been created. Check the drafts folder in Gmail before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed', opId, fp: opFp } };
   }
   const dj = await res.json().catch(() => null);
   if (!res.ok) {
     const ref = dj && dj.error && dj.error.message;
-    if (res.status >= 400 && res.status < 500 && ref) return { status: 502, body: { error: 'Google did not create the draft (' + bizClean(ref) + ').', code: 'app_draft_failed' } }; // an authoritative, parsed refusal only
-    return { status: 502, body: { error: 'Google could not confirm the draft (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed' } }; // a gateway/5xx/unreadable failure says nothing about creation
+    if (res.status >= 400 && res.status < 500 && ref) { await opSettle('failed'); return { status: 502, body: { error: 'Google did not create the draft (' + bizClean(ref) + ').', code: 'app_draft_failed' } }; } // an authoritative, parsed refusal only
+    await opSettle('unconfirmed', { unknownReason: 'http_' + res.status });
+    return { status: 502, body: { error: 'Google could not confirm the draft (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed', opId, fp: opFp } }; // a gateway/5xx/unreadable failure says nothing about creation
   }
-  if (!dj || !dj.id) return { status: 502, body: { error: 'Google answered but the draft could not be confirmed (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed' } };
+  if (!dj || !dj.id) { await opSettle('unconfirmed', { unknownReason: 'unreadable' }); return { status: 502, body: { error: 'Google answered but the draft could not be confirmed (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed', opId, fp: opFp } }; }
+  await opSettle('ok', { draftId: dj.id });
   await bizLog('app_draft_created', { provider: p, draftId: dj.id, to: tos.join(', ') }, at.snap.f0);
-  return { status: 200, body: { provider: p, draftId: dj.id, account: at.rec.email || null, to: tos, subject, note: 'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.' } };
+  return { status: 200, body: { provider: p, draftId: dj.id, account: at.rec.email || null, to: tos, subject, opId, fp: opFp, note: 'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.' } };
 }
 // LOCAL-FIRST disconnect: one atomic step removes the record + snapshot, bumps the epoch,
 // cancels every pending sign-in and writes an encrypted tombstone - only THEN is the provider
@@ -4137,7 +4191,7 @@ async function bizDataPurge(body) {
     if (pendNow && pendNow.op === 'purge') return bizOpNeedsReview();
   }
   const ctx = await bizOpBegin('purge', null, !retry, retry ? body.opId : undefined); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
-  const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0, scans: 0, connections: 0, grantsRevoked: 0, grantsUnconfirmed: 0 };
+  const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0, scans: 0, connections: 0, grantsRevoked: 0, grantsUnconfirmed: 0, draftOps: 0 };
   let stage = 'start';
   try {
     bizFault('purge:begin');
@@ -4182,6 +4236,7 @@ async function bizDataPurge(body) {
     await fam('fm:biz:apptomb:*', null);
     await fam('fm:biz:appstate:*', null); // pending OAuth states die with the workspace
     await fam('fm:biz:appgen:*', null);
+    stage = 'draft_ops'; await fam('fm:biz:draftop:*', 'draftOps'); await fam('fm:biz:draftif:*', null); // durable draft operation intent + in-flight markers leave with the workspace
     stage = 'delegated_jobs';
     // Delegated jobs carry business text (brief/context) in the fm:task keyspace. Pending ones
     // are cancelled first so nothing keeps processing deleted data (their settle then no-ops:
@@ -4196,7 +4251,7 @@ async function bizDataPurge(body) {
     await bizOpWrite(ctx, 'del', 'fm:biz:delegated');
     bizFault('purge:jobs');
     stage = 'sets';
-    for (const k of ['fm:biz:sources', 'fm:biz:proposals', 'fm:biz:resps', 'fm:biz:consent', 'fm:biz:log', 'fm:biz:discoveries', 'fm:biz:profile']) await bizOpWrite(ctx, 'del', k);
+    for (const k of ['fm:biz:sources', 'fm:biz:proposals', 'fm:biz:resps', 'fm:biz:consent', 'fm:biz:log', 'fm:biz:discoveries', 'fm:biz:profile', 'fm:biz:draftops']) await bizOpWrite(ctx, 'del', k);
     await r(['SREM', 'gl:biz:workspaces', wsId()]); // global registry: idempotent, outside the workspace freeze
     stage = 'close';
     bizFault('purge:close');

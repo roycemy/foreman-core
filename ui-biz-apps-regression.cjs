@@ -6,7 +6,7 @@
 // reviewed connection version and the server refuses stale/unbound removals; the toast
 // never claims all-removed while a prior grant is unconfirmed.
 // Real Chromium over CDP, stubbed API, synthetic data only - no Google surface anywhere.
-const fs=require('fs'),path=require('path'),http=require('http'),assert=require('assert'),{spawn}=require('child_process');
+const fs=require('fs'),path=require('path'),http=require('http'),assert=require('assert'),crypto=require('crypto'),{spawn}=require('child_process');
 
 const SCOPES=['https://www.googleapis.com/auth/gmail.readonly','https://www.googleapis.com/auth/gmail.compose'];
 const DISC='Sync reads sender, subject, date and a short excerpt (the Gmail snippet) of recent inbox messages. The stored snapshot is encrypted at rest, kept for the owner only, and never forwarded to any bot or AI automatically.';
@@ -21,6 +21,7 @@ function appFor(mode){
   return null; // omit: status unavailable
 }
 let mode='connected-unconfigured',ident='A',disconnCalls=[],draftCalls=[],oauthHits=0,connectGo=null,disconnGo=null,draftGo=null,draftParked=[],draftOutcome='ok',withSystems=false;
+let draftOpStore={A:[],B:[]},draftOpSeq=0,draftOpsFail=false;
 function stateFor(){
   if(ident==='B'){const sb={engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[],proposals:[],responsibilities:[],log:[],opPending:null};const gb=appFor(mode);if(gb)sb.apps={gmail:gb};return sb;}
   const s={engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[{id:'src_1',kind:'doc',title:'How we work',version:2,text:'Refunds over $50 need Royce.',updatedAt:'2026-10-23T00:00:00Z'}],proposals:[{id:'prop_act1',title:'Estimate follow-up desk',summary:'Track sent estimates and draft reminders.',boundary:'Draft reminders only.',status:'active',createdAt:'2026-10-23T00:00:00Z',evidence:[],unknowns:[],systems:[]}],responsibilities:withSystems?[{id:'resp_1',title:'Customer reply desk',summary:'Draft replies',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:['src_1'],systems:['Email inbox','QuickBooks'],runs:[]}]:[],log:[],opPending:null};
@@ -29,7 +30,7 @@ function stateFor(){
 }
 const server=http.createServer((req,res)=>{
   const u=new URL(req.url,'http://x');
-  const json=(o,st)=>{res.statusCode=st||200;res.setHeader('content-type','application/json');res.end(JSON.stringify(o));};
+  const json=(o,st)=>{try{res.statusCode=st||200;res.setHeader('content-type','application/json');res.end(JSON.stringify(o));}catch(e){/* the page may have reloaded mid-park: the settle already happened server-side */}};
   if(u.pathname==='/__ident'){ident=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__mode'){mode=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__systems'){withSystems=u.searchParams.get('on')==='1';return json({ok:true});}
@@ -57,12 +58,26 @@ const server=http.createServer((req,res)=>{
   if(u.pathname==='/api/business/apps/gmail/drafts'&&req.method==='POST'){
     let b='';req.on('data',d=>b+=d);req.on('end',async()=>{
       const reqIdent=ident; // the caller's identity, captured before any park
-      if(draftGo==='park'){await new Promise(r=>{draftParked.push(r);});}
       let body={};try{body=JSON.parse(b||'{}')}catch(e){}
-      draftCalls.push({body,ident:reqIdent});
-      if(draftOutcome==='unconfirmed')return json({error:'Google could not confirm the draft (HTTP 503). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.',code:'app_draft_unconfirmed'},502);
-      return json({provider:'gmail',draftId:'draft_9',account:'royce@northbend.example',to:[body.to],subject:body.subject||'',note:'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.'});});
+      const tos=String(body.to||'').split(',').map(x=>x.trim()).filter(Boolean),toN=tos.join(', '),subj=String(body.subject||''),txt=String(body.text||'');
+      const fp=crypto.createHash('sha256').update('v1:'+JSON.stringify([toN,subj,txt])).digest('hex'); // exact payload identity, same canonicalization as the server + page
+      if(draftOpStore[reqIdent].some(o=>o.status==='in_flight'&&o.connectionVersion===body.expectedVersion))return json({error:'A draft is already being created for this connection - wait for its result before creating another. Nothing new was created.',code:'app_draft_pending'},409);
+      const op={id:'dop_'+(++draftOpSeq),at:new Date().toISOString(),provider:'gmail',account:'royce@northbend.example',connectionVersion:body.expectedVersion||null,to:tos,subject:subj,fp,status:'in_flight'};
+      draftOpStore[reqIdent].unshift(op); // the intent is durable BEFORE the effect below - a reload mid-create loses nothing
+      if(draftGo==='park'){await new Promise(r=>{draftParked.push(r);});}
+      draftCalls.push({body,ident:reqIdent}); // counted on settle: a duplicate from Back/reopen would add an entry of its own
+      if(draftOutcome==='unconfirmed'){op.status='unconfirmed';op.settledAt=new Date().toISOString();return json({error:'Google could not confirm the draft (HTTP 503). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.',code:'app_draft_unconfirmed',opId:op.id,fp},502);}
+      draftOpStore[reqIdent]=draftOpStore[reqIdent].filter(o=>o.id!==op.id); // a confirmed create is resolved: its record leaves the store
+      return json({provider:'gmail',draftId:'draft_9',account:'royce@northbend.example',to:tos,subject:subj,opId:op.id,fp,note:'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.'});});
     return;}
+  if(u.pathname==='/api/business/apps/gmail/draft-ops'&&req.method==='GET'){
+    if(draftOpsFail)return json({error:'Earlier draft attempts could not be checked.',code:'draft_ops_unavailable'},500);
+    return json({ops:draftOpStore[ident]});}
+  {const dm=u.pathname.match(/^\/api\/business\/apps\/gmail\/draft-ops\/(dop_\d+)\/reconcile$/);if(dm&&req.method==='POST'){
+    const op=draftOpStore[ident].find(o=>o.id===dm[1]);
+    if(!op||op.status!=='unconfirmed')return json({error:'That unresolved draft record is not here - it may already be acknowledged.',code:'draft_op_not_found'},404);
+    draftOpStore[ident]=draftOpStore[ident].filter(o=>o.id!==dm[1]);return json({acknowledged:true,opId:dm[1]});}}
+  if(u.pathname.startsWith('/__draftops-fail')){draftOpsFail=u.searchParams.get('on')==='1';return json({ok:true});}
   if(u.pathname==='/api/business/apps/gmail/disconnect'&&req.method==='POST'){
     let b='';req.on('data',d=>b+=d);req.on('end',async()=>{
       if(disconnGo==='park'){await new Promise(r=>{disconnGo=r;});}
@@ -345,15 +360,39 @@ let PORT=0;
  assert(await ev(`(document.querySelector('#modal.on #bz-draft-text')||{value:''}).value==='KEPTWORDS'`),'the newer words survive the settlement');
  await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
 
- // 19. unconfirmed creates become durable receipts: explicit checked-Gmail decision, never success-cleared
+ // 16b. a reload mid-create loses nothing: the durable gate persists, the server settles, the gate clears
+ await ctl('/__park-draft');
+ await ev(`document.querySelector('#bz-app-draft').click();'open'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the composer opens for the reload test');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-text').value='reload words';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review opens for the reload test');
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create'`);
+ {const t0=Date.now();let ok=false;while(Date.now()-t0<5000){const p=await new Promise((res,rej)=>{http.get('http://127.0.0.1:'+PORT+'/__draft-parked',r=>{let d='';r.on('data',ch=>d+=ch);r.on('end',()=>res(JSON.parse(d).count>=1));}).on('error',rej);});if(p){ok=true;break;}await new Promise(r=>setTimeout(r,100));}assert(ok,'the reload-test create parked server-side');}
+ await reload(`!!document.querySelector('#bz-app-draft')`); // the page dies mid-create - the fetch with it
+ await ev(`document.querySelector('#bz-app-draft').click();'reopen after reload'`);
+ assert(await poll(`!!document.querySelector('#modal [data-draft-pending]')`),'the pending gate survives a full reload mid-create');
+ assert(await ev(`(document.querySelector('#modal [data-draft-review]')||{disabled:false}).disabled`),'no create while the durable gate stands');
+ await ctl('/__draft-release'); // the parked create settles server-side with no page listening
+ await new Promise(r=>setTimeout(r,400));
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+ await ev(`document.querySelector('#bz-app-draft').click();'after server settle'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the composer opens after the settle');
+ assert(!(await ev(`!!document.querySelector('#modal [data-draft-pending]')`)),'the settled operation clears the durable gate');
+ assert(!(await ev(`!!document.querySelector('#modal [data-draft-unconf]')`)),'a confirmed settle leaves no receipt');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+
+ // 19. unconfirmed creates become durable server-side receipts: explicit checked-Gmail decision, never success-cleared
  await ctl('/__draft-mode?to=unconfirmed');
  assert(await poll(`!!document.querySelector('#bz-app-draft')`),'the apps card paints for test 19');
  await ev(`document.querySelector('#bz-app-draft').click();'open'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the composer opens for test 19');
  await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-subject').value='Estimate';document.querySelector('#bz-draft-text').value='the gate brace quote';return 1})()`);
  await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review'`);
  assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review opens');
  await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create'`);
  assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('check the drafts folder')`),'the unconfirmed outcome tells the owner to check Gmail');
+ assert(!(await ev(`Object.keys(localStorage).some(k=>k.startsWith('bzDraftUnconf'))`)),'draft operation state never lives in browser storage');
  await ev(`document.querySelector('#bz-app-draft').click();'reopen'`);
  assert(await poll(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('may exist in Gmail')`),'the unresolved op is never forgotten across close/reopen');
  await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-subject').value='Estimate';document.querySelector('#bz-draft-text').value='the gate brace quote';return 1})()`);
@@ -366,36 +405,87 @@ let PORT=0;
  await ev(`(()=>{document.querySelector('#bz-draft-subject').value='Different subject';return 1})()`);
  await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review other'`);
  assert(!(await ev(`!!document.querySelector('#modal.on [data-draft-checked]')`)),'an unrelated new draft needs no decision');
+ await ev(`document.querySelector('#modal.on [data-draft-back]').click();'back again'`);
+ await ev(`(()=>{document.querySelector('#bz-draft-subject').value='Estimate';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review same again'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-checked]')`),'the repeated same-op retry still requires the decision');
+ await ev(`(()=>{const c=document.querySelector('#modal.on [data-draft-checked]');c.checked=true;c.onchange();return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create same again'`);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('check the drafts folder')`),'the repeated retry is unconfirmed too');
+ await ev(`document.querySelector('#bz-app-draft').click();'reopen after repeat'`);
+ assert(await poll(`document.querySelectorAll('#modal [data-draft-unconf]').length===2`),'a repeated uncertain retry keeps both attempt records');
  await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
  await reload(`!!document.querySelector('#bz-app-draft')`);
  await ev(`document.querySelector('#bz-app-draft').click();'after reload'`);
- assert(await poll(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('may exist in Gmail')`),'the receipt survives a full reload');
+ assert(await poll(`document.querySelectorAll('#modal [data-draft-unconf]').length===2`),'both receipts survive a full reload');
  await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
  await ctl('/__draft-mode?to=ok');
  await ev(`document.querySelector('#bz-app-draft').click();'resolve'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the composer opens for the resolving retry');
  await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-subject').value='Estimate';document.querySelector('#bz-draft-text').value='the gate brace quote';return 1})()`);
  await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review final'`);
- await ev(`(()=>{const c=document.querySelector('#modal.on [data-draft-checked]');if(c){c.checked=true;c.onchange();}return 1})()`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-checked]')`),'the resolving retry still requires the decision');
+ await ev(`(()=>{const c=document.querySelector('#modal.on [data-draft-checked]');c.checked=true;c.onchange();return 1})()`);
  await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create final'`);
  assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('An earlier attempt may also have created a draft')`),'a successful retry still names the possible earlier draft');
  await ev(`document.querySelector('#bz-app-draft').click();'after success'`);
  assert(await poll(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('may exist in Gmail')`),'a success never clears the earlier unknown');
  await ev(`(()=>{document.querySelector('#modal.on [data-draft-reconciled]').click();return 1})()`);
- assert(!(await ev(`!!document.querySelector('#modal [data-draft-unconf]')`)),'the owner decision clears the receipt');
+ assert(await poll(`document.querySelectorAll('#modal [data-draft-unconf]').length===1`),'the owner decision clears exactly that receipt');
+ await ev(`(()=>{document.querySelector('#modal.on [data-draft-reconciled]').click();return 1})()`);
+ assert(await poll(`document.querySelectorAll('#modal [data-draft-unconf]').length===0`),'each receipt takes its own acknowledgment');
  await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
  await reload(`!!document.querySelector('#bz-app-draft')`);
  await ev(`document.querySelector('#bz-app-draft').click();'after clear'`);
  assert(!(await ev(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('may exist in Gmail')`)),'the cleared receipt stays cleared across reloads');
  await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
 
+ // 19c. a legacy-djb2 colliding pair (a@example.test / s / Aa vs B@) is never the same operation
+ await ctl('/__draft-mode?to=unconfirmed');
+ await ev(`document.querySelector('#bz-app-draft').click();'collision open'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the collision composer opens');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='a@example.test';document.querySelector('#bz-draft-subject').value='s';document.querySelector('#bz-draft-text').value='Aa';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'collision review'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review opens before create');
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'collision create'`);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('check the drafts folder')`),'the collision-setup attempt is unconfirmed');
+ await ev(`document.querySelector('#bz-app-draft').click();'collision reopen'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'the collision composer reopens');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='a@example.test';document.querySelector('#bz-draft-subject').value='s';document.querySelector('#bz-draft-text').value='B@';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'collision review other'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the collision review opens');
+ assert(!(await ev(`!!document.querySelector('#modal.on [data-draft-checked]')`)),'a colliding legacy fingerprint never gates a different draft');
+ await ev(`document.querySelector('#modal.on [data-draft-back]').click();'collision back'`);
+ await ev(`(()=>{document.querySelector('#bz-draft-text').value='Aa';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'collision review exact'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-checked]')`),'the exact same draft still requires the decision');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+ await ev(`document.querySelector('#bz-app-draft').click();'collision cleanup'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-reconciled]')`),'the collision receipt renders for cleanup');
+ await ev(`(()=>{document.querySelector('#modal.on [data-draft-reconciled]').click();return 1})()`);
+ assert(await poll(`document.querySelectorAll('#modal [data-draft-unconf]').length===0`),'the collision receipt is acknowledged away');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+ await ctl('/__draft-mode?to=ok');
+
+ // 19d. a failed operation check fails closed - nothing is created blind
+ await ctl('/__draftops-fail?on=1');
+ await ev(`document.querySelector('#bz-app-draft').click();'failclosed open'`);
+ assert(await poll(`!!document.querySelector('#modal [data-draft-opserr]')`),'a failed operation check says so');
+ assert(await ev(`(document.querySelector('#modal [data-draft-review]')||{disabled:false}).disabled`),'a failed operation check fails closed - nothing is created blind');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+ await ctl('/__draftops-fail?on=0');
+
  // 20. A->B->A: operation records are scoped and stable - no singleton overwrite, no cross-identity clear
  await ctl('/__park-draft');
  assert(await poll(`!!document.querySelector('#bz-app-draft')`),'the apps card paints for test 20');
  await ev(`document.querySelector('#bz-app-draft').click();'A open'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'A composer opens');
  await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-text').value='A words';return 1})()`);
  await ev(`document.querySelector('#modal.on [data-draft-review]').click();'A review'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review opens before create');
  await ev(`document.querySelector('#modal.on [data-draft-create]').click();'A create'`);
  {const t0=Date.now();let ok=false;while(Date.now()-t0<5000){const p=await new Promise((res,rej)=>{http.get('http://127.0.0.1:'+PORT+'/__draft-parked',r=>{let d='';r.on('data',ch=>d+=ch);r.on('end',()=>res(JSON.parse(d).count>=1));}).on('error',rej);});if(p){ok=true;break;}await new Promise(r=>setTimeout(r,100));}assert(ok,'A parked');}
+ assert.equal(await ev(`(async()=>{const r=await fetch('/api/business/apps/gmail/drafts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:'x@example.test',text:'y',expectedVersion:'gen-AAA'})});const j=await r.json();return r.status+':'+(j.code||'')})()`),'409:app_draft_pending','a second create for the same connection is refused while one is in flight');
  await flip('B');
  assert(await poll(`!!document.querySelector('#bz-app-draft')`),'B apps card paints after the flip');
  await ev(`document.querySelector('#bz-app-draft').click();'B open'`);
@@ -403,6 +493,7 @@ let PORT=0;
  assert(!(await ev(`!!document.querySelector('#modal [data-draft-pending]')`)),'B is never gated by A operation');
  await ev(`(()=>{document.querySelector('#bz-draft-to').value='sam@example.com';document.querySelector('#bz-draft-text').value='B words';return 1})()`);
  await ev(`document.querySelector('#modal.on [data-draft-review]').click();'B review'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review opens before create');
  await ev(`document.querySelector('#modal.on [data-draft-create]').click();'B create'`);
  {const t0=Date.now();let ok=false;while(Date.now()-t0<5000){const p=await new Promise((res,rej)=>{http.get('http://127.0.0.1:'+PORT+'/__draft-parked',r=>{let d='';r.on('data',ch=>d+=ch);r.on('end',()=>res(JSON.parse(d).count>=2));}).on('error',rej);});if(p){ok=true;break;}await new Promise(r=>setTimeout(r,100));}assert(ok,'B parked behind A');}
  await flip('A');

@@ -5,24 +5,15 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null, draftOps = {};
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null;
   // Identity objects are rebuilt on every flip: compare by VALUE, never by reference.
   const sameId = (a, b) => a && b && a.e === b.e && a.w === b.w;
-  const opKey = (id, v) => ((id && id.e) || '') + '|' + ((id && id.w) || '') + '|' + (v || '');
-  // An unconfirmed create is remembered across reloads WITHOUT storing the draft body:
-  // account, recipient, subject, time and a non-reversible fingerprint of to+subject+text.
-  const draftFp = (to, subject, text) => { const s0 = to + String.fromCharCode(10) + subject + String.fromCharCode(10) + text; let h = 5381; for (let i = 0; i < s0.length; i++) h = ((h << 5) + h + s0.charCodeAt(i)) >>> 0; return h.toString(36); };
-  // Durable unresolved-draft receipts: a COLLECTION scoped to owner+workspace, surviving
-  // reloads and identity round trips. No draft body is stored - account, connection
-  // version, recipient, subject, time and a non-reversible words fingerprint only. A
-  // receipt is cleared ONLY by the owner's explicit checked-Gmail decision - never by a
-  // later success, never by a newer unresolved op.
-  let unconfMem = {};
-  const unconfStoreKey = (id) => 'bzDraftUnconf:' + ((id && id.w) || 'ws') + ':' + ((id && id.e) || 'who');
-  const readUnconfAll = (scope) => { const k = unconfStoreKey(scope || identity()); try { const j = JSON.parse(localStorage.getItem(k) || 'null'); if (Array.isArray(j)) return j.filter(r => r && r.opId && r.fp); } catch (e) {} return unconfMem[k] || []; };
-  const writeUnconfAll = (list, scope) => { const k = unconfStoreKey(scope || identity()); unconfMem[k] = list; try { localStorage.setItem(k, JSON.stringify(list.slice(0, 10))); } catch (e) {} };
-  const addUnconf = (rec, scope) => { const l = readUnconfAll(scope).filter(r => r.opId !== rec.opId); l.unshift(rec); writeUnconfAll(l, scope); };
-  const clearUnconf = (opId, scope) => writeUnconfAll(readUnconfAll(scope).filter(r => r.opId !== opId), scope);
+  // Draft operation state is SERVER-OWNED: the deployment durably records each create's intent
+  // BEFORE the provider effect, holds one in-flight operation per owner+connection, and keeps
+  // unresolved (unconfirmed) receipts until the owner's explicit checked-Gmail acknowledgment.
+  // The browser stores none of it - no localStorage, no in-memory gate, no body anywhere.
+  const fetchDraftOps = async () => { const j = await api('/apps/gmail/draft-ops'); if (j && Array.isArray(j.ops)) return j; return { error: (j && j.error) || 'unavailable', ops: null }; };
+  const draftFpSha = async (to, subject, text) => { const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('v1:' + JSON.stringify([to, subject, text]))); return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join(''); }; // exact payload identity - canonicalization must match the server byte for byte
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
   // Tenant identity guard: loaded state belongs to the exact identity (account + workspace)
@@ -74,6 +65,7 @@
       pendingDelegation = null; // same for a reviewed delegation payload
       pendingDiscovery = null; // and a reviewed discovery scan payload
       pendingSchedule = null; schedGen++; // and a reviewed daily-schedule payload
+      if (window.BB && BB.closeModal) BB.closeModal(); // private dialogs (the draft composer carries receipts + typed words) never survive an identity change
       V.innerHTML = ''; // synchronous DOM clear: nothing from the previous identity stays painted
       return true;
     }
@@ -448,27 +440,42 @@
       if (j.error) return BB.toast(j.error);
       if (j.authorizationUrl) window.location.assign(j.authorizationUrl); // Google's consent screen; the return lands on the callback
     };
-    const dr = $('#bz-app-draft', V); if (dr) dr.onclick = () => {
+    const dr = $('#bz-app-draft', V); if (dr) dr.onclick = async () => {
       const stamp = identity(), want = appSnap();
-      const stillCurrent = () => !(stamp && stamp !== identity()) && (() => { const cur = appSnap(); return want && cur && cur.email === want.email && cur.at === want.at && cur.v === want.v; })();
+      const stillCurrent = () => !(stamp && !sameId(stamp, identity())) && (() => { const cur = appSnap(); return want && cur && cur.email === want.email && cur.at === want.at && cur.v === want.v; })(); // value compare: an A->B->A round trip is still the same owner
+      const opsJ = await fetchDraftOps(); // server-owned durable operation state, read fresh at every composer open
+      if (stamp && !sameId(stamp, identity())) return; // the identity changed while the list loaded: show none of it
       const openComposer = (vals) => {
-        const pend = draftOps[opKey(stamp, want && want.v)] || null; // one in-flight create per identity+connection, across close/reopen - never a singleton another identity can overwrite
-        const unList = readUnconfAll(); // scoped to this identity by its store key; never another owner's ops
+        const pendOp = opsJ.ops ? (opsJ.ops.find(o => o.status === 'in_flight' && o.connectionVersion === (want && want.v)) || null) : null; // the durable in-flight gate - survives close, reload and round trips
+        const unList = opsJ.ops ? opsJ.ops.filter(o => o.status === 'unconfirmed') : [];
         const form = BB.modal(`<h3>Draft an email</h3>
         <p class="meta">A draft is created in the connected Google account with exactly your words. Nothing is sent - you review and send it in Gmail.</p>
-        ${pend ? `<p class="meta" data-draft-pending="${pend.token}"><b>A draft is already being created in Gmail from this review - wait for its result before creating another.</b> Closing this window does not cancel it.</p>` : ''}
-        ${unList.map(u0 => `<p class="meta" data-draft-unconf="${esc(u0.opId)}">An earlier draft attempt for <b>${esc(u0.account || 'the connected account')}</b>${u0.to ? ' to <b>' + esc(u0.to) + '</b>' : ''}${u0.subject ? ' (' + esc(u0.subject) + ')' : ''}${u0.at ? ' · ' + BB.when(u0.at) : ''} did not get a clear answer - it may exist in Gmail. Check the drafts folder there before creating the same draft again. <button class="b out sm" data-draft-reconciled="${esc(u0.opId)}" type="button">I checked Gmail - clear this note</button></p>`).join('')}
+        ${opsJ.ops === null ? `<p class="meta" data-draft-opserr><b>Earlier draft attempts could not be checked - reload this card before creating, so nothing is duplicated.</b></p>` : ''}
+        ${pendOp ? `<p class="meta" data-draft-pending="${esc(pendOp.id)}"><b>A draft is already being created in Gmail from this connection - wait for its result before creating another.</b> Closing this window does not cancel it.</p>` : ''}
+        ${unList.map(u0 => `<p class="meta" data-draft-unconf="${esc(u0.id)}">An earlier draft attempt for <b>${esc(u0.account || 'the connected account')}</b>${u0.to && u0.to.length ? ' to <b>' + esc(u0.to.join(', ')) + '</b>' : ''}${u0.subject ? ' (' + esc(u0.subject) + ')' : ''}${u0.at ? ' · ' + BB.when(u0.at) : ''} did not get a clear answer - it may exist in Gmail. Check the drafts folder there before creating the same draft again. <button class="b out sm" data-draft-reconciled="${esc(u0.id)}" type="button">I checked Gmail - clear this note</button></p>`).join('')}
         <label class="fld">To<input class="in" id="bz-draft-to" maxlength="300" value="${esc(vals.to || '')}" placeholder="dana@example.com"></label>
         <label class="fld">Subject<input class="in" id="bz-draft-subject" maxlength="300" value="${esc(vals.subject || '')}" placeholder="Re: Estimate"></label>
         <label class="fld">Words<textarea class="in" id="bz-draft-text" rows="6" maxlength="20000" placeholder="Hi Dana - ">${esc(vals.text || '')}</textarea></label>
-        <div class="acts"><button class="b ghost" data-close>Cancel</button><button class="b ink" data-draft-review ${pend ? 'disabled' : ''}>Review the exact draft</button></div>`, { label: 'Draft an email' });
-        form.querySelectorAll('[data-draft-reconciled]').forEach(recBtn => recBtn.onclick = () => { clearUnconf(recBtn.getAttribute('data-draft-reconciled')); const n = form.querySelector('[data-draft-unconf="' + recBtn.getAttribute('data-draft-reconciled') + '"]'); if (n) n.remove(); }); // the owner's explicit checked-Gmail decision clears a receipt - nothing else does
-        form.querySelector('[data-draft-review]').onclick = () => {
+        <div class="acts"><button class="b ghost" data-close>Cancel</button><button class="b ink" data-draft-review ${pendOp || opsJ.ops === null ? 'disabled' : ''}>Review the exact draft</button></div>`, { label: 'Draft an email' });
+        form.querySelectorAll('[data-draft-reconciled]').forEach(recBtn => recBtn.onclick = async () => { // the owner's explicit checked-Gmail acknowledgment clears a receipt - nothing else does
+          if (stamp && !sameId(stamp, identity())) { BB.closeModal(); load(); return; } // the acknowledgment binds the identity that opened this composer: a stale dialog never addresses another owner's records
+          const opId = recBtn.getAttribute('data-draft-reconciled');
+          recBtn.disabled = true;
+          const j = await api('/apps/gmail/draft-ops/' + opId + '/reconcile', 'POST', {});
+          if (stamp && !sameId(stamp, identity())) { BB.closeModal(); load(); return; }
+          if (j && j.error && j._status !== 404) { recBtn.disabled = false; return BB.toast(j.error); } // a 404 means it was already acknowledged elsewhere - consistent
+          const n = form.querySelector('[data-draft-unconf="' + opId + '"]'); if (n) n.remove();
+          if (opsJ.ops) opsJ.ops = opsJ.ops.filter(o => o.id !== opId);
+        });
+        form.querySelector('[data-draft-review]').onclick = async () => {
           if (!stillCurrent()) { BB.closeModal(); load(); return BB.toast('The connection changed - review it and try again.'); }
           const to = form.querySelector('#bz-draft-to').value.trim(), subject = form.querySelector('#bz-draft-subject').value, text = form.querySelector('#bz-draft-text').value;
           if (!to || !text.trim()) return BB.toast('A draft needs a recipient and text.');
           const g = B.apps.gmail;
-          const sameUn = unList.find(u0 => u0.v === want.v && u0.fp === draftFp(to, subject, text)) || null;
+          const toN = to.split(',').map(x => x.trim()).filter(Boolean).join(', ');
+          const fp = await draftFpSha(toN, subject, text); // exact payload identity - the same canonicalization the server used when it recorded the attempt
+          if (!stillCurrent()) { BB.closeModal(); load(); return BB.toast('The connection changed - review it and try again.'); }
+          const sameUn = unList.find(u0 => u0.connectionVersion === want.v && u0.fp === fp) || null;
           BB.modal(`<h3>Review the exact draft</h3>
           <p class="meta">This creates a draft - nothing is sent.</p>
           ${sameUn ? `<p class="meta"><b>An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail.</b> Check the drafts folder in Gmail before creating it again.</p>
@@ -488,17 +495,10 @@
             createBtn.disabled = true; backBtn.disabled = true; // a submitted request cannot be undone: Back/Close never pretend otherwise
             createBtn.textContent = 'Creating in Gmail...';
             const liveNote = document.querySelector('#modal [data-draft-live]'); if (liveNote) liveNote.textContent = 'Creating the draft in Gmail - closing this window does not cancel it.';
-            const opTok = Math.random().toString(36).slice(2) + Date.now().toString(36);
-            const myKey = opKey(stamp, want.v);
-            draftOps[myKey] = { token: opTok, at: Date.now() };
-            const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v });
-            if (draftOps[myKey] && draftOps[myKey].token === opTok) delete draftOps[myKey]; // token-owned release: a newer operation's gate is never cleared by an older reply
-            if (j && j.code === 'app_draft_unconfirmed') { // unresolved: record under the op's OWN owner/workspace first - an identity flip never loses it
-              addUnconf({ opId: want.v + ':' + draftFp(to, subject, text), v: want.v, account: want.email || null, to, subject, fp: draftFp(to, subject, text), at: new Date().toISOString() }, stamp);
-            }
-            if (stamp && !sameId(stamp, identity())) return; // changed mid-request: discard the stale reply (value compare - identity objects rebuild on flips)
+            const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v }); // the server records the intent BEFORE the provider effect - a reload here loses nothing
+            if (stamp && !sameId(stamp, identity())) return; // changed mid-request: the server owns the operation record; this stale reply touches nothing
             // A composer reopened while this op was in flight re-arms on the known outcome - words untouched
-            const pn = document.querySelector('#modal [data-draft-pending="' + opTok + '"]');
+            const pn = j && j.opId ? document.querySelector('#modal [data-draft-pending="' + j.opId + '"]') : null;
             if (pn) { pn.remove(); const rv = document.querySelector('#modal [data-draft-review]'); if (rv) rv.disabled = false; }
             createBtn.disabled = false; backBtn.disabled = false;
             createBtn.textContent = 'Create this draft in Gmail';
@@ -506,13 +506,15 @@
             const closeIfOurs = () => { if (document.contains(createBtn)) BB.closeModal(); }; // never close a modal that is not this review
             await load(); // refresh BEFORE judging: a replacement that landed mid-request must not get the success copy
             if (stamp && !sameId(stamp, identity())) return; // value compare: an A->B->A round trip during the request must not strand this op's own settlement
-            if (j.error) { closeIfOurs(); return BB.toast(j.error); } // unresolved ops were already recorded above under their own owner scope
+            if (j.error) { closeIfOurs(); return BB.toast(j.error); } // an unresolved outcome is already a durable server-side receipt under this exact owner - the error copy tells the owner to check Gmail
             closeIfOurs();
             // The create was bound to the reviewed connection: if it has since been replaced,
             // say where the draft went and let the card show the current state.
             if (!stillCurrent()) return BB.toast('Draft created in Gmail for ' + (want.email || 'the reviewed account') + ' - the connection changed meanwhile; the card shows the current state.');
-            const hadUn = readUnconfAll().length > 0;
-            BB.toast((j.note || 'Draft created in Gmail - nothing was sent.') + (hadUn ? ' An earlier attempt may also have created a draft - check the drafts folder in Gmail.' : '')); // a success never clears any earlier unknown: only the owner's checked-Gmail decision does
+            const ops2 = await fetchDraftOps();
+            if (stamp && !sameId(stamp, identity())) return;
+            const hadUn = ops2.ops ? ops2.ops.some(o => o.status === 'unconfirmed') : false;
+            BB.toast((j.note || 'Draft created in Gmail - nothing was sent.') + (hadUn ? ' An earlier attempt may also have created a draft - check the drafts folder in Gmail.' : '')); // a success never clears any earlier unknown: only the owner's checked-Gmail acknowledgment does
           };
         };
       };

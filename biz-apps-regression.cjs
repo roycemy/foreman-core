@@ -8,7 +8,7 @@
 // injection rejection, purge invalidating pending states and revoking grants.
 // Stubbed provider only - no real network, no real account, no live-Google proof.
 const fs=require('fs'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizAppConnect,bizAppCallback,bizAppCallbackMarker,bizAppStatus,bizAppSync,bizAppDraftCreate,bizAppDisconnect,bizDataPurge,bizState,getJ,setJ,r,als,BIZ_APPS};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizAppConnect,bizAppCallback,bizAppCallbackMarker,bizAppStatus,bizAppSync,bizAppDraftCreate,bizAppDisconnect,bizDataPurge,bizState,getJ,setJ,r,als,BIZ_APPS,bizDraftOpList:typeof bizDraftOpList!=="undefined"?bizDraftOpList:undefined,bizDraftOpSweep:typeof bizDraftOpSweep!=="undefined"?bizDraftOpSweep:undefined,bizDraftOpReconcile:typeof bizDraftOpReconcile!=="undefined"?bizDraftOpReconcile:undefined};';
 const calls=[];let F=null;
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,URLSearchParams,Buffer,crypto:require('crypto'),AbortSignal,setTimeout,clearTimeout,
  fetch:async(u,o)=>{
@@ -48,6 +48,7 @@ const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},
   if(u.includes('/messages/m1'))return reply({id:'m1',threadId:'t1',snippet:'Hi - can you send the estimate when',labelIds:['UNREAD','INBOX'],payload:{headers:[{name:'From',value:'Dana Customer <dana@example.com>'},{name:'Subject',value:'Estimate for the fence repair'},{name:'Date',value:'Fri, 23 Oct 2026 18:02:11 -0400'}]}});
   if(u.includes('/messages/m2'))return reply({id:'m2',threadId:'t2',snippet:'Following up on the quote you sent',labelIds:['INBOX'],payload:{headers:[{name:'From',value:'Sam Owner <sam@example.com>'},{name:'Subject',value:'Re: Deck estimate'},{name:'Date',value:'Thu, 22 Oct 2026 09:14:00 -0400'}]}});
   if(u==='https://gmail.googleapis.com/gmail/v1/users/me/drafts'&&o.method==='POST'){
+   if(E.__G_DRAFT_HOLD)await new Promise(res=>{E.__G_DRAFT_GO=res;}); // a parked create, released by the test
    if(E.__G_DRAFT_THROW)throw new Error('socket hang up');
    if(E.__G_DRAFT_503)return reply({error:{message:'backendError'}},false,503);
    if(E.__G_DRAFT_400)return reply({error:{message:'Invalid recipient'}},false,400);
@@ -595,6 +596,48 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.ok(/did not create/.test(d400.body.error)&&/Invalid recipient/.test(d400.body.error),'the refusal names the provider reason');
   delete E.__G_DRAFT_400;
 
+  // Server-owned draft operation state: durable intent BEFORE the provider effect, unique
+  // attempt ids, exact SHA-256 payload fingerprints, no eviction, explicit acknowledgment only
+  assert.equal(typeof f.bizDraftOpList,'function','draft operation state is server-owned (list)');
+  assert.equal(typeof f.bizDraftOpReconcile,'function','draft operation state is server-owned (reconcile)');
+  assert.equal(typeof f.bizDraftOpSweep,'function','an interrupted operation reconciles to unconfirmed, never vanishes (sweep)');
+  for (const o of await f.bizDraftOpList()) await f.bizDraftOpReconcile(o.id); // drain the earlier unconfirmed attempts
+  assert.equal((await f.bizDraftOpList()).length,0,'acknowledgment drains earlier attempts');
+  E.__G_DRAFT_503=1;
+  const u1=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',subject:'Estimate',text:'words one'},cid0);
+  assert.equal(u1.body.code,'app_draft_unconfirmed');
+  assert.ok(/^dop_[a-f0-9]+$/.test(u1.body.opId),'each attempt gets a unique server-minted id');
+  assert.ok(/^[a-f0-9]{64}$/.test(u1.body.fp),'the payload fingerprint is a full SHA-256, never a tiny hash');
+  const u2=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',subject:'Estimate',text:'words one'},cid0);
+  assert.notEqual(u2.body.opId,u1.body.opId,'a repeated uncertain retry never replaces the prior attempt');
+  let ops=await f.bizDraftOpList();
+  assert.equal(ops.filter(o=>o.status==='unconfirmed').length,2,'both uncertain attempts persist - no eviction, no dedup');
+  const opRec1=ops.find(o=>o.id===u1.body.opId);
+  assert.equal(opRec1.to[0],'dana@example.com','the receipt carries the exact recipient');
+  assert.equal(opRec1.subject,'Estimate','the receipt carries the exact subject');
+  assert.equal(opRec1.connectionVersion,cid0,'the receipt binds the exact connection');
+  assert.equal(opRec1.fp,u1.body.fp,'the receipt keeps the exact payload fingerprint');
+  delete E.__G_DRAFT_503;
+  const ack1=await f.bizDraftOpReconcile(u1.body.opId);assert.equal(ack1.status,200,'the owner acknowledgment clears the record');
+  assert.equal((await f.bizDraftOpReconcile(u1.body.opId)).status,404,'an acknowledged record is gone - a stale or cross-identity clear finds nothing');
+  assert.equal((await f.bizDraftOpList()).filter(o=>o.status==='unconfirmed').length,1,'each attempt takes its own acknowledgment - a success or another clear never sweeps it');
+  // in-flight backstop: one create per connection at a time, durable server-side
+  E.__G_DRAFT_HOLD=1;
+  const p1=f.bizAppDraftCreate('gmail',{to:'sam@example.com',text:'held'},cid0);
+  await new Promise(r=>setTimeout(r,150));
+  const dup=await f.bizAppDraftCreate('gmail',{to:'other@example.com',text:'x'},cid0);
+  assert.equal(dup.status,409);assert.equal(dup.body.code,'app_draft_pending','a second create waits for the in-flight one - the backstop is durable, not a JS flag');
+  E.__G_DRAFT_GO();delete E.__G_DRAFT_HOLD;const held=await p1;assert.equal(held.status,200,'the held create completes');
+  assert.equal((await f.bizDraftOpList()).filter(o=>o.status==='in_flight').length,0,'a confirmed settle releases the in-flight marker');
+  // sweep: an interrupted in-flight operation becomes unconfirmed - unknown outcome, never dropped, never gates forever
+  await f.setJ('fm:biz:draftop:dop_fake1',{id:'dop_fake1',at:new Date(Date.now()-11*60*1000).toISOString(),provider:'gmail',account:'a@x.test',connectionVersion:cid0,to:['q@x.test'],subject:'s',fp:'f',status:'in_flight'});
+  await f.r(['SADD','fm:biz:draftops','dop_fake1']);await f.r(['SET','fm:biz:draftif:'+cid0,'dop_fake1']); // the marker stores the plain op id, exactly as the begin EVAL writes it
+  await f.bizDraftOpSweep();
+  assert.equal((await f.bizDraftOpList()).find(o=>o.id==='dop_fake1').status,'unconfirmed','an interrupted operation reconciles to unconfirmed - the outcome is unknown, never dropped');
+  assert.equal(await f.r(['GET','fm:biz:draftif:'+cid0]),null,'the stale marker releases the gate');
+  await f.bizDraftOpReconcile('dop_fake1');await f.bizDraftOpReconcile(u2.body.opId);
+  assert.equal((await f.bizDraftOpList()).length,0,'drained for the following tests');
+
   // 13f. key loss mid-lifecycle: the undecryptable credential is PRESERVED as unresolved
   // recovery material, disclosed with the manual path, and revoked when the key returns
   await f.bizAppSync('gmail');
@@ -629,7 +672,12 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   const c9=await connect(); // a pending state that is never completed
   const c10=await connect();await f.bizAppCallback('gmail',{state:c10.nonce,code:'authcode1'},'https://test.local',c10.cookie);
   await f.bizAppSync('gmail');calls.length=0;
+  E.__G_DRAFT_503=1;const u9=await f.bizAppDraftCreate('gmail',{to:'p@x.test',text:'w'},(await f.getJ('fm:biz:app:gmail')).connectionId);delete E.__G_DRAFT_503;
+  assert.equal(u9.body.code,'app_draft_unconfirmed','an unresolved draft operation stands before the purge');
+  assert.equal((await f.bizDraftOpList()).length,1);
   const pg=await f.bizDataPurge({confirm:'DELETE'});
+  assert.equal((await f.bizDraftOpList()).length,0,'durable draft operation state leaves with the workspace purge');
+  assert.ok(pg.body.counts.draftOps>=1,'the purge reports the operation records it removed');
   assert.equal(pg.status,200);assert.ok(pg.body.counts.connections>=1,'purge counts the connection family');
   assert.ok(pg.body.counts.grantsRevoked>=1,'purge revokes the stored grant (and retries any unresolved tombstone)');
   assert.equal((await f.r(['KEYS','fm:biz:apptomb:*'])).length,0,'tombstones die with the purge');
