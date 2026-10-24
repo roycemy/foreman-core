@@ -711,8 +711,8 @@ function timelineOf(t,events,requests,receipts,kids,name){
  return out.filter(x=>x.at).sort((a,b)=>String(a.at).localeCompare(String(b.at))||(a.end?1:0)-(b.end?1:0));}
 
 // ---------- public receipts: owner-reviewed, allowlisted snapshots (the PR #33 boundary, extended) ----------
-// A public receipt is never a serialization of the task. The owner writes the public title, summary and reusable template
-// (blank to start), reviews the exact snapshot, confirms the public audience, then publishes. The public payload carries no
+// A public receipt is never a serialization of the task. The owner starts from generic, detector-checked suggestions, edits
+// the public title, summary and reusable template while watching the exact snapshot, confirms the public audience, then publishes. The public payload carries no
 // bot or owner identity, no task/child titles or IDs, no step notes, no raw result, no params, URLs, file paths or tool details.
 const PUBLIC_TTL_DAYS=30;
 const publicText=(x,max)=>typeof x==='string'&&x.trim().length>0&&x.trim().length<=max&&!/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(x);
@@ -744,6 +744,21 @@ async function publicSource(taskId){const j=await jobDetail(taskId);if(!j)return
  return {j,hash:sha(JSON.stringify({id:t.id,status:t.status,result:t.result,title:t.title,startedAt:t.startedAt,finishedAt:t.finishedAt,cost:t.modelCostUsd??null,receipts:j.receipts.map(x=>({id:x.id,hash:x.hash,costCents:x.costCents})),requests:j.requests.map(q=>({id:q.id,status:q.status})),kids:j.children.map(k=>({id:k.id,status:k.status}))}))};}
 // Pre-filled budget for the reusable template: what this job recorded (bot-reported model costs + gateway ledger), rounded up to cents.
 function suggestedBudgetCents(t,receipts){const ledger=receipts.reduce((v,x)=>v+(Number.isSafeInteger(x.costCents)&&x.costCents>0?x.costCents:0),0),model=t.modelCostUsd!=null?Math.ceil(Math.round(Number(t.modelCostUsd)*1e8)/1e6):0;return ledger+model;}
+function publicSnapshotBuild(t,src,fields,budget){
+ const started=Date.parse(t.startedAt),ended=Date.parse(t.finishedAt),ms=ended-started,ledger=src.j.receipts.filter(x=>Number.isSafeInteger(x.costCents)&&x.costCents>=0);
+ return {version:2,title:fields.title,summary:fields.summary,template:fields.template,budgetCents:budget,outcome:t.status==='done'?'completed':'failed',
+  elapsedSeconds:Number.isFinite(started)&&Number.isFinite(ended)&&ms>=0?Math.round(ms/1000):null,
+  reportedModelCostUsd:t.modelCostUsd!=null&&Number.isFinite(Number(t.modelCostUsd))?Math.round(Number(t.modelCostUsd)*1e6)/1e6:null,externalCost:null,
+  ledgerCents:ledger.length?ledger.reduce((v,x)=>v+x.costCents,0):null,trackedActions:src.j.receipts.length,
+  approvals:src.j.requests.filter(q=>['approved','executed','failed'].includes(q.status)).length,
+  steps:publicSteps(t,src.j.requests,src.j.receipts,src.j.children),
+  provenance:'Outcome and model costs are reported by the bot, not verified. Title, description and template were reviewed and approved by the owner. Elapsed is wall-clock time, not active work time. The gateway ledger covers retained linked actions only; it is not provider spending or a complete job cost.'};}
+// Pre-filled starting points for the share form (the owner edits before publishing). Generic on purpose: no job titles, bot
+// names or result text are copied in, and every suggestion passes the same private-detail detector; a flagged field falls back to blank.
+function publicSuggestions(t){
+ const kind=t.biz&&t.biz.kind;
+ if(kind==='discover')return {title:'Business discovery scan',summary:'A bot read the business notes I connected and drafted workflow proposals for my review. Nothing was sent or booked; every draft needs my approval.',template:'Read the business notes I connect and draft workflow proposals for my review. Send or book nothing without my approval.'};
+ return {title:t.status==='done'?'Completed job':'Job attempt',summary:'',template:''};}
 async function publicReceiptReview(taskId,b){
  const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};
  const t=src.j.task,fields={title:b.title,summary:b.summary,template:b.template};
@@ -753,19 +768,19 @@ async function publicReceiptReview(taskId,b){
  const names=[...(await listAgents()).map(a=>a.name),t.title,...src.j.children.map(k=>k.title)];
  const problems=publicProblems(fields,names);
  if(problems.length)return {status:400,body:{error:'Remove private details before sharing: '+problems.map(p=>p.kind+' in '+p.field).join(', ')+'.',problems}};
- const started=Date.parse(t.startedAt),ended=Date.parse(t.finishedAt),ms=ended-started,ledger=src.j.receipts.filter(x=>Number.isSafeInteger(x.costCents)&&x.costCents>=0);
- const snapshot={version:2,title:fields.title,summary:fields.summary,template:fields.template,budgetCents:budget,outcome:t.status==='done'?'completed':'failed',
-  elapsedSeconds:Number.isFinite(started)&&Number.isFinite(ended)&&ms>=0?Math.round(ms/1000):null,
-  reportedModelCostUsd:t.modelCostUsd!=null&&Number.isFinite(Number(t.modelCostUsd))?Math.round(Number(t.modelCostUsd)*1e6)/1e6:null,externalCost:null,
-  ledgerCents:ledger.length?ledger.reduce((v,x)=>v+x.costCents,0):null,trackedActions:src.j.receipts.length,
-  approvals:src.j.requests.filter(q=>['approved','executed','failed'].includes(q.status)).length,
-  steps:publicSteps(t,src.j.requests,src.j.receipts,src.j.children),
-  provenance:'Outcome and model costs are reported by the bot, not verified. Title, description and template were written and reviewed by the owner. Elapsed is wall-clock time, not active work time. The gateway ledger covers retained linked actions only; it is not provider spending or a complete job cost.'};
+ const snapshot=publicSnapshotBuild(t,src,fields,budget);
  const reviewId=crypto.randomBytes(18).toString('hex'),expiresAt=new Date(Date.now()+600000).toISOString();
  await setJ('fm:publicReview:'+reviewId,{snapshot,hash:sha(JSON.stringify(snapshot)),taskId,sourceHash:src.hash,expiresAt});await r(['EXPIRE','fm:publicReview:'+reviewId,600]);
  return {status:200,body:{reviewId,expiresAt,snapshot,hash:sha(JSON.stringify(snapshot)),suggestedBudgetCents:suggestedBudgetCents(t,src.j.receipts),audience:'Anyone with the link, for '+PUBLIC_TTL_DAYS+' days or until you revoke it. People who already saw or copied it keep what they saw.'}};}
-// Suggested budget for the review form, before the owner writes anything public.
-async function publicReceiptDraft(taskId){const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};return {status:200,body:{suggestedBudgetCents:suggestedBudgetCents(src.j.task,src.j.receipts),title:'',summary:'',template:''}};}
+// Pre-filled share form: budget from what the job recorded, generic detector-checked suggestions, and the base snapshot so
+// the owner watches the exact public page update while editing. Publishing still requires review + publish, unchanged.
+async function publicReceiptDraft(taskId){
+ const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};
+ const t=src.j.task,budget=suggestedBudgetCents(t,src.j.receipts),suggestions=publicSuggestions(t);
+ const names=[...(await listAgents()).map(a=>a.name),t.title,...src.j.children.map(k=>k.title)];
+ for(const k of Object.keys(suggestions))if(publicProblems({[k]:suggestions[k]},names).length)suggestions[k]='';
+ const baseSnapshot=publicSnapshotBuild(t,src,suggestions,budget);
+ return {status:200,body:{suggestedBudgetCents:budget,suggestions,baseSnapshot,baseHash:sha(JSON.stringify(baseSnapshot))}};}
 async function publicReceiptPublish(b){
  if(b.confirmed!==true||b.audience!=='public'||typeof b.reviewId!=='string'||!/^[a-f0-9]{36}$/.test(b.reviewId))return {status:400,body:{error:'Review the exact snapshot and confirm its public audience'}};
  const k='fm:publicReview:'+b.reviewId,review=await getJ(k);if(!review||Date.parse(review.expiresAt)<=Date.now())return {status:409,body:{error:'Review expired; review again'}};

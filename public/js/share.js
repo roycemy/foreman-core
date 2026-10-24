@@ -1,6 +1,7 @@
-/* Black Box vNext · sharing a receipt (the PR #33 boundary). The owner writes the public title, description and reusable
-   template from blank fields, reviews the exact snapshot (rendered with the public page's own renderer), confirms the
-   public audience, then publishes. Nothing from the private job is prefilled except the suggested budget. Links expire in
+/* Black Box vNext · sharing a receipt (the PR #33 boundary). The form opens pre-filled with generic, detector-checked
+   suggestions and the exact public page renders live under the fields (same renderer as the public page), so there is one
+   editable preview and one Publish - no separate review screen. The owner edits, confirms the public audience, then publishes;
+   publishing still goes through the server review (private-detail rejection, hash-bound snapshot) unchanged. Links expire in
    30 days and can be revoked. There is no "clone after sign-in": a public receipt can only be copied as text. */
 (function () {
   'use strict';
@@ -9,33 +10,34 @@
   const FIELD = { title: 'Public title', summary: 'Description', template: 'Job template' };
   BB.openShare = async function (taskId) {
     const t = BB.task(taskId), d = await BB.api('/api/public-receipts/draft?taskId=' + encodeURIComponent(taskId)); if (d.error) return BB.toast(d.error);
-    let review = null;
-    const box = BB.modal(`<h3>Share a public receipt</h3><p>Write what the public may see. Nothing from the private job is copied in. Keep out client names, private work, contact details, links, file paths, tool details and credentials.</p>
-      <div class="stackf"><label class="fld">Public title<input class="in" id="sh-title" maxlength="100" placeholder="A generic title, not the private job title"></label>
-      <label class="fld">What the bot did<textarea class="in" id="sh-summary" maxlength="700" style="min-height:80px" placeholder="A public-safe, honest description"></textarea></label>
-      <label class="fld">Reusable job template <small>what "Run this job" copies</small><textarea class="in" id="sh-template" maxlength="1500" style="min-height:100px" placeholder="A generic task anyone could reuse. No private context."></textarea></label>
+    const sg = d.suggestions || { title: '', summary: '', template: '' };
+    const box = BB.modal(`<h3>Share a public receipt</h3><p>Pre-filled from this job - edit anything before you publish. The page below is exactly what anyone with the link will see, and it updates as you type. Keep out client names, private work, contact details, links, file paths, tool details and credentials.</p>
+      <div class="stackf"><label class="fld">Public title<input class="in" id="sh-title" maxlength="100"></label>
+      <label class="fld">What the bot did<textarea class="in" id="sh-summary" maxlength="700" style="min-height:80px"></textarea></label>
+      <label class="fld">Reusable job template <small>what "Run this job" copies</small><textarea class="in" id="sh-template" maxlength="1500" style="min-height:100px"></textarea></label>
       <label class="fld">Budget <small>pre-filled from what this job recorded${t && t.modelCostUsd == null ? ' (gateway ledger only; model costs were not reported)' : ''}</small><span class="inline-input">$<input type="number" min="0" step="0.01" id="sh-budget" value="${(d.suggestedBudgetCents / 100).toFixed(2)}" style="width:110px;text-align:left"></span></label></div>
       <ul class="problems" id="sh-problems" hidden></ul><p class="err" id="sh-e" style="color:var(--vermilion-press);font-size:13px;margin-top:8px"></p>
-      <div id="sh-review" hidden></div>
-      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b out" type="button" id="sh-check">Review exact snapshot</button><button class="b ink" type="button" id="sh-publish" hidden disabled>Publish</button></div>`, { label: 'Share a public receipt', wide: true });
-    const reset = () => { review = null; box.querySelector('#sh-review').hidden = true; box.querySelector('#sh-publish').hidden = true; box.querySelector('#sh-publish').disabled = true; };
-    box.querySelectorAll('#sh-title,#sh-summary,#sh-template,#sh-budget').forEach(i => i.oninput = reset);
-    box.querySelector('#sh-check').onclick = async () => {
-      const pr = box.querySelector('#sh-problems'), er = box.querySelector('#sh-e'); pr.hidden = true; er.textContent = '';
+      <div class="review-frame" style="margin-top:16px"><div class="rc" id="sh-preview"></div></div>
+      <label class="consent"><input type="checkbox" id="sh-consent"> I reviewed every word. Anyone with the link may see this snapshot for 30 days or until I revoke it. People who already saw or copied it keep it.</label>
+      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="button" id="sh-publish" disabled>Publish</button></div>`, { label: 'Share a public receipt', wide: true });
+    box.querySelector('#sh-title').value = sg.title || '';
+    box.querySelector('#sh-summary').value = sg.summary || '';
+    box.querySelector('#sh-template').value = sg.template || '';
+    const cur = () => { const s = JSON.parse(JSON.stringify(d.baseSnapshot)); s.title = box.querySelector('#sh-title').value; s.summary = box.querySelector('#sh-summary').value; s.template = box.querySelector('#sh-template').value; const b = box.querySelector('#sh-budget').value.trim(); s.budgetCents = b === '' ? null : Math.round(Number(b) * 100); return s; };
+    const sha256 = async str => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)))].map(b => b.toString(16).padStart(2, '0')).join('');
+    let paintSeq = 0;
+    const paint = async () => { const n = ++paintSeq, snapshot = cur(), hash = await sha256(JSON.stringify(snapshot)); if (n !== paintSeq) return; box.querySelector('#sh-preview').innerHTML = publicReceiptDoc({ snapshot, hash, publishedAt: null }, { preview: true }); };
+    paint();
+    box.querySelectorAll('#sh-title,#sh-summary,#sh-template,#sh-budget').forEach(i => i.oninput = paint);
+    box.querySelector('#sh-consent').onchange = e => box.querySelector('#sh-publish').disabled = !e.target.checked;
+    box.querySelector('#sh-publish').onclick = async () => {
+      if (!box.querySelector('#sh-consent').checked) return;
+      const pb = box.querySelector('#sh-publish'), pr = box.querySelector('#sh-problems'), er = box.querySelector('#sh-e'); pb.disabled = true; pr.hidden = true; er.textContent = '';
       const budget = box.querySelector('#sh-budget').value.trim();
       const j = await BB.api('/api/public-receipts/review', 'POST', { taskId, title: box.querySelector('#sh-title').value, summary: box.querySelector('#sh-summary').value, template: box.querySelector('#sh-template').value, budgetCents: budget === '' ? null : Math.round(Number(budget) * 100) });
-      if (j.error) { reset(); if (j.problems && j.problems.length) { pr.innerHTML = j.problems.map(p => `<li>${esc(FIELD[p.field] || p.field)} contains ${esc(KIND[p.kind] || p.kind)}.</li>`).join(''); pr.hidden = false; } else er.textContent = j.error; return; }
-      review = j; const rv = box.querySelector('#sh-review'); rv.hidden = false;
-      rv.innerHTML = `<p class="meta" style="margin-top:16px">Exactly what anyone with the link will see:</p><div class="review-frame"><div class="rc">${publicReceiptDoc({ snapshot: j.snapshot, hash: j.hash, publishedAt: null }, { preview: true })}</div></div>
-        <label class="consent"><input type="checkbox" id="sh-consent"> I reviewed every word. Anyone with the link may see this snapshot for 30 days or until I revoke it. People who already saw or copied it keep it.</label>`;
-      const pb = box.querySelector('#sh-publish'); pb.hidden = false; pb.disabled = true;
-      box.querySelector('#sh-consent').onchange = e => pb.disabled = !e.target.checked;
-    };
-    box.querySelector('#sh-publish').onclick = async () => {
-      if (!review || !box.querySelector('#sh-consent').checked) return;
-      const pb = box.querySelector('#sh-publish'); pb.disabled = true;
-      const r = await BB.api('/api/public-receipts/publish', 'POST', { reviewId: review.reviewId, hash: review.hash, audience: 'public', confirmed: true });
-      if (r.error) { box.querySelector('#sh-e').textContent = r.error; reset(); return; }
+      if (j.error) { pb.disabled = false; if (j.problems && j.problems.length) { pr.innerHTML = j.problems.map(p => `<li>${esc(FIELD[p.field] || p.field)} contains ${esc(KIND[p.kind] || p.kind)}.</li>`).join(''); pr.hidden = false; } else er.textContent = j.error; return; }
+      const r = await BB.api('/api/public-receipts/publish', 'POST', { reviewId: j.reviewId, hash: j.hash, audience: 'public', confirmed: true });
+      if (r.error) { er.textContent = r.error; pb.disabled = false; return; }
       const link = location.origin + r.path;
       box.innerHTML = `<button class="x" type="button" aria-label="Close" data-close>${BB.ICON.x}</button><h3>Published</h3><p>Anyone with this link can see the snapshot until ${esc(new Date(r.expiresAt).toLocaleDateString())}, or until you revoke it.</p>
         <div class="share-box" style="margin-top:16px;padding:0;border:0"><div class="link"><input class="in" readonly value="${esc(link)}" aria-label="Public link"><button class="b ink" type="button" id="sh-copy">Copy</button></div></div>
