@@ -58,19 +58,40 @@
   function publishHQ() {
     if (!B) { BB.hqState = null; return; }
     const prof = B.profile || {}, eng = B.engine || {}, resps = (B.responsibilities || []).filter(rp => rp.status !== 'retired');
+    const team = B.team || [], delegate = B.delegate || null;
+    const connActive = c => !!(c && c.status === 'active');
     BB.hqState = {
       name: typeof prof.name === 'string' && prof.name.trim() ? prof.name.trim().slice(0, 80) : null,
       engineConfigured: !!eng.configured,
       engineOn: !!(eng.configured && eng.enabled && eng.consent && eng.consent.current),
-      resps: resps.map(rp => ({
-        id: rp.id, title: String(rp.title || '').slice(0, 80), status: rp.status,
-        botId: rp.assignment ? rp.assignment.botId : (rp.bot ? (B.delegate && B.delegate.id) || null : null),
-        botName: rp.assignment ? rp.assignment.botName : (rp.bot ? ((B.delegate && B.delegate.name) || 'the connected bot') : null),
-        explicit: !!rp.assignment,
-        runsCount: rp.runsCount || (rp.runs || []).length || 0,
-        needsReview: !!(rp.schedule && rp.schedule.needsReview),
-        noPick: !!(rp.bot && !rp.assignment && !B.delegate) // bot-marked, no connected pick: needs an explicit assignment or a connection
-      }))
+      resps: resps.map(rp => {
+        // Owner resolution MIRRORS the team card's ownerOf and the server resolver
+        // (bizRespBot/bizDelegateBot): research reads public pages on the engine; an explicit
+        // assignment is the exact bot, never substituted; everything else non-research follows
+        // the automatic delegate pick; a bot-marked responsibility with no pick is a nopick
+        // block; a plain one runs on the engine. Saved data only - never a live-presence claim.
+        let botId = null, botName = null, ownerState = null;
+        if (!rp.research) {
+          const asg = rp.assignment;
+          if (asg && asg.botId) {
+            const entry = team.find(t => t.id === asg.botId);
+            botId = asg.botId; botName = asg.botName;
+            ownerState = !entry ? 'reassign' : (connActive(entry.connection) ? 'assigned' : 'reconnect');
+          } else if (delegate) {
+            botId = delegate.id; botName = delegate.name || 'the connected bot';
+            ownerState = connActive(delegate.connection) ? 'auto' : 'reconnect';
+          } else if (rp.bot) ownerState = 'nopick';
+        }
+        const needsReview = !!(rp.schedule && rp.schedule.needsReview);
+        return {
+          id: rp.id, title: String(rp.title || '').slice(0, 80), status: rp.status,
+          botId, botName,
+          explicit: !!rp.assignment,
+          runsCount: rp.runsCount || (rp.runs || []).length || 0,
+          needsReview, ownerState,
+          needsYou: needsReview || ownerState === 'reassign' || ownerState === 'reconnect' || ownerState === 'nopick'
+        };
+      })
     };
   }
   // Read-time validity for the HQ projection: the Floor can be up when the identity flips and

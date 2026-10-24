@@ -10,18 +10,23 @@ const fs=require('fs'),path=require('path'),http=require('http'),assert=require(
 const AGT={id:'agent_1',name:'Grokbot',providerId:'grok',status:'active',lastSeen:'2026-10-24T08:00:00Z',connection:{status:'active'},room:'ops'};
 const RESP1={id:'resp_1',title:'Estimate follow-up desk',summary:'Draft estimate follow-ups',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:3,sourceIds:[],bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},fp:'fp1',runs:[],assignment:{botId:'agent_1',botName:'Grokbot',assignedAt:'2026-10-23T02:00:00Z'}};
 const RESP2={id:'resp_2',title:'Invoice chase desk',summary:'Draft invoice chases',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},fp:'fp2',runs:[],schedule:{enabled:false,needsReview:true}}; // automatic pick, schedule awaiting the owner's review: SAME bot, SAME room
+const RESP5={id:'resp_5',title:'Competitor price watch',summary:'Read public price pages',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],research:true,bot:{id:'agent_3',name:'Stray',providerId:'grok'},fp:'fp5',runs:[]}; // research: engine owns it, the stray bot field maps nothing
+const RESP6={id:'resp_6',title:'Supplier chase desk',summary:'Draft supplier chases',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],bot:{id:'agent_3',name:'Stray',providerId:'grok'},fp:'fp6',runs:[]}; // stale bot field: the automatic delegate pick still owns it
 const RESP4={id:'resp_4',title:'Parts ordering',summary:'Draft parts orders',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],bot:{id:'agent_2',name:'Oldbot',providerId:'grok'},fp:'fp4',runs:[],assignment:{botId:'agent_2',botName:'Oldbot',assignedAt:'2026-10-23T02:00:00Z'}}; // assigned bot is GONE from the workspace
 const RESP3={id:'resp_3',title:'Weekly summary',summary:'Engine summary',boundary:'Drafts only',status:'paused',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],fp:'fp3',runs:[]}; // no bot: maps no room
+const GRESP1={id:'gresp_1',title:'Competitor watch',summary:'Read public pages',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],research:true,bot:{id:'agent_9',name:'Stray',providerId:'grok'},fp:'gfp1',runs:[]};
+const GRESP2={id:'gresp_2',title:'Stock reorder desk',summary:'Draft reorders',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],bot:{id:'agent_9',name:'Stray',providerId:'grok'},fp:'gfp2',runs:[]};
 function bizState(ident){
+  if(ident==='G')return {engine:{configured:false,enabled:false,consent:null},profile:{name:'G Workshop',blurb:'Demo',updatedAt:'2026-10-23T00:00:00Z'},delegate:null,team:[],sources:[],proposals:[],responsibilities:[GRESP1,GRESP2],log:[],opPending:null};
   if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,team:[],sources:[],proposals:[],responsibilities:[],log:[],opPending:null};
-  return {engine:{configured:false,enabled:false,consent:null},profile:{name:'North Bend Contracting',blurb:'Demo',updatedAt:'2026-10-23T00:00:00Z'},delegate:{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}},team:[{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}}],sources:[],proposals:[],responsibilities:[RESP1,RESP2,RESP3,RESP4],log:[],opPending:null};
+  return {engine:{configured:false,enabled:false,consent:null},profile:{name:'North Bend Contracting',blurb:'Demo',updatedAt:'2026-10-23T00:00:00Z'},delegate:{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}},team:[{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}}],sources:[],proposals:[],responsibilities:[RESP5,RESP1,RESP2,RESP3,RESP4,RESP6],log:[],opPending:null}; // research first in A: a resolver leak would name the room after it
 }
 let ident='A';
 const server=http.createServer((req,res)=>{
   const u=new URL(req.url,'http://x');
   const json=o=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(o));};
   if(u.pathname==='/__ident'){ident=u.searchParams.get('to');return json({ok:true});}
-  if(u.pathname==='/api/me')return json(ident==='A'?{email:'a@a.test',workspace:'wA'}:{email:'b@b.test',workspace:'wB'});
+  if(u.pathname==='/api/me')return json(ident==='A'?{email:'a@a.test',workspace:'wA'}:ident==='G'?{email:'g@g.test',workspace:'wG'}:{email:'b@b.test',workspace:'wB'});
   if(u.pathname==='/api/state')return json({now:new Date().toISOString(),agents:[AGT]});
   if(u.pathname==='/api/money')return json({requests:[]});
   if(u.pathname==='/api/cards')return json({proposals:[],bots:[],ledger:[]});
@@ -62,7 +67,7 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  await ev(`location.hash='#floor';'go'`);
  assert(await poll(`(()=>{const b=document.getElementById('hqbanner');return b&&!b.hidden&&b.textContent.includes('North Bend Contracting HQ');})()`),'HQ banner names the business');
  let t=await ev(`(document.getElementById('hqbanner')||{textContent:''}).textContent`);
- assert(t.includes('3 active'),'banner counts active responsibilities');
+ assert(t.includes('5 active'),'banner counts active responsibilities');
  assert(t.includes('1 paused'),'banner counts paused responsibilities');
  assert(t.includes('reasoning engine not connected yet'),'banner is honest about the engine');
  assert(t.includes('2 need you'),'banner surfaces the owner-actionable saved states: needs-review schedule + a mapped bot that is gone');
@@ -84,10 +89,19 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  t=await ev(`(document.getElementById('tip')||{textContent:''}).textContent`);
  assert(t.includes('Estimate follow-up desk'),'tooltip names the responsibility');
  assert(t.includes('3 runs on record'),'tooltip shows the real run history count');
- assert(t.includes('+1 more responsibility here'),'tooltip is honest about the shared room');
+ assert(t.includes('+3 more responsibilities here'),'tooltip is honest about the shared room');
  // Click-through: the room opens its responsibility card for the owner
  await ev(`document.querySelector('#rooms polygon[data-room="ops"]').dispatchEvent(new MouseEvent('click',{bubbles:true}));'click'`);
  assert(await poll(`location.hash==='#business'&&!!document.querySelector('[data-run-input="resp_1"]')`),'room click opens the responsibility card');
+ // Live-presence independence: a mapped bot dropping live reverts the room mapping (honest,
+ // live) but must NOT move the needs-you count - the whole line is saved-state scoped.
+ await ev(`location.hash='#floor';'floor'`);
+ await poll(`(()=>{const b=document.getElementById('hqbanner');return b&&!b.hidden;})()`,8000);
+ await ev(`(()=>{const a=BB.agent('agent_1');a.connection={status:'needs_reauth'};BB.emit();})()`);
+ assert(await poll(`(()=>{const p=document.querySelector('#rooms polygon[data-room="ops"] title');return p&&p.textContent==='Workshop';})()`,8000),'live presence drop reverts the room mapping (the drop really happened)');
+ assert(await ev(`(()=>{const b=document.getElementById('hqbanner');return b&&b.textContent.includes('2 need you');})()`),'live presence drop does not move the saved-state needs-you count');
+ await ev(`(()=>{const a=BB.agent('agent_1');a.connection={status:'active'};BB.emit();})()`);
+ assert(await poll(`(()=>{const p=document.querySelector('#rooms polygon[data-room="ops"] title');return p&&p.textContent==='Estimate follow-up desk';})()`,8000),'presence restored: room mapping back for the flip segment');
  // Identity flip with the Business view CLOSED AND a mapped room's tooltip SHOWING: the
  // projection must die at read time - banner, room titles, the painted tooltip AND the
  // polygon's aria-label all lose A's responsibility data immediately, not on the next hover.
@@ -101,6 +115,15 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(await poll(`(()=>{const b=document.getElementById('hqbanner');return !b||b.hidden;})()`),'stale identity: banner gone without the Business view running');
  assert(await poll(`(()=>{const p=document.querySelector('#rooms polygon[data-room="ops"] title');return p&&p.textContent==='Workshop';})()`),'stale identity: rooms revert to generic names');
  await shot('floor-hq-stale-cleared.png');
+ // No-delegate workspace G: research with a stray bot field reads public pages on the engine
+ // and is never a no-pick block; a plain bot-marked responsibility with no connected pick IS.
+ await ev(`fetch('/__ident?to=G').then(r=>r.text()).then(()=>'g')`); // awaited: the state load below must see G
+ await ev(`BB.who=${JSON.stringify({email:'g@g.test',workspace:'wG'})};BB.emit();'flipg'`);
+ await ev(`location.hash='#business';'biz'`);
+ assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('Competitor watch')`),'G business view paints its responsibilities');
+ await ev(`location.hash='#floor';'floor'`);
+ await ev(`BB.emit();'kick'`); // the app's 1s visible-interval repaint is suppressed headless
+ assert(await poll(`(()=>{const b=document.getElementById('hqbanner');return b&&!b.hidden&&b.textContent.includes('1 needs you');})()`),'no-delegate workspace: research-with-stray-bot is not a no-pick block, plain bot-marked is');
  console.log('ui-floor-hq-regression: ALL PASS');
  process.exit(0);
 })().catch(e=>{console.error('FAIL:',e.message);process.exit(1);});
