@@ -166,7 +166,7 @@
             <label class="fld">Standing instruction<textarea class="in" data-sched-input rows="3" maxlength="4000">${esc(pendingSchedule.instruction)}</textarea></label>
             <div class="btns"><button class="b ink" data-sched-preview type="button">Review the daily text</button><button class="b out" data-sched-cancel type="button">Cancel</button></div>`
           : (() => { const d = pendingSchedule.delegation, conn = (d.bot && d.bot.connection) || {};
-            const presence = conn.status === 'active' ? 'connected now' : conn.lastRealCallAt ? 'last heard from ' + BB.when(conn.lastRealCallAt) : 'not heard from yet - it picks the job up when it connects';
+            const presence = conn.lastRealCallAt && (Date.now() - new Date(conn.lastRealCallAt).getTime()) < 15*60e3 ? 'heard from in the last 15 minutes' : conn.lastRealCallAt ? 'paired - last heard from ' + BB.when(conn.lastRealCallAt) + '; it picks the job up when it connects' : 'paired - not heard from yet; it picks the job up when it connects';
             return `<p class="meta">Destination each day: <b>${esc(d.bot.name)}</b>${d.bot.providerId ? ' (' + esc(d.bot.providerId) + ')' : ''} - ${esc(presence)}. This text leaves Alter to that bot through its own connection once a day. How the bot processes or keeps it is between you and the bot's provider. If your sources or this responsibility change, the schedule pauses until you review the new text.</p>
             <p class="meta">Instructions (exact text):</p><p class="bz-reviewed">${esc(d.brief)}</p>
             <p class="meta">Work and sources (exact text):</p><p class="bz-reviewed">${esc(d.context)}</p>
@@ -180,7 +180,7 @@
           ${pendingApproval.urls.map(u => `<label class="bz-urlrow"><input type="checkbox" data-appr-url value="${esc(u)}"${(pendingApproval.checked || []).includes(u) ? ' checked' : ''}><span class="bz-url">${esc(u)}</span>${pendingApproval.flagged.includes(u) ? chip('Looks like a signed or private link - review carefully', 'warn') : ''}</label>`).join('')}
           <div class="btns"><button class="b ink" data-appr-run type="button">Run with checked pages</button><button class="b out" data-appr-cancel type="button">Cancel</button></div></div>` : ''}
         ${pendingDelegation && pendingDelegation.respId === rp.id ? (() => { const d = pendingDelegation.delegation, conn = (d.bot && d.bot.connection) || {};
-          const presence = conn.status === 'active' ? 'connected now' : conn.lastRealCallAt ? 'last heard from ' + BB.when(conn.lastRealCallAt) : 'not heard from yet - it picks the job up when it connects';
+          const presence = conn.lastRealCallAt && (Date.now() - new Date(conn.lastRealCallAt).getTime()) < 15*60e3 ? 'heard from in the last 15 minutes' : conn.lastRealCallAt ? 'paired - last heard from ' + BB.when(conn.lastRealCallAt) + '; it picks the job up when it connects' : 'paired - not heard from yet; it picks the job up when it connects';
           return `<div class="bz-card bz-approve"><div class="bz-sech">Review exactly what goes to ${esc(d.bot.name)}</div>
           <p class="meta">Destination: <b>${esc(d.bot.name)}</b>${d.bot.providerId ? ' (' + esc(d.bot.providerId) + ')' : ''} - ${esc(presence)}. This text leaves Alter to that bot through its own connection. How the bot processes or keeps it is between you and the bot's provider: Alter does not control or verify it, and a connected personal bot account is not a separate private space for this business's data.</p>
           <p class="meta">Instructions (exact text):</p><p class="bz-reviewed">${esc(d.brief)}</p>
@@ -244,7 +244,7 @@
       ${B.delegate ? `<p class="meta">Map with ${esc(B.delegate.name)} sends your sources to that bot after you review the exact text. Its answer is checked against your sources - quotes that do not match are dropped - and proposals come back here as drafts. Alter does not send the answer anywhere and cannot verify what the bot does with the text it receives.</p>` : ''}
       ${discCard}
       ${pendingDiscovery ? (() => { const d = pendingDiscovery.delegation, conn = (d.bot && d.bot.connection) || {};
-        const presence = conn.status === 'active' ? 'connected now' : conn.lastRealCallAt ? 'last heard from ' + BB.when(conn.lastRealCallAt) : 'not heard from yet - it picks the job up when it connects';
+        const presence = conn.lastRealCallAt && (Date.now() - new Date(conn.lastRealCallAt).getTime()) < 15*60e3 ? 'heard from in the last 15 minutes' : conn.lastRealCallAt ? 'paired - last heard from ' + BB.when(conn.lastRealCallAt) + '; it picks the job up when it connects' : 'paired - not heard from yet; it picks the job up when it connects';
         return `<div class="bz-card bz-approve"><div class="bz-sech">Review exactly what goes to ${esc(d.bot.name)} for the scan</div>
         <p class="meta">Destination: <b>${esc(d.bot.name)}</b>${d.bot.providerId ? ' (' + esc(d.bot.providerId) + ')' : ''} - ${esc(presence)}. This text leaves Alter to that bot through its own connection. How the bot processes or keeps it is between you and the bot's provider: Alter does not control or verify it, and a connected personal bot account is not a separate private space for this business's data.</p>
         <p class="meta">Instructions (exact text):</p><p class="bz-reviewed">${esc(d.brief)}</p>
