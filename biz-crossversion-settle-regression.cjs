@@ -98,12 +98,12 @@ async function oldCodeTerminal(taskId,status,result){
     {title:t1,summary:'Draft customer replies for owner review.',evidence:[{sourceId:'SRC1',excerpt:'We answer every customer email within a day'}],unknowns:[],systems:['Email'],boundary:'Drafts only; owner approves every reply.'},
     {title:t2,summary:'Draft estimate follow-ups for owner review.',evidence:[{sourceId:'SRC2',excerpt:'nobody follows up unless the customer calls back'}],unknowns:[],systems:[],boundary:'Drafts only.'}]});
   const inWs=(ws,fn)=>f.als.run({ws},fn);
-  const seedScan=async(t1,t2)=>{
-    const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
-    const a1=(await f.bizSourceAdd({kind:'note',title:'How we communicate',text:S1})).body.source;
-    const a2=(await f.bizSourceAdd({kind:'note',title:'Estimates',text:S2})).body.source;
-    const pv=await f.bizDiscoveryDelegatePreview();
-    const disc=(await f.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash})).body.discovery;
+  const seedScan=async(fx,t1,t2)=>{
+    const g=await fx.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+    const a1=(await fx.bizSourceAdd({kind:'note',title:'How we communicate',text:S1})).body.source;
+    const a2=(await fx.bizSourceAdd({kind:'note',title:'Estimates',text:S2})).body.source;
+    const pv=await fx.bizDiscoveryDelegatePreview();
+    const disc=(await fx.bizDiscoverDelegateRun({delegateHash:pv.body.delegation.hash})).body.discovery;
     return {agent:g.agent,disc,answer:mkAnswer(t1,t2).replace('SRC1',a1.id).replace('SRC2',a2.id)};
   };
 
@@ -112,7 +112,7 @@ async function oldCodeTerminal(taskId,status,result){
   // scan shows done, so a done scan beside a pre-settle (empty) proposals list would hide the
   // result until a manual refresh. Settling runs before any collection is read.
   await inWs('wscvxA',async()=>{
-    const {disc,answer}=await seedScan('Reply drafting queue','Estimate chase');
+    const {disc,answer}=await seedScan(f,'Reply drafting queue','Estimate chase');
     await oldCodeTerminal(disc.taskId,'done',answer);
     const stA=await f.bizState();
     const dA=stA.discoveries.find(d=>d.id===disc.id);
@@ -125,7 +125,7 @@ async function oldCodeTerminal(taskId,status,result){
   // finished scan: exactly ONE settles, the other no-ops - no duplicated proposals, and any
   // response showing the scan done also carries its proposals.
   await inWs('wscvxB',async()=>{
-    const {disc,answer}=await seedScan('Follow-up drafts','Inbox triage');
+    const {disc,answer}=await seedScan(f,'Follow-up drafts','Inbox triage');
     await oldCodeTerminal(disc.taskId,'done',answer);
     const [ra,rb]=await Promise.all([f.bizState(),f.bizState()]);
     assert.equal((await f.bizProposals()).length,2,'parallel reads create no duplicate proposals');
@@ -141,7 +141,7 @@ async function oldCodeTerminal(taskId,status,result){
   // state read: exactly one settle lands, no duplicates, and the report itself is not
   // disturbed by the concurrent read.
   await inWs('wscvxC',async()=>{
-    const {agent,disc,answer}=await seedScan('Quote reminders','Reply desk');
+    const {agent,disc,answer}=await seedScan(f,'Quote reminders','Reply desk');
     const claimed=await f.claimTask(agent);
     assert(claimed&&claimed.id===disc.taskId,'the bot claims the scan job');
     const [rc]=await Promise.all([f.completeTask(agent,disc.taskId,{status:'done',result:answer}),f.bizState()]);
@@ -152,6 +152,36 @@ async function oldCodeTerminal(taskId,status,result){
     assert.equal(dC.status,'done');
     assert(stC.proposals.some(p=>p.title==='Quote reminders')&&stC.proposals.some(p=>p.title==='Reply desk'),'the settled payload is fresh');
   });
+
+
+  // --- D. An interrupted settle - crash AFTER the proposal writes, BEFORE the scan commit -
+  // retried by a later read: deterministic per-scan proposal ids make the retry OVERWRITE the
+  // partial attempt's records instead of duplicating them (the reviewer's recovery fault).
+  {
+    const srcFault=src.replace("      next.proposals = made.length;\n","      if (typeof __settleFault!=='undefined'&&__settleFault>0){__settleFault--;throw new Error('injected interruption after proposal writes, before scan commit');}\n      next.proposals = made.length;\n");
+    assert(srcFault!==src,'the fault injection point exists in the settle path');
+    const cF={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
+      fetch:(u,o)=>{throw new Error('no network in the cross-version settle path: '+u);}};
+    vm.runInNewContext(srcFault,cF);const fF=cF.module.exports.t;
+    await fF.als.run({ws:'wscvxD'},async()=>{
+      const {disc,answer}=await seedScan(fF,'Refund drafting','Estimate follow-through');
+      const tD=await fF.getJ('fm:task:'+disc.taskId);
+      await fF.setJ('fm:task:'+disc.taskId,{...tD,status:'done',result:answer,finishedAt:new Date().toISOString()});
+      cF.__settleFault=1;
+      const stD1=await fF.bizState();
+      const dD1=stD1.discoveries.find(d=>d.id===disc.id);
+      assert(dD1.status==='delegated'||dD1.status==='running','the interrupted settle leaves the scan in-flight (nothing claims it finished)');
+      const orphans=await fF.bizProposals();
+      assert.equal(orphans.length,2,'the partial writes are visible honestly as drafts, not hidden');
+      const stD2=await fF.bizState(); // the retry: no fault left
+      const after=await fF.bizProposals();
+      assert.equal(after.length,2,'the retry overwrites the partial attempt - no duplicated proposals');
+      assert.deepEqual(after.map(p=>p.id).sort(),orphans.map(p=>p.id).sort(),'the retry reuses the same per-scan proposal ids');
+      const dD2=stD2.discoveries.find(d=>d.id===disc.id);
+      assert.equal(dD2.status,'done','the retry completes the settle');
+      assert.equal(stD2.proposals.length,2,'the completing response carries the proposals');
+    });
+  }
 
   console.log('biz-crossversion-settle-regression: PASS');
  });

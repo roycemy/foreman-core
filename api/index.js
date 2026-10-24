@@ -1335,6 +1335,15 @@ async function cardControlUnlocked(body){
 // OAuth for outbound MCP connections. Providers never lend us their account password.
 const OAUTH_ORIGIN='https://foreman-core.vercel.app';
 const PUBLIC_ORIGIN='https://www.alterhq.app';
+// Origin embedded in bot-facing pairing and instruction payloads (pairing steps, pairing
+// pickup, repaste message, connect-flow instructions). Production and every non-preview
+// environment use the canonical origin, unchanged. On a Vercel PREVIEW deployment Vercel
+// itself injects VERCEL_ENV and VERCEL_BRANCH_URL (system variables - no project setting,
+// not caller-controlled), and those payloads must point the bot at the deployment the owner
+// actually used: a bot handed production URLs from a preview would write through
+// production's older, unreviewed routes against the same store. OAuth/MCP client metadata
+// and invite links intentionally keep the canonical origin in all environments.
+const PAIR_ORIGIN=()=>process.env.VERCEL_ENV==='preview'&&process.env.VERCEL_BRANCH_URL?'https://'+process.env.VERCEL_BRANCH_URL:PUBLIC_ORIGIN;
 const originOk=o=>o===OAUTH_ORIGIN||o===PUBLIC_ORIGIN;
 const originFor=req=>/^(www\.)?alterhq\.app$/.test(String(req&&req.headers&&req.headers.host||''))?PUBLIC_ORIGIN:OAUTH_ORIGIN;
 const validRedirect=u=>{try{const x=new URL(u);return !x.username&&!x.password&&!x.hash&&(x.protocol==='https:'||x.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(x.hostname));}catch{return false;}};
@@ -1530,7 +1539,7 @@ const blCaller=req=>({userAgent:String(req.headers['user-agent']||''),ipRegion:S
 async function botLinkBotRoutes(req,res,path,body){res.setHeader('Cache-Control','no-store');const send=o=>res.status(o.status).json(o.body);
  const pm=path.match(/^\/pair\/(pr_[A-Za-z0-9_-]{20,40})$/);
  if(pm&&req.method==='POST')return send(await botLink.hello(pm[1],{nonce:body.nonce,callerSecret:body.callerSecret,fingerprint:blCaller(req),oldKey:body.oldKey||null}));
- if(pm&&req.method==='GET'){const h=String(req.headers.authorization||'');if(!/^Pairing\s+/i.test(h))return send(await botLink.steps(pm[1],PUBLIC_ORIGIN));return send(await botLink.pickup(pm[1],{callerSecret:h.replace(/^Pairing\s+/i,'')}));}
+ if(pm&&req.method==='GET'){const h=String(req.headers.authorization||'');if(!/^Pairing\s+/i.test(h))return send(await botLink.steps(pm[1],PAIR_ORIGIN()));return send(await botLink.pickup(pm[1],{callerSecret:h.replace(/^Pairing\s+/i,'')}));}
  if(path==='/link/call'&&req.method==='POST'){const key=String(req.headers.authorization||'').replace(/^Bearer\s+/i,'').trim();return send(await botLink.call(key,{op:body.op,text:body.text,action:body.action,params:body.params,requestId:body.requestId}));}
  return res.status(404).json({error:'not found'});}
 async function linkableAgents(ws){return als.run({ws},async()=>{const out=[];for(const a of await listAgents()){if(a.status!=='active'||a.harness||a.hosted)continue;if(await r(['GET','bl:agentBot:'+ws+':'+a.id]))continue;out.push({id:a.id,name:a.name,provider:a.provider});}return out;});}
@@ -1547,9 +1556,9 @@ async function botLinkOwnerRoutes(req,res,path,body,sess){res.setHeader('Cache-C
  const ownOrigin=o==='https://'+req.headers.host; // any deployment (prod, preview) accepts its own host: same-origin is the CSRF barrier
  if(!t||typeof req.headers['x-alter-csrf']!=='string'||!crypto.timingSafeEqual(Buffer.from(sha(req.headers['x-alter-csrf'])),Buffer.from(sha(t)))||(o!==OAUTH_ORIGIN&&!ownOrigin&&!devOrigin))return res.status(403).json({error:'csrf'});
  if(path==='/botlink/pairings'){let agentId=null;if(body.agentId!=null){if(!(await linkableAgents(sess.ws)).some(a=>a.id===body.agentId))return res.status(409).json({error:'agent_not_linkable'});agentId=body.agentId;}
-  return send(await botLink.createPairing({ws:sess.ws,account:sess.email,type:body.type,agentId,origin:PUBLIC_ORIGIN}));}
+  return send(await botLink.createPairing({ws:sess.ws,account:sess.email,type:body.type,agentId,origin:PAIR_ORIGIN()}));}
  {const m=path.match(/^\/botlink\/pairings\/(pr_[A-Za-z0-9_-]{20,40})\/(approve|cancel)$/);if(m)return send(m[2]==='approve'?await botLink.approve(sess.ws,m[1],{confirmBotId:body.confirmBotId||null}):await botLink.cancel(sess.ws,m[1]));}
- {const m=path.match(/^\/botlink\/bots\/(bot_[A-Za-z0-9_-]+)\/(revoke|repaste)$/);if(m)return send(m[2]==='revoke'?await botLink.revoke(sess.ws,m[1]):await botLink.repasteMessage(sess.ws,m[1],PUBLIC_ORIGIN));}
+ {const m=path.match(/^\/botlink\/bots\/(bot_[A-Za-z0-9_-]+)\/(revoke|repaste)$/);if(m)return send(m[2]==='revoke'?await botLink.revoke(sess.ws,m[1]):await botLink.repasteMessage(sess.ws,m[1],PAIR_ORIGIN()));}
  return res.status(404).json({error:'not found'});}
 
 module.exports = async (req, res) => {
@@ -1789,7 +1798,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/connect' && req.method === 'POST') {
       const _ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();if(await ipRateLimited('connect',_ip,30,3600))return res.status(429).json({error:'Too many connection attempts. Try again later.'});
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
-      const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = PUBLIC_ORIGIN;
+      const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = PAIR_ORIGIN();
       if (prov === 'muse' && body.connectionMode !== 'existing') {
         let k = String(body.apiKey || '').trim().replace(/^MODEL_API_KEY=/i, '').replace(/^Bearer\s+/i, '').trim(); if (k.length > 1 && ((k[0] === '"' && k.endsWith('"')) || (k[0] === "'" && k.endsWith("'")))) k = k.slice(1, -1).trim();
         if (!/^LLM(?:_[^\s_|]+_[^\s|]+|\|[^\s|]+\|[^\s|]+)$/.test(k)) return res.status(400).json({ error: 'Paste your Meta Model API key from dev.meta.ai. It starts with LLM_ (LLM_<id>_<secret>).' });
@@ -1813,7 +1822,7 @@ async function routes(req, res, path, body, agentPre) {
         await track('connected', { provider: 'grok' }); return res.json({ agent: c.agent, hosted: true });
       }
       const c = await createAgent(name, String(body.role || '').trim(), prov, false, { preset });
-      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${PUBLIC_ORIGIN}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it stops presence; reopening this exact link in the saved browser resumes the pair unless revoked, reset or expired. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
+      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${PAIR_ORIGIN()}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it stops presence; reopening this exact link in the saved browser resumes the pair unless revoked, reset or expired. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
       await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, noFirstTask: true, connectionStatus: 'awaiting_bot', instructions: msg, mcpUrl: base + '/api/mcp', runnerUrl: base + '/runner?agent=' + encodeURIComponent(c.agent.id) });
     }
     if (path === '/track' && req.method === 'POST') { if (['connect_started', 'first_task_started', 'approval_shown'].includes(body.step)) await track(body.step, body.provider ? { provider: String(body.provider).slice(0, 20) } : null); return res.json({ ok: true }); }
@@ -2298,7 +2307,7 @@ async function bizMakeProposals(parsed, srcs, prov, f0, room) {
   const list = (Array.isArray(parsed && parsed.proposals) ? parsed.proposals : []).slice(0, Math.max(0, Math.min(4, room)));
   const byId = {}; srcs.forEach(s => byId[s.id] = s);
   const made = []; let droppedEvidence = 0, droppedProposals = 0, fenceFailed = false;
-  for (const p of list) {
+  for (const [pi, p] of list.entries()) {
     const evidence = [], seen = new Set(); let dropped = 0;
     for (const ev of (Array.isArray(p && p.evidence) ? p.evidence : [])) {
       const s = ev && byId[String(ev.sourceId)]; const ex = String((ev && ev.excerpt) || '').slice(0, 300);
@@ -2309,7 +2318,11 @@ async function bizMakeProposals(parsed, srcs, prov, f0, room) {
       evidence.push({ sourceId: s.id, sourceVersion: s.version, sourceTitle: s.title, excerpt: ex });
     }
     droppedEvidence += dropped;
-    const prop = { id: rid('prop'), title: String((p && p.title) || '').slice(0, 90) || 'Untitled responsibility',
+    // Idempotent retry of an interrupted settle: with prov.idem the proposal id is derived
+    // from the scan and the proposal's position in the answer, so a crash after the writes
+    // but before the scan commit is retried as an OVERWRITE of the partial attempt's records
+    // (same ids, set semantics), never a duplicate next to them.
+    const prop = { id: prov.idem ? 'prop_' + sha(prov.idem + '|' + pi).slice(0, 24) : rid('prop'), title: String((p && p.title) || '').slice(0, 90) || 'Untitled responsibility',
       summary: String((p && p.summary) || '').slice(0, 600),
       evidence, evidenceDropped: dropped || undefined,
       unknowns: (Array.isArray(p && p.unknowns) ? p.unknowns : []).map(x => String(x).slice(0, 200)).filter(Boolean).slice(0, 6),
@@ -2322,6 +2335,10 @@ async function bizMakeProposals(parsed, srcs, prov, f0, room) {
     // or bot's unsupported hypothesis - quote checks prove quote fidelity, never that the
     // inference is right - so it is dropped and counted, not presented as grounded.
     if (!evidence.length) { droppedProposals++; continue; }
+    if (prov.idem) { // a record from the interrupted attempt may already exist
+      const prev = await getJ('fm:biz:prop:' + prop.id);
+      if (prev && (prev.status !== 'draft' || prev.editedByOwner)) { made.push(prev); continue; } // the owner already acted on it; their version wins, the retry does not clobber it
+    }
     if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:prop:' + prop.id, f0, JSON.stringify(prop)])) { fenceFailed = true; break; }
     if (!await r(['EVAL', BIZ_FENCE_SADD, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:proposals', f0, prop.id])) { fenceFailed = true; break; }
     made.push(prop);
@@ -2745,7 +2762,7 @@ async function bizSettleDiscovery(t) {
       const botRef = (t.assignee && t.assignee !== disc.bot.id)
         ? { id: t.assignee, name: String(((await getJ('fm:agent:' + t.assignee)) || {}).name || 'bot').slice(0, 40), providerId: (((await getJ('fm:agent:' + t.assignee)) || {}).providerId) || null, reassignedFrom: disc.bot.name }
         : disc.bot;
-      const { made, droppedEvidence, droppedProposals, fenceFailed } = await bizMakeProposals(parsed || { proposals: [] }, srcs, { bot: { ...botRef, viaScan: disc.id, at: now() } }, f0, Math.max(0, BIZ.MAX_PROPS - draftCount));
+      const { made, droppedEvidence, droppedProposals, fenceFailed } = await bizMakeProposals(parsed || { proposals: [] }, srcs, { bot: { ...botRef, viaScan: disc.id, at: now() }, idem: 'scan:' + disc.id }, f0, Math.max(0, BIZ.MAX_PROPS - draftCount));
       if (fenceFailed) return; // a delete owns the workspace; the records are gone or being removed
       next.proposals = made.length;
       if (droppedEvidence) next.droppedEvidence = droppedEvidence;
