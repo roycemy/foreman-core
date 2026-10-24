@@ -746,6 +746,15 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   const kdRec=(await f.bizDraftOpList()).find(o=>(o.to||[])[0]==='ken@example.com');
   assert.ok(kdRec && kdRec.status==='in_flight','the durable intent is honestly still unresolved until reconciled - never claimed settled');
   await f.r(['DEL','fm:biz:draftop:'+kdRec.id]); await f.r(['SREM','fm:biz:draftops',kdRec.id]); await f.r(['DEL','fm:biz:draftif:'+cid0]); await f.r(['DEL','fm:biz:appconn:gmail']); // cleaned by hand here; production leaves it to the sweep
+  // an ORDINARY (non-timeout) store failure after a known provider-200 takes the same known-created path - never a generic 500
+  c.global.__BIZ_STORE_THROW='draftop_settle_plain';
+  const kp=await f.bizAppDraftCreate('gmail',{to:'ken@example.com',text:'known created'},cid0);
+  delete c.global.__BIZ_STORE_THROW;
+  assert.equal(kp.status,200);assert.equal(kp.body.created,true,'a plain store failure after a known 200 still reports created - no generic 500');
+  assert.equal(kp.body.draftId,'draft_9');assert.equal(kp.body.accountingPending,true);
+  const kpRec=(await f.bizDraftOpList()).find(o=>(o.to||[])[0]==='ken@example.com');
+  assert.ok(kpRec && kpRec.status==='in_flight','the durable intent is honestly still unresolved after a plain store failure');
+  await f.r(['DEL','fm:biz:draftop:'+kpRec.id]); await f.r(['SREM','fm:biz:draftops',kpRec.id]); await f.r(['DEL','fm:biz:draftif:'+cid0]); await f.r(['DEL','fm:biz:appconn:gmail']); // cleaned by hand here; production leaves it to the sweep
 
   // HOLD2: the decision must name the EXACT reviewed set at the EXACT set revision
   E.__G_DRAFT_503=1;

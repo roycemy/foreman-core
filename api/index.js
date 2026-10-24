@@ -59,6 +59,7 @@ async function r(cmd0) {
   if (URL_ && Date.now() < storeQuotaUntil) throw storeQuotaError();
   const cmd = cmd0.map((x, i) => i === 0 ? x : nsKey(x));
   if (global.__BIZ_STORE_THROW === 'draftop_settle' && cmd[0] === 'EVAL' && cmd[1] === BIZ_DRAFTOP_SETTLE) { const e = new Error('The operation was aborted'); e.name = 'AbortError'; throw e; } // test-only seam, never set in production: a settle response lost to the deadline
+  if (global.__BIZ_STORE_THROW === 'draftop_settle_plain' && cmd[0] === 'EVAL' && cmd[1] === BIZ_DRAFTOP_SETTLE) throw new Error('store: injected backend failure'); // test-only seam, never set in production: an ordinary (non-timeout) store failure on settle
   if (!URL_) return memCmd(cmd);
   const res = await fetch(URL_, { method: 'POST', headers: { Authorization: 'Bearer ' + TOK, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd), ...((als.getStore()||{}).issuerDeadline?{signal:AbortSignal.timeout(Math.max(1,(als.getStore()||{}).issuerDeadline-Date.now()))}:{}) });
   const j = await res.json();
@@ -2910,14 +2911,16 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
       // cleanup below is itself bounded by the same child-context clock and never deletes
       // another holder's lock (token compare).
       const msg = String((e && (e.name + ' ' + e.message)) || e);
-      if (!/abort|timed?out/i.test(msg)) throw e; // genuine bugs still surface
       if (knownDraft) {
-        // The provider said 200 with a draft id - that outcome stays KNOWN-created. Only the
-        // LOCAL accounting is uncertain: retry the real settle once (best-effort, still
-        // bounded by the clock), say so separately, and kill the retry risk outright.
+        // The provider said 200 with a draft id - that outcome stays KNOWN-created no matter
+        // what LOCAL accounting did afterwards: a lost settle response, a store backend
+        // error, a log failure. The error type is irrelevant once the draft provably exists.
+        // Retry the real settle once (best-effort, still bounded by the clock), name only
+        // the local accounting as pending, and kill the retry risk outright.
         await opSettle('ok', { draftId: knownDraft.draftId }).catch(() => {});
         return { status: 200, body: { ok: true, created: true, provider: p, draftId: knownDraft.draftId, account: knownDraft.account, to: tos, subject, opId, fp: opFp, accountingPending: true, note: 'The draft was created in Gmail - that part is known. Saving the local record hit the time limit, so the operation list reconciles itself. Do NOT create it again - it already exists. Nothing was sent - review and send it in Gmail.' } };
       }
+      if (!/abort|timed?out/i.test(msg)) throw e; // genuine bugs still surface (nothing provably created)
       if (begunOk && providerCalled) {
         await unlock();
         return { status: 503, body: { error: 'The draft result could not be confirmed before the deadline - the provider may or may not have created it. Check the operation list and Gmail before retrying; the operation reconciles itself automatically. Nothing was sent.', code: 'app_draft_state_unknown', opId } };
