@@ -220,7 +220,7 @@
       : discFailed ? `<div class="bz-card"><div class="bz-sech">Business scan · with ${esc(discFailed.bot.name)}</div>
           <p class="meta">The scan did not finish${discFailed.failureReason === 'bot_stalled' ? ': the bot went quiet and the job was stopped' : discFailed.failureReason === 'owner_stopped' ? ': you stopped it' : discFailed.failureReason === 'source_deleted' ? ': a source it used was deleted' : discFailed.failureReason === 'data_deleted' ? ': the business data was deleted' : discFailed.failureReason === 'workspace_changed' ? ': the workspace changed while it was being created' : discFailed.failureDetail ? ': ' + esc(String(discFailed.failureDetail).replace(/\.+$/, '')) : ''}. No proposals were drafted from it.</p></div>`
       : '';
-    const propSec = srcs.length ? `<div class="bz-sech row"><span>What Alter could take over</span><span><button class="b ink sm" id="bz-discover" ${eng.configured && eng.enabled && eng.consent && eng.consent.current ? '' : 'disabled'}>Look for work</button>${B.delegate ? ` <button class="b ink sm" id="bz-discover-bot">Map with ${esc(B.delegate.name)}</button>` : ''}</span></div>
+    const propSec = srcs.length ? `<div class="bz-sech row" id="bz-proposals"><span>What Alter could take over</span><span><button class="b ink sm" id="bz-discover" ${eng.configured && eng.enabled && eng.consent && eng.consent.current ? '' : 'disabled'}>Look for work</button>${B.delegate ? ` <button class="b ink sm" id="bz-discover-bot">Map with ${esc(B.delegate.name)}</button>` : ''}</span></div>
       ${engNote}
       ${B.delegate ? `<p class="meta">Map with ${esc(B.delegate.name)} sends your sources to that bot after you review the exact text. Its answer is checked against your sources - quotes that do not match are dropped - and proposals come back here as drafts. Alter does not send the answer anywhere and cannot verify what the bot does with the text it receives.</p>` : ''}
       ${discCard}
@@ -234,6 +234,40 @@
         <p class="meta">The answer comes back here. Alter checks every quote against your sources and drops what does not match; proposals are drafts for your review. Alter does not send the answer anywhere and cannot verify what the bot did with the text.</p>
         <div class="btns"><button class="b ink" data-disc-run type="button">Send scan to ${esc(d.bot.name)}</button><button class="b out" data-disc-cancel type="button">Cancel</button></div></div>`; })() : ''}
       ${props.length ? props.map(propCard).join('') : '<p class="meta">No proposals yet. Ask Alter to look for work once you have added sources.</p>'}` : '';
+    /* ---------- HQ: the business's home base. Everything shown derives from live state:
+       needs-you items, the plate, and the profile - nothing is invented or padded. ---------- */
+    const profile = B.profile || null;
+    const draftProps = props.filter(p => p.status === 'draft');
+    const liveResps = resps.filter(rp => rp.status === 'active'), pausedResps = resps.filter(rp => rp.status === 'paused');
+    const needs = [];
+    if (draftProps.length) needs.push({ label: draftProps.length + ' proposal' + (draftProps.length === 1 ? ' is' : 's are') + ' waiting for your review', cta: 'Review', target: 'bz-proposals' });
+    if (discLive) needs.push({ label: 'A business scan is still working - its proposals appear here when it finishes' });
+    if (discFailed) needs.push({ label: 'The last business scan did not finish. No proposals were drafted from it.' });
+    if (B.delegate && B.delegate.connection && B.delegate.connection.status !== 'active') needs.push({ label: B.delegate.name + ' is not connected right now - delegated work waits for it to reconnect' });
+    const botRespsNoBot = !B.delegate ? liveResps.filter(rp => rp.bot).length : 0;
+    if (botRespsNoBot) needs.push({ label: botRespsNoBot + (botRespsNoBot === 1 ? ' responsibility runs' : ' responsibilities run') + ' on a bot, and no bot is connected', cta: 'Connect a bot', target: 'connect' });
+    const plate = liveResps.map(rp => {
+      const last = (rp.runs || [])[0];
+      const lastTxt = !last ? 'no runs yet'
+        : (last.status === 'delegated' || last.status === 'running') ? 'a run is with ' + esc((last.bot && last.bot.name) || 'the bot') + ' now'
+        : last.status === 'failed' ? 'last run ' + BB.when(last.at) + ' did not finish'
+        : 'last draft ' + BB.when(last.at);
+      return `<div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>${lastTxt}${rp.bot ? '' : ' · daily check-in while provider processing is on'}</small></div>${chip(rp.bot ? 'Runs on ' + ((rp.bot && rp.bot.name) || 'the bot') : 'Reasoning engine', 'dim')}</div>`;
+    }).join('');
+    const hqPanel = (srcs.length || profile) ? `<div class="bz-card bz-hq">
+      <div class="bz-sech">At a glance</div>
+      ${needs.length ? `<div class="bz-hq-needs">${needs.map(n => `<div class="bz-hq-need"><span>${esc(n.label)}</span>${n.cta ? `<button class="b out sm" data-hq-target="${esc(n.target)}" type="button">${esc(n.cta)}</button>` : ''}</div>`).join('')}</div>` : `<p class="meta">Nothing needs you right now.</p>`}
+      ${liveResps.length ? `<div class="bz-sech">On Alter's plate</div>${plate}` : ''}
+      ${pausedResps.length ? `<p class="meta">Paused: ${pausedResps.map(rp => esc(rp.title)).join(', ')}</p>` : ''}
+    </div>` : '';
+    const nameCard = (!profile && srcs.length) ? `<div class="bz-card"><div class="bz-sech">Name this business</div>
+      <p class="meta">The name and one line appear at the top of this page. Only you see them here.</p>
+      <label class="fld">Business name<input class="in" id="bz-prof-name" maxlength="80" placeholder="e.g. North Bend Contracting"></label>
+      <label class="fld">One line about it<input class="in" id="bz-prof-blurb" maxlength="240" placeholder="e.g. Renovations and repairs around North Bend"></label>
+      <div class="btns"><button class="b ink" id="bz-prof-save" type="button">Save</button></div></div>` : '';
+    const pageH = profile
+      ? `<div class="page-h"><div><h1>${esc(profile.name)}</h1><p class="sub">${esc(profile.blurb || 'Approve what Alter takes over.')}</p></div><button class="b ghost sm" id="bz-prof-edit" type="button">Edit profile</button></div>`
+      : `<div class="page-h"><div><h1>Business</h1><p class="sub">Teach Alter the business. Approve what it takes over.</p></div></div>`;
     const live = resps.filter(rp => rp.status !== 'retired'), retired = resps.filter(rp => rp.status === 'retired');
     const respSec = (live.length ? `<div class="bz-sech">Running with your approval</div>${live.map(respCard).join('')}` : '') + (retired.length ? `<div class="bz-sech">Retired</div>${retired.map(respCard).join('')}` : '');
     const logSec = (B.log && B.log.length) ? `<div class="bz-sech">Recent activity</div><div class="bz-log">${B.log.slice(0, 8).map(l => `<div><small>${BB.when(l.at)} · ${esc(logLine(l))}</small></div>`).join('')}</div>` : '';
@@ -242,8 +276,8 @@
     const pendCard = pend ? `<div class="bz-card"><div class="bz-sech">A delete did not finish</div>
       <p class="meta">${esc(pendWhat)} started ${BB.when(pend.at)} but paused partway. Records already deleted stay deleted; everything else is held - no new work runs until you finish or cancel it.</p>
       <div class="btns bz-pendbtns"><button class="b danger sm" id="bz-pend-finish">Finish this delete</button><button class="b out sm" id="bz-pend-cancel">Cancel the delete - keep what remains</button></div></div>` : '';
-    V.innerHTML = `<div class="page-in narrow"><div class="page-h"><div><h1>Business</h1><p class="sub">Teach Alter the business. Approve what it takes over.</p></div></div>
-      ${pendCard}${empty}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
+    V.innerHTML = `<div class="page-in narrow">${pageH}
+      ${pendCard}${empty}${hqPanel}${nameCard}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
     bind();
     // A delegated run settles whenever the bot reports: refresh on a slow poll while one is
     // in flight so the draft appears without a manual reload. Never faster - this is a view.
@@ -256,6 +290,7 @@
       discover: 'Looked for work: ' + l.proposals + ' proposal' + (l.proposals === 1 ? '' : 's') + (l.droppedEvidence ? ' · ' + l.droppedEvidence + ' unverifiable quote' + (l.droppedEvidence === 1 ? '' : 's') + ' dropped' : ''),
       proposal_edited: 'Proposal edited', proposal_rejected: 'Proposal rejected: ' + (l.title || ''),
       responsibility_deleted: 'Deleted with its history: ' + (l.title || ''), provider_consent_granted: 'Provider processing allowed: ' + (l.host || '') + ' (' + (l.model || '') + ')', provider_consent_withdrawn: 'Provider processing withdrawn',
+      profile_saved: 'Business profile saved: ' + (l.name || ''), profile_cleared: 'Business profile cleared',
       responsibility_activated: 'Started: ' + (l.title || ''), responsibility_paused: 'Paused: ' + (l.title || ''), responsibility_resumed: 'Resumed: ' + (l.title || ''), responsibility_retired: 'Retired: ' + (l.title || ''),
       run: (l.runKind === 'daily' ? 'Daily check-in' : 'Work run') + (l.usage ? ' · ' + tok(l.usage) + ' tokens' : ''),
       run_delegated: 'Sent to ' + (l.botName || 'the connected bot') + (l.omittedSources ? ' · ' + l.omittedSources + ' linked source(s) did not fit' : ''),
@@ -263,6 +298,20 @@
       discover_settled: l.status === 'done' ? 'Business scan finished: ' + (l.proposals || 0) + ' proposal' + (l.proposals === 1 ? '' : 's') + (l.droppedEvidence ? ' · ' + l.droppedEvidence + ' unverifiable quote' + (l.droppedEvidence === 1 ? '' : 's') + ' dropped' : '') : 'Business scan ended without proposals' + (l.failure ? ' (' + l.failure + ')' : ''),
       run_settled: l.status === 'done' ? 'Draft received from the bot' : 'Delegated run ended without a draft' + (l.failure ? ' (' + l.failure + ')' : ''),
       data_purged: 'All business data deleted. Earlier activity was deleted with it; only this minimal receipt remains.', delete_abandoned: 'A paused delete was cancelled; what remained was kept.' }[l.kind] || l.kind;
+  }
+
+  function profileDialog() {
+    const p = B && B.profile || {};
+    const box = BB.modal(`<h3>Business profile</h3>
+      <p class="meta">Shown at the top of this page. Only you see this page. Clearing the name removes the profile.</p>
+      <label class="fld">Business name<input class="in" id="bz-d-name" maxlength="80" value="${esc(p.name || '')}"></label>
+      <label class="fld">One line about it<input class="in" id="bz-d-blurb" maxlength="240" value="${esc(p.blurb || '')}"></label>
+      <div class="acts"><button class="b ghost" data-close>Cancel</button><button class="b ink" id="bz-d-save" type="button">Save</button></div>`, { label: 'Business profile' });
+    box.querySelector('#bz-d-save').onclick = async () => {
+      const j = await api('/profile', 'POST', { name: box.querySelector('#bz-d-name').value, blurb: box.querySelector('#bz-d-blurb').value });
+      if (j.error) return BB.toast(j.error);
+      BB.closeModal(); BB.toast('Saved.'); load();
+    };
   }
 
   /* ---------- confirm via the app modal ---------- */
@@ -276,6 +325,12 @@
 
   /* ---------- actions ---------- */
   function bind() {
+    const pe = $('#bz-prof-edit', V); if (pe) pe.onclick = () => profileDialog();
+    const ps = $('#bz-prof-save', V); if (ps) ps.onclick = async () => {
+      ps.disabled = true; const j = await api('/profile', 'POST', { name: $('#bz-prof-name', V).value, blurb: $('#bz-prof-blurb', V).value }); ps.disabled = false;
+      if (j.error) return BB.toast(j.error); BB.toast('Saved.'); await load();
+    };
+    $$('[data-hq-target]', V).forEach(b => b.onclick = () => { if (b.dataset.hqTarget === 'connect') return BB.openConnect(); const el = document.getElementById(b.dataset.hqTarget); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
     let kind = 'note';
     $$('.bz-kind .b', V).forEach(b => b.onclick = () => { kind = b.dataset.kind; $$('.bz-kind .b', V).forEach(x => x.classList.toggle('ink', x === b)); });
     const add = $('#bz-add', V);

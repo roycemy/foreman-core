@@ -1802,6 +1802,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/business/provider-consent' && (req.method === 'POST' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizConsentAct(req.method === 'POST', body)); }
     if (path === '/business/sources' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizSourceAdd(body)); }
     { const bm = path.match(/^\/business\/sources\/(src_\w+)$/); if (bm && (req.method === 'PATCH' || req.method === 'DELETE')) { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(req.method === 'PATCH' ? await bizSourceEdit(bm[1], body) : await bizSourceDel(bm[1], body)); } }
+    if (path === '/business/profile' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProfileSet(body)); }
     if (path === '/business/discover' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscover()); }
     if (path === '/business/discover/delegate-preview' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscoveryDelegatePreview()); }
     if (path === '/business/discover/delegate-run' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscoverDelegateRun(body)); }
@@ -2141,6 +2142,24 @@ const bizStale = (p, srcs) => { const byId = {}; srcs.forEach(s => byId[s.id] = 
   for (const [sid, ver] of Object.entries(p.sourceMap || {})) { if (!byId[sid]) stale.push({ sourceId: sid, missing: true }); else if (byId[sid].version !== ver) stale.push({ sourceId: sid, from: ver, to: byId[sid].version }); }
   return stale; };
 
+// The business profile is owner-authored identity for the HQ: a name and a one-line description.
+// Display text only - never sent to a bot or the reasoning engine as part of any payload, and
+// deleted with the rest of the business data on purge.
+async function bizProfileSet(body) {
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict();
+  const name = String(body && body.name || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const blurb = String(body && body.blurb || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  if (String(body && body.name || '').trim() && !name) return { status: 400, body: { error: 'A name is letters and words, not just symbols' } };
+  if (!name) {
+    if (!await r(['EVAL', BIZ_FENCE_DEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:profile', f0])) return bizFenceConflict();
+    if (!await bizLog('profile_cleared', {}, f0)) return bizFenceConflict();
+    return { status: 200, body: { profile: null } };
+  }
+  const profile = { name, blurb, updatedAt: now() };
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:profile', f0, JSON.stringify(profile)])) return bizFenceConflict();
+  if (!await bizLog('profile_saved', { name }, f0)) return bizFenceConflict();
+  return { status: 200, body: { profile } };
+}
 async function bizState() {
   // Settle pass FIRST. A job that finished without its settle landing (older deployment code
   // has no settle hook; a lost report response settles nothing twice) would leave its record
@@ -2180,7 +2199,7 @@ async function bizState() {
   let discoveries = await readDiscoveries(discIds);
   for (const d of discoveries) if (d.status === 'delegated' || d.status === 'running') await settleTerminalJob(d.taskId);
   if (settleDirty) { runsByResp = await readRunsByResp(resps); discoveries = await readDiscoveries(discIds); }
-  const [srcs, props, logRaw, opPending] = await Promise.all([bizSources(), bizProposals(), r(['LRANGE', 'fm:biz:log', 0, 19]), getJ('fm:biz:op_pending')]);
+  const [srcs, props, logRaw, opPending, profile] = await Promise.all([bizSources(), bizProposals(), r(['LRANGE', 'fm:biz:log', 0, 19]), getJ('fm:biz:op_pending'), getJ('fm:biz:profile')]);
   const eng = bizEngineEnv();
   const consent = await getJ('fm:biz:consent');
   const engine = eng.key ? { configured: true, enabled: eng.allow.includes(wsId()), host: (() => { try { return new URL(eng.base).host; } catch { return 'unknown'; } })(), model: eng.model,
@@ -2197,7 +2216,7 @@ async function bizState() {
     const t = await getJ('fm:task:' + d.taskId);
     d.job = t ? { status: t.status, startedAt: t.startedAt || null, assignee: t.assignee || null } : { status: 'missing' };
   }
-  return { engine, delegate, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
+  return { engine, delegate, profile, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
     responsibilities: resps.map(rp => ({ ...rp, runs: runsByResp[rp.id] || [] })), discoveries,
     opPending, log: (logRaw || []).map(x => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean) };
 }
@@ -3435,7 +3454,7 @@ async function bizDataPurge(body) {
     await bizOpWrite(ctx, 'del', 'fm:biz:delegated');
     bizFault('purge:jobs');
     stage = 'sets';
-    for (const k of ['fm:biz:sources', 'fm:biz:proposals', 'fm:biz:resps', 'fm:biz:consent', 'fm:biz:log', 'fm:biz:discoveries']) await bizOpWrite(ctx, 'del', k);
+    for (const k of ['fm:biz:sources', 'fm:biz:proposals', 'fm:biz:resps', 'fm:biz:consent', 'fm:biz:log', 'fm:biz:discoveries', 'fm:biz:profile']) await bizOpWrite(ctx, 'del', k);
     await r(['SREM', 'gl:biz:workspaces', wsId()]); // global registry: idempotent, outside the workspace freeze
     stage = 'close';
     bizFault('purge:close');

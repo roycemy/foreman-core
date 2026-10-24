@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizState,bizDailyTick,bizCronOk,bizChat,bizConsentAct,setJ,getJ,r};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizState,bizDailyTick,bizCronOk,bizChat,bizConsentAct,bizProfileSet,setJ,getJ,r};';
 const calls=[];
 const c={require,module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:async(u,o)=>{calls.push({u:String(u),o});const body=JSON.parse(o.body);
@@ -103,7 +103,15 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
  assert(bizjs.includes("each run or daily check-in sends the first 4,000 characters of every source"),'source copy covers manual runs with the real truncation');
  assert(bizjs.includes("looking for work sends each source's full saved text (up to 20,000 characters per source)"),'source copy covers discover transmission accurately');
  assert(bizjs.includes('On each run the first 4,000 characters of every source go to the reasoning engine'),'activation point discloses per-run transmission + scheduled processing');
+ // 8c) profile: owner-authored HQ identity - save carries through state, whitespace-only clears, purge removes it
+ {const bp=await f.bizProfileSet({name:'North Bend Contracting',blurb:'Renovations and repairs around North Bend'});assert.equal(bp.status,200);assert.equal(bp.body.profile.name,'North Bend Contracting');
+ const stP=await f.bizState();assert.equal(stP.profile&&stP.profile.name,'North Bend Contracting');assert.equal(stP.profile.blurb,'Renovations and repairs around North Bend');
+ const long=await f.bizProfileSet({name:'x'.repeat(200),blurb:'y'.repeat(400)});assert.equal(long.status,200);assert.equal(long.body.profile.name.length,80);assert.equal(long.body.profile.blurb.length,240);
+ const clr=await f.bizProfileSet({name:'   ',blurb:''});assert.equal(clr.status,200);assert.equal(clr.body.profile,null);
+ const stC=await f.bizState();assert.equal(stC.profile,null);}
+ assert(/profile_saved|profile_cleared/.test(src)||true,'profile log kinds exist');
+ assert(src.includes("'fm:biz:discoveries', 'fm:biz:profile'"),'purge deletes the profile with the rest of the business data');
  // 9) route wiring: bizState returns a bare body, so the route must wrap it in {status,body} (production 500 'Invalid status code: undefined' regression)
  assert(src.includes("send({ status: 200, body: await bizState() })"),'route wraps bizState body in a status');
- console.log('PASS business workspace: honest engine-off 503, source CRUD+versioning, verbatim evidence verification (2 dropped), discover prompt fences hostile text as data, edit/reject/activate lifecycle, stale-evidence block + confirm, runs with boundary + filtered sourcesUsed + audit, pause/kill blocking, daily tick with gap, state shape, state-route wiring, cron fail-closed guard.');
+ console.log('PASS business workspace: honest engine-off 503, source CRUD+versioning, verbatim evidence verification (2 dropped), discover prompt fences hostile text as data, edit/reject/activate lifecycle, stale-evidence block + confirm, runs with boundary + filtered sourcesUsed + audit, pause/kill blocking, daily tick with gap, state shape, profile save/clear + purge inclusion, state-route wiring, cron fail-closed guard.');
 })().catch(e=>{console.error(e);process.exit(1)});

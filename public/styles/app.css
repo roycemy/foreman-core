@@ -632,6 +632,10 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .bz-prop-h{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;margin-bottom:8px}
 .bz-sech{font-size:var(--t-section);font-weight:600;letter-spacing:var(--tr-section);color:var(--ink);margin:22px 0 10px}
 .bz-sech.row{display:flex;align-items:center;justify-content:space-between}
+.bz-hq-needs{display:flex;flex-direction:column;gap:8px;margin-bottom:4px}
+.bz-hq-need{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--well);border-radius:var(--r-inner);padding:10px 12px;font-size:var(--t-body)}
+.bz-hq-need .b{flex:none}
+.bz-hq .bz-row{cursor:default;padding:6px 0}
 /* Pending-delete recovery actions: wrap and stack on narrow screens so neither button clips */
 .bz-pendbtns{flex-wrap:wrap}
 .bz-pendbtns .b{flex:1 1 200px;min-width:0;white-space:normal;text-align:center;height:auto;min-height:44px;padding:10px 12px;line-height:1.3}
