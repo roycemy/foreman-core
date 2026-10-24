@@ -203,7 +203,7 @@
     const engNote = eng.configured && eng.enabled ? (eng.consent && eng.consent.current ? '' :
       `<div class="bz-note">Provider processing is off. Allow it above before Alter looks for work or runs responsibilities - your sources stay in Alter until you do.</div>`) :
       `<div class="bz-note">The reasoning engine ${eng.configured ? 'is connected but not enabled for this workspace' : 'is not connected yet'}. ${B.delegate ? 'You can add sources and map the business with ' + esc(B.delegate.name) + ' now; engine runs and daily check-ins start once setup finishes.' : 'You can add sources now; proposals and work runs start once setup finishes.'} Nothing is simulated: proposals come only from a real provider or bot answer - Alter never writes them itself. Every quote is checked against your sources and non-matching quotes are dropped; Alter does not verify the answer's reasoning or whether a proposal is a good fit.</div>`;
-    const addForm = `<div class="bz-card"><div class="bz-sech">Add to what Alter knows</div>
+    const addForm = `<div class="bz-card" id="bz-add-form"><div class="bz-sech">Add to what Alter knows</div>
       <div class="bz-kind"><button class="b out sm" data-kind="note" type="button">Note</button><button class="b out sm" data-kind="doc" type="button">Document</button></div>
       <label class="fld">Title<input class="in" id="bz-add-title" maxlength="120" placeholder="e.g. How last week actually went"></label>
       <label class="fld">Text<textarea class="in" id="bz-add-text" rows="6" maxlength="20000" placeholder="Paste notes, a call summary, a process doc…"></textarea></label>
@@ -280,6 +280,11 @@
       ${liveResps.length ? `<div class="bz-sech">On Alter's plate</div>${plate}` : ''}
       ${pausedResps.length ? `<p class="meta">Paused: ${pausedResps.map(rp => esc(rp.title)).join(', ')}</p>` : ''}
     </div>` : '';
+    const systems = [...new Set(props.flatMap(p => p.systems || []).concat(resps.flatMap(rp => rp.systems || [])))].slice(0, 8);
+    const appsCard = srcs.length || systems.length ? `<div class="bz-card"><div class="bz-sech">App connections</div>
+      <p class="meta">Live app connections (mail, calendar, drive) are not available yet - nothing here connects to your other accounts. Today Alter learns from what you paste or import: notes, documents and plain-text files.</p>
+      ${systems.length ? `<p class="meta">Your proposals mention: ${systems.map(esc).join(', ')}. Until those connect, paste or import their key details as sources.</p>` : ''}
+      <div class="btns"><button class="b out sm" data-hq-target="#bz-add-form" type="button">Add a source</button></div></div>` : '';
     const nameCard = (!profile && srcs.length) ? `<div class="bz-card"><div class="bz-sech">Name this business</div>
       <p class="meta">The name and one line appear at the top of this page. Only you see them here.</p>
       <label class="fld">Business name<input class="in" id="bz-prof-name" maxlength="80" placeholder="e.g. North Bend Contracting"></label>
@@ -297,7 +302,7 @@
       <p class="meta">${esc(pendWhat)} started ${BB.when(pend.at)} but paused partway. Records already deleted stay deleted; everything else is held - no new work runs until you finish or cancel it.</p>
       <div class="btns bz-pendbtns"><button class="b danger sm" id="bz-pend-finish">Finish this delete</button><button class="b out sm" id="bz-pend-cancel">Cancel the delete - keep what remains</button></div></div>` : '';
     V.innerHTML = `<div class="page-in narrow">${pageH}
-      ${pendCard}${empty}${hqPanel}${nameCard}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
+      ${pendCard}${empty}${hqPanel}${appsCard}${nameCard}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
     bind();
     // A delegated run settles whenever the bot reports: refresh on a slow poll while one is
     // in flight so the draft appears without a manual reload. Never faster - this is a view.
