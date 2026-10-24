@@ -8,7 +8,7 @@
 // injection rejection, purge invalidating pending states and revoking grants.
 // Stubbed provider only - no real network, no real account, no live-Google proof.
 const fs=require('fs'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizAppConnect,bizAppCallback,bizAppCallbackMarker,bizAppStatus,bizAppSync,bizAppDraftCreate,bizAppDisconnect,bizDataPurge,bizState,getJ,setJ,r,als,BIZ_APPS,bizDraftOpList:typeof bizDraftOpList!=="undefined"?bizDraftOpList:undefined,bizDraftOpSweep:typeof bizDraftOpSweep!=="undefined"?bizDraftOpSweep:undefined,bizDraftOpReconcile:typeof bizDraftOpReconcile!=="undefined"?bizDraftOpReconcile:undefined};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizAppConnect,bizAppCallback,bizAppCallbackMarker,bizAppStatus,bizAppSync,bizAppDraftCreate,bizAppDisconnect,bizDataPurge,bizState,getJ,setJ,r,als,BIZ_APPS,bizDraftOpList:typeof bizDraftOpList!=="undefined"?bizDraftOpList:undefined,bizDraftOpSweep:typeof bizDraftOpSweep!=="undefined"?bizDraftOpSweep:undefined,bizDraftOpReconcile:typeof bizDraftOpReconcile!=="undefined"?bizDraftOpReconcile:undefined,BIZ_DRAFTOP_BEGIN:typeof BIZ_DRAFTOP_BEGIN!=="undefined"?BIZ_DRAFTOP_BEGIN:undefined,BIZ_DRAFTOP_SETTLE:typeof BIZ_DRAFTOP_SETTLE!=="undefined"?BIZ_DRAFTOP_SETTLE:undefined,BIZ_DRAFTOP_ACK:typeof BIZ_DRAFTOP_ACK!=="undefined"?BIZ_DRAFTOP_ACK:undefined};';
 const calls=[];let F=null;
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,URLSearchParams,Buffer,crypto:require('crypto'),AbortSignal,setTimeout,clearTimeout,
  fetch:async(u,o)=>{
@@ -570,7 +570,7 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.ok(/check the drafts folder/i.test(dBad.body.error),'the owner checks Gmail before retrying so nothing is duplicated');
   delete E.__G_DRAFT_BADJSON;
   E.__G_DRAFT_THROW=1;
-  const dThr=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi'},cid0);
+  const dThr=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi',checkedGmail:true},cid0); // an identical retry after an unresolved attempt carries the owner decision
   assert.equal(dThr.status,502);assert.equal(dThr.body.code,'app_draft_unconfirmed','no answer at all is unconfirmed, never a false failure');
   delete E.__G_DRAFT_THROW;
   // HOLD 2:21 item 4: the landing marker classifies lifecycle fields, not just two codes
@@ -586,12 +586,12 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal(f.bizAppCallbackMarker({status:409,body:{code:'app_connect_lease_lost',grantStatus:'not_revoked'}}),'uncertain','a grant left at the provider is unresolved even when the local record is discarded');
   // HOLD: only an authoritative parsed refusal is "not created"; 5xx/gateway is unconfirmed
   E.__G_DRAFT_503=1;
-  const d503=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi'},cid0);
+  const d503=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi',checkedGmail:true},cid0);
   assert.equal(d503.status,502);assert.equal(d503.body.code,'app_draft_unconfirmed','a 503 says nothing about creation');
   assert.ok(!/did not create/.test(d503.body.error),'a gateway failure never claims refusal');
   delete E.__G_DRAFT_503;
   E.__G_DRAFT_400=1;
-  const d400=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi'},cid0);
+  const d400=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',text:'hi',checkedGmail:true},cid0);
   assert.equal(d400.status,502);assert.equal(d400.body.code,'app_draft_failed','an authoritative parsed refusal is a real failure');
   assert.ok(/did not create/.test(d400.body.error)&&/Invalid recipient/.test(d400.body.error),'the refusal names the provider reason');
   delete E.__G_DRAFT_400;
@@ -608,8 +608,14 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal(u1.body.code,'app_draft_unconfirmed');
   assert.ok(/^dop_[a-f0-9]+$/.test(u1.body.opId),'each attempt gets a unique server-minted id');
   assert.ok(/^[a-f0-9]{64}$/.test(u1.body.fp),'the payload fingerprint is a full SHA-256, never a tiny hash');
-  const u2=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',subject:'Estimate',text:'words one'},cid0);
+  const uNoDec=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',subject:'Estimate',text:'words one'},cid0);
+  assert.equal(uNoDec.status,409,'a same-payload retry is refused server-side without the decision');
+  assert.equal(uNoDec.body.code,'draft_retry_needs_decision','the refusal names the required checked-Gmail decision');
+  assert.equal(uNoDec.body.opId,u1.body.opId,'the refusal names the exact unresolved attempt');
+  assert.equal((await f.bizDraftOpList()).filter(o=>o.status==='unconfirmed').length,1,'a refused retry creates nothing');
+  const u2=await f.bizAppDraftCreate('gmail',{to:'dana@example.com',subject:'Estimate',text:'words one',checkedGmail:true},cid0);
   assert.notEqual(u2.body.opId,u1.body.opId,'a repeated uncertain retry never replaces the prior attempt');
+  assert.equal((await f.bizDraftOpList()).find(o=>o.id===u2.body.opId).retryOf,u1.body.opId,'the retry record carries the decision evidence');
   let ops=await f.bizDraftOpList();
   assert.equal(ops.filter(o=>o.status==='unconfirmed').length,2,'both uncertain attempts persist - no eviction, no dedup');
   const opRec1=ops.find(o=>o.id===u1.body.opId);
@@ -630,13 +636,24 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   E.__G_DRAFT_GO();delete E.__G_DRAFT_HOLD;const held=await p1;assert.equal(held.status,200,'the held create completes');
   assert.equal((await f.bizDraftOpList()).filter(o=>o.status==='in_flight').length,0,'a confirmed settle releases the in-flight marker');
   // sweep: an interrupted in-flight operation becomes unconfirmed - unknown outcome, never dropped, never gates forever
-  await f.setJ('fm:biz:draftop:dop_fake1',{id:'dop_fake1',at:new Date(Date.now()-11*60*1000).toISOString(),provider:'gmail',account:'a@x.test',connectionVersion:cid0,to:['q@x.test'],subject:'s',fp:'f',status:'in_flight'});
+  await f.setJ('fm:biz:draftop:dop_fake1',{id:'dop_fake1',at:new Date(Date.now()-11*60*1000).toISOString(),provider:'gmail',account:'a@x.test',connectionVersion:cid0,to:['q@x.test'],subject:'s',fp:'f',status:'in_flight',fence:(await f.r(['GET','fm:biz:fence']))||'0'});
   await f.r(['SADD','fm:biz:draftops','dop_fake1']);await f.r(['SET','fm:biz:draftif:'+cid0,'dop_fake1']); // the marker stores the plain op id, exactly as the begin EVAL writes it
   await f.bizDraftOpSweep();
   assert.equal((await f.bizDraftOpList()).find(o=>o.id==='dop_fake1').status,'unconfirmed','an interrupted operation reconciles to unconfirmed - the outcome is unknown, never dropped');
   assert.equal(await f.r(['GET','fm:biz:draftif:'+cid0]),null,'the stale marker releases the gate');
   await f.bizDraftOpReconcile('dop_fake1');await f.bizDraftOpReconcile(u2.body.opId);
   assert.equal((await f.bizDraftOpList()).length,0,'drained for the following tests');
+  // The exact interleavings from review, at the guard level
+  const fenc=(await f.r(['GET','fm:biz:fence']))||'0';
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,7,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua1','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:nope',fenc,'{}','dop_lua1','vX']),3,'a begin against a missing app record is refused atomically');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,7,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua2','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:gmail','0','{}','dop_lua2',cid0]),0,'a pre-begin request carrying a stale fence never attaches an intent');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_BEGIN,7,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_lua3','fm:biz:draftops','fm:biz:draftif:vX','fm:biz:app:gmail',fenc,'{}','dop_lua3','WRONG_VERSION']),3,'a connection swap between token read and begin is refused atomically');
+  assert.equal(await f.r(['GET','fm:biz:draftop:dop_lua3']),null,'a refused begin writes nothing');
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_SETTLE,6,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_absent','fm:biz:draftops','fm:biz:draftif:none',fenc,'dop_absent','']),3,'a settle never recreates an absent record');
+  await f.setJ('fm:biz:draftop:dop_ack1',{id:'dop_ack1',at:new Date().toISOString(),connectionVersion:cid0,status:'in_flight',fence:fenc});
+  assert.equal(await f.r(['EVAL',f.BIZ_DRAFTOP_ACK,6,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:draftop:dop_ack1','fm:biz:draftops','fm:biz:draftif:'+cid0,fenc,'dop_ack1']),5,'an in-flight operation is never undone by an acknowledgment');
+  assert.ok(await f.getJ('fm:biz:draftop:dop_ack1'),'the in-flight record survives the refused acknowledgment');
+  await f.r(['DEL','fm:biz:draftop:dop_ack1']);
 
   // 13f. key loss mid-lifecycle: the undecryptable credential is PRESERVED as unresolved
   // recovery material, disclosed with the manual path, and revoked when the key returns
@@ -672,12 +689,20 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   const c9=await connect(); // a pending state that is never completed
   const c10=await connect();await f.bizAppCallback('gmail',{state:c10.nonce,code:'authcode1'},'https://test.local',c10.cookie);
   await f.bizAppSync('gmail');calls.length=0;
-  E.__G_DRAFT_503=1;const u9=await f.bizAppDraftCreate('gmail',{to:'p@x.test',text:'w'},(await f.getJ('fm:biz:app:gmail')).connectionId);delete E.__G_DRAFT_503;
-  assert.equal(u9.body.code,'app_draft_unconfirmed','an unresolved draft operation stands before the purge');
-  assert.equal((await f.bizDraftOpList()).length,1);
+  const cidP=(await f.getJ('fm:biz:app:gmail')).connectionId;
+  E.__G_DRAFT_HOLD=1;E.__G_DRAFT_BADJSON=1;
+  const pParked=f.bizAppDraftCreate('gmail',{to:'p@x.test',text:'w'},cidP); // intent lands, provider call parks
+  await new Promise(r=>setTimeout(r,150));
+  assert.equal((await f.bizDraftOpList()).length,1,'the intent is durable while the provider call is parked');
   const pg=await f.bizDataPurge({confirm:'DELETE'});
   assert.equal((await f.bizDraftOpList()).length,0,'durable draft operation state leaves with the workspace purge');
   assert.ok(pg.body.counts.draftOps>=1,'the purge reports the operation records it removed');
+  E.__G_DRAFT_GO();delete E.__G_DRAFT_HOLD;
+  const pLate=await pParked;delete E.__G_DRAFT_BADJSON;
+  assert.equal(pLate.body.code,'app_draft_unconfirmed','a late provider outcome after the purge is still reported honestly');
+  assert.equal((await f.bizDraftOpList()).length,0,'a settle after the purge recreates nothing - no orphan record, no index entry');
+  assert.equal((await f.r(['KEYS','fm:biz:draftop:*'])).length,0,'no draft operation key survives the purge + late settle');
+  assert.equal((await f.r(['KEYS','fm:biz:draftif:*'])).length,0,'no in-flight marker survives the purge + late settle');
   assert.equal(pg.status,200);assert.ok(pg.body.counts.connections>=1,'purge counts the connection family');
   assert.ok(pg.body.counts.grantsRevoked>=1,'purge revokes the stored grant (and retries any unresolved tombstone)');
   assert.equal((await f.r(['KEYS','fm:biz:apptomb:*'])).length,0,'tombstones die with the purge');

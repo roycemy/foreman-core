@@ -62,6 +62,8 @@ const server=http.createServer((req,res)=>{
       const tos=String(body.to||'').split(',').map(x=>x.trim()).filter(Boolean),toN=tos.join(', '),subj=String(body.subject||''),txt=String(body.text||'');
       const fp=crypto.createHash('sha256').update('v1:'+JSON.stringify([toN,subj,txt])).digest('hex'); // exact payload identity, same canonicalization as the server + page
       if(draftOpStore[reqIdent].some(o=>o.status==='in_flight'&&o.connectionVersion===body.expectedVersion))return json({error:'A draft is already being created for this connection - wait for its result before creating another. Nothing new was created.',code:'app_draft_pending'},409);
+      const priorSame=draftOpStore[reqIdent].find(o=>o.status==='unconfirmed'&&o.connectionVersion===body.expectedVersion&&o.fp===fp);
+      if(priorSame&&body.checkedGmail!==true)return json({error:'An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail. Check the drafts folder there, then confirm and try again. Nothing new was created.',code:'draft_retry_needs_decision',opId:priorSame.id},409);
       const op={id:'dop_'+(++draftOpSeq),at:new Date().toISOString(),provider:'gmail',account:'royce@northbend.example',connectionVersion:body.expectedVersion||null,to:tos,subject:subj,fp,status:'in_flight'};
       draftOpStore[reqIdent].unshift(op); // the intent is durable BEFORE the effect below - a reload mid-create loses nothing
       if(draftGo==='park'){await new Promise(r=>{draftParked.push(r);});}
@@ -393,6 +395,7 @@ let PORT=0;
  await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create'`);
  assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('check the drafts folder')`),'the unconfirmed outcome tells the owner to check Gmail');
  assert(!(await ev(`Object.keys(localStorage).some(k=>k.startsWith('bzDraftUnconf'))`)),'draft operation state never lives in browser storage');
+ assert.equal(await ev(`(async()=>{const r=await fetch('/api/business/apps/gmail/drafts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:'dana@example.com',subject:'Estimate',text:'the gate brace quote',expectedVersion:'gen-AAA'})});const j=await r.json();return r.status+':'+(j.code||'')})()`),'409:draft_retry_needs_decision','the server refuses a same-payload retry without the checked-Gmail decision');
  await ev(`document.querySelector('#bz-app-draft').click();'reopen'`);
  assert(await poll(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('may exist in Gmail')`),'the unresolved op is never forgotten across close/reopen');
  await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-subject').value='Estimate';document.querySelector('#bz-draft-text').value='the gate brace quote';return 1})()`);

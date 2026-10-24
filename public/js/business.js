@@ -495,7 +495,7 @@
             createBtn.disabled = true; backBtn.disabled = true; // a submitted request cannot be undone: Back/Close never pretend otherwise
             createBtn.textContent = 'Creating in Gmail...';
             const liveNote = document.querySelector('#modal [data-draft-live]'); if (liveNote) liveNote.textContent = 'Creating the draft in Gmail - closing this window does not cancel it.';
-            const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v }); // the server records the intent BEFORE the provider effect - a reload here loses nothing
+            const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v, checkedGmail: !!(checkedBox && checkedBox.checked) }); // the server records the intent BEFORE the provider effect - a reload here loses nothing; the checked-Gmail decision is enforced server-side too
             if (stamp && !sameId(stamp, identity())) return; // changed mid-request: the server owns the operation record; this stale reply touches nothing
             // A composer reopened while this op was in flight re-arms on the known outcome - words untouched
             const pn = j && j.opId ? document.querySelector('#modal [data-draft-pending="' + j.opId + '"]') : null;
