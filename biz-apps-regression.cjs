@@ -22,6 +22,7 @@ const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},
    if(E.__G_FAIL)return reply({error:E.__G_FAIL},false,400);
    if(E.__G_EXCHANGE_THROW)throw new Error('exchange socket timeout');
    if(E.__G_BADJSON)return {ok:true,status:200,json:async()=>{throw new Error('malformed success body')}};
+   if(E.__G_FAIL503)return {ok:false,status:503,json:async()=>{throw new Error('unreadable error body')}};
    if(p.get('grant_type')==='authorization_code'){assert.ok(p.get('code'),'exchange carries the code');assert.equal(p.get('redirect_uri'),'https://test.local/api/business/apps/gmail/callback','exchange carries the exact redirect');if(E.__G_EXCHANGE_HOLD)await new Promise(res=>{E.__G_EXCHANGE_GO=res;});return reply({access_token:'ya29.first',refresh_token:E.__G_RT||'1//rt',expires_in:3600,token_type:'Bearer',scope:E.__G_SCOPE_NARROW?'https://www.googleapis.com/auth/gmail.readonly':'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose'});}
    if(p.get('grant_type')==='refresh_token'){if(E.__G_REFRESH_HOLD)await new Promise(res=>{E.__G_REFRESH_GO=res;});assert.equal(p.get('refresh_token'),'1//rt','refresh presents the stored credential');return reply({access_token:'ya29.refreshed',expires_in:3600,token_type:'Bearer',...(E.__G_REFRESH_NARROW?{scope:'https://www.googleapis.com/auth/gmail.readonly'}:{})});}
    throw new Error('unexpected grant');}
@@ -450,12 +451,24 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
    await f.r(['DEL','fm:biz:apptomb:gmail']);
    const i2=await connect();
    E.__G_EXCHANGE_THROW='1';
-   let threw=false; try { await f.bizAppCallback('gmail',{state:i2.nonce,code:'authcode1'},'https://test.local',i2.cookie); } catch (e) { threw=true; }
+   const cb2=await f.bizAppCallback('gmail',{state:i2.nonce,code:'authcode1'},'https://test.local',i2.cookie);
    delete E.__G_EXCHANGE_THROW;
-   assert.ok(threw,'a timed-out exchange propagates as a failure');
+   assert.equal(cb2.status,502);assert.equal(cb2.body.code,'app_exchange_uncertain','a timed-out exchange gets the structured honest answer');
+   assert.equal(cb2.body.grantStatus,'unknown');assert.ok(/third-party access/.test(cb2.body.error));
    tomb=await f.getJ('fm:biz:apptomb:gmail');
    assert.ok((tomb.attempts||[]).some(a=>a.status==='possibly_issued'),'a timeout is preserved as possibly-issued immediately');
    assert.equal((await f.bizAppStatus('gmail')).grantStatus,'revoke_unconfirmed');
+   // an ambiguous 503 with an unreadable body, and a transient OAuth code: both uncertain
+   await f.r(['DEL','fm:biz:apptomb:gmail']);
+   const i4=await connect();E.__G_FAIL503='1';
+   const cb4=await f.bizAppCallback('gmail',{state:i4.nonce,code:'authcode1'},'https://test.local',i4.cookie);
+   delete E.__G_FAIL503;
+   assert.equal(cb4.body.code,'app_exchange_uncertain','a bare 503 cannot prove rejection');
+   const i5=await connect();E.__G_FAIL='temporarily_unavailable';
+   const cb5=await f.bizAppCallback('gmail',{state:i5.nonce,code:'authcode1'},'https://test.local',i5.cookie);
+   assert.equal(cb5.body.code,'app_exchange_uncertain','a transient OAuth error cannot prove rejection');
+   tomb=await f.getJ('fm:biz:apptomb:gmail');
+   assert.ok((tomb.attempts||[]).filter(a=>a.status==='possibly_issued').length>=2,'both ambiguous outcomes are preserved as unknown');
    // a CONFIRMED rejection is still discarded
    await f.r(['DEL','fm:biz:apptomb:gmail']);
    const i3=await connect();E.__G_FAIL='access_denied';

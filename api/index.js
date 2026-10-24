@@ -2517,26 +2517,29 @@ async function bizAppCallback(p, query, origin, cookieHeader) {
     const ra = await bizTombAdd(p, snap.f0, attId, '', 'awaiting_exchange').catch(() => -1);
     if (ra === 0) return { status: 409, body: { error: 'Too many older access revocations are still unconfirmed. Run the workspace data purge (it retries them) or try again shortly. Nothing was started.', code: 'app_tomb_full' } };
     if (ra !== 1) return { status: 409, body: { error: 'The workspace changed while the connection was starting. Start the connection again.', code: 'app_race_lost' } };
+    const uncertainExchange = async (why) => {
+      // Anything short of a definitive, well-formed OAuth rejection is UNCERTAIN: the
+      // grant may exist at the provider. Preserve it as possibly_issued and answer
+      // honestly with the manual-recovery path - never discard, never claim rejection.
+      await bizTombMark(p, snap.f0, attId, 'possibly_issued').catch(() => {});
+      return { status: 502, body: { error: 'Google did not give a clear answer to the sign-in (' + why + '). The connection may have been created at Google - nothing was connected here. Check third-party access in the Google account and remove it there if it appears.', code: 'app_exchange_uncertain', grantStatus: 'unknown' } };
+    };
     let tok;
     try {
       tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), code, grant_type: 'authorization_code', redirect_uri: origin + '/api/business/apps/' + p + '/callback' }).toString(), signal: AbortSignal.timeout(Math.min(20000, left())) }); // bounded by the time left on the 60s connect lease
     } catch (e) {
-      // A timeout or network failure is NOT a proven rejection - the provider may have
-      // issued the grant. Preserve the unknown immediately; surface manual recovery.
-      await bizTombMark(p, snap.f0, attId, 'possibly_issued').catch(() => {});
-      throw e;
+      return uncertainExchange('the request timed out or the connection failed'); // a structured honest answer, not a bare crash
     }
     const tj = await tok.json().catch(() => null);
-    if (!tok.ok || (tj && tj.error)) { // a CONFIRMED provider rejection: discard, nothing was issued
+    // Definitive rejections ONLY: a well-formed OAuth error that cannot mean a grant was
+    // issued (RFC 6749 section 5.2). Ambiguous 5xx, unreadable error bodies and the
+    // transient server_error / temporarily_unavailable codes stay uncertain.
+    const DEFINITIVE = ['access_denied', 'invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope'];
+    if (tj && tj.error && DEFINITIVE.includes(String(tj.error))) {
       await bizTombMark(p, snap.f0, attId, 'discarded').catch(() => {});
-      return { status: 502, body: { error: 'Google did not complete the token exchange (' + bizClean((tj && tj.error) || tok.status) + '). Nothing was connected.', code: 'app_exchange_failed' } };
+      return { status: 502, body: { error: 'Google did not complete the token exchange (' + bizClean(tj.error) + '). Nothing was connected.', code: 'app_exchange_failed' } };
     }
-    if (!tj || !tj.access_token) {
-      // An unreadable or empty SUCCESS response is not a proven rejection: the grant may
-      // exist at the provider. Preserve the unknown durably and say so honestly.
-      await bizTombMark(p, snap.f0, attId, 'possibly_issued').catch(() => {});
-      return { status: 502, body: { error: 'Google returned an unreadable response after the sign-in (' + tok.status + '). The connection may have been created at Google - nothing was connected here. Check third-party access in the Google account and remove it there if it appears.', code: 'app_exchange_uncertain', grantStatus: 'unknown' } };
-    }
+    if (!tok.ok || !tj || !tj.access_token) return uncertainExchange(String((tj && tj.error) || tok.status));
     fresh = tj;
     // Test-only seam (never set in production), mirroring global.__bizBetween: a crash
     // after the provider's token reply but before the fill.
