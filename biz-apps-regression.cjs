@@ -702,6 +702,15 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal((await f.bizDraftOpList()).filter(o=>(o.to||[])[0]==='max@example.com').length,0,'the deadline-stopped create left nothing behind');
   assert.equal(await f.r(['GET','fm:biz:appconn:gmail']),null,'the deadline-stopped create released the shared lock');
   delete c.global.__bizDraftOpBudgetMs;
+  // post-gate clock check: a stall between the gate verdict and the provider call refuses - the provider is never called on an outrun budget, and the fetch is never a clamped 1ms pretend-budget
+  c.global.__bizDraftOpBudgetMs=9000; // test-only
+  c.global.__bizDraftAfterGate=async()=>{ await new Promise(res=>setTimeout(res,4000)); }; // test-only: the gate verdict is 4s stale by the time the call would start
+  const posts3=E.__DRAFT_POSTS||0;
+  const pgate=await f.bizAppDraftCreate('gmail',{to:'pat@example.com',text:'post gate'},cid0);
+  assert.equal(pgate.status,409);assert.equal(pgate.body.code,'app_draft_deadline','an outrun budget after the gate refuses the provider call');
+  assert.equal(E.__DRAFT_POSTS||0,posts3,'the post-gate refusal never reached the provider');
+  { const stray=(await f.bizDraftOpList()).find(o=>(o.to||[])[0]==='pat@example.com'); assert.ok(!stray || stray.status==='aborted','the refused operation is recorded aborted, never left in-flight'); if(stray){ await f.r(['DEL','fm:biz:draftop:'+stray.id]); await f.r(['SREM','fm:biz:draftops',stray.id]); } await f.r(['DEL','fm:biz:draftif:'+cid0]); await f.r(['DEL','fm:biz:appconn:gmail']); }
+  delete c.global.__bizDraftOpBudgetMs; delete c.global.__bizDraftAfterGate;
   // a KNOWN provider-200 outcome stays known-created even when the connection changes mid-flight
   E.__G_DRAFT_KILLAPP=1;
   const k1=await f.bizAppDraftCreate('gmail',{to:'kim@example.com',text:'known outcome stands'},cid0);

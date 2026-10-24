@@ -2687,9 +2687,10 @@ async function bizAppAccessToken(p) {
   const lock = 'fm:biz:appref:' + p, lockTok = rid('ref');
   if (!await r(['SET', lock, lockTok, 'NX', 'PX', '30000'])) return { err: { status: 409, body: { error: 'A credential refresh is already in progress. Try again in a moment.', code: 'app_refresh_busy' } } };
   const dl = Date.now() + 27000, left = () => Math.max(1, dl - Date.now()); // the whole refresh fits inside the 30s lease
+  const inhLeft = () => { const d0 = (als.getStore() || {}).issuerDeadline; return d0 ? d0 - Date.now() : Infinity; }; // an inherited operation deadline (e.g. a draft create's one clock) bounds this refresh too
   try {
     const c = BIZ_APPS[p];
-    const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), grant_type: 'refresh_token', refresh_token: rt }).toString(), signal: AbortSignal.timeout(Math.min(20000, left())) }); // bounded by the time left on the lease
+    const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), grant_type: 'refresh_token', refresh_token: rt }).toString(), signal: AbortSignal.timeout(Math.min(20000, left(), inhLeft())) }); // bounded by the time left on the lease AND any inherited operation deadline
     const tj = await tok.json().catch(() => null);
     if (!tok.ok || !tj || !tj.access_token) {
       const invalid = !!(tj && tj.error === 'invalid_grant');
@@ -2816,73 +2817,103 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
   // owned lock always has remaining lease, and no await below can outrun the budget.
   const opStart = Date.now(), opBudget = (global.__bizDraftOpBudgetMs || 45000); // test-only override, never set in production
   const left = () => opStart + opBudget - Date.now();
-  const tooSlow = async () => { await unlock(); return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was created. Try again.', code: 'app_draft_deadline' } }; };
+  // The SAME original deadline rides every underlying store await: the request context's
+  // issuerDeadline aborts any store call that would outrun the operation clock, so no
+  // fence/token/list/rev/begin/log/gate/settle await can hang past it. Restored at every exit.
+  const store0 = als.getStore() || {}, prevDl = store0.issuerDeadline;
+  store0.issuerDeadline = opStart + opBudget;
+  const restoreDl = () => { store0.issuerDeadline = prevDl; };
+  const tooSlow = async () => { restoreDl(); await unlock(); return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was created. Try again.', code: 'app_draft_deadline' } }; };
   const f0 = await bizFence(); // captured BEFORE the token + retry reads, so the original epoch covers every snapshot this create relies on
-  const at = await bizAppAccessToken(p); if (at.err) { await unlock(); return at.err; }
-  if (left() <= 4000) return tooSlow(); // never start the reservation the budget cannot finish
-  // Same owner binding as removal: the exact words go to the EXACT account reviewed on
-  // screen - a replacement reconnect since the review is never drafted into silently.
-  if (expectedVersion !== undefined) {
-    if (expectedVersion === null) { await unlock(); return { status: 409, body: { error: 'Reload this page and review the connection before drafting - this review is out of date. Nothing was created.', code: 'app_version_required' } }; }
-    if (!at.rec.connectionId || String(expectedVersion) !== String(at.rec.connectionId)) { await unlock(); return { status: 409, body: { error: 'The connection changed since this page was loaded - reload and review the account before drafting. Nothing was created.', code: 'app_version_mismatch' } }; }
-  }
-  const connId = at.rec.connectionId || null;
-  // Server-side retry decision, independent of any client control: creating the EXACT same
-  // payload (same fingerprint on the same connection) while earlier attempts are unresolved
-  // requires the owner's decision naming the EXACT reviewed set at the EXACT set revision -
-  // a bare boolean cannot bind a review, and a new unknown attempt invalidates an old one.
-  const priorSet = (await bizDraftOpList()).filter(o => o.status === 'unconfirmed' && o.connectionVersion === connId && o.fp === fp0);
-  const rev0 = String(await r(['GET', revKey]) || '0');
-  const reviewedCsv = priorSet.map(o => o.id).sort().join(',');
-  const decisionOk = priorSet.length > 0 && !!(body && body.checkedGmail === true) && Array.isArray(body && body.reviewedOps)
-    && body.reviewedOps.map(String).sort().join(',') === reviewedCsv && String((body && body.decisionRev) || '') === rev0;
-  const decisionRefusal = async () => ({ status: 409, body: { error: 'An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail. Check the drafts folder there, review every listed attempt, then confirm and try again. Nothing new was created.', code: 'draft_retry_needs_decision', ops: (await bizDraftOpList()).filter(o => o.status === 'unconfirmed' && o.connectionVersion === connId && o.fp === fp0).map(o => o.id), rev: String(await r(['GET', revKey]) || '0') } });
-  if (priorSet.length && !decisionOk) { await unlock(); return decisionRefusal(); }
-  const opRec = () => ({ id: opId, at: opAt, provider: p, account: (at.rec && at.rec.email) || null, connectionVersion: connId, to: tos, subject, fp: opFp, fence: f0, lockTok: connTok, ...(priorSet.length ? { retryOf: priorSet.map(o => o.id) } : {}) });
-  const begun = await r(['EVAL', BIZ_DRAFTOP_BEGIN, 9, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, 'fm:biz:app:' + p, lockKey, revKey, f0, JSON.stringify({ ...opRec(), status: 'in_flight' }), opId, String(connId || ''), decisionOk ? reviewedCsv : '', opFp, decisionOk ? rev0 : '', connTok]);
-  if (begun !== 1) {
-    if (begun !== 7) await unlock(); // 7: the lease is no longer ours - never delete another holder's lock
-    if (begun === 2) return { status: 409, body: { error: 'A draft is already being created for this connection - wait for its result before creating another. Nothing new was created.', code: 'app_draft_pending' } };
-    if (begun === 3) return { status: 409, body: { error: 'The connection changed while this create was starting - reload and review the account before drafting. Nothing was created.', code: 'app_version_mismatch' } };
-    if (begun === 6 || begun === 8) return decisionRefusal(); // the unresolved set changed between the review and the reservation - re-review the current set
-    if (begun === 7) return { status: 409, body: { error: 'That draft operation changed hands while starting - reload to see the current state. Nothing new was created.', code: 'draft_op_changed' } };
-    return bizFenceConflict();
-  } // intent is durable BEFORE the provider effect below, and the decision is logged only now - after the reservation actually owns the lifecycle
-  if (priorSet.length) await bizLog('app_draft_retry_decision', { provider: p, priorOpIds: priorSet.map(o => o.id), to: toN0, subject });
-  const opSettle = async (status, extra) => r(['EVAL', BIZ_DRAFTOP_SETTLE, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, status === 'unconfirmed' ? JSON.stringify({ ...opRec(), status, settledAt: now(), ...(extra || {}) }) : '', opFp, connTok]); // original fence + exact-record CAS incl. payload ownership; releases the still-owned lock. ok/failed records are resolved: they leave the store (the activity log keeps the outcome); unconfirmed persists until the owner's explicit acknowledgment
-  if (global.__bizDraftAfterBegin) { const fn = global.__bizDraftAfterBegin; global.__bizDraftAfterBegin = null; await fn(); } // test-only interleave hook, never set in production
-  if (left() <= 4000) { await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, connTok]); return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was created. Try again.', code: 'app_draft_deadline' } }; } // the whole-operation clock: never start the provider effect the budget cannot finish
-  // Pre-effect gate: the LAST atomic check before anything reaches Google - original epoch,
-  // owned lock, exact current app record (still connected), exact in-flight record. A
-  // disconnect that completed after the intent stops the create HERE: no stale start.
-  const gate = await r(['EVAL', BIZ_DRAFTOP_PREFFECT, 7, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:app:' + p, lockKey, 'fm:biz:draftif:' + connId, f0, opId, String(connId || ''), opFp, connTok]);
-  if (gate !== 1) {
-    await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, connTok]);
-    if (gate === 0) return bizFenceConflict();
-    return { status: 409, body: { error: 'The connection changed before anything was sent to Google. Nothing was created.', code: 'app_changed' } };
-  }
-  const mime = 'To: ' + tos.join(', ') + '\r\nSubject: ' + subject + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text;
-  const raw = Buffer.from(mime, 'utf8').toString('base64url');
-  let res = null;
   try {
-    res = await fetch(c.apiBase + '/drafts', { method: 'POST', headers: { Authorization: 'Bearer ' + at.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { raw, ...(body.threadId ? { threadId: String(body.threadId) } : {}) } }), signal: AbortSignal.timeout(Math.min(20000, Math.max(1, left() - 5000))) }); // bounded by the SAME clock: the settle + log always keep 5s of budget and the lease outlives both
-  } catch {
-    // No answer at all: the create may have landed. Never claim failure - the owner checks
-    // Gmail before retrying so the draft is not duplicated.
-    await opSettle('unconfirmed', { unknownReason: 'no_answer' });
-    return { status: 502, body: { error: 'Google did not answer - the draft may have been created. Check the drafts folder in Gmail before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed', opId, fp: opFp } };
+    const at = await bizAppAccessToken(p); if (at.err) { restoreDl(); await unlock(); return at.err; }
+    if (left() <= 4000) return tooSlow(); // never start the reservation the budget cannot finish
+    // Same owner binding as removal: the exact words go to the EXACT account reviewed on
+    // screen - a replacement reconnect since the review is never drafted into silently.
+    if (expectedVersion !== undefined) {
+      if (expectedVersion === null) { restoreDl(); await unlock(); return { status: 409, body: { error: 'Reload this page and review the connection before drafting - this review is out of date. Nothing was created.', code: 'app_version_required' } }; }
+      if (!at.rec.connectionId || String(expectedVersion) !== String(at.rec.connectionId)) { restoreDl(); await unlock(); return { status: 409, body: { error: 'The connection changed since this page was loaded - reload and review the account before drafting. Nothing was created.', code: 'app_version_mismatch' } }; }
+    }
+    const connId = at.rec.connectionId || null;
+    // Server-side retry decision, independent of any client control: creating the EXACT same
+    // payload (same fingerprint on the same connection) while earlier attempts are unresolved
+    // requires the owner's decision naming the EXACT reviewed set at the EXACT set revision -
+    // a bare boolean cannot bind a review, and a new unknown attempt invalidates an old one.
+    const priorSet = (await bizDraftOpList()).filter(o => o.status === 'unconfirmed' && o.connectionVersion === connId && o.fp === fp0);
+    const rev0 = String(await r(['GET', revKey]) || '0');
+    const reviewedCsv = priorSet.map(o => o.id).sort().join(',');
+    const decisionOk = priorSet.length > 0 && !!(body && body.checkedGmail === true) && Array.isArray(body && body.reviewedOps)
+      && body.reviewedOps.map(String).sort().join(',') === reviewedCsv && String((body && body.decisionRev) || '') === rev0;
+    const decisionRefusal = async () => ({ status: 409, body: { error: 'An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail. Check the drafts folder there, review every listed attempt, then confirm and try again. Nothing new was created.', code: 'draft_retry_needs_decision', ops: (await bizDraftOpList()).filter(o => o.status === 'unconfirmed' && o.connectionVersion === connId && o.fp === fp0).map(o => o.id), rev: String(await r(['GET', revKey]) || '0') } });
+    if (priorSet.length && !decisionOk) { restoreDl(); await unlock(); return decisionRefusal(); }
+    const opRec = () => ({ id: opId, at: opAt, provider: p, account: (at.rec && at.rec.email) || null, connectionVersion: connId, to: tos, subject, fp: opFp, fence: f0, lockTok: connTok, ...(priorSet.length ? { retryOf: priorSet.map(o => o.id) } : {}) });
+    const begun = await r(['EVAL', BIZ_DRAFTOP_BEGIN, 9, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, 'fm:biz:app:' + p, lockKey, revKey, f0, JSON.stringify({ ...opRec(), status: 'in_flight' }), opId, String(connId || ''), decisionOk ? reviewedCsv : '', opFp, decisionOk ? rev0 : '', connTok]);
+    if (begun !== 1) {
+      restoreDl(); if (begun !== 7) await unlock(); // 7: the lease is no longer ours - never delete another holder's lock
+      if (begun === 2) return { status: 409, body: { error: 'A draft is already being created for this connection - wait for its result before creating another. Nothing new was created.', code: 'app_draft_pending' } };
+      if (begun === 3) return { status: 409, body: { error: 'The connection changed while this create was starting - reload and review the account before drafting. Nothing was created.', code: 'app_version_mismatch' } };
+      if (begun === 6 || begun === 8) return decisionRefusal(); // the unresolved set changed between the review and the reservation - re-review the current set
+      if (begun === 7) return { status: 409, body: { error: 'That draft operation changed hands while starting - reload to see the current state. Nothing new was created.', code: 'draft_op_changed' } };
+      return bizFenceConflict();
+    } // intent is durable BEFORE the provider effect below, and the decision is logged only now - after the reservation actually owns the lifecycle
+    if (priorSet.length) await bizLog('app_draft_retry_decision', { provider: p, priorOpIds: priorSet.map(o => o.id), to: toN0, subject });
+    const opSettle = async (status, extra) => r(['EVAL', BIZ_DRAFTOP_SETTLE, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, status === 'unconfirmed' ? JSON.stringify({ ...opRec(), status, settledAt: now(), ...(extra || {}) }) : '', opFp, connTok]); // original fence + exact-record CAS incl. payload ownership; releases the still-owned lock. ok/failed records are resolved: they leave the store (the activity log keeps the outcome); unconfirmed persists until the owner's explicit acknowledgment
+    if (global.__bizDraftAfterBegin) { const fn = global.__bizDraftAfterBegin; global.__bizDraftAfterBegin = null; await fn(); } // test-only interleave hook, never set in production
+    if (left() <= 6000) { await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, connTok]).catch(() => {}); restoreDl(); return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was created. Try again.', code: 'app_draft_deadline' } }; } // the whole-operation clock: never start the provider effect the budget cannot finish
+    // Pre-effect gate: the LAST atomic check before anything reaches Google - original epoch,
+    // owned lock, exact current app record (still connected), exact in-flight record. A
+    // disconnect that completed after the intent stops the create HERE: no stale start.
+    const gate = await r(['EVAL', BIZ_DRAFTOP_PREFFECT, 7, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:app:' + p, lockKey, 'fm:biz:draftif:' + connId, f0, opId, String(connId || ''), opFp, connTok]);
+    if (gate !== 1) {
+      await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, connTok]).catch(() => {});
+      restoreDl();
+      if (gate === 0) return bizFenceConflict();
+      return { status: 409, body: { error: 'The connection changed before anything was sent to Google. Nothing was created.', code: 'app_changed' } };
+    }
+    if (global.__bizDraftAfterGate) { const fn = global.__bizDraftAfterGate; global.__bizDraftAfterGate = null; await fn(); } // test-only interleave hook, never set in production
+    // Post-gate: the gate's verdict is only as fresh as the clock. An expired or insufficient
+    // remaining budget refuses HERE - the provider call is never started on a lapsed lease,
+    // and the fetch timeout is never a clamped 1ms pretend-budget.
+    if (left() <= 6000) {
+      await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, connTok]).catch(() => {});
+      restoreDl();
+      return { status: 409, body: { error: 'Creating the draft took too long to stay safe - nothing was created. Try again.', code: 'app_draft_deadline' } };
+    }
+    const mime = 'To: ' + tos.join(', ') + '\r\nSubject: ' + subject + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text;
+    const raw = Buffer.from(mime, 'utf8').toString('base64url');
+    let res = null;
+    try {
+      res = await fetch(c.apiBase + '/drafts', { method: 'POST', headers: { Authorization: 'Bearer ' + at.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { raw, ...(body.threadId ? { threadId: String(body.threadId) } : {}) } }), signal: AbortSignal.timeout(Math.min(20000, left() - 5000)) }); // bounded by the SAME clock: the post-gate check guarantees left() > 6000 here, so this is a real budget, never a clamped 1ms; the settle + log always keep 5s
+    } catch {
+      // No answer at all: the create may have landed. Never claim failure - the owner checks
+      // Gmail before retrying so the draft is not duplicated.
+      await opSettle('unconfirmed', { unknownReason: 'no_answer' });
+      return { status: 502, body: { error: 'Google did not answer - the draft may have been created. Check the drafts folder in Gmail before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed', opId, fp: opFp } };
+    }
+    const dj = await res.json().catch(() => null);
+    if (!res.ok) {
+      const ref = dj && dj.error && dj.error.message;
+      if (res.status >= 400 && res.status < 500 && ref) { await opSettle('failed'); return { status: 502, body: { error: 'Google did not create the draft (' + bizClean(ref) + ').', code: 'app_draft_failed' } }; } // an authoritative, parsed refusal only
+      await opSettle('unconfirmed', { unknownReason: 'http_' + res.status });
+      return { status: 502, body: { error: 'Google could not confirm the draft (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed', opId, fp: opFp } }; // a gateway/5xx/unreadable failure says nothing about creation
+    }
+    if (!dj || !dj.id) { await opSettle('unconfirmed', { unknownReason: 'unreadable' }); return { status: 502, body: { error: 'Google answered but the draft could not be confirmed (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed', opId, fp: opFp } }; }
+    await opSettle('ok', { draftId: dj.id });
+    await bizLog('app_draft_created', { provider: p, draftId: dj.id, to: tos.join(', ') }, at.snap.f0);
+    return { status: 200, body: { provider: p, draftId: dj.id, account: at.rec.email || null, to: tos, subject, opId, fp: opFp, note: 'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.' } };
+  } catch (e) {
+    // Safe unknown-mutation accounting: a store await whose response was lost to the
+    // operation deadline (or any abort mid-lifecycle) leaves the durable record in an
+    // UNKNOWN state - the intent may or may not have landed. Never claim a clean
+    // "nothing was created": hand back the operation id, let the sweep reconcile the
+    // record to unconfirmed, and tell the reviewer to check before retrying.
+    const msg = String((e && (e.name + ' ' + e.message)) || e);
+    if (!/abort|timed?out/i.test(msg)) { restoreDl(); throw e; } // genuine bugs still surface
+    restoreDl();
+    await unlock().catch(() => {}); // token compare: never deletes another holder's lock
+    if (opFp) return { status: 503, body: { error: 'The draft result could not be confirmed before the deadline - the provider may or may not have created it. Check the operation list and Gmail before retrying; the operation reconciles itself automatically. Nothing was sent.', code: 'app_draft_state_unknown', opId } };
+    return { status: 503, body: { error: 'The draft create could not be confirmed before the deadline - nothing was sent to Google. If the operation appears in the list it reconciles itself automatically; check it before retrying.', code: 'app_draft_state_unknown', opId } };
   }
-  const dj = await res.json().catch(() => null);
-  if (!res.ok) {
-    const ref = dj && dj.error && dj.error.message;
-    if (res.status >= 400 && res.status < 500 && ref) { await opSettle('failed'); return { status: 502, body: { error: 'Google did not create the draft (' + bizClean(ref) + ').', code: 'app_draft_failed' } }; } // an authoritative, parsed refusal only
-    await opSettle('unconfirmed', { unknownReason: 'http_' + res.status });
-    return { status: 502, body: { error: 'Google could not confirm the draft (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed', opId, fp: opFp } }; // a gateway/5xx/unreadable failure says nothing about creation
-  }
-  if (!dj || !dj.id) { await opSettle('unconfirmed', { unknownReason: 'unreadable' }); return { status: 502, body: { error: 'Google answered but the draft could not be confirmed (HTTP ' + res.status + '). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.', code: 'app_draft_unconfirmed', opId, fp: opFp } }; }
-  await opSettle('ok', { draftId: dj.id });
-  await bizLog('app_draft_created', { provider: p, draftId: dj.id, to: tos.join(', ') }, at.snap.f0);
-  return { status: 200, body: { provider: p, draftId: dj.id, account: at.rec.email || null, to: tos, subject, opId, fp: opFp, note: 'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.' } };
 }
 // LOCAL-FIRST disconnect: one atomic step removes the record + snapshot, bumps the epoch,
 // cancels every pending sign-in and writes an encrypted tombstone - only THEN is the provider
