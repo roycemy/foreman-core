@@ -636,6 +636,14 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .bz-hq-need{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--well);border-radius:var(--r-inner);padding:10px 12px;font-size:var(--t-body)}
 .bz-hq-need .b{flex:none}
 .bz-hq .bz-row{cursor:default;padding:6px 0}
+/* Your team: rows are not themselves clickable (Open navigates), and on narrow screens the
+   responsibility/owner/status text takes the full width - the classification chip and Open
+   wrap beneath it instead of squeezing the text into a thin column. */
+#bz-team .bz-row{cursor:default}
+@media (max-width:760px){
+  #bz-team .bz-row{flex-wrap:wrap;row-gap:6px}
+  #bz-team .bz-row .t{flex:1 1 100%}
+}
 /* Pending-delete recovery actions: wrap and stack on narrow screens so neither button clips */
 .bz-pendbtns{flex-wrap:wrap}
 .bz-pendbtns .b{flex:1 1 200px;min-width:0;white-space:normal;text-align:center;height:auto;min-height:44px;padding:10px 12px;line-height:1.3}
