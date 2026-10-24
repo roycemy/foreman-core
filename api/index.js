@@ -2083,10 +2083,15 @@ async function bizState() {
   const runsByResp = {};
   for (const rp of resps) { const ids = await r(['LRANGE', 'fm:biz:runs:' + rp.id, 0, 9]); if (ids.length) runsByResp[rp.id] = (await r(['MGET', ...ids.map(i => 'fm:biz:run:' + i)])).filter(Boolean).map(v => JSON.parse(v)); }
   // Live job state rides on unsettled delegated runs (claimed, stopped, missing) so the view
-  // renders what is actually happening without a second fetch.
+  // renders what is actually happening without a second fetch. A job that finished through a
+  // deployment running older code (production serves the previous release; the settle hook
+  // exists only in this version) lands terminal in the shared store with its record still
+  // unsettled - settle it here through the same fenced, idempotent path the report route
+  // uses, so a run can never hang 'delegated' after its job finished.
   for (const rp of resps) for (const run of (runsByResp[rp.id] || [])) {
     if ((run.status === 'delegated' || run.status === 'running') && run.taskId) {
       const t = await getJ('fm:task:' + run.taskId);
+      if (t && (t.status === 'done' || t.status === 'failed')) { await bizSettleDelegatedRun(t); const fresh = await getJ('fm:biz:run:' + run.id); if (fresh) Object.assign(run, fresh); }
       run.job = t ? { status: t.status, startedAt: t.startedAt || null, assignee: t.assignee || null } : { status: 'missing' };
     }
   }
@@ -2096,6 +2101,7 @@ async function bizState() {
   const discoveries = discIds && discIds.length ? (await r(['MGET', ...discIds.map(i => 'fm:biz:disc:' + i)])).filter(Boolean).map(v => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean) : [];
   for (const d of discoveries) if ((d.status === 'delegated' || d.status === 'running') && d.taskId) {
     const t = await getJ('fm:task:' + d.taskId);
+    if (t && (t.status === 'done' || t.status === 'failed')) { await bizSettleDelegatedRun(t); const fresh = await getJ('fm:biz:disc:' + d.id); if (fresh) Object.assign(d, fresh); }
     d.job = t ? { status: t.status, startedAt: t.startedAt || null, assignee: t.assignee || null } : { status: 'missing' };
   }
   return { engine, delegate, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
