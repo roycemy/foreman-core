@@ -58,6 +58,7 @@ function sendStoreError(res,e){if(e.code==='store_quota'){res.setHeader('Retry-A
 async function r(cmd0) {
   if (URL_ && Date.now() < storeQuotaUntil) throw storeQuotaError();
   const cmd = cmd0.map((x, i) => i === 0 ? x : nsKey(x));
+  if (global.__BIZ_STORE_THROW === 'draftop_settle' && cmd[0] === 'EVAL' && cmd[1] === BIZ_DRAFTOP_SETTLE) { const e = new Error('The operation was aborted'); e.name = 'AbortError'; throw e; } // test-only seam, never set in production: a settle response lost to the deadline
   if (!URL_) return memCmd(cmd);
   const res = await fetch(URL_, { method: 'POST', headers: { Authorization: 'Bearer ' + TOK, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd), ...((als.getStore()||{}).issuerDeadline?{signal:AbortSignal.timeout(Math.max(1,(als.getStore()||{}).issuerDeadline-Date.now()))}:{}) });
   const j = await res.json();

@@ -732,6 +732,20 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal(E.__DRAFT_POSTS||0,posts4,'the inherited-deadline refusal never reached the provider');
   assert.equal(await f.r(['GET','fm:biz:appconn:gmail']),null,'the inherited-deadline refusal released the shared lock');
   assert.equal((await f.bizDraftOpList()).filter(o=>(o.to||[])[0]==='pam@example.com').length,0,'the inherited-deadline refusal left no operation record');
+  // a KNOWN provider-200 whose LOCAL settle response is lost stays known-created: draft id + account come back,
+  // local accounting uncertainty is named separately, retry is killed outright, and the durable record is
+  // honestly still unresolved (read back, never assumed) until the sweep reconciles it
+  c.global.__BIZ_STORE_THROW='draftop_settle';
+  const kd=await f.bizAppDraftCreate('gmail',{to:'ken@example.com',text:'known created'},cid0);
+  delete c.global.__BIZ_STORE_THROW;
+  assert.equal(kd.status,200);assert.equal(kd.body.created,true,'a known provider-200 reports created even when local accounting hit the deadline');
+  assert.equal(kd.body.draftId,'draft_9','the known draft id is preserved');
+  assert.ok(kd.body.account,'the known account is preserved');
+  assert.equal(kd.body.accountingPending,true,'local accounting uncertainty is named separately from the known creation');
+  assert.ok(/already exists/.test(kd.body.note),'the do-not-duplicate instruction is explicit');
+  const kdRec=(await f.bizDraftOpList()).find(o=>(o.to||[])[0]==='ken@example.com');
+  assert.ok(kdRec && kdRec.status==='in_flight','the durable intent is honestly still unresolved until reconciled - never claimed settled');
+  await f.r(['DEL','fm:biz:draftop:'+kdRec.id]); await f.r(['SREM','fm:biz:draftops',kdRec.id]); await f.r(['DEL','fm:biz:draftif:'+cid0]); await f.r(['DEL','fm:biz:appconn:gmail']); // cleaned by hand here; production leaves it to the sweep
 
   // HOLD2: the decision must name the EXACT reviewed set at the EXACT set revision
   E.__G_DRAFT_503=1;
