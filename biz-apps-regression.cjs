@@ -721,6 +721,17 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.ok(log9.some(x=>x.includes('app_draft_created')&&x.includes('kim@example.com')===false&&true||x.includes('app_draft_created')),'the completed creation is logged as created - uncertainty is never manufactured after the fact');
   assert.equal((await f.bizDraftOpList()).filter(o=>(o.to||[])[0]==='kim@example.com').length,0,'a known ok resolves the operation record');
   await f.r(['SET','fm:biz:app:gmail',appRaw9]);
+  // the operation clock rides an ISOLATED child context: the parent request store is never mutated, on any exit
+  assert.equal(f.als.getStore().issuerDeadline,undefined,'a create never mutates the parent request context deadline');
+  // a tighter parent deadline always wins: the op never extends it, and an expired inherited budget refuses before any provider call
+  const parDl=Date.now()+1500; f.als.getStore().issuerDeadline=parDl;
+  const posts4=E.__DRAFT_POSTS||0;
+  const pd=await f.bizAppDraftCreate('gmail',{to:'pam@example.com',text:'parent deadline'},cid0);
+  delete f.als.getStore().issuerDeadline;
+  assert.equal(pd.status,409);assert.equal(pd.body.code,'app_draft_deadline','a tighter inherited deadline refuses the create honestly');
+  assert.equal(E.__DRAFT_POSTS||0,posts4,'the inherited-deadline refusal never reached the provider');
+  assert.equal(await f.r(['GET','fm:biz:appconn:gmail']),null,'the inherited-deadline refusal released the shared lock');
+  assert.equal((await f.bizDraftOpList()).filter(o=>(o.to||[])[0]==='pam@example.com').length,0,'the inherited-deadline refusal left no operation record');
 
   // HOLD2: the decision must name the EXACT reviewed set at the EXACT set revision
   E.__G_DRAFT_503=1;
