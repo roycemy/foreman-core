@@ -356,6 +356,88 @@
       ${liveResps.length ? `<div class="bz-sech">On Alter's plate</div>${plate}` : ''}
       ${pausedResps.length ? `<p class="meta">Paused: ${pausedResps.map(rp => esc(rp.title)).join(', ')}</p>` : ''}
     </div>` : '';
+    // Your team: the owner-facing functional surface. Functional responsibility labels are
+    // the primary rows; who handles each is the secondary line and MIRRORS the server's own
+    // resolver (bizRespBot/bizDelegateBot): research reads public pages on the engine; an
+    // explicit assignment is the exact owner and is never substituted (not connected means
+    // refuse, never fall back to the engine); everything else non-research follows the
+    // automatic pick - the connected delegate - and a bot-marked responsibility with no
+    // unambiguous connected pick asks for an explicit assignment instead of inventing a gone
+    // owner. Every state is from saved data only - never a live-presence or online claim -
+    // and nothing here implies work resumes or sends on its own: new runs go only when the
+    // owner sends them, and automatic daily sends have no live trigger on this deployment.
+    const teamCard = (() => {
+      const team = (B.team || []);
+      const engS = (B.engine || {});
+      const engineOn = !!(engS.configured && engS.enabled && engS.consent && engS.consent.current);
+      const nonRetired = resps.filter(rp => rp.status !== 'retired');
+      const delegateId = (B.delegate && B.delegate.id) || null;
+      const connActive = c => !!(c && c.status === 'active');
+      // Mirrors bizRespBot + the run routes: research -> engine; assignment -> exact bot,
+      // never substituted; otherwise the connected delegate (automatic pick) when one
+      // resolves; a bot-marked responsibility with no pick refuses rather than falls back;
+      // a plain responsibility with no pick runs on the engine.
+      const ownerOf = rp => {
+        if (rp.research) return { kind: 'engine', research: true };
+        const asg = rp.assignment;
+        if (asg && asg.botId) {
+          const entry = teamEntry(asg.botId);
+          if (entry && connActive(entry.connection)) return { kind: 'bot', name: asg.botName, providerId: entry.providerId, verb: 'Assigned to' };
+          return { kind: 'bot', name: asg.botName, providerId: entry && entry.providerId, verb: 'Assigned to', gone: true, entryMissing: !entry };
+        }
+        if (B.delegate) return { kind: 'bot', name: B.delegate.name || 'the connected bot', providerId: B.delegate.providerId, verb: 'Handled by', autopick: true, conn: B.delegate.connection };
+        if (rp.bot) {
+          const connected = team.filter(t => connActive(t.connection));
+          return { kind: 'bot', name: null, nopick: true, connectedCount: connected.length };
+        }
+        return { kind: 'engine' };
+      };
+      const ownerLine = o => {
+        if (o.kind === 'engine') return o.research ? 'Runs on the reasoning engine · reads public pages' : 'Runs on the reasoning engine · built in';
+        if (o.nopick) return 'Runs on a connected bot';
+        return o.verb + ' ' + o.name + (o.autopick ? ' · automatic pick' : '') + ' · paired bot' + (o.providerId ? ' · ' + o.providerId : '');
+      };
+      const ownerChip = o => {
+        if (o.kind === 'engine') return engineOn ? chip('Runs in Alter', 'dim') : chip('Setup unfinished', 'warn');
+        if (o.nopick) return chip(o.connectedCount ? 'Assignment needed' : 'Connection needed', 'warn');
+        if (o.gone) return chip(o.entryMissing ? 'Reassign needed' : 'Reconnect needed', 'warn');
+        if (o.conn && !connActive(o.conn)) return chip('Reconnect needed', 'warn');
+        return chip('Paired', 'dim');
+      };
+      const blockLine = o => {
+        if (o.kind === 'engine') return engineOn ? null : 'The reasoning engine is not connected and allowed on this deployment yet - runs and daily check-ins are off until setup finishes.';
+        if (o.nopick) return o.connectedCount
+          ? 'Alter does not pick between your connected bots on its own - assign a specific bot from its card below. The reasoning engine is never substituted.'
+          : 'No bot is connected right now - work refuses until one connects. The reasoning engine is never substituted.';
+        if (o.gone) return o.entryMissing
+          ? 'No longer on your team - work assigned to it refuses until you reassign it or pair the bot again. The reasoning engine is never substituted.'
+          : 'Not connected right now - reassign it or connect that bot first; the reasoning engine is never substituted. New runs go only when you send them; no automatic sends are live on this deployment.';
+        if (o.conn && !connActive(o.conn)) return 'Not connected right now. New runs go only when you send them - no automatic sends are live on this deployment.';
+        return null;
+      };
+      const rowState = rp => {
+        const last = (rp.runs || [])[0];
+        const runTxt = !last ? 'no runs yet'
+          : (last.status === 'delegated' || last.status === 'running') ? 'a run was sent - waiting for its draft'
+          : last.status === 'failed' ? 'last run ' + BB.when(last.at) + ' did not finish'
+          : 'last draft ' + BB.when(last.at);
+        // A paused schedule never hides an in-flight run: both saved states stay visible.
+        if (rp.schedule && rp.schedule.needsReview) return 'schedule paused - the text it would send changed since your review · ' + runTxt;
+        return runTxt;
+      };
+      // Paired bots holding no responsibility: one secondary closing line, never a heading.
+      const delegateUsed = nonRetired.some(rp => !rp.research && (!rp.assignment || (delegateId && rp.assignment.botId === delegateId)));
+      const ownerless = team.filter(t => t.id !== delegateId && !nonRetired.some(rp => rp.assignment && rp.assignment.botId === t.id));
+      if (B.delegate && !delegateUsed) ownerless.unshift({ id: delegateId, name: B.delegate.name });
+      if (!nonRetired.length && !ownerless.length) return '';
+      const rows = nonRetired.map(rp => {
+        const o = ownerOf(rp), block = blockLine(o);
+        return `<div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>${rp.status === 'paused' ? 'Paused · ' : ''}${esc(ownerLine(o))}</small><small>${esc(rowState(rp))}</small></div>${ownerChip(o)}<button class="b ghost sm" data-hq-target="[data-resp=&quot;${esc(rp.id)}&quot;]" type="button">Open</button></div>`
+          + (block ? `<p class="bz-blocked">${esc(block)}</p>` : '');
+      }).join('');
+      const unassigned = ownerless.length ? `<p class="meta">Also paired, with nothing handed off yet: ${ownerless.map(t => esc(t.name)).join(', ')} - assign a responsibility from its card below.</p>` : '';
+      return `<div class="bz-card" id="bz-team"><div class="bz-sech">Your team</div>${rows}${unassigned}</div>`;
+    })();
     const systems = [...new Set(props.flatMap(p => p.systems || []).concat(resps.flatMap(rp => rp.systems || [])))].slice(0, 8);
     // App connections: rendered from the LIVE server-reported status, so every state is
     // honest. A stored connection (exact account, scope, removal path) renders whenever one
@@ -417,7 +499,7 @@
       <p class="meta">${esc(pendWhat)} started ${BB.when(pend.at)} but paused partway. Records already deleted stay deleted; everything else is held - no new work runs until you finish or cancel it.</p>
       <div class="btns bz-pendbtns"><button class="b danger sm" id="bz-pend-finish">Finish this delete</button><button class="b out sm" id="bz-pend-cancel">Cancel the delete - keep what remains</button></div></div>` : '';
     V.innerHTML = `<div class="page-in narrow">${pageH}
-      ${pendCard}${empty}${hqPanel}${appsCard}${nameCard}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
+      ${pendCard}${empty}${hqPanel}${teamCard}${appsCard}${nameCard}${srcs.length ? `<div class="bz-sech">What Alter knows</div>${srcs.map(srcRow).join('')}` : ''}${addForm}${consentCard}${propSec}${respSec}${logSec}${dataCard}</div>`;
     bind();
     // A delegated run settles whenever the bot reports: refresh on a slow poll while one is
     // in flight so the draft appears without a manual reload. Never faster - this is a view.
