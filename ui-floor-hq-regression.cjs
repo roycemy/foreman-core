@@ -75,10 +75,16 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  // Click-through: the room opens its responsibility card for the owner
  await ev(`document.querySelector('#rooms polygon[data-room="ops"]').dispatchEvent(new MouseEvent('click',{bubbles:true}));'click'`);
  assert(await poll(`location.hash==='#business'&&!!document.querySelector('[data-run-input="resp_1"]')`),'room click opens the responsibility card');
- // Identity flip with the Business view CLOSED: the projection must die at read time
+ // Identity flip with the Business view CLOSED AND a mapped room's tooltip SHOWING: the
+ // projection must die at read time - banner, room titles, the painted tooltip AND the
+ // polygon's aria-label all lose A's responsibility data immediately, not on the next hover.
  await ev(`location.hash='#floor';'back'`);
  await poll(`(()=>{const b=document.getElementById('hqbanner');return b&&!b.hidden;})()`,8000);
+ await ev(`document.querySelector('#rooms polygon[data-room="ops"]').dispatchEvent(new Event('mouseenter'));'hover'`);
+ assert((await ev(`(document.getElementById('tip')||{textContent:''}).textContent`)).includes('Estimate follow-up desk'),'pre-flip tooltip shows the responsibility');
  await ev(`BB.who=${JSON.stringify({email:'b@b.test',workspace:'wB'})};BB.emit();'flip'`);
+ assert(await poll(`(()=>{const tip=document.getElementById('tip');const shown=tip&&tip.classList.contains('on');return !shown||(!tip.textContent.includes('Estimate follow-up')&&!tip.textContent.includes('runs on record')&&!tip.textContent.includes('more responsibilit'));})()`),'hovering during the flip: the painted tooltip loses A responsibility data immediately');
+ assert(await ev(`(()=>{const p=document.querySelector('#rooms polygon[data-room="ops"]');const a=p&&p.getAttribute('aria-label')||'';return !a.includes('Estimate follow-up')&&!a.includes('runs on record');})()`),'aria-label loses A responsibility data immediately');
  assert(await poll(`(()=>{const b=document.getElementById('hqbanner');return !b||b.hidden;})()`),'stale identity: banner gone without the Business view running');
  assert(await poll(`(()=>{const p=document.querySelector('#rooms polygon[data-room="ops"] title');return p&&p.textContent==='Workshop';})()`),'stale identity: rooms revert to generic names');
  await shot('floor-hq-stale-cleared.png');

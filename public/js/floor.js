@@ -34,13 +34,17 @@
     for (const rp of hqResps()) {
       if (!rp.botId) continue;
       const a = BB.agent(rp.botId);
-      if (!a || BB.isGhost(a)) continue;
+      if (!a || BB.presence(a) !== 'connected') continue; // ghosts, revoked and needs-reconnect bots are not eligible workers: their saved mapping names nothing
       let room = BB.roomOf(a); if (room === 'support') room = 'sales';
       if (room === key) out.push(rp);
     }
     return out;
   }
   const respForRoom = k => respsForRoom(k)[0] || null;
+  function roomExtras(k) {
+    const rps = respsForRoom(k), rp = rps[0];
+    return rp ? ' \u00b7 ' + (rp.runsCount === 1 ? '1 run on record' : (rp.runsCount || 0) + ' runs on record') + (rp.status === 'paused' ? ' \u00b7 paused' : '') + (rps.length > 1 ? ' \u00b7 +' + (rps.length - 1) + ' more responsibilit' + (rps.length === 2 ? 'y' : 'ies') + ' here' : '') : '';
+  }
   const roomLabel = k => { const rp = respForRoom(k); return rp && rp.title ? rp.title : typeOf(k).name; };
   BB.ROOMS = ['finance', 'marketing', 'sales', 'ops', 'lounge'];
   BB.roomOf = a => { const as = BB.agents(), i = Math.max(0, as.findIndex(x => x.id === a.id)); const r = a.visibleRoom || a.room; return ROOMK.includes(r) ? r : ROOMK[i % ROOMK.length]; };
@@ -218,8 +222,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const b = BOXW[k], pts = [W2P(b[0], b[1]), W2P(b[2], b[1]), W2P(b[2], b[3]), W2P(b[0], b[3])];
     const cx = pts.reduce((s, q) => s + q[0], 0) / 4, top = Math.min(...pts.map(q => q[1]));
     const tip = $('#tip'), info = roomInfo(k);
-    const rps = respsForRoom(k), rp = rps[0];
-    const extra = rp ? ' \u00b7 ' + (rp.runsCount === 1 ? '1 run on record' : (rp.runsCount || 0) + ' runs on record') + (rp.status === 'paused' ? ' \u00b7 paused' : '') + (rps.length > 1 ? ' \u00b7 +' + (rps.length - 1) + ' more responsibilit' + (rps.length === 2 ? 'y' : 'ies') + ' here' : '') : '';
+    const extra = roomExtras(k);
     tip.innerHTML = esc(roomLabel(k)) + '<small>' + esc(info.line + extra) + '</small>';
     tip.style.left = cx + '%'; tip.style.top = (top - 1) + '%'; tip.classList.add('on');
     p.setAttribute('aria-label', roomLabel(k) + ': ' + info.line + extra);
@@ -297,9 +300,10 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     if (hb) {
       const rs = hqResps(), act = rs.filter(r => r.status === 'active').length, pau = rs.length - act;
       if (hq && (hq.name || rs.length)) {
-        const bits = [rs.length === 1 ? '1 responsibility' : (act + ' active' + (pau ? ' \u00b7 ' + pau + ' paused' : ''))];
+        const bits = [rs.length === 1 ? (rs[0].status === 'active' ? '1 active responsibility' : '1 paused responsibility') : (act + ' active' + (pau ? ' \u00b7 ' + pau + ' paused' : ''))];
         if (!hq.engineConfigured) bits.push('reasoning engine not connected yet');
         else if (!hq.engineOn) bits.push('provider processing is off');
+        bits.push('as of your last Business view'); // the projection refreshes when the Business view loads, not while the Floor is up
         hb.innerHTML = '<b>' + esc(hq.name ? hq.name + ' HQ' : 'Your business HQ') + '</b><small>' + esc(bits.join(' \u00b7 ')) + '</small>';
         hb.hidden = false;
       } else hb.hidden = true;
@@ -307,8 +311,10 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     BB.$$('#rooms polygon').forEach(p => {
       const t = p.querySelector('title'); if (t) t.textContent = roomLabel(p.dataset.room);
       p.classList.toggle('has-resp', respsForRoom(p.dataset.room).length > 0);
+      p.setAttribute('aria-label', roomLabel(p.dataset.room) + ': ' + roomInfo(p.dataset.room).line + roomExtras(p.dataset.room));
       if (!p.dataset.hqClick) { p.dataset.hqClick = '1'; p.addEventListener('click', () => { const rp = respForRoom(p.dataset.room); if (rp && BB.openBusinessResp) BB.openBusinessResp(rp.id); }); }
     });
+    if (hoverRoom) showRoom(hoverRoom); // a showing tooltip repaints from the CURRENT projection (a flip never leaves the old business's data on screen)
     const as = BB.agents(), ids = new Set(as.map(a => a.id));
     Object.keys(F).forEach(id => { if (!ids.has(id)) { const r=F[id];if(!BB.reduced()&&!document.hidden){const out=r.el.cloneNode(true);out.removeAttribute('tabindex');out.removeAttribute('role');out.setAttribute('aria-hidden','true');out.style.pointerEvents='none';out.classList.add('departing');r.el.parentNode.appendChild(out);setTimeout(()=>out.remove(),600);}r.el.remove();delete F[id]; } });
     const waitList = []; waitingItems().forEach(i => { if (!waitList.includes(i.a.id)) waitList.push(i.a.id); });
