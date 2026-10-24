@@ -129,8 +129,9 @@ function memEval(script, n, keys, argv) {
     // one write phase. (mem keeps sets as arrays in kv and lists in lists - mty maps that.)
     const mty = k => mem.lists.has(k) ? 'list' : (mem.kv.has(k) ? (Array.isArray(mem.kv.get(k)) ? 'set' : 'string') : 'none');
     const ckt = (k, t) => { const ty = mty(k); return ty === 'none' || ty === t; };
-    const n0 = parseInt(argv[11], 10);
-    if (!Number.isFinite(n0) || n0 < 0 || !Number.isFinite(parseInt(argv[3], 10)) || !Number.isFinite(parseInt(argv[7], 10)) || !Number.isFinite(parseInt(argv[12], 10))) return ['bad_args'];
+    const posintB = s => typeof s === 'string' && /^\d+$/.test(s) && Number(s) > 0;
+    const n0 = /^\d+$/.test(String(argv[11])) ? parseInt(argv[11], 10) : NaN;
+    if (!Number.isFinite(n0) || !posintB(String(argv[3])) || !posintB(String(argv[7])) || !posintB(String(argv[12]))) return ['bad_args'];
     let atj0; try { atj0 = JSON.parse(argv[10]); } catch { return ['bad_args']; }
     if (!atj0 || typeof atj0 !== 'object' || Array.isArray(atj0)) return ['bad_args'];
     if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return ['held'];
@@ -141,6 +142,7 @@ function memEval(script, n, keys, argv) {
     if (!ckt(keys[10 + n0], 'string') || !ckt(keys[11 + n0], 'list') || !ckt(keys[12 + n0], 'set')) return ['corrupt'];
     const rraw = mem.kv.get(keys[5]); if (rraw == null) return ['gone'];
     let rp; try { rp = JSON.parse(rraw); } catch { return ['gone']; }
+    if (!rp || typeof rp !== 'object' || Array.isArray(rp)) return ['gone'];
     if (rp.status !== 'active') return ['inactive'];
     if (rp.research) return ['research'];
     if (!rp.bot) return ['nobot'];
@@ -149,6 +151,8 @@ function memEval(script, n, keys, argv) {
     if (String(mg.grantId) !== argv[5] || String(mg.scopeHash) !== argv[6]) return ['grant_changed'];
     const mraw = mem.kv.get(keys[6]); if (mraw == null) return ['snapshot_missing'];
     let snap; try { snap = JSON.parse(mraw); } catch { return ['snapshot_missing']; }
+    if (!snap || typeof snap !== 'object' || Array.isArray(snap) || !snap.respFields || typeof snap.respFields !== 'object' || !Array.isArray(snap.sources)) return ['snapshot_missing'];
+    if (n0 !== snap.sources.length) return ['bad_args'];
     if (String(snap.grantId) !== argv[5] || String(snap.scopeHash) !== argv[6]) return ['grant_changed'];
     if (rp.title !== snap.respFields.title || rp.summary !== snap.respFields.summary || rp.boundary !== snap.respFields.boundary) return ['resp_changed'];
     const craw = mem.kv.get(keys[4]); if (craw == null || craw !== snap.consentRaw) return ['consent_changed'];
@@ -156,10 +160,10 @@ function memEval(script, n, keys, argv) {
     const snapids = snap.sources.map(s => s.id).sort();
     if (live.length !== snapids.length || live.some((v, i) => v !== snapids[i])) return ['sources_changed'];
     for (let i = 0; i < n0; i++) { const sraw = mem.kv.get(keys[10 + i]); if (sraw == null || sraw !== snap.sources[i].raw) return ['sources_changed']; }
-    const calls = parseInt(mem.kv.get(keys[8]) || '0', 10); if (calls >= parseInt(argv[7], 10)) return ['capped'];
+    const crawB = mem.kv.get(keys[8]) || '0'; if (!/^-?\d+$/.test(crawB)) return ['corrupt']; const calls = parseInt(crawB, 10); if (calls >= parseInt(argv[7], 10)) return ['capped'];
     const un = (mem.kv.get(keys[9]) || []).slice().sort();
     const parts = [];
-    for (const aid of un) { if (!ckt(argv[13] + aid, 'string')) return ['corrupt']; const araw = mem.kv.get(argv[13] + aid); if (araw == null) return ['attempt_orphan']; let at; try { at = JSON.parse(araw); } catch { return ['attempt_orphan']; } parts.push(aid + ':' + String(at.requestHash)); }
+    for (const aid of un) { if (!ckt(argv[13] + aid, 'string')) return ['corrupt']; const araw = mem.kv.get(argv[13] + aid); if (araw == null) return ['attempt_orphan']; let at; try { at = JSON.parse(araw); } catch { return ['attempt_orphan']; } if (!at || typeof at !== 'object' || Array.isArray(at)) return ['attempt_orphan']; parts.push(aid + ':' + String(at.requestHash)); }
     if (parts.join('\n') !== argv[8]) return ['unresolved'];
     const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
     mem.kv.set(keys[1], argv[2]);
@@ -174,22 +178,26 @@ function memEval(script, n, keys, argv) {
   if (script === BIZ_MANAGED_SETTLE) {
     const mty = k => mem.lists.has(k) ? 'list' : (mem.kv.has(k) ? (Array.isArray(mem.kv.get(k)) ? 'set' : 'string') : 'none');
     const ckt = (k, t) => { const ty = mty(k); return ty === 'none' || ty === t; };
-    try { JSON.parse(argv[4]); JSON.parse(argv[5]); if (argv[6] !== '') JSON.parse(argv[6]); } catch { return ['bad_args']; }
-    if (!Number.isFinite(parseInt(argv[8], 10)) || !Number.isFinite(parseInt(argv[10], 10))) return ['bad_args'];
+    const jtabS = s => { try { const v = JSON.parse(s); return v && typeof v === 'object' && !Array.isArray(v) ? v : null; } catch { return null; } };
+    if (!jtabS(argv[4]) || !jtabS(argv[5]) || (argv[6] !== '' && !jtabS(argv[6])) || !jtabS(argv[9]) || !jtabS(argv[15])) return ['bad_args'];
+    const posintS = s => /^\d+$/.test(String(s)) && Number(s) > 0;
+    if (!posintS(String(argv[8])) || !posintS(String(argv[10]))) return ['bad_args'];
     for (const [i, t] of [[0, 'string'], [1, 'string'], [2, 'string'], [4, 'string'], [5, 'set'], [7, 'list'], [8, 'list']]) if (!ckt(keys[i], t)) return ['corrupt'];
     const pr = mem.kv.get(keys[2]);
     if (pr == null) {
       const araw = mem.kv.get(keys[4]);
-      if (araw != null) { try { const at = JSON.parse(araw); if (at.status !== 'started' && String(at.id) === argv[2] && String(at.token) === argv[0] && String(at.gen) === argv[1] && String(at.requestHash) === argv[3] && (String(at.receipt) === argv[11] || String(at.receipt) === argv[12])) return ['landed', String(at.status)]; } catch {} }
+      if (araw != null) { try { const at = JSON.parse(araw); if (at && typeof at === 'object' && !Array.isArray(at) && at.status !== 'started' && String(at.id) === argv[2] && String(at.token) === argv[0] && String(at.gen) === argv[1] && String(at.requestHash) === argv[3] && (String(at.receipt) === argv[11] || String(at.receipt) === argv[12])) return ['landed', String(at.status)]; } catch {} }
       return ['lost'];
     }
     let pj; try { pj = JSON.parse(pr); } catch { return ['lost']; }
+    if (!pj || typeof pj !== 'object' || Array.isArray(pj)) return ['lost'];
     if (pj.op !== 'managed-run') return ['lost'];
     if (pj.token !== argv[0] || String(pj.gen) !== argv[1]) return ['lost'];
     if ((mem.kv.get(keys[0]) || '0') !== argv[1]) return ['lost'];
     if (mem.kv.get(keys[1]) !== argv[0]) return ['lost'];
     const araw2 = mem.kv.get(keys[4]); if (araw2 == null) return ['lost'];
     let at2; try { at2 = JSON.parse(araw2); } catch { return ['lost']; }
+    if (!at2 || typeof at2 !== 'object' || Array.isArray(at2)) return ['lost'];
     if (at2.status !== 'started' || String(at2.id) !== argv[2] || String(at2.token) !== argv[0] || String(at2.gen) !== argv[1] || String(at2.requestHash) !== argv[3]) return ['lost'];
     const killed = mem.kv.has(keys[3]);
     mem.kv.set(keys[4], killed ? argv[5] : argv[4]);
@@ -201,7 +209,7 @@ function memEval(script, n, keys, argv) {
       mem.lists.set(keys[7], l.slice(0, keep));
       for (const rid2 of extra) mem.kv.delete(argv[13] + rid2);
     }
-    const lg = memList(keys[8]); lg.unshift(argv[9]); mem.lists.set(keys[8], lg.slice(0, parseInt(argv[10], 10)));
+    const lg = memList(keys[8]); lg.unshift(killed ? argv[15] : argv[9]); mem.lists.set(keys[8], lg.slice(0, parseInt(argv[10], 10)));
     mem.kv.delete(keys[2]); mem.kv.delete(keys[1]);
     return ['ok', killed ? 'withheld' : 'settled'];
   }
@@ -210,16 +218,18 @@ function memEval(script, n, keys, argv) {
     const ckt = (k, t) => { const ty = mty(k); return ty === 'none' || ty === t; };
     let receipts; try { receipts = JSON.parse(argv[5]); } catch { return ['bad_args']; }
     if (!receipts || typeof receipts !== 'object' || Array.isArray(receipts)) return ['bad_args'];
-    if (!Number.isFinite(parseInt(argv[2], 10))) return ['bad_args'];
+    let lentryR; try { lentryR = JSON.parse(argv[1]); } catch { return ['bad_args']; }
+    if (!lentryR || typeof lentryR !== 'object' || Array.isArray(lentryR)) return ['bad_args'];
+    if (!/^\d+$/.test(String(argv[2])) || Number(argv[2]) <= 0) return ['bad_args'];
     for (const [i, t] of [[0, 'string'], [1, 'string'], [2, 'string'], [3, 'set'], [4, 'list']]) if (!ckt(keys[i], t)) return ['corrupt'];
     if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return ['held'];
     const pr = mem.kv.get(keys[2]);
-    let pj = null; if (pr != null) { try { pj = JSON.parse(pr); } catch { return ['not_managed']; } if (pj.op !== 'managed-run') return ['not_managed']; }
+    let pj = null; if (pr != null) { try { pj = JSON.parse(pr); } catch { return ['not_managed']; } if (!pj || typeof pj !== 'object' || Array.isArray(pj)) return ['not_managed']; if (pj.op !== 'managed-run') return ['not_managed']; }
     const un = (mem.kv.get(keys[3]) || []).slice().sort();
     const parts = [], raws = {};
-    for (const aid of un) { if (!ckt(argv[4] + aid, 'string')) return ['corrupt']; const araw = mem.kv.get(argv[4] + aid); if (araw == null) return ['orphan']; let at; try { at = JSON.parse(araw); } catch { return ['orphan']; } if (['started', 'started-unknown', 'unknown', 'provider-ambiguous', 'withheld'].includes(String(at.status))) { parts.push(aid + ':' + String(at.requestHash)); raws[aid] = at; } }
+    for (const aid of un) { if (!ckt(argv[4] + aid, 'string')) return ['corrupt']; const araw = mem.kv.get(argv[4] + aid); if (araw == null) return ['orphan']; let at; try { at = JSON.parse(araw); } catch { return ['orphan']; } if (!at || typeof at !== 'object' || Array.isArray(at)) return ['orphan']; if (['started', 'started-unknown', 'unknown', 'provider-ambiguous', 'withheld'].includes(String(at.status))) { parts.push(aid + ':' + String(at.requestHash)); raws[aid] = at; } }
     if (parts.join('\n') !== argv[0]) return ['stale'];
-    if (pj) { for (const aid of un) { const at = raws[aid]; if (at && String(at.token) !== String(pj.token)) return ['unbound']; } }
+    if (pj) { for (const aid of un) { const at = raws[aid]; if (at && at.status === 'started' && String(at.token) !== String(pj.token)) return ['unbound']; } }
     const gen = parseInt(mem.kv.get(keys[0]) || '0', 10) + 1; mem.kv.set(keys[0], String(gen));
     let done = 0;
     for (const aid of un) { const at = raws[aid]; if (at) { at.status = 'acknowledged-unknown'; at.receipt = receipts[aid]; at.resolvedAt = argv[3]; mem.kv.set(argv[4] + aid, JSON.stringify(at)); mem.kv.set(keys[3], (mem.kv.get(keys[3]) || []).filter(v => v !== aid)); done++; } }
@@ -235,6 +245,8 @@ function memEval(script, n, keys, argv) {
     if (mem.kv.has(keys[2])) return ['pending'];
     const old = mem.kv.get(keys[3]); if (old == null) return ['notfound'];
     if (old !== argv[1]) return ['conflict'];
+    const jtabG = s => { try { const v = JSON.parse(s); return v && typeof v === 'object' && !Array.isArray(v) ? v : null; } catch { return null; } };
+    if (!jtabG(argv[2]) || !jtabG(argv[3])) return ['bad_args'];
     mem.kv.set(keys[4], argv[3]); mem.kv.set(keys[3], argv[2]); // snapshot first, then the pointer - one atomic pair
     return ['ok'];
   }
@@ -246,15 +258,38 @@ function memEval(script, n, keys, argv) {
     if (mem.kv.has(keys[2])) return ['pending'];
     const old = mem.kv.get(keys[3]); if (old == null) return ['notfound'];
     if (old !== argv[1]) return ['conflict'];
+    const jtabU = s => { try { const v = JSON.parse(s); return v && typeof v === 'object' && !Array.isArray(v) ? v : null; } catch { return null; } };
+    if (!jtabU(argv[2])) return ['bad_args'];
+    let mgid = null; { const mg0 = mem.kv.get(keys[4]); if (mg0 != null) { const d = jtabU(mg0); if (!d || typeof d.grantId !== 'string') return ['corrupt']; mgid = d.grantId; } }
     mem.kv.set(keys[3], argv[2]);
-    const mg = mem.kv.get(keys[4]); if (mg != null) { try { const d = JSON.parse(mg); if (String(d.grantId) === argv[3]) mem.kv.delete(keys[4]); } catch {} } // compare-delete: never removes a newer grant
+    if (mgid === argv[3]) mem.kv.delete(keys[4]); // compare-delete: never removes a newer grant
     return ['ok'];
+  }
+  if (script === BIZ_MANAGED_ADOPT) {
+    const mty = k => mem.lists.has(k) ? 'list' : (mem.kv.has(k) ? (Array.isArray(mem.kv.get(k)) ? 'set' : 'string') : 'none');
+    if (mty(keys[4]) !== 'set' || mty(keys[5]) !== 'list' || mty(keys[6]) !== 'set') return ['no'];
+    const pr = mem.kv.get(keys[1]); if (pr == null) return ['no'];
+    let pj; try { pj = JSON.parse(pr); } catch { return ['no']; }
+    if (!pj || typeof pj !== 'object' || Array.isArray(pj)) return ['no'];
+    if (pj.op !== 'managed-run' || String(pj.id) !== argv[0] || String(pj.token) !== argv[1] || String(pj.opId) !== argv[2]) return ['no'];
+    const gen = String(pj.gen);
+    if ((mem.kv.get(keys[0]) || '0') !== gen) return ['no'];
+    const fraw = mem.kv.get(keys[2]); if (fraw == null || String(fraw) !== argv[1]) return ['no'];
+    const araw = mem.kv.get(keys[3]); if (araw == null) return ['no'];
+    let at; try { at = JSON.parse(araw); } catch { return ['no']; }
+    if (!at || typeof at !== 'object' || Array.isArray(at)) return ['no'];
+    if (at.status !== 'started' || String(at.id) !== argv[2] || String(at.token) !== argv[1] || String(at.gen) !== gen || String(at.requestHash) !== argv[3]) return ['no'];
+    if (!(mem.kv.get(keys[4]) || []).includes(argv[2])) return ['no'];
+    if (!(mem.lists.get(keys[5]) || []).includes(argv[2])) return ['no'];
+    if (!(mem.kv.get(keys[6]) || []).includes(argv[2])) return ['no'];
+    const crawA = mem.kv.get(keys[7]) || '0'; if (!/^-?\d+$/.test(crawA) || Number(crawA) < 1) return ['no'];
+    return ['ok', gen];
   }
   if (script === BIZ_MANAGED_MGDEL) {
     if ((mem.kv.get(keys[0]) || '0') !== argv[0]) return 0;
     if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return 0;
     if (mem.kv.has(keys[2])) return 0;
-    const mg = mem.kv.get(keys[3]); if (mg != null) { try { const d = JSON.parse(mg); if (String(d.grantId) === argv[1]) { mem.kv.delete(keys[3]); return 1; } } catch {} }
+    const mg = mem.kv.get(keys[3]); if (mg != null) { try { const d = JSON.parse(mg); if (d && typeof d === 'object' && !Array.isArray(d) && String(d.grantId) === argv[1]) { mem.kv.delete(keys[3]); return 1; } } catch {} }
     return 0;
   }
   const fence = mem.kv.get(keys[0]) || '0';
@@ -567,7 +602,8 @@ const BIZ_OP_RELEASE = "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end;
 // durable intent, counter increment, unresolved-set add, and the 'started' attempt with the
 // RETURNED generation injected - one atomic transition.
 const BIZ_MANAGED_BEGIN = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
-+ "local n=tonumber(ARGV[12]); if not n or n<0 or not tonumber(ARGV[4]) or not tonumber(ARGV[8]) or not tonumber(ARGV[13]) then return {'bad_args'} end; "
++ "local function posint(s) return type(s)=='string' and string.match(s,'^%d+$')~=nil and tonumber(s)>0 end; "
++ "local n=nil; if string.match(ARGV[12],'^%d+$') then n=tonumber(ARGV[12]) end; if not n or not posint(ARGV[4]) or not posint(ARGV[8]) or not posint(ARGV[13]) then return {'bad_args'} end; "
 + "local atok,atj=pcall(cjson.decode,ARGV[11]); if not atok or type(atj)~='table' then return {'bad_args'} end; "
 + "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; if redis.call('EXISTS',KEYS[4])==1 then return {'killed'} end; "
 + "local tspec={{1,'string'},{2,'string'},{3,'string'},{5,'string'},{6,'string'},{7,'string'},{8,'set'},{9,'string'},{10,'set'}}; "
@@ -576,18 +612,19 @@ const BIZ_MANAGED_BEGIN = "local function mty(k) local t=redis.call('TYPE',k); i
 + "local ty=mty(KEYS[11+n]); if ty~='none' and ty~='string' then return {'corrupt'} end; "
 + "ty=mty(KEYS[12+n]); if ty~='none' and ty~='list' then return {'corrupt'} end; "
 + "ty=mty(KEYS[13+n]); if ty~='none' and ty~='set' then return {'corrupt'} end; "
-+ "local rraw=redis.call('GET',KEYS[6]); if not rraw then return {'gone'} end; local rok,rp=pcall(cjson.decode,rraw); if not rok then return {'gone'} end; "
++ "local rraw=redis.call('GET',KEYS[6]); if not rraw then return {'gone'} end; local rok,rp=pcall(cjson.decode,rraw); if not rok or type(rp)~='table' then return {'gone'} end; "
 + "if rp.status~='active' then return {'inactive'} end; if rp.research then return {'research'} end; if not rp.bot then return {'nobot'} end; if rp.assignment then return {'assigned'} end; "
 + "local mg=rp.managed; if not mg then return {'unapproved'} end; if tostring(mg.grantId)~=ARGV[6] or tostring(mg.scopeHash)~=ARGV[7] then return {'grant_changed'} end; "
-+ "local mraw=redis.call('GET',KEYS[7]); if not mraw then return {'snapshot_missing'} end; local mok,snap=pcall(cjson.decode,mraw); if not mok then return {'snapshot_missing'} end; "
++ "local mraw=redis.call('GET',KEYS[7]); if not mraw then return {'snapshot_missing'} end; local mok,snap=pcall(cjson.decode,mraw); if not mok or type(snap)~='table' or type(snap.respFields)~='table' or type(snap.sources)~='table' then return {'snapshot_missing'} end; "
++ "if n~=#snap.sources then return {'bad_args'} end; "
 + "if tostring(snap.grantId)~=ARGV[6] or tostring(snap.scopeHash)~=ARGV[7] then return {'grant_changed'} end; "
 + "if rp.title~=snap.respFields.title or rp.summary~=snap.respFields.summary or rp.boundary~=snap.respFields.boundary then return {'resp_changed'} end; "
 + "local craw=redis.call('GET',KEYS[5]); if not craw or craw~=snap.consentRaw then return {'consent_changed'} end; "
 + "local live=redis.call('SMEMBERS',KEYS[8]); table.sort(live); local snapids={}; for i,s in ipairs(snap.sources) do snapids[i]=s.id end; table.sort(snapids); "
 + "if #live~=#snapids then return {'sources_changed'} end; for i=1,#live do if live[i]~=snapids[i] then return {'sources_changed'} end end; "
 + "for i=1,n do local sraw=redis.call('GET',KEYS[10+i]); if not sraw or sraw~=snap.sources[i].raw then return {'sources_changed'} end end; "
-+ "local calls=tonumber(redis.call('GET',KEYS[9]) or '0'); if calls>=tonumber(ARGV[8]) then return {'capped'} end; "
-+ "local un=redis.call('SMEMBERS',KEYS[10]); table.sort(un); local parts={}; for _,aid in ipairs(un) do local aty=mty(ARGV[14]..aid); if aty~='none' and aty~='string' then return {'corrupt'} end; local araw=redis.call('GET',ARGV[14]..aid); if not araw then return {'attempt_orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok then return {'attempt_orphan'} end; parts[#parts+1]=aid..':'..tostring(at.requestHash) end; "
++ "local craw=redis.call('GET',KEYS[9]) or '0'; if not string.match(craw,'^-?%d+$') then return {'corrupt'} end; local calls=tonumber(craw); if calls>=tonumber(ARGV[8]) then return {'capped'} end; "
++ "local un=redis.call('SMEMBERS',KEYS[10]); table.sort(un); local parts={}; for _,aid in ipairs(un) do local aty=mty(ARGV[14]..aid); if aty~='none' and aty~='string' then return {'corrupt'} end; local araw=redis.call('GET',ARGV[14]..aid); if not araw then return {'attempt_orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok or type(at)~='table' then return {'attempt_orphan'} end; parts[#parts+1]=aid..':'..tostring(at.requestHash) end; "
 + "if table.concat(parts,'\\n')~=ARGV[9] then return {'unresolved'} end; "
 + "local gen=redis.call('INCRBY',KEYS[1],1); redis.call('SET',KEYS[2],ARGV[3],'PX',tonumber(ARGV[4])); redis.call('SET',KEYS[3],cjson.encode({op=ARGV[1],id=ARGV[2],token=ARGV[3],gen=gen,at=ARGV[5],opId=ARGV[10]})); "
 + "redis.call('INCRBY',KEYS[9],1); redis.call('EXPIRE',KEYS[9],tonumber(ARGV[13])); redis.call('SADD',KEYS[10],ARGV[10]); redis.call('SADD',KEYS[13+n],ARGV[10]); "
@@ -599,23 +636,39 @@ const BIZ_MANAGED_BEGIN = "local function mty(k) local t=redis.call('TYPE',k); i
 // pending intent the script only reconciles: a terminal attempt carrying one of this exact
 // settle's deterministic receipts (matching attempt id + request hash + outcome class) means a
 // prior identical settle LANDED; anything else is 'lost' - absence never recreates a record.
+const BIZ_MANAGED_ADOPT = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
++ "if mty(KEYS[5])~='set' or mty(KEYS[6])~='list' or mty(KEYS[7])~='set' then return {'no'} end; "
++ "local p=redis.call('GET',KEYS[2]); if not p then return {'no'} end; local pok,pj=pcall(cjson.decode,p); if not pok or type(pj)~='table' then return {'no'} end; "
++ "if pj.op~='managed-run' or tostring(pj.id)~=ARGV[1] or tostring(pj.token)~=ARGV[2] or tostring(pj.opId)~=ARGV[3] then return {'no'} end; "
++ "local gen=tostring(pj.gen); local f=redis.call('GET',KEYS[1]) or '0'; if f~=gen then return {'no'} end; "
++ "local fraw=redis.call('GET',KEYS[3]); if not fraw or tostring(fraw)~=ARGV[2] then return {'no'} end; "
++ "local araw=redis.call('GET',KEYS[4]); if not araw then return {'no'} end; local aok,at=pcall(cjson.decode,araw); if not aok or type(at)~='table' then return {'no'} end; "
++ "if at.status~='started' or tostring(at.id)~=ARGV[3] or tostring(at.token)~=ARGV[2] or tostring(at.gen)~=gen or tostring(at.requestHash)~=ARGV[4] then return {'no'} end; "
++ "if redis.call('SISMEMBER',KEYS[5],ARGV[3])==0 then return {'no'} end; "
++ "local idx=redis.call('LRANGE',KEYS[6],0,49); local found=false; for _,v in ipairs(idx) do if v==ARGV[3] then found=true end end; if not found then return {'no'} end; "
++ "if redis.call('SISMEMBER',KEYS[7],ARGV[3])==0 then return {'no'} end; "
++ "local craw=redis.call('GET',KEYS[8]) or '0'; if not string.match(craw,'^-?%d+$') or tonumber(craw)<1 then return {'no'} end; "
++ "return {'ok',gen}";
 const BIZ_MANAGED_SETTLE = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
-+ "local t1=pcall(cjson.decode,ARGV[5]); if not t1 then return {'bad_args'} end; "
-+ "local t2=pcall(cjson.decode,ARGV[6]); if not t2 then return {'bad_args'} end; "
-+ "if ARGV[7]~='' then local t3=pcall(cjson.decode,ARGV[7]); if not t3 then return {'bad_args'} end end; "
-+ "if not tonumber(ARGV[9]) or not tonumber(ARGV[11]) then return {'bad_args'} end; "
++ "local function posint(s) return type(s)=='string' and string.match(s,'^%d+$')~=nil and tonumber(s)>0 end; "
++ "local t1,v1=pcall(cjson.decode,ARGV[5]); if not t1 or type(v1)~='table' then return {'bad_args'} end; "
++ "local t2,v2=pcall(cjson.decode,ARGV[6]); if not t2 or type(v2)~='table' then return {'bad_args'} end; "
++ "if ARGV[7]~='' then local t3,v3=pcall(cjson.decode,ARGV[7]); if not t3 or type(v3)~='table' then return {'bad_args'} end end; "
++ "local t4,v4=pcall(cjson.decode,ARGV[10]); if not t4 or type(v4)~='table' then return {'bad_args'} end; "
++ "local t5,v5=pcall(cjson.decode,ARGV[16]); if not t5 or type(v5)~='table' then return {'bad_args'} end; "
++ "if not posint(ARGV[9]) or not posint(ARGV[11]) then return {'bad_args'} end; "
 + "local tspec={{1,'string'},{2,'string'},{3,'string'},{5,'string'},{6,'set'},{8,'list'},{9,'list'}}; "
 + "for _,p in ipairs(tspec) do local ty=mty(KEYS[p[1]]); if ty~='none' and ty~=p[2] then return {'corrupt'} end end; "
 + "local p=redis.call('GET',KEYS[3]); "
-+ "if not p then local araw=redis.call('GET',KEYS[5]); if araw then local aok,at=pcall(cjson.decode,araw); if aok and at.status~='started' and tostring(at.id)==ARGV[3] and tostring(at.token)==ARGV[1] and tostring(at.gen)==ARGV[2] and tostring(at.requestHash)==ARGV[4] and (tostring(at.receipt)==ARGV[12] or tostring(at.receipt)==ARGV[13]) then return {'landed',tostring(at.status)} end end; return {'lost'} end; "
-+ "local pok,pj=pcall(cjson.decode,p); if not pok then return {'lost'} end; if pj.op~='managed-run' then return {'lost'} end; if pj.token~=ARGV[1] or tostring(pj.gen)~=ARGV[2] then return {'lost'} end; "
++ "if not p then local araw=redis.call('GET',KEYS[5]); if araw then local aok,at=pcall(cjson.decode,araw); if aok and type(at)=='table' and at.status~='started' and tostring(at.id)==ARGV[3] and tostring(at.token)==ARGV[1] and tostring(at.gen)==ARGV[2] and tostring(at.requestHash)==ARGV[4] and (tostring(at.receipt)==ARGV[12] or tostring(at.receipt)==ARGV[13]) then return {'landed',tostring(at.status)} end end; return {'lost'} end; "
++ "local pok,pj=pcall(cjson.decode,p); if not pok or type(pj)~='table' then return {'lost'} end; if pj.op~='managed-run' then return {'lost'} end; if pj.token~=ARGV[1] or tostring(pj.gen)~=ARGV[2] then return {'lost'} end; "
 + "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[2] then return {'lost'} end; if redis.call('GET',KEYS[2])~=ARGV[1] then return {'lost'} end; "
-+ "local araw2=redis.call('GET',KEYS[5]); if not araw2 then return {'lost'} end; local aok2,at2=pcall(cjson.decode,araw2); if not aok2 then return {'lost'} end; "
++ "local araw2=redis.call('GET',KEYS[5]); if not araw2 then return {'lost'} end; local aok2,at2=pcall(cjson.decode,araw2); if not aok2 or type(at2)~='table' then return {'lost'} end; "
 + "if at2.status~='started' or tostring(at2.id)~=ARGV[3] or tostring(at2.token)~=ARGV[1] or tostring(at2.gen)~=ARGV[2] or tostring(at2.requestHash)~=ARGV[4] then return {'lost'} end; "
 + "local killed=redis.call('EXISTS',KEYS[4])==1; redis.call('SET',KEYS[5],killed and ARGV[6] or ARGV[5]); "
 + "if (not killed) and ARGV[15]=='1' then redis.call('SREM',KEYS[6],ARGV[3]) end; "
 + "if (not killed) and ARGV[7]~='' then redis.call('SET',KEYS[7],ARGV[7]); redis.call('LPUSH',KEYS[8],ARGV[8]); local extra=redis.call('LRANGE',KEYS[8],tonumber(ARGV[9]),-1); redis.call('LTRIM',KEYS[8],0,tonumber(ARGV[9])-1); for _,rid in ipairs(extra) do redis.call('DEL',ARGV[14]..rid) end end; "
-+ "redis.call('LPUSH',KEYS[9],ARGV[10]); redis.call('LTRIM',KEYS[9],0,tonumber(ARGV[11])-1); redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[2]); return {'ok',killed and 'withheld' or 'settled'}";
++ "redis.call('LPUSH',KEYS[9],killed and ARGV[16] or ARGV[10]); redis.call('LTRIM',KEYS[9],0,tonumber(ARGV[11])-1); redis.call('DEL',KEYS[3]); redis.call('DEL',KEYS[2]); return {'ok',killed and 'withheld' or 'settled'}";
 // BIZ_MANAGED_RESOLVE: owner-reviewed acknowledgment of stuck attempts, ONE atomic script. It
 // requires the freeze lease GONE (expiry ends local write ownership only - it never proves the
 // provider stopped; the acknowledgment copy says exactly that). With a durable managed-run
@@ -628,16 +681,18 @@ const BIZ_MANAGED_SETTLE = "local function mty(k) local t=redis.call('TYPE',k); 
 // the log records it. Purged private content is never recreated - attempts it deleted are
 // simply absent ('orphan').
 const BIZ_MANAGED_RESOLVE = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
++ "local function posint(s) return type(s)=='string' and string.match(s,'^%d+$')~=nil and tonumber(s)>0 end; "
 + "local rok,receipts=pcall(cjson.decode,ARGV[6]); if not rok or type(receipts)~='table' then return {'bad_args'} end; "
-+ "if not tonumber(ARGV[3]) then return {'bad_args'} end; "
++ "local lok,lentry=pcall(cjson.decode,ARGV[2]); if not lok or type(lentry)~='table' then return {'bad_args'} end; "
++ "if not posint(ARGV[3]) then return {'bad_args'} end; "
 + "local tspec={{1,'string'},{2,'string'},{3,'string'},{4,'set'},{5,'list'}}; "
 + "for _,p in ipairs(tspec) do local ty=mty(KEYS[p[1]]); if ty~='none' and ty~=p[2] then return {'corrupt'} end end; "
 + "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; "
-+ "local p=redis.call('GET',KEYS[3]); local pj=nil; if p then local pok,pjj=pcall(cjson.decode,p); if not pok then return {'not_managed'} end; pj=pjj; if pj.op~='managed-run' then return {'not_managed'} end end; "
++ "local p=redis.call('GET',KEYS[3]); local pj=nil; if p then local pok,pjj=pcall(cjson.decode,p); if not pok or type(pjj)~='table' then return {'not_managed'} end; pj=pjj; if pj.op~='managed-run' then return {'not_managed'} end end; "
 + "local un=redis.call('SMEMBERS',KEYS[4]); table.sort(un); local parts={}; local raws={}; "
-+ "for _,aid in ipairs(un) do local aty=mty(ARGV[5]..aid); if aty~='none' and aty~='string' then return {'corrupt'} end; local araw=redis.call('GET',ARGV[5]..aid); if not araw then return {'orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok then return {'orphan'} end; local us=tostring(at.status); if us=='started' or us=='started-unknown' or us=='unknown' or us=='provider-ambiguous' or us=='withheld' then parts[#parts+1]=aid..':'..tostring(at.requestHash); raws[aid]=at end end; "
++ "for _,aid in ipairs(un) do local aty=mty(ARGV[5]..aid); if aty~='none' and aty~='string' then return {'corrupt'} end; local araw=redis.call('GET',ARGV[5]..aid); if not araw then return {'orphan'} end; local aok,at=pcall(cjson.decode,araw); if not aok or type(at)~='table' then return {'orphan'} end; local us=tostring(at.status); if us=='started' or us=='started-unknown' or us=='unknown' or us=='provider-ambiguous' or us=='withheld' then parts[#parts+1]=aid..':'..tostring(at.requestHash); raws[aid]=at end end; "
 + "if table.concat(parts,'\\n')~=ARGV[1] then return {'stale'} end; "
-+ "if pj then for _,aid in ipairs(un) do local at=raws[aid]; if at and tostring(at.token)~=tostring(pj.token) then return {'unbound'} end end end; "
++ "if pj then for _,aid in ipairs(un) do local at=raws[aid]; if at and at.status=='started' and tostring(at.token)~=tostring(pj.token) then return {'unbound'} end end end; "
 + "local gen=redis.call('INCRBY',KEYS[1],1); local done=0; "
 + "for _,aid in ipairs(un) do local at=raws[aid]; if at then at.status='acknowledged-unknown'; at.receipt=receipts[aid]; at.resolvedAt=ARGV[4]; redis.call('SET',ARGV[5]..aid,cjson.encode(at)); redis.call('SREM',KEYS[4],aid); done=done+1 end end; "
 + "redis.call('LPUSH',KEYS[5],ARGV[2]); redis.call('LTRIM',KEYS[5],0,tonumber(ARGV[3])-1); if pj then redis.call('DEL',KEYS[3]) end; return {'ok',done}";
@@ -647,6 +702,7 @@ const BIZ_MANAGED_RESOLVE = "local function mty(k) local t=redis.call('TYPE',k);
 // responsibility nor strands the winner's snapshot). Distinct outcomes: notfound / conflict /
 // fence-held-pending / ok.
 const BIZ_MANAGED_GRANT = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
++ "local function jt(s) local ok,v=pcall(cjson.decode,s); return ok and type(v)=='table' end; if not jt(ARGV[3]) or not jt(ARGV[4]) then return {'bad_args'} end; "
 + "local tspec={{1,'string'},{2,'string'},{3,'string'},{4,'string'},{5,'string'}}; "
 + "for _,p in ipairs(tspec) do local ty=mty(KEYS[p[1]]); if ty~='none' and ty~=p[2] then return {'corrupt'} end end; "
 + "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return {'fence'} end; "
@@ -657,19 +713,21 @@ const BIZ_MANAGED_GRANT = "local function mty(k) local t=redis.call('TYPE',k); i
 // and the snapshot is deleted ONLY when it is still the exact grant being revoked - a newer
 // approval's grant is never removed by a stale revoke.
 const BIZ_MANAGED_UNGRANT = "local function mty(k) local t=redis.call('TYPE',k); if type(t)=='table' then return t.ok end; return t end; "
++ "local function jt(s) local ok,v=pcall(cjson.decode,s); return ok and type(v)=='table' end; if not jt(ARGV[3]) then return {'bad_args'} end; "
 + "local tspec={{1,'string'},{2,'string'},{3,'string'},{4,'string'},{5,'string'}}; "
 + "for _,p in ipairs(tspec) do local ty=mty(KEYS[p[1]]); if ty~='none' and ty~=p[2] then return {'corrupt'} end end; "
 + "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return {'fence'} end; "
 + "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; "
 + "local old=redis.call('GET',KEYS[4]); if not old then return {'notfound'} end; if old~=ARGV[2] then return {'conflict'} end; "
++ "local mg0=redis.call('GET',KEYS[5]); local mgid=nil; if mg0 then local mok0,d0=pcall(cjson.decode,mg0); if not mok0 or type(d0)~='table' or type(d0.grantId)~='string' then return {'corrupt'} end; mgid=d0.grantId end; "
 + "redis.call('SET',KEYS[4],ARGV[3]); "
-+ "local mg=redis.call('GET',KEYS[5]); if mg then local mok,d=pcall(cjson.decode,mg); if mok and tostring(d.grantId)==ARGV[4] then redis.call('DEL',KEYS[5]) end end; "
++ "if mgid==ARGV[4] then redis.call('DEL',KEYS[5]) end; "
 + "return {'ok'}";
 // Compare-delete for managed snapshots: removes the record ONLY when it is still the exact
 // grant the caller cleared (an assignment that closed managed mode). A newer approval's grant
 // is never deleted; a conflict leaves an unreferenced, unrunnable record for the next
 // approval or purge.
-const BIZ_MANAGED_MGDEL = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local mg=redis.call('GET',KEYS[4]); if mg then local mok,d=pcall(cjson.decode,mg); if mok and tostring(d.grantId)==ARGV[2] then redis.call('DEL',KEYS[4]); return 1 end end; return 0";
+const BIZ_MANAGED_MGDEL = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local mg=redis.call('GET',KEYS[4]); if mg then local mok,d=pcall(cjson.decode,mg); if mok and type(d)=='table' and tostring(d.grantId)==ARGV[2] then redis.call('DEL',KEYS[4]); return 1 end end; return 0";
 // Coherent entry snapshot for non-delete actions: fence generation + absence of freeze AND
 // pending intent read in one atomic call, so no check-then-write gap at entry.
 const BIZ_ENTRY = "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; return {'ok', redis.call('GET',KEYS[1]) or '0'}";
@@ -1436,6 +1494,7 @@ async function xaiChat(key, model, prompt, maxTokens) {
   return Object.assign(new String(text), { usage: usageOf(j) });
 }
 // Provider-reported usage only. A cost is recorded only when the provider itself returns one; tokens are never priced here.
+function bizManagedUsage(j){const u=j&&j.usage;if(!u||typeof u!=='object')return null;const g=v=>(typeof v==='number'&&Number.isFinite(v))?v:null;return{promptTokens:g(u.prompt_tokens),completionTokens:g(u.completion_tokens)};} // exact managed provenance: a missing/empty usage field is null, never an invented zero
 function usageOf(j){const u=j&&j.usage;if(!u||typeof u!=='object')return null;const o={promptTokens:Number(u.prompt_tokens)||0,completionTokens:Number(u.completion_tokens)||0};
  const ticks=Number(u.cost_in_usd_ticks);if(Number.isFinite(ticks)&&ticks>=0)o.costUsd=ticks/1e10;else if(Number.isFinite(Number(u.cost))&&Number(u.cost)>=0)o.costUsd=Number(u.cost);return o;}
 async function museModels(key) {
@@ -4358,20 +4417,26 @@ async function bizManagedReview(id, resp, body) {
 // attempt id + request hash + one of this settle's own receipts (a withheld/acknowledged
 // receipt never equals a known-result one); an absent record recreates nothing.
 async function bizManagedSettleRun(ctx, respId, attempt0, outcome, runRec) {
-  // Deterministic terminal receipts bind the FULL outcome: status, note, http status, usage,
-  // the run record id AND its output content, and the owning attempt token + generation. A
-  // repeated or different result never shares a receipt; a withheld receipt never equals a
-  // known-result one.
-  const core = (status, note) => ({ status, note: note == null ? null : note, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, usage: status === 'withheld' ? null : (outcome.usage || null), runId: status === 'withheld' ? null : (runRec ? runRec.id : null), output: status === 'withheld' ? null : (runRec ? runRec.output : null), token: attempt0.token, gen: String(ctx.gen) });
-  const receipt = sha(attempt0.id + '|' + attempt0.requestHash + '|' + bizStable(core(outcome.status, outcome.note == null ? null : outcome.note)));
-  const wReceipt = sha(attempt0.id + '|' + attempt0.requestHash + '|' + bizStable(core('withheld', 'killed')));
-  const term = { ...attempt0, gen: ctx.gen, status: outcome.status, receipt, settledAt: now(), httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, usage: outcome.usage || null, note: outcome.note || null };
-  const withheld = { ...term, status: 'withheld', receipt: wReceipt, usage: null, note: 'killed' };
+  // Deterministic terminal receipts bind the canonical WHOLE landed payload - the complete
+  // terminal record (minus the receipt field itself), the complete run record, and the
+  // complete audit entry: blockedStep/sourcesUsed/input/actual model/at/backend/status are
+  // all bound, so two outcomes with different provenance can never reconcile as the same
+  // landing. A withheld landing gets its own receipt and its own withheld-shaped audit
+  // entry; a kill never logs the supplied known-result outcome.
+  const termCore = { ...attempt0, gen: ctx.gen, status: outcome.status, settledAt: now(), httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, usage: outcome.usage || null, note: outcome.note == null ? null : outcome.note };
+  const logCore = { id: rid('bizlog'), at: now(), kind: 'managed_run', respId, attemptId: attempt0.id, outcome: outcome.status, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, model: runRec ? runRec.model : null, requestedModel: attempt0.provider.model, usage: outcome.usage || null };
+  const wTermCore = { ...termCore, status: 'withheld', usage: null, note: 'killed' };
+  const wLogCore = { ...logCore, outcome: 'withheld', model: null, usage: null };
+  const receipt = sha(bizStable({ term: termCore, run: runRec || null, log: logCore }));
+  const wReceipt = sha(bizStable({ term: wTermCore, run: null, log: wLogCore }));
+  const term = { ...termCore, receipt };
+  const withheld = { ...wTermCore, receipt: wReceipt };
   // A clean finish leaves the retry gate; a billing-uncertain one stays blocking until the
   // owner reviews and resolves it (the script enforces this atomically).
   const clean = (outcome.status === 'known-result' || outcome.status === 'refused-no-call') ? '1' : '0';
-  const logEntry = JSON.stringify({ id: rid('bizlog'), at: now(), kind: 'managed_run', respId, attemptId: attempt0.id, outcome: outcome.status, httpStatus: outcome.httpStatus == null ? null : outcome.httpStatus, model: runRec ? runRec.model : null, requestedModel: attempt0.provider.model, usage: outcome.usage || null });
-  const call = () => r(['EVAL', BIZ_MANAGED_SETTLE, 9, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:kill', 'fm:biz:matt:' + attempt0.id, 'fm:biz:munres:' + respId, runRec ? 'fm:biz:run:' + runRec.id : 'fm:biz:run:none', 'fm:biz:runs:' + respId, 'fm:biz:log', ctx.token, String(ctx.gen), attempt0.id, attempt0.requestHash, JSON.stringify(term), JSON.stringify(withheld), runRec ? JSON.stringify(runRec) : '', runRec ? runRec.id : '', String(BIZ.RUNS_KEEP), logEntry, String(BIZ.LOG_KEEP), receipt, wReceipt, nsKey('fm:biz:run:'), clean]);
+  const logEntry = JSON.stringify(logCore);
+  const wLogEntry = JSON.stringify(wLogCore);
+  const call = () => r(['EVAL', BIZ_MANAGED_SETTLE, 9, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:kill', 'fm:biz:matt:' + attempt0.id, 'fm:biz:munres:' + respId, runRec ? 'fm:biz:run:' + runRec.id : 'fm:biz:run:none', 'fm:biz:runs:' + respId, 'fm:biz:log', ctx.token, String(ctx.gen), attempt0.id, attempt0.requestHash, JSON.stringify(term), JSON.stringify(withheld), runRec ? JSON.stringify(runRec) : '', runRec ? runRec.id : '', String(BIZ.RUNS_KEEP), logEntry, String(BIZ.LOG_KEEP), receipt, wReceipt, nsKey('fm:biz:run:'), clean, wLogEntry]);
   let res = null;
   try { res = await call(); } catch (e) { res = null; }
   if (global.__bizManagedSettleLoseOnce) { const fn = global.__bizManagedSettleLoseOnce; global.__bizManagedSettleLoseOnce = null; res = null; if (typeof fn === 'function') await fn(); } // test-only lost-response hook, never set in production
@@ -4401,21 +4466,14 @@ async function bizManagedSettleRun(ctx, respId, attempt0, outcome, runRec) {
 // in BOTH the unresolved set and the attempt index, and a consumed daily counter. Anything
 // less: no adoption and no provider contact.
 async function bizManagedBeginAdopt(id, token, attemptId, requestHash, day) {
-  const p = await getJ('fm:biz:op_pending').catch(() => null);
-  if (!p || p.op !== 'managed-run' || String(p.id) !== String(id) || p.token !== token || String(p.opId) !== String(attemptId)) return null;
-  const gen = String(p.gen);
-  const fence = await r(['GET', 'fm:biz:fence']).catch(() => null);
-  const freeze = await r(['GET', 'fm:biz:freeze']).catch(() => null);
-  if (fence !== gen || freeze !== token) return null;
-  const araw = await r(['GET', 'fm:biz:matt:' + attemptId]).catch(() => null);
-  let a = null; try { a = araw ? JSON.parse(araw) : null; } catch { a = null; }
-  if (!a || a.status !== 'started' || String(a.id) !== String(attemptId) || a.token !== token || String(a.gen) !== gen || a.requestHash !== requestHash) return null;
-  const un = await r(['SMEMBERS', 'fm:biz:munres:' + id]).catch(() => []);
-  const idx = await r(['LRANGE', 'fm:biz:mattl:' + id, 0, 49]).catch(() => []); // the index is trimmed to 50; a bounded read (never -1)
-  if (!un.includes(attemptId) || !idx.includes(attemptId)) return null;
-  const calls = parseInt((await r(['GET', 'fm:biz:calls:' + day]).catch(() => null)) || '0', 10);
-  if (!(calls >= 1)) return null;
-  return gen;
+  // ONE atomic proof: pending intent, original fence/freeze ownership, exact started attempt,
+  // unresolved-set membership, the never-trimmed matts inventory (index AND durable set), and
+  // the counted call are all verified in the same script execution. Independent reads could
+  // span a purge or a lease change and continue an effect from stale ownership - this cannot.
+  // Any error or mismatch refuses adoption: no fetch, no continued effect.
+  const res = await r(['EVAL', BIZ_MANAGED_ADOPT, 8, 'fm:biz:fence', 'fm:biz:op_pending', 'fm:biz:freeze', 'fm:biz:matt:' + attemptId, 'fm:biz:munres:' + id, 'fm:biz:mattl:' + id, 'fm:biz:matts:' + id, 'fm:biz:calls:' + day, String(id), String(token), String(attemptId), String(requestHash)]).catch(() => null);
+  if (Array.isArray(res) && res[0] === 'ok') return String(res[1]);
+  return null;
 }
 const BIZ_MANAGED_BEGIN_REFUSALS = {
   held: { status: 409, body: { error: 'Another workspace operation is finishing. Wait a moment and reload.', code: 'workspace_changed' } },
@@ -4507,10 +4565,10 @@ async function bizManagedConfirm(id, resp, body, mDeadline) {
       const parsed = bizJson(text);
       if (parsed && parsed.draft) {
         const srcIds = new Set(snap.sources.map(s => s.id));
-        outcome = { status: 'known-result', usage: usageOf(j) || null };
+        outcome = { status: 'known-result', usage: bizManagedUsage(j) };
         // Provenance is what the provider actually said: the response's own model and usage,
         // null when absent - never the requested config presented as the responder.
-        runRec = { id: rid('run'), respId: id, kind: 'managed', at: now(), input: input.slice(0, 4000), output: String(parsed.draft).slice(0, 8000), blockedStep: parsed.blocked_step ? String(parsed.blocked_step).slice(0, 300) : null, sourcesUsed: (Array.isArray(parsed.sources_used) ? parsed.sources_used : []).filter(x => srcIds.has(String(x))).slice(0, 20), model: j && typeof j.model === 'string' ? j.model.slice(0, 80) : null, usage: usageOf(j) || null, status: 'done', jsonOk: true, backend: 'managed-engine', attemptId, httpStatus };
+        runRec = { id: rid('run'), respId: id, kind: 'managed', at: now(), input: input.slice(0, 4000), output: String(parsed.draft).slice(0, 8000), blockedStep: parsed.blocked_step ? String(parsed.blocked_step).slice(0, 300) : null, sourcesUsed: (Array.isArray(parsed.sources_used) ? parsed.sources_used : []).filter(x => srcIds.has(String(x))).slice(0, 20), model: j && typeof j.model === 'string' ? j.model.slice(0, 80) : null, usage: bizManagedUsage(j), status: 'done', jsonOk: true, backend: 'managed-engine', attemptId, httpStatus };
       } else {
         outcome = { status: 'unknown', httpStatus, note: 'unreadable_200' }; // a 200 without a readable draft is unknown, never clean
       }

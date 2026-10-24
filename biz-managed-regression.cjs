@@ -10,7 +10,7 @@
 // intent and orphan), generic-cancel refusal, purge subsumption.
 // No real network, no real keys.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizRespAct,bizConsentAct,bizSourceAdd,bizSourceEdit,bizSourceDel,bizDataPurge,bizOpCancel,bizState,getJ,setJ,r,als,BIZ};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizRespAct,bizConsentAct,bizSourceAdd,bizSourceEdit,bizSourceDel,bizDataPurge,bizOpCancel,bizState,getJ,setJ,r,als,BIZ,sha,bizStable};';
 const behavior={mode:'draft'};
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,
  fetch:async(u,o)=>{
@@ -21,7 +21,7 @@ const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},
   if(behavior.mode==='garbage200')return {ok:true,status:200,json:async()=>({choices:[{message:{content:'not json at all'}}]})};
   if(behavior.mode==='401')return {ok:false,status:401,json:async()=>({error:{message:'Invalid API key',type:'auth'}})};
   if(behavior.mode==='slow')await new Promise(r=>setTimeout(r,50));
-  return {ok:true,status:200,json:async()=>({choices:[{message:{content:'{"draft":"managed draft text","blocked_step":null,"sources_used":["'+behavior.sid+'"]}'}}],usage:{prompt_tokens:11,completion_tokens:7}})};
+  return {ok:true,status:200,json:async()=>({choices:[{message:{content:'{"draft":"managed draft text","blocked_step":null,"sources_used":["'+behavior.sid+'"]}'}}],usage:behavior.usageOverride===undefined?{prompt_tokens:11,completion_tokens:7}:behavior.usageOverride})};
  }};
 vm.runInNewContext(src,c);const f=c.module.exports.t;
 
@@ -107,6 +107,15 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   assert.deepEqual(run1.sourcesUsed,[sid]);assert(run1.usage&&run1.usage.promptTokens===11,'usage from the response');
   const att1=await f.getJ('fm:biz:matt:'+cf.body.managedOutcome.attemptId);
   assert.equal(att1.status,'known-result');assert(att1.receipt,'terminal receipt recorded');assert.equal(att1.requestHash,review.requestHash);
+  // the receipt binds the canonical WHOLE landed payload: terminal record (minus the receipt
+  // field), the complete run record, and the complete audit entry - any provenance change is
+  // a different receipt
+  const runRec1=await f.getJ('fm:biz:run:'+run1.id);
+  const logEntry1=(await f.r(['LRANGE','fm:biz:log',0,49])).map(x=>JSON.parse(x)).find(x=>x.attemptId===att1.id);
+  const termCore1={...att1};delete termCore1.receipt;
+  assert.equal(att1.receipt,f.sha(f.bizStable({term:termCore1,run:runRec1,log:logEntry1})),'receipt binds the whole terminal+run+log payload');
+  assert.notEqual(att1.receipt,f.sha(f.bizStable({term:termCore1,run:{...runRec1,blockedStep:'tampered'},log:logEntry1})),'different run provenance never reconciles as the same landing');
+  assert.notEqual(att1.receipt,f.sha(f.bizStable({term:termCore1,run:runRec1,log:{...logEntry1,model:'other-model'}})),'different audit provenance never reconciles as the same landing');
   assert.equal(await f.r(['GET','fm:biz:op_pending']),null,'intent released');assert.equal(await f.r(['GET','fm:biz:freeze']),null,'lease released');
   assert.equal((await f.r(['SMEMBERS','fm:biz:munres:'+respId])).length,0,'unresolved set empty after terminal settle');
   assert.equal(await f.r(['GET','fm:biz:calls:'+new Date().toISOString().slice(0,10)]),'1','daily counter consumed once');
@@ -114,6 +123,20 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   const rp1=st1.responsibilities.find(x=>x.id===respId);
   assert(rp1.managed&&rp1.managed.scopeHash,'state surfaces the managed approval');
   assert.equal(rp1.managedUnresolved,0);assert(rp1.runs.find(x=>x.id===run1.id),'run in state history');
+
+  // --- managed usage provenance is EXACT: missing or partial usage stays null, never zeros
+  behavior.usageOverride=null;
+  let rvU=await f.bizRespAct(respId,'managed',{op:'review',input});
+  cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:rvU.body.managedReview.requestHash});
+  assert.equal(cf.status,200);
+  assert.strictEqual(cf.body.managedOutcome.run.usage,null,'absent usage object stays null');
+  assert.strictEqual((await f.getJ('fm:biz:matt:'+cf.body.managedOutcome.attemptId)).usage,null,'attempt usage stays null');
+  behavior.usageOverride={prompt_tokens:5};
+  rvU=await f.bizRespAct(respId,'managed',{op:'review',input});
+  cf=await f.bizRespAct(respId,'managed',{op:'confirm',input,requestHash:rvU.body.managedReview.requestHash});
+  assert.equal(cf.status,200);
+  assert.deepEqual(cf.body.managedOutcome.run.usage,{promptTokens:5,completionTokens:null},'partial usage keeps the missing field null');
+  behavior.usageOverride=undefined;
 
   // --- source edit after approval: the gate refuses BEFORE any provider contact
   await f.bizSourceEdit(sid,{text:'We are open 9 to 5 weekdays. Refunds over $50 need the owner. Weekend email answered Monday.'});
@@ -186,6 +209,10 @@ vm.runInNewContext(src,c);const f=c.module.exports.t;
   for(const k of keys){const v=await f.r(['GET',k]).catch(()=>null);if(typeof v==='string')assert(!v.includes('WITHHELD-DRAFT-MARKER'),'withheld draft never persisted ('+k+')');}
   const attW=await f.getJ('fm:biz:matt:'+cf.body.managedOutcome.attemptId);
   assert.equal(attW.status,'withheld');
+  const logHeadW=JSON.parse((await f.r(['LRANGE','fm:biz:log',0,0]))[0]);
+  assert.equal(logHeadW.outcome,'withheld','a kill logs the withheld audit entry, never the supplied known-result outcome');
+  assert.strictEqual(logHeadW.model,null);assert.strictEqual(logHeadW.usage,null);
+  assert(!JSON.stringify(logHeadW).includes('WITHHELD-DRAFT-MARKER'),'the withheld audit entry carries no result provenance');
   assert((await f.r(['SMEMBERS','fm:biz:munres:'+respId])).includes(cf.body.managedOutcome.attemptId),'withheld KEEPS the retry gate until reviewed');
   // lost settle response reconciled by the read path: the withheld outcome is PRESERVED -
   // the response must not answer with the withheld output
