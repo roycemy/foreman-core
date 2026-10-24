@@ -281,10 +281,34 @@
       ${pausedResps.length ? `<p class="meta">Paused: ${pausedResps.map(rp => esc(rp.title)).join(', ')}</p>` : ''}
     </div>` : '';
     const systems = [...new Set(props.flatMap(p => p.systems || []).concat(resps.flatMap(rp => rp.systems || [])))].slice(0, 8);
-    const appsCard = srcs.length || systems.length ? `<div class="bz-card"><div class="bz-sech">App connections</div>
-      <p class="meta">Live app connections (mail, calendar, drive) are not available yet - nothing here connects to your other accounts. Today Alter learns from what you paste or import: notes, documents and plain-text files.</p>
-      ${systems.length ? `<p class="meta">Your proposals mention: ${systems.map(esc).join(', ')}. Until those connect, paste or import their key details as sources.</p>` : ''}
-      <div class="btns"><button class="b out sm" data-hq-target="#bz-add-form" type="button">Add a source</button></div></div>` : '';
+    // App connections: rendered from the LIVE server-reported status, so every state is
+    // honest - not set up, not connected, connected (exact account + scope), and any grant
+    // whose removal Google did not confirm is surfaced with the manual recovery path.
+    const appG = (B.apps && B.apps.gmail) || null;
+    const appsCard = (() => {
+      const head = `<div class="bz-sech">App connections</div>`;
+      const fallback = systems.length ? `<p class="meta">Your proposals mention: ${systems.map(esc).join(', ')}. Until those connect, paste or import their key details as sources.</p>` : '';
+      if (!appG) return `<div class="bz-card">${head}<p class="meta">Connection status could not be loaded - nothing is connected, and no account data is read.</p>${fallback}</div>`;
+      const scopeLine = (appG.scopes || []).length ? `<p class="meta">Access this connection asks for: ${appG.scopes.map(x => esc(String(x).split('/').pop())).join(', ')} - read recent inbox messages and create drafts you review and send yourself. Nothing is ever sent.</p>` : '';
+      const warn = appG.grantStatus === 'revoke_unconfirmed' ? `<div class="bz-row"><div class="t"><b>A removal was not confirmed</b><small>${esc(appG.grantNote || 'Check third-party access in the Google account and remove the connection there to be sure.')}</small></div>${chip('Check Google account', 'warn')}</div>` : '';
+      if (!appG.configured) return `<div class="bz-card">${head}${warn}
+        <p class="meta">${esc(appG.label)} connection is not set up on this deployment yet - the Google app credentials still need to be created. Nothing is connected, and no account data is read. Today Alter learns from what you paste or import: notes, documents and plain-text files.</p>
+        ${scopeLine}${fallback}
+        <div class="btns"><button class="b out sm" data-hq-target="#bz-add-form" type="button">Add a source</button></div></div>`;
+      if (appG.credentialStorage !== 'ready') return `<div class="bz-card">${head}${warn}
+        <p class="meta">Credential storage is not configured safely on this deployment, so connecting is unavailable. Nothing is connected.</p></div>`;
+      if (!appG.connected) return `<div class="bz-card">${head}${warn}
+        ${appG.status === 'needs_reconnect' ? `<div class="bz-row"><div class="t"><b>Reconnect needed</b><small>${esc(appG.lastError || 'The stored credential no longer works.')}</small></div>${chip('Action needed', 'warn')}</div>` : ''}
+        <p class="meta">Connect ${esc(appG.label)} so Alter can draft from recent inbox context. Connecting is your choice and can be removed here anytime.</p>
+        ${scopeLine}
+        ${appG.syncDisclosure ? `<p class="meta">${esc(appG.syncDisclosure)}</p>` : ''}
+        <div class="btns"><button class="b ink sm" id="bz-app-connect" type="button">Connect ${esc(appG.label)}</button></div></div>`;
+      return `<div class="bz-card">${head}${warn}
+        <div class="bz-row"><div class="t"><b>${esc(appG.label)}</b><small>Connected as ${esc(appG.email || 'unknown account')}${appG.connectedAt ? ' · since ' + BB.when(appG.connectedAt) : ''}${appG.lastSyncAt ? ' · inbox last read ' + BB.when(appG.lastSyncAt) : ' · inbox not read yet'}</small></div>${chip('Connected', 'ok')}</div>
+        ${scopeLine}
+        <div class="btns"><button class="b out sm" id="bz-app-disconnect" type="button">Disconnect</button></div>
+        <p class="meta" id="bz-app-msg"></p></div>`;
+    })();
     const nameCard = (!profile && srcs.length) ? `<div class="bz-card"><div class="bz-sech">Name this business</div>
       <p class="meta">The name and one line appear at the top of this page. Only you see them here.</p>
       <label class="fld">Business name<input class="in" id="bz-prof-name" maxlength="80" placeholder="e.g. North Bend Contracting"></label>
@@ -353,6 +377,18 @@
   /* ---------- actions ---------- */
   function bind() {
     const pe = $('#bz-prof-edit', V); if (pe) pe.onclick = () => profileDialog();
+    const ac = $('#bz-app-connect', V); if (ac) ac.onclick = async () => {
+      ac.disabled = true; const j = await api('/apps/gmail/connect', 'POST', {}); ac.disabled = false;
+      if (j.error) return BB.toast(j.error);
+      if (j.authorizationUrl) window.location.assign(j.authorizationUrl); // Google's consent screen; the return lands on the callback
+    };
+    const ad = $('#bz-app-disconnect', V); if (ad) ad.onclick = async () => {
+      if (!await askConfirm('Disconnect Gmail?', 'Alter stops reading the inbox and the stored connection is removed here. Google is asked to revoke its access too.', 'Disconnect')) return;
+      ad.disabled = true; const j = await api('/apps/gmail/disconnect', 'POST', {}); ad.disabled = false;
+      if (j.error) return BB.toast(j.error);
+      BB.toast(j.grantStatus === 'revoked' ? 'Disconnected - Google confirmed the access removal.' : 'Disconnected here. ' + (j.note || ''));
+      await load();
+    };
     const ps = $('#bz-prof-save', V); if (ps) ps.onclick = async () => {
       ps.disabled = true; const j = await api('/profile', 'POST', { name: $('#bz-prof-name', V).value, blurb: $('#bz-prof-blurb', V).value }); ps.disabled = false;
       if (j.error) return BB.toast(j.error); BB.toast('Saved.'); await load();

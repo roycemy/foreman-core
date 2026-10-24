@@ -4,7 +4,7 @@
    HTTP cache (max-age=0, must-revalidate on this deployment) always revalidates it.
    /api, /oauth and /receipt are always live network: no work state, approval or receipt is
    ever served from cache. */
-const CACHE = 'alter-shell-v21';
+const CACHE = 'alter-shell-v22';
 const SHELL = [
   '/hq', '/app.html', '/manifest.webmanifest',
   '/brand/favicon.svg', '/brand/alter-icon-light-180.png', '/brand/alter-icon-light-512.png'
@@ -13,7 +13,7 @@ self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
-  // Purge every older cache (including pre-v21 shells that cached code), then take control.
+  // Purge every older cache (including pre-v22 shells that cached code), then take control.
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
