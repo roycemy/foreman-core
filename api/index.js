@@ -1874,6 +1874,11 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/business/discover/delegate-preview' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscoveryDelegatePreview()); }
     if (path === '/business/discover/delegate-run' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscoverDelegateRun(body)); }
     { const bm = path.match(/^\/business\/proposals\/(prop_\w+)\/(edit|reject|activate)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProposalAct(bm[1], bm[2], body)); } }
+    if (path === '/business/apps/gmail/connect' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppConnect('gmail', origin)); }
+    if (path === '/business/apps/gmail/callback' && req.method === 'GET') { const aq = Object.fromEntries(new URL(req.url, 'https://local.invalid').searchParams); return send(await bizAppCallback('gmail', aq, origin)); }
+    if (path === '/business/apps/gmail/disconnect' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDisconnect('gmail')); }
+    if (path === '/business/apps/gmail/sync' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppSync('gmail')); }
+    if (path === '/business/apps/gmail/drafts' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDraftCreate('gmail', body)); }
     if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(body && body.confirm === 'CANCEL' ? await bizOpCancel(body) : await bizDataPurge(body)); }
     { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete|candidates|delegate-preview|schedule)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
@@ -2229,6 +2234,149 @@ async function bizProfileSet(body) {
   if (!await bizLog('profile_saved', { name }, f0)) return bizFenceConflict();
   return { status: 200, body: { profile } };
 }
+// ---- Business app connections (Alter as the OAuth client) ----
+// First connector: Google Gmail, grounded in Google's published documentation (fetched
+// 2026-10-24): authorization endpoint accounts.google.com/o/oauth2/v2/auth with
+// access_type=offline (a refresh token is returned on the first exchange; prompt=consent
+// re-issues one), token endpoint oauth2.googleapis.com/token (authorization_code and
+// refresh_token grants), revocation oauth2.googleapis.com/revoke?token= (revoking a token
+// also revokes its corresponding refresh token; 200 on success), Gmail v1 users/me/profile,
+// users/me/messages (list; get with format=METADATA + metadataHeaders), users/me/drafts POST
+// (creates a DRAFT-label message only). gmail.compose is the narrowest documented scope that
+// covers drafts.create; it technically also permits sending - this connector contains NO
+// send call, and the connection copy says so plainly. Unconfigured (no Google client
+// credentials on the deployment) is an honest state, not an error.
+const BIZ_APPS = {
+  gmail: {
+    label: 'Gmail',
+    authEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenEndpoint: 'https://oauth2.googleapis.com/token',
+    revokeEndpoint: 'https://oauth2.googleapis.com/revoke',
+    apiBase: 'https://gmail.googleapis.com/gmail/v1/users/me',
+    scopes: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose'],
+    clientId: () => process.env.BIZ_GOOGLE_CLIENT_ID || '',
+    clientSecret: () => process.env.BIZ_GOOGLE_CLIENT_SECRET || ''
+  }
+};
+const BIZ_APP_MAIL_KEEP = 25;
+function bizAppConfigured(p) { const c = BIZ_APPS[p]; return !!(c && c.clientId() && c.clientSecret()); }
+async function bizAppRecord(p) { return (await getJ('fm:biz:app:' + p)) || null; }
+// Public-safe view of a connection: NEVER carries tokens or secrets.
+async function bizAppStatus(p) {
+  const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
+  const base = { provider: p, label: c.label, configured: bizAppConfigured(p), scopes: c.scopes };
+  const rec = await bizAppRecord(p);
+  if (!rec) return { ...base, connected: false, status: 'not_connected' };
+  return { ...base, connected: rec.status === 'connected', status: rec.status, email: rec.email || null, connectedAt: rec.connectedAt || null, lastSyncAt: rec.lastSyncAt || null, lastError: rec.lastError || null };
+}
+async function bizAppConnect(p, origin) {
+  const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
+  if (!bizAppConfigured(p)) return { status: 503, body: { error: c.label + ' sign-in is not configured on this deployment yet - the Google app credentials still need to be created. Nothing was connected.', code: 'app_not_configured' } };
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict();
+  const nonce = crypto.randomBytes(16).toString('hex');
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:appstate:' + nonce, f0, JSON.stringify({ provider: p, at: now(), expires: Date.now() + 600000 })])) return bizFenceConflict();
+  const q = new URLSearchParams({ client_id: c.clientId(), redirect_uri: origin + '/api/business/apps/' + p + '/callback', response_type: 'code', scope: c.scopes.join(' '), access_type: 'offline', prompt: 'consent', state: nonce });
+  return { status: 200, body: { authorizationUrl: c.authEndpoint + '?' + q.toString() } };
+}
+async function bizAppCallback(p, query, origin) {
+  const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
+  if (query && query.error) return { status: 400, body: { error: 'Google declined the sign-in (' + String(query.error).slice(0, 120) + '). Nothing was connected.', code: 'app_consent_declined' } };
+  const nonce = String((query && query.state) || ''), code = String((query && query.code) || '');
+  const sKey = 'fm:biz:appstate:' + nonce, sRaw = await r(['GET', sKey]);
+  const st = sRaw && JSON.parse(sRaw);
+  if (!nonce || !st || st.provider !== p || st.expires < Date.now() || !code) return { status: 400, body: { error: 'That sign-in link expired or was already used. Start the connection again.', code: 'app_state_invalid' } };
+  await r(['DEL', sKey]); // single-use, before the exchange: a replayed callback can never exchange twice
+  const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), code, grant_type: 'authorization_code', redirect_uri: origin + '/api/business/apps/' + p + '/callback' }).toString() });
+  const tj = await tok.json().catch(() => null);
+  if (!tok.ok || !tj || !tj.access_token) return { status: 502, body: { error: 'Google did not complete the token exchange (' + String((tj && tj.error) || tok.status).slice(0, 80) + '). Nothing was connected.', code: 'app_exchange_failed' } };
+  // access_type=offline returns a refresh token on the FIRST consent only; prompt=consent
+  // forces a fresh one, but if none arrives nothing durable was granted - refuse honestly.
+  if (!tj.refresh_token) return { status: 502, body: { error: 'Google did not return an offline credential. Nothing was connected - try the connection again and accept the access screen.', code: 'app_no_refresh_token' } };
+  const prof = await fetch(c.apiBase + '/profile', { headers: { Authorization: 'Bearer ' + tj.access_token } });
+  const pj = await prof.json().catch(() => null);
+  const rec = { provider: p, status: 'connected', email: (pj && pj.emailAddress) || null, scopes: c.scopes,
+    accessToken: enc(tj.access_token), accessTokenExpiresAt: Date.now() + (Number(tj.expires_in) || 3600) * 1000,
+    refreshToken: enc(tj.refresh_token), connectedAt: now(), lastSyncAt: null, lastError: null };
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict();
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, f0, JSON.stringify(rec)])) return bizFenceConflict();
+  await bizLog('app_connected', { provider: p, email: rec.email }, f0);
+  return { status: 200, body: { connected: true, provider: p, email: rec.email } };
+}
+// A live access token, refreshing when needed. invalid_grant (revoked/expired refresh token,
+// per Google's docs) flips the connection to needs_reconnect honestly - never a retry loop.
+async function bizAppAccessToken(p) {
+  const rec = await bizAppRecord(p);
+  if (!rec || rec.status !== 'connected') return { err: { status: 409, body: { error: 'Connect ' + BIZ_APPS[p].label + ' first.', code: 'app_not_connected' } } };
+  if (rec.accessToken && rec.accessTokenExpiresAt > Date.now() + 60000) return { token: dec(rec.accessToken), rec };
+  if (!rec.refreshToken) return { err: { status: 409, body: { error: 'The offline credential was never stored. Reconnect ' + BIZ_APPS[p].label + '.', code: 'app_needs_reconnect' } } };
+  const c = BIZ_APPS[p];
+  const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), grant_type: 'refresh_token', refresh_token: dec(rec.refreshToken) }).toString() });
+  const tj = await tok.json().catch(() => null);
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict();
+  if (!tok.ok || !tj || !tj.access_token) {
+    const invalid = !!(tj && tj.error === 'invalid_grant');
+    const next = { ...rec, status: invalid ? 'needs_reconnect' : rec.status, lastError: invalid ? 'Google revoked or expired the offline credential. Reconnect to continue.' : 'Token refresh failed (' + String((tj && tj.error) || tok.status).slice(0, 80) + ')' };
+    await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, f0, JSON.stringify(next)]);
+    return { err: { status: invalid ? 409 : 502, body: { error: next.lastError, code: invalid ? 'app_needs_reconnect' : 'app_token_failed' } } };
+  }
+  const next = { ...rec, status: 'connected', accessToken: enc(tj.access_token), accessTokenExpiresAt: Date.now() + (Number(tj.expires_in) || 3600) * 1000, ...(tj.refresh_token ? { refreshToken: enc(tj.refresh_token) } : {}), lastError: null };
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, f0, JSON.stringify(next)])) return bizFenceConflict();
+  return { token: tj.access_token, rec: next };
+}
+// Bounded inbox metadata pull (headers + snippet only - never bodies) for responsibilities
+// that work from the inbox, e.g. the estimate follow-up desk.
+async function bizAppSync(p) {
+  const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
+  const at = await bizAppAccessToken(p); if (at.err) return at.err;
+  const list = await fetch(c.apiBase + '/messages?' + new URLSearchParams({ maxResults: String(BIZ_APP_MAIL_KEEP), q: 'newer_than:14d' }), { headers: { Authorization: 'Bearer ' + at.token } });
+  const lj = await list.json().catch(() => null);
+  if (!list.ok || !lj) return { status: 502, body: { error: 'Google did not return the message list (' + String((lj && lj.error && lj.error.message) || list.status).slice(0, 120) + ').', code: 'app_sync_failed' } };
+  const out = [];
+  for (const m of (lj.messages || []).slice(0, BIZ_APP_MAIL_KEEP)) {
+    const q = new URLSearchParams({ format: 'METADATA' });
+    q.append('metadataHeaders', 'From'); q.append('metadataHeaders', 'Subject'); q.append('metadataHeaders', 'Date');
+    const g = await fetch(c.apiBase + '/messages/' + encodeURIComponent(m.id) + '?' + q, { headers: { Authorization: 'Bearer ' + at.token } });
+    const gj = await g.json().catch(() => null);
+    if (!g.ok || !gj) continue;
+    const h = Object.fromEntries(((gj.payload && gj.payload.headers) || []).map(x => [String(x.name).toLowerCase(), x.value]));
+    out.push({ id: m.id, threadId: m.threadId || null, from: String(h.from || '').slice(0, 200), subject: String(h.subject || '(no subject)').slice(0, 200), date: String(h.date || '').slice(0, 80), snippet: String(gj.snippet || '').slice(0, 300), unread: (gj.labelIds || []).includes('UNREAD') });
+  }
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict();
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p + ':mail', f0, JSON.stringify(out)])) return bizFenceConflict();
+  const rec = at.rec;
+  if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, f0, JSON.stringify({ ...rec, lastSyncAt: now(), lastError: null })])) return bizFenceConflict();
+  await bizLog('app_synced', { provider: p, count: out.length }, f0);
+  return { status: 200, body: { provider: p, count: out.length, messages: out } };
+}
+// DRAFTS ONLY: creates a Gmail draft the owner reviews and sends themselves. There is no
+// send call anywhere in this connector - that code path does not exist.
+async function bizAppDraftCreate(p, body) {
+  const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
+  if (!body || !String(body.to || '').trim() || !String(body.text || '').trim()) return { status: 400, body: { error: 'A draft needs a recipient and text.' } };
+  const at = await bizAppAccessToken(p); if (at.err) return at.err;
+  const to = String(body.to).slice(0, 320), subject = String(body.subject || '').replace(/[\r\n]+/g, ' ').slice(0, 300), text = String(body.text).slice(0, 20000);
+  const mime = 'To: ' + to + '\r\nSubject: ' + subject + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text;
+  const raw = Buffer.from(mime, 'utf8').toString('base64url');
+  const res = await fetch(c.apiBase + '/drafts', { method: 'POST', headers: { Authorization: 'Bearer ' + at.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { raw, ...(body.threadId ? { threadId: String(body.threadId) } : {}) } }) });
+  const dj = await res.json().catch(() => null);
+  if (!res.ok || !dj || !dj.id) return { status: 502, body: { error: 'Google did not create the draft (' + String((dj && dj.error && dj.error.message) || res.status).slice(0, 120) + ').', code: 'app_draft_failed' } };
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict();
+  await bizLog('app_draft_created', { provider: p, draftId: dj.id, to }, f0);
+  return { status: 200, body: { provider: p, draftId: dj.id } };
+}
+async function bizAppDisconnect(p) {
+  const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
+  const rec = await bizAppRecord(p);
+  // Best-effort documented revocation (oauth2.googleapis.com/revoke?token=; revoking the
+  // refresh token revokes derived access tokens). Local removal proceeds regardless.
+  if (rec && rec.refreshToken) await fetch(c.revokeEndpoint + '?' + new URLSearchParams({ token: dec(rec.refreshToken) }), { method: 'POST' }).catch(() => {});
+  const f0 = await bizEntry(); if (f0 == null) return bizFrozenConflict();
+  if (!await r(['EVAL', BIZ_FENCE_DEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, f0])) return bizFenceConflict();
+  if (!await r(['EVAL', BIZ_FENCE_DEL, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p + ':mail', f0])) return bizFenceConflict();
+  await bizLog('app_disconnected', { provider: p }, f0);
+  return { status: 200, body: { disconnected: true, provider: p } };
+}
+
 async function bizState() {
   // Settle pass FIRST. A job that finished without its settle landing (older deployment code
   // has no settle hook; a lost report response settles nothing twice) would leave its record
@@ -2285,7 +2433,7 @@ async function bizState() {
     const t = await getJ('fm:task:' + d.taskId);
     d.job = t ? { status: t.status, startedAt: t.startedAt || null, assignee: t.assignee || null } : { status: 'missing' };
   }
-  return { engine, delegate, profile, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
+  return { engine, delegate, apps: { gmail: await bizAppStatus('gmail') }, profile, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
     responsibilities: resps.map(rp => ({ ...rp, runs: runsByResp[rp.id] || [] })), discoveries,
     opPending, log: (logRaw || []).map(x => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean) };
 }
@@ -3549,7 +3697,7 @@ async function bizDataPurge(body) {
     if (pendNow && pendNow.op === 'purge') return bizOpNeedsReview();
   }
   const ctx = await bizOpBegin('purge', null, !retry, retry ? body.opId : undefined); if (ctx && ctx.completed) return bizOpCompleted(); if (ctx && ctx.stale) return bizOpStale(); if (ctx && ctx.uncertain) return bizOpUncertain(); if (!ctx) return bizFrozenConflict();
-  const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0, scans: 0 };
+  const counts = { sources: 0, proposals: 0, responsibilities: 0, runs: 0, scans: 0, connections: 0 };
   let stage = 'start';
   try {
     bizFault('purge:begin');
@@ -3568,6 +3716,7 @@ async function bizDataPurge(body) {
     stage = 'runs'; await fam('fm:biz:run:*', 'runs'); await fam('fm:biz:runs:*', null);
     bizFault('purge:runs');
     stage = 'scans'; await fam('fm:biz:disc:*', 'scans');
+    stage = 'apps'; await fam('fm:biz:app:*', 'connections');
     stage = 'delegated_jobs';
     // Delegated jobs carry business text (brief/context) in the fm:task keyspace. Pending ones
     // are cancelled first so nothing keeps processing deleted data (their settle then no-ops:
