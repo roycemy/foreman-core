@@ -680,15 +680,19 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
 .bz-reviewed{background:rgba(0,0,0,.04);border-radius:8px;padding:8px 10px;font-size:12.5px;white-space:pre-wrap;word-break:break-word}
 
 /* share-a-receipt: form + live exact preview as one compact view (tablet-first) */
-.sh-share{display:grid;gap:14px;margin-top:6px}
+.sh-share{display:flex;flex-direction:column;gap:12px;margin-top:6px;max-height:calc(100dvh - 80px)}
+.sh-body{display:grid;gap:14px;overflow:auto;flex:1;min-height:0;padding:2px}
 .sh-share h3{margin-top:0}
 .sh-share .stackf{gap:10px;margin-top:12px}
 .sh-share .review-frame{margin-top:0;max-height:38vh}
 .sh-share .review-frame .rc{zoom:.6}
 .sh-share .consent{margin-top:12px}
-.sh-share .acts{margin-top:12px}
+.sh-share .sh-acts{margin-top:0;padding-top:12px;border-top:1px solid var(--line);flex:none}
+@media (min-width:761px){
+  .sh-share{max-height:calc(100dvh - 10vh - 64px)}
+}
 @media (min-width:900px){
-  .sh-share{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
-  .sh-share .review-frame{max-height:calc(80vh - 170px)}
+  .sh-body{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+  .sh-share .review-frame{max-height:calc(100dvh - 10vh - 150px)}
   .sh-share .review-frame .rc{zoom:.68}
 }
