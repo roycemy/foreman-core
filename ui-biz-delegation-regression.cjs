@@ -8,6 +8,8 @@ const fs=require('fs'),path=require('path'),http=require('http'),assert=require(
 const SRC={id:'src_1',kind:'doc',title:'How we work',version:2,text:'We answer every customer email within a day. Refunds over $50 need Royce.',updatedAt:'2026-10-23T00:00:00Z'};
 const RESP={id:'resp_1',title:'Customer reply desk',summary:'Draft replies',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:1,sourceIds:['src_1']};
 const BOT={id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}};
+const BOT2={id:'agent_2',name:'Scout',providerId:'custom',connection:{status:'awaiting_bot'}};
+let assigned=null, assignMode='ok';
 const PAYLOAD={hash:'hashABC123',brief:'Alter business job - produce a draft for the owner to review.\nBoundary the owner set: Drafts only',context:'<work_item>\nDraft a reply about the $60 refund.\n</work_item>\n\n<source id="src_1" version="2" title="How we work">\nWe answer every customer email within a day. Refunds over $50 need Royce.\n</source>',sources:[{id:'src_1',version:2,title:'How we work',chars:74,totalChars:74}],omittedSources:[],bot:BOT};
 let phase='none'; // none -> queued -> working -> done; 'failed' variant via /__phase?to=failed
 function stateFor(ident){
@@ -17,7 +19,7 @@ function stateFor(ident){
   if(phase==='done')runs.push({id:'run_1',respId:'resp_1',kind:'manual',at:'2026-10-23T01:00:00Z',input:'Draft a reply about the $60 refund.',status:'done',backend:'linked-bot',bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},taskId:'task_1',settledAt:'2026-10-23T01:04:00Z',output:'Draft: we can offer the $60 refund - Royce approved it.'});
   if(phase==='failed')runs.push({id:'run_1',respId:'resp_1',kind:'manual',at:'2026-10-23T01:00:00Z',input:'Draft a reply about the $60 refund.',status:'failed',backend:'linked-bot',bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},taskId:'task_1',settledAt:'2026-10-23T01:04:00Z',output:null,failureReason:'bot_failed',failureDetail:'Missing current refund policy.'});
   if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[],proposals:[],responsibilities:[],log:[],opPending:null};
-  return {engine:{configured:false,enabled:false,consent:null},delegate:BOT,sources:[SRC],proposals:[],responsibilities:[{...RESP,runs}],log:[],opPending:null};
+  return {engine:{configured:false,enabled:false,consent:null},delegate:BOT,team:[BOT,BOT2],sources:[SRC],proposals:[],responsibilities:[{...RESP,bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},runs,...(assigned?{assignment:assigned}:{})}],log:[],opPending:null};
 }
 let ident='A';
 const server=http.createServer((req,res)=>{
@@ -25,6 +27,7 @@ const server=http.createServer((req,res)=>{
   const json=o=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(o));};
   if(u.pathname==='/__ident'){ident=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__phase'){phase=u.searchParams.get('to');return json({ok:true});}
+  if(u.pathname==='/__assign-mode'){assignMode=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/api/me')return json(ident==='A'?{email:'a@a.test',workspace:'wA'}:{email:'b@b.test',workspace:'wB'});
   if(u.pathname==='/api/state')return json({now:new Date().toISOString()});
   if(u.pathname==='/api/money')return json({requests:[]});
@@ -35,6 +38,13 @@ const server=http.createServer((req,res)=>{
     let b='';req.on('data',d=>b+=d);req.on('end',()=>{const body=JSON.parse(b||'{}');
       if(body.delegateHash!==PAYLOAD.hash)return json({error:'Review exactly what would be sent first.',code:'delegation_review_required',delegation:PAYLOAD});
       phase='queued';const run=stateFor('A').responsibilities[0].runs[0];return json({run});});
+    return;}
+  if(u.pathname==='/api/business/responsibilities/resp_1/assign'&&req.method==='POST'){
+    let b='';req.on('data',d=>b+=d);req.on('end',()=>{const body=JSON.parse(b||'{}');
+      if(assignMode==='changed')return json({error:'This responsibility changed while you were assigning - reload and review it before assigning. Nothing was overwritten.',code:'resp_changed'});
+      if(body.botId==='agent_2')return json({error:'That bot is not connected right now. Pair or reconnect it first - Alter does not create bot accounts.',code:'assign_bot_unavailable'});
+      assigned=body.botId?{botId:body.botId,botName:body.botId==='agent_1'?'Grokbot':'Scout',assignedAt:new Date().toISOString()}:null;
+      return json({responsibility:{...RESP,bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},...(assigned?{assignment:assigned}:{})}});});
     return;}
   if(u.pathname.startsWith('/api/'))return json({});
   if(u.pathname==='/'||u.pathname==='/app.html'||u.pathname==='/index.html'){res.setHeader('content-type','text/html');return res.end(fs.readFileSync('public/app.html'));}
@@ -163,6 +173,34 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(t.includes('could not finish'),'failure names the actor');
  await shot2('delegation-failed',`[...document.querySelectorAll('.bz-run')].pop()`);
 
+ // --- team assignment: roster honesty, connected-only picking, refusal reloads truth, saved assignment paints
+ if(!(await ev(`!!document.querySelector('[data-run-input="resp_1"]')`)))await ev(`(()=>{const q=document.querySelector('[data-toggle-resp]');if(q)q.click();})();'open'`);
+ assert(await poll(`!!document.querySelector('[data-resp-assign="resp_1"]')`),'assign button present on a bot-mapped responsibility');
+ t=await bizText();
+ assert(t.includes('Runs on'),'assignment line present');
+ assert(t.includes('automatic pick'),'the automatic pick is named by default');
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'assign chooser paints');
+ t=await bizText();
+ assert(t.includes('Alter never creates bot accounts'),'the honest no-provisioning copy is shown');
+ assert(t.includes('Scout'),'the paired-but-unconnected roster bot is listed, not hidden');
+ assert(await ev(`document.querySelector('[data-assign-bot][value="agent_2"]').disabled`),'a disconnected bot is never pickable');
+ assert(t.includes('Paired - not heard from yet'),'the disconnected state is named honestly');
+ await shot2('assign-chooser',`document.querySelector('[data-assign-save="resp_1"]')`);
+ await ctl('/__assign-mode?to=changed');
+ await ev(`document.querySelector('[data-assign-bot][value="agent_1"]').click();document.querySelector('[data-assign-save="resp_1"]').click();'save-refused'`);
+ assert(await poll(`!document.querySelector('[data-assign-save="resp_1"]')`),'a refused save closes the chooser');
+ t=await bizText();
+ assert(!t.includes('you assigned it'),'a refused save never claims the assignment landed');
+ await ctl('/__assign-mode?to=ok');
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign2'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'chooser reopens');
+ await ev(`document.querySelector('[data-assign-bot][value="agent_1"]').click();document.querySelector('[data-assign-save="resp_1"]').click();'save-ok'`);
+ assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('you assigned it')`),'the saved assignment paints');
+ t=await bizText();
+ assert(t.includes('Grokbot (you assigned it)'),'the assigned bot is named');
+ await shot2('assign-saved',`document.querySelector('[data-resp-assign="resp_1"]')`);
+
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions, scoped effects claims), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop - pixels at /downloads/delegation-{review,sent,working,done,failed}-{390,desktop}.png.');
+ console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions, scoped effects claims), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop + team assignment (roster honesty, connected-only pick, refusal reloads truth, saved state) - pixels at /downloads/delegation-{review,sent,working,done,failed}- and /downloads/assign-{chooser,saved}-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{server.close();}catch(_){/*noop*/}process.exit(1)});
