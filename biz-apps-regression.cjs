@@ -20,13 +20,14 @@ const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},
    assert.equal(p.get('client_id'),'cid123','token calls carry the configured client id');
    assert.equal(p.get('client_secret'),'sec456','token calls carry the configured client secret');
    if(E.__G_FAIL)return reply({error:E.__G_FAIL},false,400);
-   if(p.get('grant_type')==='authorization_code'){assert.ok(p.get('code'),'exchange carries the code');assert.equal(p.get('redirect_uri'),'https://test.local/api/business/apps/gmail/callback','exchange carries the exact redirect');return reply({access_token:'ya29.first',refresh_token:'1//rt',expires_in:3600,token_type:'Bearer',scope:E.__G_SCOPE_NARROW?'https://www.googleapis.com/auth/gmail.readonly':'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose'});}
+   if(p.get('grant_type')==='authorization_code'){assert.ok(p.get('code'),'exchange carries the code');assert.equal(p.get('redirect_uri'),'https://test.local/api/business/apps/gmail/callback','exchange carries the exact redirect');if(E.__G_EXCHANGE_HOLD)await new Promise(res=>{E.__G_EXCHANGE_GO=res;});return reply({access_token:'ya29.first',refresh_token:E.__G_RT||'1//rt',expires_in:3600,token_type:'Bearer',scope:E.__G_SCOPE_NARROW?'https://www.googleapis.com/auth/gmail.readonly':'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose'});}
    if(p.get('grant_type')==='refresh_token'){if(E.__G_REFRESH_HOLD)await new Promise(res=>{E.__G_REFRESH_GO=res;});assert.equal(p.get('refresh_token'),'1//rt','refresh presents the stored credential');return reply({access_token:'ya29.refreshed',expires_in:3600,token_type:'Bearer',...(E.__G_REFRESH_NARROW?{scope:'https://www.googleapis.com/auth/gmail.readonly'}:{})});}
    throw new Error('unexpected grant');}
   if(u==='https://oauth2.googleapis.com/revoke'){
    assert.equal(o.method,'POST','revocation is a POST');
    assert.ok(!u.includes('token='),'the token never travels in a URL');
    const p=new URLSearchParams(o.body||'');assert.ok(p.get('token'),'revocation carries the token in the BODY (RFC 7009)');
+   if(E.__G_REVOKE_HOLD)await new Promise(res=>{E.__G_REVOKE_GO=res;}); // a parked revocation, released by the test
    if(E.__PARK_SYNC){delete E.__PARK_SYNC;E.__PARKED=await F.bizAppSync('gmail');} // a parked sync wakes mid-disconnect
    if(E.__G_REVOKE_FAIL)return reply({error:'temporarily_unavailable'},false,503);
    return reply({},true,200);}
@@ -203,6 +204,7 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   const cbR2=await f.bizAppCallback('gmail',{state:c6b.nonce,code:'authcode1'},'https://test.local',c6b.cookie);
   delete E.__RACE_APPGEN;
   assert.equal(cbR2.status,409);assert.equal(cbR2.body.grantStatus,'not_revoked','a possibly-shared grant is discarded, never revoked');
+  await f.r(['DEL','fm:biz:apptomb:gmail']); // test hygiene: cbR2\'s discarded-grant handle (encrypted under suite-enc-key) would be undecryptable after the key-rotation test below
   assert.ok(!calls.some(x=>x.u==='https://oauth2.googleapis.com/revoke'),'no revocation fires against the live connection');
   assert.equal(JSON.stringify(await f.getJ('fm:biz:app:gmail')),recBefore,'the live connection is untouched');
 
@@ -275,6 +277,57 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
    assert.equal(calls.filter(x=>x.u==='https://oauth2.googleapis.com/revoke').length,2,'both the live grant and the old tomb grant were revoked');
    // a NEW sign-in cannot complete while the retry holds the connect lock: covered by 5b\'s
    // app_connect_busy serialization - no delayed cleanup can meet a live shared grant.
+  }
+  // 13c. REVIEWER REPRO: a parked CURRENT-grant revocation must serialize against reconnects
+  {
+   const y1=await connect();await f.bizAppCallback('gmail',{state:y1.nonce,code:'authcode1'},'https://test.local',y1.cookie);
+   E.__G_REVOKE_HOLD='1';
+   const p1=f.bizAppDisconnect('gmail'); // parks mid-revoke, local record already killed
+   await new Promise(r2=>setTimeout(r2,20));
+   const y2=await connect();
+   const cb2=await f.bizAppCallback('gmail',{state:y2.nonce,code:'authcode1'},'https://test.local',y2.cookie);
+   assert.equal(cb2.status,409,'a sign-in cannot complete while a disconnect holds the connect lock');
+   assert.equal(cb2.body.code,'app_connect_busy');
+   delete E.__G_REVOKE_HOLD; E.__G_REVOKE_GO(); const d1=await p1; // release the parked revoke, then disarm the hold
+   assert.equal(d1.status,200);assert.equal(d1.body.grantStatus,'revoked');
+   assert.equal(await f.getJ('fm:biz:app:gmail'),null,'no connected record survived a confirmed revocation');
+   const y3=await connect();const cb3=await f.bizAppCallback('gmail',{state:y3.nonce,code:'authcode1'},'https://test.local',y3.cookie);
+   assert.equal(cb3.status,200,'a fresh sign-in after the disconnect completes works');
+   await f.bizAppDisconnect('gmail');
+  }
+  // 13d. REVIEWER REPRO: two distinct unresolved grants are BOTH accounted for
+  {
+   E.__G_REVOKE_FAIL='1';
+   const z1=await connect();await f.bizAppCallback('gmail',{state:z1.nonce,code:'authcode1'},'https://test.local',z1.cookie);
+   await f.bizAppDisconnect('gmail'); // grant A unconfirmed, handle held
+   E.__G_RT='1//rtB';
+   const z2=await connect();await f.bizAppCallback('gmail',{state:z2.nonce,code:'authcode1'},'https://test.local',z2.cookie); // DISTINCT grant B
+   await f.bizAppDisconnect('gmail'); // current B revoke fails AND old A retry fails
+   delete E.__G_REVOKE_FAIL; delete E.__G_RT;
+   const tomb=await f.getJ('fm:biz:apptomb:gmail');
+   const un=(tomb.attempts||[]).filter(a=>a.enc&&(a.status==='pending'||a.status==='revoke_unconfirmed'));
+   assert.equal(un.length,2,'BOTH unresolved grants keep durable handles (A and B), got '+JSON.stringify(tomb));
+   assert.notEqual(un[0].enc,un[1].enc,'the two handles cover the two distinct credentials');
+   const d3=await f.bizAppDisconnect('gmail'); // recovery: both retried and confirmed
+   assert.equal(d3.body.priorGrant,'revoked');
+   assert.equal((await f.getJ('fm:biz:apptomb:gmail')).attempts.filter(a=>a.enc&&(a.status==='pending'||a.status==='revoke_unconfirmed')).length,0,'the ledger drains once Google confirms');
+  }
+  // 5d. REVIEWER REPRO: a callback whose lease lapses mid-exchange commits NOTHING and revokes NOTHING
+  {
+   const w1=await connect();
+   const revokes0=calls.filter(x=>x.u==='https://oauth2.googleapis.com/revoke').length;
+   E.__G_EXCHANGE_HOLD='1';
+   const pcb=f.bizAppCallback('gmail',{state:w1.nonce,code:'authcode1'},'https://test.local',w1.cookie);
+   await new Promise(r2=>setTimeout(r2,20));
+   await f.r(['SET','fm:biz:appconn:gmail','other-owner','XX','PX','60000']); // the lease now belongs to someone else
+   delete E.__G_EXCHANGE_HOLD; E.__G_EXCHANGE_GO();
+   const cb=await pcb;
+   assert.equal(cb.status,409);assert.equal(cb.body.code,'app_connect_lease_lost','the commit is bound to lease ownership');
+   assert.equal(await f.getJ('fm:biz:app:gmail'),null,'nothing was persisted');
+   assert.equal(calls.filter(x=>x.u==='https://oauth2.googleapis.com/revoke').length,revokes0,'nothing was revoked either - the grant may be shared with the new lock holder');
+   const un=(await f.getJ('fm:biz:apptomb:gmail')).attempts.filter(a=>a.enc&&a.status==='pending');
+   assert.equal(un.length,1,'the interrupted grant keeps a durable handle for a later retry');
+   await f.r(['DEL','fm:biz:apptomb:gmail']); await f.r(['DEL','fm:biz:appconn:gmail']);
   }
   // 13b. a parked sync completing mid-disconnect: local state is gone BEFORE the network
   const cE=await connect();await f.bizAppCallback('gmail',{state:cE.nonce,code:'authcode1'},'https://test.local',cE.cookie);

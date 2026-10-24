@@ -65,6 +65,16 @@ async function r(cmd0) {
   return j.result;
 }
 const memList = k => mem.lists.get(k) || [];
+// Grant-attempt tombstones are a bounded COLLECTION (v2): every grant that exists gets a
+// durable encrypted handle BEFORE any revocation is attempted, so no failure path - an
+// unconfirmed revoke, a lost lease, a crashed process - can lose a grant's only handle.
+// Legacy singleton tombstones normalize to one attempt.
+function bizTombNorm(t) {
+  if (!t || typeof t !== 'object') return { v: 2, at: '', attempts: [] };
+  if (Array.isArray(t.attempts)) return t;
+  const olds = (t.enc && (t.grantStatus === 'pending' || t.grantStatus === 'revoke_unconfirmed')) ? [{ id: 'legacy', enc: t.enc, status: t.grantStatus, at: t.at }] : [];
+  return { v: 2, at: t.at || '', attempts: olds };
+}
 function memEval(script, n, keys, argv) {
   if (script === AGENT_CAS || script === BOTLINK_CAS) {
     if (Number(n) !== 1) throw Error('unsupported local EVAL');
@@ -72,6 +82,23 @@ function memEval(script, n, keys, argv) {
   }
   if (script === BIZ_STATE_TAKE) { const v = mem.kv.has(keys[0]) ? mem.kv.get(keys[0]) : null; if (v !== null) mem.kv.delete(keys[0]); return v; }
   if (script === BIZ_LOCK_REL) { if (mem.kv.get(keys[0]) === argv[0]) { mem.kv.delete(keys[0]); return 1; } return 0; }
+  if (script === BIZ_LOCK_OWNED) return mem.kv.get(keys[0]) === argv[0] ? 1 : 0;
+  if (script === BIZ_TOMB_ADD) {
+    const t = bizTombNorm(mem.kv.has(keys[0]) ? JSON.parse(mem.kv.get(keys[0])) : null);
+    t.attempts.push({ id: argv[0], enc: argv[1], status: argv[2], at: argv[3] });
+    if (t.attempts.length > 8) { // fail closed: only RESOLVED attempts are evictable; a full unresolved ledger refuses
+      const i = t.attempts.findIndex(a => a.status !== 'pending' && a.status !== 'revoke_unconfirmed' && a.status !== 'undecryptable');
+      if (i < 0) return 0;
+      t.attempts.splice(i, 1);
+    }
+    t.at = argv[3]; mem.kv.set(keys[0], JSON.stringify(t)); return 1;
+  }
+  if (script === BIZ_TOMB_MARK) {
+    const raw = mem.kv.get(keys[0]); if (raw == null) return 0;
+    const t = JSON.parse(raw); if (!Array.isArray(t.attempts)) return 0;
+    const a = t.attempts.find(x => x.id === argv[0]); if (!a) return 0;
+    a.status = argv[1]; mem.kv.set(keys[0], JSON.stringify(t)); return 1;
+  }
   const fence = mem.kv.get(keys[0]) || '0';
   if (fence !== argv[0]) return 0; // a purge/delete bump invalidates stale writers
   if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return 0; // a delete/purge freeze excludes ALL writers for its duration
@@ -81,6 +108,13 @@ function memEval(script, n, keys, argv) {
     case BIZ_FENCE_CAS: { const old = mem.kv.get(keys[3]); if (old == null) return -1; if (old !== argv[1]) return 0; mem.kv.set(keys[3], argv[2]); return 1; }
     case BIZ_FENCE_DEL: mem.kv.delete(keys[3]); mem.lists.delete(keys[3]); return 1;
     case BIZ_STATE_SET: mem.kv.set(keys[3], argv[1]); return 1;
+    case BIZ_APP_PUT_OWNED: {
+      if (mem.kv.get(keys[5]) !== argv[4]) return -3;
+      if ((mem.kv.get(keys[4]) || '0') !== argv[1]) return -1;
+      const cur = mem.kv.has(keys[3]) ? String(mem.kv.get(keys[3])) : '__absent__';
+      if (cur !== argv[2]) return -2;
+      mem.kv.set(keys[3], argv[3]); return 1;
+    }
     case BIZ_APP_PUT: {
       if ((mem.kv.get(keys[4]) || '0') !== argv[1]) return -1;
       const cur = mem.kv.has(keys[3]) ? String(mem.kv.get(keys[3])) : '__absent__';
@@ -256,11 +290,17 @@ const BIZ_FENCE_DEL = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] t
 const BIZ_STATE_SET = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call(\'SET\',KEYS[4],ARGV[2],\'PX\',tonumber(ARGV[3])); return 1";
 const BIZ_STATE_TAKE = "local v=redis.call('GET',KEYS[1]); if v then redis.call(\'DEL\',KEYS[1]); return v end; return false";
 const BIZ_LOCK_REL = "if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end; return 0";
+const BIZ_LOCK_OWNED = "if redis.call('GET',KEYS[1])==ARGV[1] then return 1 end; return 0";
+const BIZ_TOMB_ADD = "local raw=redis.call('GET',KEYS[1]); local t; if raw then t=cjson.decode(raw) else t={v=2,at='',attempts={}} end; if not t.attempts then local olds={}; if t.enc and (t.grantStatus=='pending' or t.grantStatus=='revoke_unconfirmed') then olds={{id='legacy',enc=t.enc,status=t.grantStatus,at=t.at}} end; t={v=2,at=t.at or '',attempts=olds} end; table.insert(t.attempts,{id=ARGV[1],enc=ARGV[2],status=ARGV[3],at=ARGV[4]}); if #t.attempts>8 then local idx=nil; for i,a in ipairs(t.attempts) do if a.status~='pending' and a.status~='revoke_unconfirmed' and a.status~='undecryptable' then idx=i; break end end; if not idx then return 0 end; table.remove(t.attempts,idx) end; t.at=ARGV[4]; redis.call('SET',KEYS[1],cjson.encode(t)); return 1";
+const BIZ_TOMB_MARK = "local raw=redis.call('GET',KEYS[1]); if not raw then return 0 end; local t=cjson.decode(raw); if not t.attempts then return 0 end; local found=false; for i,a in ipairs(t.attempts) do if a.id==ARGV[1] then a.status=ARGV[2]; t.attempts[i]=a; found=true end end; if found then redis.call('SET',KEYS[1],cjson.encode(t)); return 1 end; return 0";
 // Connector CAS writes: the fence (purge/delete), the per-provider epoch (disconnect bump)
 // AND the exact current record must all match what the caller read before its network calls.
 // 0 = fence conflict (retryable), -1 = epoch lost (disconnect/purge interleaved), -2 = record changed.
 const BIZ_APP_PUT = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local g=redis.call('GET',KEYS[5]) or '0'; if g~=ARGV[2] then return -1 end; local cur=redis.call('GET',KEYS[4]); if cur==false then cur='__absent__' end; if cur~=ARGV[3] then return -2 end; redis.call('SET',KEYS[4],ARGV[4]); return 1";
 const BIZ_APP_PUT2 = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local g=redis.call('GET',KEYS[6]) or '0'; if g~=ARGV[2] then return -1 end; local cur=redis.call('GET',KEYS[4]); if cur==false then cur='__absent__' end; if cur~=ARGV[3] then return -2 end; redis.call('SET',KEYS[4],ARGV[4]); redis.call('SET',KEYS[5],ARGV[5]); return 1";
+// The commit is bound to lock OWNERSHIP inside the same atomic store op: a lease that
+// lapsed between the last check and the write fails the write itself, never a check-then-act gap.
+const BIZ_APP_PUT_OWNED = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('GET',KEYS[6])~=ARGV[5] then return -3 end; local g=redis.call('GET',KEYS[5]) or '0'; if g~=ARGV[2] then return -1 end; local cur=redis.call('GET',KEYS[4]); if cur==false then cur='__absent__' end; if cur~=ARGV[3] then return -2 end; redis.call('SET',KEYS[4],ARGV[4]); return 1";
 const BIZ_APP_KILL = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local g=redis.call('GET',KEYS[6]) or '0'; if g~=ARGV[2] then return -1 end; local cur=redis.call('GET',KEYS[4]); if cur==false then cur='__absent__' end; if cur~=ARGV[3] then return -2 end; redis.call('DEL',KEYS[4]); redis.call('DEL',KEYS[5]); redis.call('SET',KEYS[6],ARGV[4]); redis.call('SET',KEYS[7],ARGV[5]); local ks=redis.call('KEYS',ARGV[6]); for _,k in ipairs(ks) do redis.call('DEL',k) end; return 1";
 const BIZ_FENCE_SADD = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call(\'SADD\',KEYS[4],ARGV[2]); return 1";
 const BIZ_FENCE_SREM = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call(\'SREM\',KEYS[4],ARGV[2]); return 1";
@@ -2351,17 +2391,21 @@ async function bizAppSnap(p) {
 }
 // RFC 7009 body-form revocation, best-effort, NEVER in a URL or a log line. Returns whether
 // the provider CONFIRMED it - callers report an unconfirmed grant honestly.
-async function bizAppRevoke(c, token) {
+async function bizAppRevoke(c, token, ms) {
   if (!token) return false;
-  try { const rr = await fetch(c.revokeEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: String(token) }).toString() }); return !!rr.ok; } catch { return false; }
+  try { const rr = await fetch(c.revokeEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: String(token) }).toString(), signal: AbortSignal.timeout(Math.max(1, ms || 20000)) }); return !!rr.ok; } catch { return false; }
 }
+const bizLockOwned = (key, tok) => r(['EVAL', BIZ_LOCK_OWNED, 1, key, tok]).then(x => x === 1).catch(() => false);
+const bizTombAdd = (p, id, enc, status) => r(['EVAL', BIZ_TOMB_ADD, 1, 'fm:biz:apptomb:' + p, id, enc, status, now()]);
+const bizTombMark = (p, id, status) => r(['EVAL', BIZ_TOMB_MARK, 1, 'fm:biz:apptomb:' + p, id, status]);
+const bizTombUnresolved = (t) => bizTombNorm(t).attempts.filter(a => a.enc && (a.status === 'pending' || a.status === 'revoke_unconfirmed' || a.status === 'undecryptable'));
 // Public-safe view of a connection: NEVER carries tokens, secrets, or message content.
 async function bizAppStatus(p) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
   const mail = await getJ('fm:biz:app:' + p + ':mail'), tomb = await getJ('fm:biz:apptomb:' + p);
   const base = { provider: p, label: c.label, configured: bizAppConfigured(p), credentialStorage: bizAppEncOk() ? 'ready' : 'unavailable', scopes: c.scopes,
     syncDisclosure: 'Sync reads sender, subject, date and a short excerpt (the Gmail snippet) of recent inbox messages. The stored snapshot is encrypted at rest, kept for the owner only, and never forwarded to any bot or AI automatically.' };
-  if (tomb && tomb.grantStatus === 'revoke_unconfirmed') base.grantStatus = 'revoke_unconfirmed', base.grantNote = 'Google did not confirm revoking a removed connection - it may still show under third-party access in the Google account; remove it there to be sure.';
+  if (bizTombUnresolved(tomb).length) base.grantStatus = 'revoke_unconfirmed', base.grantNote = 'Google did not confirm revoking a removed connection - it may still show under third-party access in the Google account; remove it there to be sure.';
   const rec = await getJ('fm:biz:app:' + p);
   if (!rec) return { ...base, connected: false, status: 'not_connected' };
   return { ...base, connected: rec.status === 'connected', status: rec.status, email: rec.email || null, connectedAt: rec.connectedAt || null, lastSyncAt: rec.lastSyncAt || null, lastError: rec.lastError || null, mailCount: mail ? (mail.count || 0) : 0 };
@@ -2406,16 +2450,34 @@ async function bizAppCallback(p, query, origin, cookieHeader) {
   // (Google may share one grant across consents). Token-owned release below.
   const connLock = 'fm:biz:appconn:' + p, connTok = rid('conn');
   if (!await r(['SET', connLock, connTok, 'NX', 'PX', '60000'])) return { status: 409, body: { error: 'Another ' + c.label + ' sign-in is completing right now. Start again in a moment.', code: 'app_connect_busy' } };
-  let fresh = null, persisted = false; // once the exchange succeeds, this grant must ALWAYS be accounted for
+  // One lease covers the WHOLE grant lifecycle - exchange, profile, commit and any cleanup
+  // revoke. Every step is bounded by the time LEFT on the lease, and the final commit plus
+  // every cleanup revocation first re-check lock OWNERSHIP: a lease that lapsed mid-flight
+  // means someone else owns the lifecycle now, so we persist nothing and revoke nothing.
+  const dl = Date.now() + 55000, left = () => Math.max(1, dl - Date.now());
+  let fresh = null, persisted = false, attId = null, attTracked = true; // once the exchange succeeds, this grant must ALWAYS be accounted for
   // Cleanup-time ownership: revoke ONLY a grant that was never persisted while NO connection
   // record exists right now - initial absence at initiation proves nothing by cleanup time.
+  // The grant gets a durable encrypted tombstone handle BEFORE any revocation is attempted:
+  // an unconfirmed revoke or a crashed process can never lose track of it.
   const cleanupGrant = async () => {
     if (persisted) return 'not_revoked';
+    const tok0 = (fresh && (fresh.refresh_token || fresh.access_token)) || null;
+    if (tok0 && !attId) {
+      attId = rid('att');
+      // Fail-closed ledger: a full unresolved ledger refuses (0) rather than evicting an
+      // unresolved grant. The grant is then revoked without a stored handle and reported untracked.
+      const added = await bizTombAdd(p, attId, bizAppEnc(tok0), 'pending').catch(() => 0);
+      if (added !== 1) attTracked = false;
+    }
     if ((await r(['GET', 'fm:biz:app:' + p])) != null) return 'not_revoked';
-    return (await bizAppRevoke(c, (fresh && (fresh.refresh_token || fresh.access_token)) || null)) ? 'revoked' : 'revoke_unconfirmed';
+    if (!await bizLockOwned(connLock, connTok)) return 'pending_retry'; // lease lost: the durable handle is retried by a later disconnect or purge
+    const ok = await bizAppRevoke(c, tok0, Math.min(20000, left()));
+    if (attId) await bizTombMark(p, attId, ok ? 'revoked' : 'revoke_unconfirmed').catch(() => {});
+    return ok ? 'revoked' : 'revoke_unconfirmed';
   };
   try {
-    const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), code, grant_type: 'authorization_code', redirect_uri: origin + '/api/business/apps/' + p + '/callback' }).toString(), signal: AbortSignal.timeout(20000) }); // bounded: the connect lease is 60s
+    const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), code, grant_type: 'authorization_code', redirect_uri: origin + '/api/business/apps/' + p + '/callback' }).toString(), signal: AbortSignal.timeout(Math.min(20000, left())) }); // bounded by the time left on the 60s connect lease
     const tj = await tok.json().catch(() => null);
     if (!tok.ok || !tj || !tj.access_token) return { status: 502, body: { error: 'Google did not complete the token exchange (' + bizClean((tj && tj.error) || tok.status) + '). Nothing was connected.', code: 'app_exchange_failed' } };
     fresh = tj;
@@ -2426,26 +2488,31 @@ async function bizAppCallback(p, query, origin, cookieHeader) {
     const granted = String(tj.scope || '').split(/\s+/), missing = c.scopes.filter(x => !granted.includes(x));
     if (!tj.refresh_token || missing.length) {
       const gs = await cleanupGrant();
-      return { status: 502, body: { error: !tj.refresh_token ? 'Google did not return an offline credential. Nothing was connected - try the connection again and accept the access screen.' : 'Google granted narrower access than this connection needs (' + missing.join(', ') + '). Nothing was connected.', code: !tj.refresh_token ? 'app_no_refresh_token' : 'app_scope_missing', grantStatus: gs } };
+      return { status: 502, body: { error: !tj.refresh_token ? 'Google did not return an offline credential. Nothing was connected - try the connection again and accept the access screen.' : 'Google granted narrower access than this connection needs (' + missing.join(', ') + '). Nothing was connected.', code: !tj.refresh_token ? 'app_no_refresh_token' : 'app_scope_missing', grantStatus: gs, ...(attTracked ? {} : { grantTracked: false }) } };
     }
-    const prof = await fetch(c.apiBase + '/profile', { headers: { Authorization: 'Bearer ' + tj.access_token }, signal: AbortSignal.timeout(20000) });
+    const prof = await fetch(c.apiBase + '/profile', { headers: { Authorization: 'Bearer ' + tj.access_token }, signal: AbortSignal.timeout(Math.min(15000, left())) }); // bounded by the lease
     const pj = await prof.json().catch(() => null);
     if (!prof.ok || !pj || !pj.emailAddress) {
       const gs = await cleanupGrant();
-      return { status: 502, body: { error: 'Google did not confirm the account profile. Nothing was connected.', code: 'app_profile_failed', grantStatus: gs } };
+      return { status: 502, body: { error: 'Google did not confirm the account profile. Nothing was connected.', code: 'app_profile_failed', grantStatus: gs, ...(attTracked ? {} : { grantTracked: false }) } };
     }
     const rec = { provider: p, status: 'connected', email: pj.emailAddress, scopes: c.scopes,
       accessToken: bizAppEnc(tj.access_token), accessTokenExpiresAt: Date.now() + (Number(tj.expires_in) || 3600) * 1000,
       refreshToken: bizAppEnc(tj.refresh_token), connectedAt: now(), lastSyncAt: null, lastError: null };
-    // Initiation fence + epoch: a disconnect/purge after the flow started fails this write.
-    const put = await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, st.f0, st.gen, snap.raw, JSON.stringify(rec)]);
+    // Initiation fence + epoch + ATOMIC lease-ownership binding: if the 60s lease lapsed
+    // mid-flight, another flow may own the lifecycle now - the write itself fails (-3).
+    const put = await r(['EVAL', BIZ_APP_PUT_OWNED, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, connLock, st.f0, st.gen, snap.raw, JSON.stringify(rec), connTok]);
     persisted = put === 1;
+    if (put === -3) {
+      const gs = await cleanupGrant();
+      return { status: 409, body: { error: 'The connection took too long and its completion lease lapsed. Nothing was connected - start the connection again.', code: 'app_connect_lease_lost', grantStatus: gs, ...(attTracked ? {} : { grantTracked: false }) } };
+    }
     // Test-only seam (never set in production), mirroring global.__bizBetween: a failure
     // AFTER the record persisted must never revoke the persisted grant.
     if (global.__bizAppThrowAfterPut) { global.__bizAppThrowAfterPut = null; throw new Error('test seam: post-commit failure'); }
     if (!persisted) {
       const gs = await cleanupGrant();
-      return { status: 409, body: { error: 'The workspace changed while Google was connecting (a delete or disconnect landed). Start the connection again.', code: 'app_race_lost', grantStatus: gs,
+      return { status: 409, body: { error: 'The workspace changed while Google was connecting (a delete or disconnect landed). Start the connection again.', code: 'app_race_lost', grantStatus: gs, ...(attTracked ? {} : { grantTracked: false }),
         ...(gs !== 'revoked' ? { note: gs === 'not_revoked' ? 'The existing connection was left untouched; the interrupted grant was discarded. Remove it under third-party access in the Google account if it appears there.' : 'Google did not confirm revoking the interrupted grant - remove it under third-party access in the Google account if it appears there.' } : {}) } };
     }
     await bizLog('app_connected', { provider: p, email: rec.email }, st.f0);
@@ -2474,9 +2541,10 @@ async function bizAppAccessToken(p) {
   }
   const lock = 'fm:biz:appref:' + p, lockTok = rid('ref');
   if (!await r(['SET', lock, lockTok, 'NX', 'PX', '30000'])) return { err: { status: 409, body: { error: 'A credential refresh is already in progress. Try again in a moment.', code: 'app_refresh_busy' } } };
+  const dl = Date.now() + 27000, left = () => Math.max(1, dl - Date.now()); // the whole refresh fits inside the 30s lease
   try {
     const c = BIZ_APPS[p];
-    const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), grant_type: 'refresh_token', refresh_token: rt }).toString(), signal: AbortSignal.timeout(20000) }); // bounded inside the 30s lease
+    const tok = await fetch(c.tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId(), client_secret: c.clientSecret(), grant_type: 'refresh_token', refresh_token: rt }).toString(), signal: AbortSignal.timeout(Math.min(20000, left())) }); // bounded by the time left on the lease
     const tj = await tok.json().catch(() => null);
     if (!tok.ok || !tj || !tj.access_token) {
       const invalid = !!(tj && tj.error === 'invalid_grant');
@@ -2494,8 +2562,11 @@ async function bizAppAccessToken(p) {
         return { err: { status: 409, body: { error: next.lastError, code: 'app_needs_reconnect' } } };
       }
     }
+    // The commit is bound to the refresh lease INSIDE the atomic store op: an expired lease
+    // fails the write itself (-3) - discard these tokens, revoke NOTHING (may be shared).
     const next = { ...rec, status: 'connected', accessToken: bizAppEnc(tj.access_token), accessTokenExpiresAt: Date.now() + (Number(tj.expires_in) || 3600) * 1000, ...(tj.refresh_token ? { refreshToken: bizAppEnc(tj.refresh_token) } : {}), lastError: null };
-    const put = await r(['EVAL', BIZ_APP_PUT, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, snap.f0, snap.gen, snap.raw, JSON.stringify(next)]);
+    const put = await r(['EVAL', BIZ_APP_PUT_OWNED, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:appgen:' + p, lock, snap.f0, snap.gen, snap.raw, JSON.stringify(next), lockTok]);
+    if (put === -3) return { err: { status: 409, body: { error: 'The credential refresh took too long and its lease lapsed. Try again.', code: 'app_refresh_lease_lost' } } };
     // CAS lost: discard the fresh tokens, revoke NOTHING - the grant may be shared.
     if (put !== 1) return { err: { status: 409, body: { error: 'The connection changed while its credential was refreshed. Reconnect if the app asks.', code: 'app_race_lost' } } };
     return { token: tj.access_token, rec: next, snap: { f0: snap.f0, gen: snap.gen, raw: JSON.stringify(next), rec: next } };
@@ -2567,42 +2638,63 @@ async function bizAppDisconnect(p) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
   const snap = await bizAppSnap(p); if (!snap) return bizFrozenConflict();
   const rt = snap.rec && snap.rec.refreshToken ? bizAppDec(snap.rec.refreshToken) : null;
-  const tombKey = 'fm:biz:apptomb:' + p, oldTomb = await getJ(tombKey);
-  const tomb = (status0, keepTok) => JSON.stringify({ at: now(), grantStatus: status0, enc: keepTok && rt ? bizAppEnc(rt) : null });
-  // An older unresolved tombstone (pending/unconfirmed, token still held) is PRESERVED
-  // through this disconnect - a resolved or credential-less outcome never overwrites it.
-  const unresolved = !!(oldTomb && oldTomb.enc && (oldTomb.grantStatus === 'pending' || oldTomb.grantStatus === 'revoke_unconfirmed'));
-  const killTomb = unresolved ? JSON.stringify({ at: oldTomb.at, grantStatus: 'revoke_unconfirmed', enc: oldTomb.enc }) : tomb(rt ? 'pending' : (snap.rec ? 'no_credential' : 'not_connected'), true);
-  const kill = await r(['EVAL', BIZ_APP_KILL, 7, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:app:' + p + ':mail', 'fm:biz:appgen:' + p, tombKey, snap.f0, snap.gen, snap.raw, rid('appgen'), killTomb, 'fm:biz:appstate:*']);
-  if (kill !== 1) return { status: 409, body: { error: 'The connection changed while it was being removed. Try the disconnect again.', code: 'app_race_lost' } };
-  const grantStatus = rt ? (await bizAppRevoke(c, rt) ? 'revoked' : 'revoke_unconfirmed') : (snap.rec ? 'no_credential' : 'not_connected');
-  // Retry an older unresolved grant under the connect lock: no new sign-in can complete
-  // while it runs, and the post-lock record re-check means a reconnected (possibly shared)
-  // grant is never revoked by this delayed cleanup.
-  let oldRetried = null;
-  if (unresolved) {
-    const rtLock = 'fm:biz:appconn:' + p, rtTok = rid('connrt');
-    if (await r(['SET', rtLock, rtTok, 'NX', 'PX', '60000'])) {
-      try {
-        if ((await r(['GET', 'fm:biz:app:' + p])) == null) {
-          const ort = bizAppDec(oldTomb.enc);
-          if (ort) oldRetried = (await bizAppRevoke(c, ort)) ? 'revoked' : 'revoke_unconfirmed';
-        }
-      } finally { await r(['EVAL', BIZ_LOCK_REL, 1, rtLock, rtTok]).catch(() => {}); }
+  const tombKey = 'fm:biz:apptomb:' + p, oldAttempts = bizTombUnresolved(await getJ(tombKey));
+  // Fail-closed backpressure: the ledger is capped at 8 and unresolved handles are never
+  // evicted, so a full ledger REFUSES the disconnect (nothing is removed) until the older
+  // grants are resolved (a purge retries them) - no failure path can lose a grant's handle.
+  if (oldAttempts.length >= 8) return { status: 409, body: { error: 'Too many older access revocations are still unconfirmed. Run the workspace data purge (it retries them) or try again shortly. Nothing was removed.', code: 'app_tomb_full' } };
+  // The connect lock serializes the WHOLE grant lifecycle - local removal, the current
+  // grant's revocation AND retries of older unresolved grants - against sign-ins: a
+  // callback can never complete between the local kill and a delayed revoke, so a
+  // reconnected (possibly shared) grant is never revoked from under its owner.
+  const connLock = 'fm:biz:appconn:' + p, connTok = rid('disconn');
+  if (!await r(['SET', connLock, connTok, 'NX', 'PX', '60000'])) return { status: 409, body: { error: 'Another ' + c.label + ' connection change is in progress. Try again in a moment.', code: 'app_disconnect_busy' } };
+  const dl = Date.now() + 55000, left = () => Math.max(1, dl - Date.now());
+  try {
+    // Local-first: the kill writes the tombstone COLLECTION - every older unresolved
+    // attempt is preserved, and this connection's own grant joins it as pending BEFORE its
+    // revocation is attempted. No failure path can lose a grant's only handle.
+    const attempts = oldAttempts.map(a => ({ id: a.id, enc: a.enc, status: a.status, at: a.at }));
+    let curId = null;
+    if (rt) { curId = rid('att'); attempts.push({ id: curId, enc: bizAppEnc(rt), status: 'pending', at: now() }); }
+    else if (snap.rec) attempts.push({ id: rid('att'), enc: null, status: 'no_credential', at: now() });
+    const killTomb = JSON.stringify({ v: 2, at: now(), attempts });
+    const kill = await r(['EVAL', BIZ_APP_KILL, 7, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:app:' + p, 'fm:biz:app:' + p + ':mail', 'fm:biz:appgen:' + p, tombKey, snap.f0, snap.gen, snap.raw, rid('appgen'), killTomb, 'fm:biz:appstate:*']);
+    if (kill !== 1) return { status: 409, body: { error: 'The connection changed while it was being removed. Try the disconnect again.', code: 'app_race_lost' } };
+    // Current grant: revoke, bounded by the lease and gated on still owning it, then record
+    // the outcome on its attempt. A lost lease leaves the durable pending handle for retry.
+    let grantStatus = snap.rec ? (rt ? 'pending' : 'no_credential') : 'not_connected';
+    if (rt) {
+      const ok = (left() > 4000 && await bizLockOwned(connLock, connTok)) ? await bizAppRevoke(c, rt, Math.min(20000, left())) : false;
+      grantStatus = ok ? 'revoked' : 'revoke_unconfirmed';
     }
-  }
-  // Record the outcome on the EXACT tombstone the kill wrote, under the ORIGINAL fence: a
-  // purge or concurrent disconnect landing during the network work makes this a no-op
-  // instead of resurrecting a token-bearing tombstone after the data is gone.
-  {
-    const finalUnresolved = unresolved && oldRetried !== 'revoked';
-    const outcome = finalUnresolved ? JSON.stringify({ at: oldTomb.at, grantStatus: 'revoke_unconfirmed', enc: oldTomb.enc })
-      : tomb(grantStatus, grantStatus !== 'revoked'); // a confirmed revocation drops the stored token
-    await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', tombKey, snap.f0, killTomb, outcome]);
-  }
-  await bizLog('app_disconnected', { provider: p, grantStatus, ...(oldRetried ? { priorGrant: oldRetried } : {}) }, snap.f0);
-  return { status: 200, body: { disconnected: true, provider: p, grantStatus, pendingCancelled: true, ...(oldRetried ? { priorGrant: oldRetried } : {}) ,
-    ...(grantStatus === 'revoke_unconfirmed' ? { note: 'Local data is removed. Google did not confirm the access revocation - the connection may still show under third-party access in the Google account; remove it there to be sure.' } : {}) } };
+    // Older unresolved grants: retried in the SAME critical section - no sign-in can
+    // complete while it runs and the local record is already gone, so nothing live can
+    // share these grants. Each attempt keeps its own durable handle and outcome.
+    const outcomes = {}; if (curId) outcomes[curId] = grantStatus;
+    for (const a of oldAttempts) {
+      if (left() < 4000 || !await bizLockOwned(connLock, connTok)) break; // never start a network call the lease cannot finish
+      // A handle whose credential can no longer be decrypted (the encryption secret
+      // rotated) stays UNRESOLVED with its recovery material kept - it becomes retriable
+      // again if the matching secret is restored. It is never labeled resolved.
+      const ort = bizAppDec(a.enc);
+      outcomes[a.id] = ort ? ((await bizAppRevoke(c, ort, Math.min(15000, left()))) ? 'revoked' : 'revoke_unconfirmed') : 'undecryptable';
+    }
+    // Record outcomes on the EXACT tombstone the kill wrote, under the ORIGINAL fence: a
+    // purge landing during the network work makes this a no-op instead of resurrecting
+    // token-bearing tombstones. Confirmed revocations drop their stored credential.
+    const finalAttempts = attempts.map(a => {
+      const st2 = outcomes[a.id];
+      if (st2 === 'revoked') return { id: a.id, enc: null, status: st2, at: a.at }; // a confirmed revocation drops the stored credential
+      if (st2) return { id: a.id, enc: a.enc, status: st2, at: a.at }; // unconfirmed/undecryptable: recovery material is kept
+      return a;
+    });
+    await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', tombKey, snap.f0, killTomb, JSON.stringify({ v: 2, at: now(), attempts: finalAttempts })]);
+    const prior = oldAttempts.length ? (oldAttempts.every(a => outcomes[a.id] === 'revoked') ? 'revoked' : 'revoke_unconfirmed') : null;
+    await bizLog('app_disconnected', { provider: p, grantStatus, ...(prior ? { priorGrant: prior } : {}) }, snap.f0);
+    return { status: 200, body: { disconnected: true, provider: p, grantStatus, pendingCancelled: true, ...(prior ? { priorGrant: prior } : {}),
+      ...(grantStatus === 'revoke_unconfirmed' || prior === 'revoke_unconfirmed' ? { note: 'Local data is removed. Google did not confirm revoking every grant - the connection may still show under third-party access in the Google account; remove it there to be sure.' } : {}) } };
+  } finally { await r(['EVAL', BIZ_LOCK_REL, 1, connLock, connTok]).catch(() => {}); } // token-owned release
 }
 
 async function bizState() {
@@ -3961,8 +4053,8 @@ async function bizDataPurge(body) {
     for (const k of (await r(['KEYS', 'fm:biz:apptomb:*'])) || []) {
       if (!k.startsWith(nsKey('fm:biz:apptomb:'))) continue;
       const tb = await getJ(k.slice(nsKey('').length));
-      if (tb && tb.enc && tb.grantStatus !== 'revoked') {
-        const prov = k.slice(nsKey('fm:biz:apptomb:').length), rt = bizAppDec(tb.enc);
+      for (const a of bizTombUnresolved(tb)) {
+        const prov = k.slice(nsKey('fm:biz:apptomb:').length), rt = bizAppDec(a.enc);
         if (rt && BIZ_APPS[prov]) { if (await bizAppRevoke(BIZ_APPS[prov], rt)) counts.grantsRevoked++; else counts.grantsUnconfirmed++; }
       }
     }
