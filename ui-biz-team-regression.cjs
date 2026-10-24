@@ -152,6 +152,24 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  // Assignment-shaped blocks carry their recovery on the row
  assert(await ev(`(()=>{const rows=[...document.querySelectorAll('#bz-team .bz-row')];const g=rows.find(r=>r.textContent.includes('Permit tracker'));return !!g.querySelector('[data-team-assign="resp_3"]')&&g.querySelector('[data-team-assign="resp_3"]').textContent==='Reassign';})()`),'disappeared-owner row carries Reassign');
 
+ // A retained node from a superseded SAME-identity render owns nothing: it can neither
+ // close a newer chooser nor open one after a refresh (reviewer repro on f479320).
+ await ev(`window.__sup1=document.querySelector('#bz-team [data-team-assign="resp_3"]');'s1'`);
+ await ev(`window.__sup1.click();'open1'`); // paint supersedes __sup1
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_3"]')`),'chooser opens from the live node');
+ await ev(`document.querySelector('[data-assign-cancel]').click();'cancel'`);
+ assert(await poll(`!document.querySelector('[data-assign-save="resp_3"]')`),'cancel closes');
+ await ev(`document.querySelector('#bz-team [data-team-assign="resp_3"]').click();'open2'`); // current node reopens
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_3"]')`),'chooser reopens from the current node');
+ await ev(`window.__sup1.click();'stale-toggle'`);
+ await new Promise(r=>setTimeout(r,300));
+ assert(await ev(`!!document.querySelector('[data-assign-save="resp_3"]')`),'a retained superseded node never closes the current chooser');
+ await ev(`document.querySelector('[data-assign-cancel]').click();'cancel2'`);
+ assert(await poll(`!document.querySelector('[data-assign-save="resp_3"]')`),'cancel closes again');
+ await ev(`window.__sup1.click();'stale-open'`);
+ await new Promise(r=>setTimeout(r,300));
+ assert(!(await ev(`!!document.querySelector('[data-assign-save]')`)),'a retained superseded node never opens a chooser');
+
  // Open navigates to the responsibility's own card
  await ev(`[...document.querySelectorAll('#bz-team [data-hq-target]')].find(b=>b.getAttribute('data-hq-target')==='[data-resp="resp_3"]').click();'go'`);
  assert(await poll(`!!document.querySelector('[data-run-input="resp_3"]')`),'Open expands that responsibility card');

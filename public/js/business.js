@@ -912,6 +912,7 @@
     // Team-row recovery: open the SAME reviewed chooser (fingerprint + identity + generation
     // bound at creation) inside the responsibility's own card - never a second assign path.
     $$('[data-team-assign]', V).forEach(b => { const stampAtBind = identity(); b.onclick = () => {
+      if (!V.contains(b)) return; // a detached node from a superseded render owns nothing: it never toggles a newer chooser or resolves state it never showed
       if (stampAtBind !== identity()) return; // a node rendered under a previous identity never opens a same-id responsibility for the new one
       const rp = ((B && B.responsibilities) || []).find(x => x.id === b.dataset.teamAssign);
       if (!rp) return;
