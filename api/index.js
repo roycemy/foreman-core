@@ -90,6 +90,18 @@ function memEval(script, n, keys, argv) {
       return 1;
     }
   }
+  if (script === BIZ_SCHED_RECOVER) {
+    if (mem.kv.get(keys[3]) !== argv[1]) return 0;          // job must still be the exact held record (never visible)
+    if (argv[2] === '') { if (mem.kv.has(keys[4])) return 0; } // run never registered: none may exist
+    else if (mem.kv.get(keys[4]) !== argv[2]) return 0;     // run must be exactly as registered
+    if (argv[2] !== '') mem.kv.set(keys[4], argv[3]);       // fail the run honestly
+    mem.kv.delete(keys[3]);                                 // remove the never-visible job
+    if (argv[4] !== '' && mem.kv.get(keys[5]) === argv[4]) { // release only the failed attempt's OWN claim
+      let rec; try { rec = JSON.parse(mem.kv.get(keys[5])); } catch { rec = null; }
+      if (rec && rec.schedule && String(rec.schedule.claimId) === String(argv[6])) mem.kv.set(keys[5], argv[5]);
+    }
+    return 1;
+  }
   if (script === BIZ_SCHED_GATE) {
     if (mem.kv.get(keys[3]) !== argv[1]) return 0; // responsibility record changed since the schedule claim (pause/disable/drift/edit)
     if (mem.kv.get(keys[4]) !== argv[2]) return 0; // the held job is not what this run registered
@@ -233,6 +245,14 @@ const BIZ_FENCE_CAS = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] t
 // what this run registered, and the emergency stop is not set. One atomic call - the
 // schedule state and the task visibility can never be observed apart.
 const BIZ_SCHED_GATE = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('GET',KEYS[4])~=ARGV[2] then return 0 end; if redis.call('GET',KEYS[5])~=ARGV[3] then return 0 end; if redis.call('EXISTS',KEYS[6])==1 then return 0 end; local n=tonumber(ARGV[5]); for i=1,n do if redis.call('GET',KEYS[6+i])~=ARGV[5+i] then return 0 end end; local araw=redis.call('GET',KEYS[6+n+1]); if not araw then return 0 end; local aok,arec=pcall(cjson.decode,araw); if not aok then return 0 end; if arec.status~='active' or arec.paused then return 0 end; redis.call('SET',KEYS[5],ARGV[4]); return 1";
+// Atomic recovery for an interrupted scheduled/manual delegate attempt. The held-job key is
+// the mutex: a late flip and this sweep can never both win, because both are single atomic
+// scripts over it. Wins only when the job is STILL the exact held record (never became
+// visible - "nothing was sent" is secured, not inferred) and the run record is still the
+// exact registered one; then it fails the run, removes the job, and releases the schedule
+// window when the responsibility record is untouched. Any other outcome returns 0 and the
+// sweep leaves everything alone (a visible job, a settled run, an owner's change).
+const BIZ_SCHED_RECOVER = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('GET',KEYS[4])~=ARGV[2] then return 0 end; if ARGV[3]=='' then if redis.call('EXISTS',KEYS[5])==1 then return 0 end else if redis.call('GET',KEYS[5])~=ARGV[3] then return 0 end end; if ARGV[3]~='' then redis.call('SET',KEYS[5],ARGV[4]) end; redis.call('DEL',KEYS[4]); if ARGV[5]~='' then local rraw=redis.call('GET',KEYS[6]); if rraw==ARGV[5] then local rok,rrec=pcall(cjson.decode,rraw); if rok and rrec.schedule and tostring(rrec.schedule.claimId)==ARGV[7] then redis.call('SET',KEYS[6],ARGV[6]) end end end; return 1";
 async function updateAgent(id, patch) {
   const key='fm:agent:'+id;
   for(let attempt=0;attempt<8;attempt++){
@@ -1922,7 +1942,8 @@ async function routes(req, res, path, body, agentPre) {
 const BIZ = {
   MAX_SOURCES: 40, MAX_TEXT: 20000, MAX_TITLE: 120, MAX_PROPS: 12, RUNS_KEEP: 50, LOG_KEEP: 100,
   DAILY_GAP_MS: 20 * 3600e3,
-  STUCK_HELD_MS: 2 * 60 * 1000, // a held job older than this never had its flip; it is provably stuck CALLS_PER_DAY: 200, SRC_PROMPT_CHARS: 16000,
+  STUCK_HELD_MS: 2 * 60 * 1000, // liveness timeout for recovering a held job; correctness never depends on it
+  CALLS_PER_DAY: 200, SRC_PROMPT_CHARS: 16000,
   RUN_BUDGET_MS: 27000, FINALIZE_MS: 5000, MAX_FETCHES_PER_RUN: 4, MAX_CONTACTS_PER_RUN: 8, FETCH_ROUNDS: 2, PAGE_PROMPT_CHARS: 3000, MAX_CITES_PER_RUN: 8,
   BOUNDARY: 'Drafts only. Nothing is sent, posted, purchased or connected. The owner reviews every output.'
 };
@@ -2904,7 +2925,7 @@ async function failDelegatedTask(id, reason) {
 // re-checks the record through BIZ_SCHED_GATE - an owner action landing anywhere in between
 // refuses the run honestly instead of queueing against stale state.
 async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind, gate) {
-  const run = { id: rid('run'), respId: resp.id, kind: kind === 'auto' ? 'auto' : 'manual', at: now(), input: String(input).slice(0, 4000),
+  const run = { id: (gate && gate.runId) || rid('run'), respId: resp.id, kind: kind === 'auto' ? 'auto' : 'manual', at: now(), input: String(input).slice(0, 4000),
     status: 'delegated', backend: 'linked-bot',
     bot: { id: bot.id, name: String(bot.name || 'bot').slice(0, 40), providerId: bot.providerId || null },
     sourceVersions: Object.fromEntries(payload.sources.map(s => [s.id, s.version])),
@@ -3565,29 +3586,34 @@ async function bizDailyTick() {
       // Durable crash recovery: an attempt interrupted between the atomic claim and the
       // visibility flip leaves a registered 'delegated' run with a held job that can NEVER
       // become visible (expireStalledTasks covers only running jobs) plus a consumed daily
-      // window. A job still 'waiting' two minutes after creation is provably stuck - the
-      // flip path takes milliseconds. Fail the run honestly, remove the never-visible job,
-      // and release the claim so this same tick re-evaluates from CURRENT state. A job that
-      // did flip (queued/running/done) is untouched, so nothing can ever queue twice.
+      // window. The two-minute age is only a liveness timeout, never the safety basis:
+      // BIZ_SCHED_RECOVER decides atomically on the held-job key, so a stalled attempt that
+      // resumes late loses the flip no matter when it wakes, and a concurrent sweep loses
+      // the same way. Only a win fails the run honestly, removes the never-visible job,
+      // and releases the claim so this same tick re-evaluates from CURRENT state. A job
+      // that did flip (queued/running/done) is untouched, so nothing can ever queue twice.
       for (const tid of (await r(['SMEMBERS', 'fm:biz:delegated']))) {
         const tRaw = await r(['GET', 'fm:task:' + tid]);
         if (!tRaw) { await r(['SREM', 'fm:biz:delegated', tid]); continue; }
         const t = JSON.parse(tRaw);
         if (t.status !== 'waiting' || !t.biz || !t.biz.runId) continue;
         if (!t.createdAt || Date.now() - Date.parse(t.createdAt) < BIZ.STUCK_HELD_MS) continue; // still mid-creation
-        const runRaw = await r(['GET', 'fm:biz:run:' + t.biz.runId]);
+        const runRaw = (await r(['GET', 'fm:biz:run:' + t.biz.runId])) || '';
         const run = runRaw && JSON.parse(runRaw);
         if (run && run.status !== 'delegated') { await r(['SREM', 'fm:biz:delegated', tid]); continue; } // settled already; only the index entry lingered
-        await r(['DEL', 'fm:task:' + tid]);
-        await r(['SREM', 'fm:biz:delegated', tid]);
-        if (run) await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, f0, runRaw, JSON.stringify({ ...run, status: 'failed', output: null, failureReason: 'interrupted', failureDetail: 'The run was interrupted before the job went out. Nothing was sent; the next daily check-in tries again.', settledAt: now() })]);
+        const failedJson = run ? JSON.stringify({ ...run, status: 'failed', output: null, failureReason: 'interrupted', failureDetail: 'The run was interrupted before the job went out. Nothing was sent; the next daily check-in tries again.', settledAt: now() }) : '';
+        let rpRaw = '', releasedJson = '';
         if (run && run.kind === 'auto') {
-          const rpRaw = await r(['GET', 'fm:biz:resp:' + run.respId]);
-          if (rpRaw) {
-            const rp = JSON.parse(rpRaw);
-            if (rp.schedule && rp.schedule.lastQueuedAt) await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + run.respId, f0, rpRaw, JSON.stringify({ ...rp, schedule: { ...rp.schedule, lastQueuedAt: null } })]); // release the window; any owner change since wins instead
+          const raw = await r(['GET', 'fm:biz:resp:' + run.respId]);
+          if (raw) {
+            const rp = JSON.parse(raw);
+            if (rp.schedule && rp.schedule.lastQueuedAt) { rpRaw = raw; releasedJson = JSON.stringify({ ...rp, schedule: { ...rp.schedule, lastQueuedAt: null, claimId: null } }); }
           }
         }
+        // One atomic decision (see BIZ_SCHED_RECOVER): a late flip and this sweep cannot both win.
+        const done = await r(['EVAL', BIZ_SCHED_RECOVER, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:task:' + tid, 'fm:biz:run:' + t.biz.runId, 'fm:biz:resp:' + (run ? run.respId : '-'), f0, tRaw, runRaw, failedJson, rpRaw, releasedJson, t.biz.runId]);
+        if (done !== 1) continue; // it went visible, settled, or changed hands atomically - leave it
+        await r(['SREM', 'fm:biz:delegated', tid]);
         await bizLog('run_interrupted', { respId: run && run.respId, runId: t.biz.runId, taskId: tid }, f0);
       }
       for (const resp of await bizResps()) {
@@ -3627,10 +3653,11 @@ async function bizDailyTick() {
           // Atomic claim: moving lastQueuedAt past the gap gate is compare-and-set on the exact
           // record read above. Two ticks racing the same window, or an owner action landing
           // first, change the record - the loser's claim refuses and no second job can queue.
-          const claimed = { ...cur, schedule: { ...sch, lastQueuedAt: now(), needsReview: null } };
+          const runId = rid('run'); // durable attempt identity: the claim is owned, and only its owner can release it
+          const claimed = { ...cur, schedule: { ...sch, lastQueuedAt: now(), needsReview: null, claimId: runId } };
           const claimedJson = JSON.stringify(claimed);
           if (await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', schKey, f0, schRaw, claimedJson]) !== 1) { out.skipped++; continue; }
-          const gate = { expectedResp: claimedJson, srcKeys, srcRaws, botId: bot.id };
+          const gate = { expectedResp: claimedJson, srcKeys, srcRaws, botId: bot.id, runId };
           const res = await bizDelegateRun(claimed, srcs, sch.instruction, bot, f0, payload, 'auto', gate);
           if (res.status === 200) {
             out.runs++;

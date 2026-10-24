@@ -6,7 +6,7 @@
 // Engine endpoint and bot side are exercised through the real internal call path the
 // gateway/MCP adapters use (claimTask/completeTask/stopTask); no real network, no real bot.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizDelegatePayload,bizDelegateRun,bizSettleDelegatedRun,bizDailyTick,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,reassignAsleepQueuedTasks,reassignTask,gatewayAct,newTask,bizSources,listTasks,setJ,getJ,r,als};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizDelegatePayload,bizDelegateRun,bizSettleDelegatedRun,bizDailyTick,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,reassignAsleepQueuedTasks,reassignTask,gatewayAct,newTask,bizSources,listTasks,setJ,getJ,r,als,BIZ_SCHED_GATE,BIZ_SCHED_RECOVER,BIZ};';
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:(u,o)=>{const body=JSON.parse(o.body);const sys=body.messages[0].content;
   const reply=content=>Promise.resolve({ok:true,json:async()=>({choices:[{message:{content}}],usage:{prompt_tokens:1,completion_tokens:1}})});
@@ -522,6 +522,69 @@ const ISO=ms=>new Date(ms).toISOString();
   await f.bizDailyTick();
   assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,1]))[0],recoveredRuns[0],'a visible job is never double-queued');
   assert.equal((await f.getJ('fm:task:'+retryRun2.taskId)).status,'queued','the visible job is untouched by reconciliation');
+
+  // a stalled attempt resuming AFTER recovery: its late flip is atomically defeated
+  const pv7=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
+  await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv7.body.delegation.hash});
+  await f.setJ('fm:task:'+retryRun2.taskId,{...retryJob,status:'done'}); // settle the earlier job so the bot is free
+  c.global.__bizSchedInterleave=async()=>{ throw new Error('simulated process death'); };
+  await assert.rejects(()=>f.bizDailyTick(),/simulated process death/);
+  const lateRuns=await f.r(['LRANGE','fm:biz:runs:'+respS,0,1]);
+  const lateRun=await f.getJ('fm:biz:run:'+lateRuns[0]);
+  // capture exactly what the stalled attempt would present to the flip gate when it wakes
+  const lateTaskRaw=await f.r(['GET','fm:task:'+lateRun.taskId]);
+  const lateRespRaw=await f.r(['GET','fm:biz:resp:'+respS]);
+  const lateSrcIds=await f.r(['SMEMBERS','fm:biz:sources']);
+  const lateSrcKeys=lateSrcIds.map(i=>'fm:biz:src:'+i);
+  const lateSrcRaws=lateSrcKeys.length?await f.r(['MGET',...lateSrcKeys]):[];
+  const lateFence=(await f.r(['GET','fm:biz:fence']))||'0';
+  const lateNext=JSON.stringify({...JSON.parse(lateTaskRaw),status:'queued'});
+  // age it, let a fresh tick recover and retry
+  const lateTask=JSON.parse(lateTaskRaw); lateTask.createdAt=new Date(Date.now()-3*60e3).toISOString(); await f.setJ('fm:task:'+lateTask.id,lateTask);
+  await f.bizDailyTick();
+  assert.equal((await f.getJ('fm:biz:run:'+lateRun.id)).status,'failed','the recovered attempt is failed honestly');
+  // the stalled attempt wakes and tries its flip with the pre-recovery state
+  const lateFlip=await f.r(['EVAL',f.BIZ_SCHED_GATE,7+lateSrcKeys.length,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:biz:resp:'+respS,'fm:task:'+lateRun.taskId,'fm:kill',...lateSrcKeys,'fm:agent:'+g.agent.id,lateFence,lateRespRaw,lateTaskRaw,lateNext,String(lateSrcKeys.length),...lateSrcRaws]);
+  assert.equal(lateFlip,0,'the late flip is atomically defeated after recovery');
+  assert.ok(!(await f.getJ('fm:task:'+lateRun.taskId)),'the recovered job never reappears');
+  const newestRun=(await f.r(['LRANGE','fm:biz:runs:'+respS,0,1]))[0];
+  assert.notEqual(newestRun,lateRun.id,'the recovery tick queued exactly one fresh run');
+  // concurrent sweeps cannot both recover or double-queue
+  c.global.__bizSchedInterleave=async()=>{ throw new Error('simulated process death'); };
+  {const rc=await f.getJ('fm:biz:resp:'+respS);rc.schedule.lastQueuedAt=null;await f.setJ('fm:biz:resp:'+respS,rc);}
+  await assert.rejects(()=>f.bizDailyTick(),/simulated process death/);
+  const concRun=await f.getJ('fm:biz:run:'+(await f.r(['LRANGE','fm:biz:runs:'+respS,0,1]))[0]);
+  {const ct=await f.getJ('fm:task:'+concRun.taskId);ct.createdAt=new Date(Date.now()-3*60e3).toISOString();await f.setJ('fm:task:'+ct.id,ct);}
+  const queuedBefore=new Set((await f.listTasks()).filter(x=>x.status==='queued').map(x=>x.id));
+  await Promise.all([f.bizDailyTick(),f.bizDailyTick()]);
+  assert.equal((await f.getJ('fm:biz:run:'+concRun.id)).status,'failed','exactly one sweep recovered the stuck attempt');
+  const newQueued=(await f.listTasks()).filter(x=>x.status==='queued'&&!queuedBefore.has(x.id));
+  assert.equal(newQueued.length,1,'concurrent sweeps add exactly one queued job - no duplicate');
+
+  // release ownership: the sweep for attempt A never releases attempt B's claim
+  {const rpO=JSON.parse(await f.r(['GET','fm:biz:resp:'+respS]));
+   rpO.schedule={...rpO.schedule,lastQueuedAt:new Date().toISOString(),claimId:'run_B'};
+   await f.setJ('fm:biz:resp:'+respS,rpO);
+   const ownRaw=JSON.stringify(rpO);
+   const ownTask={id:'task_ownA',title:'x',brief:'x',context:'x',status:'waiting',createdAt:new Date(Date.now()-5*60e3).toISOString(),createdBy:'owner',biz:{runId:'run_ownA',respId:respS,botId:g.agent.id,sourceIds:[]}};
+   await f.setJ('fm:task:task_ownA',ownTask);
+   const ownRun={id:'run_ownA',respId:respS,kind:'auto',status:'delegated',at:new Date(Date.now()-5*60e3).toISOString()};
+   const ownRunRaw=JSON.stringify(ownRun);
+   await f.setJ('fm:biz:run:run_ownA',ownRun);
+   const res=await f.r(['EVAL',f.BIZ_SCHED_RECOVER,6,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:task:task_ownA','fm:biz:run:run_ownA','fm:biz:resp:'+respS,(await f.r(['GET','fm:biz:fence']))||'0',JSON.stringify(ownTask),ownRunRaw,JSON.stringify({...ownRun,status:'failed'}),ownRaw,JSON.stringify({...rpO,schedule:{...rpO.schedule,lastQueuedAt:null,claimId:null}}),'run_ownA']);
+   assert.equal(res,1,'the sweep still cleans the stuck attempt');
+   assert.equal((await f.getJ('fm:biz:run:run_ownA')).status,'failed','the stuck run is failed honestly');
+   assert.ok(!(await f.getJ('fm:task:task_ownA')),'the stuck job is removed');
+   const rpAfter=await f.getJ('fm:biz:resp:'+respS);
+   assert.equal(rpAfter.schedule.claimId,'run_B',"attempt B's claim is never released by attempt A's sweep");
+   assert.ok(rpAfter.schedule.lastQueuedAt,"attempt B's window stays consumed");
+   await f.r(['SREM','fm:biz:delegated','task_ownA']);
+   rpO.schedule.claimId=null; rpO.schedule.lastQueuedAt=null; await f.setJ('fm:biz:resp:'+respS,rpO);}
+
+  // caps must never be undefined (a swallowed constant would silently uncap daily calls)
+  assert.equal(f.BIZ.CALLS_PER_DAY,200,'daily call cap constant exists');
+  assert.equal(f.BIZ.SRC_PROMPT_CHARS,16000,'prompt size cap constant exists');
+  assert.equal(f.BIZ.DAILY_GAP_MS,20*3600e3,'daily gap constant exists');
 
  });
 
