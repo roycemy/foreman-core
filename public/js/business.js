@@ -5,7 +5,7 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pollT = null;
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, pollT = null;
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
   // Tenant identity guard: loaded state belongs to the exact identity (account + workspace)
@@ -40,6 +40,7 @@
       pendingApproval = null; // A's reviewed pages and work text never survive into another identity
       pendingDelegation = null; // same for a reviewed delegation payload
       pendingDiscovery = null; // and a reviewed discovery scan payload
+      pendingSchedule = null; // and a reviewed daily-schedule payload
       V.innerHTML = ''; // synchronous DOM clear: nothing from the previous identity stays painted
       return true;
     }
@@ -100,7 +101,7 @@
   /* ---------- responsibilities ---------- */
   function runItem(run) {
     const botName = run.bot && run.bot.name ? run.bot.name : 'the connected bot';
-    const head = `<div class="bz-run-h"><small>${run.kind === 'daily' ? 'Daily check-in' : 'You brought work'} · ${BB.when(run.at)}${run.usage ? ' · ' + esc(tok(run.usage)) + ' tokens' : ''}</small></div>`;
+    const head = `<div class="bz-run-h"><small>${run.kind === 'daily' ? 'Daily check-in' : run.kind === 'auto' ? 'Automatic run · scheduled by you' : 'You brought work'} · ${BB.when(run.at)}${run.usage ? ' · ' + esc(tok(run.usage)) + ' tokens' : ''}</small></div>`;
     const rin = run.input ? `<p class="bz-run-in">${esc(run.input.length > 240 ? run.input.slice(0, 240) + '…' : run.input)}</p>` : '';
     if (run.status === 'delegated' || run.status === 'running') {
       const j = run.job || null;
@@ -154,6 +155,24 @@
         <p class="meta">Boundary you approved: ${esc(rp.boundary)}</p>
         <label class="fld">Bring it work<textarea class="in" data-run-input="${rp.id}" rows="3" maxlength="4000" placeholder="Paste an email to answer, a question, a request…"></textarea></label>
         ${B.delegate && !rp.research ? `<p class="meta">Goes to <b>${esc(B.delegate.name)}</b>${B.delegate.connection && B.delegate.connection.status !== 'active' ? ' - not connected right now; it picks work up when it connects' : ''}. You review the exact text before it goes to the bot.</p>` : ''}
+        ${rp.bot && !rp.research ? `<div class="bz-sched">${rp.schedule ? `
+          <p class="meta">${chip('Scheduled', 'ok')} Once a day at Alter's daily check-in, the exact text you reviewed goes to <b>${esc(B.delegate ? B.delegate.name : 'the connected bot')}</b>. Its report comes back here as a draft - Alter sends nothing onward.${rp.schedule.lastQueuedAt ? ' Last queued ' + BB.when(rp.schedule.lastQueuedAt) + '.' : ''}</p>
+          ${rp.schedule.needsReview ? `<p class="bz-blocked">Schedule paused: the sources or this responsibility changed since you reviewed the daily text. Review the new text to resume it.</p>` : ''}
+          <div class="btns"><button class="b out sm" data-sched-edit="${rp.id}" type="button">${rp.schedule.needsReview ? 'Review and resume' : 'Change the daily instruction'}</button><button class="b out sm" data-sched-off="${rp.id}" type="button">Turn schedule off</button></div>`
+        : `<p class="meta">Not scheduled. Alter can send a standing instruction to the connected bot once a day at the daily check-in - you review the exact text before the first send, and the schedule pauses itself if anything it would send changes afterward.</p>
+          <div class="btns"><button class="b out sm" data-sched-on="${rp.id}" type="button">Set a daily schedule</button></div>`}
+          ${pendingSchedule && pendingSchedule.respId === rp.id ? `<div class="bz-card bz-approve"><div class="bz-sech">${pendingSchedule.delegation ? 'Review the exact daily text' : 'Write the daily instruction'}</div>
+            ${!pendingSchedule.delegation ? `<p class="meta">This exact instruction, with the linked sources shown after you review, goes to the bot once a day at the daily check-in. The bot's report comes back here as a draft.</p>
+            <label class="fld">Standing instruction<textarea class="in" data-sched-input rows="3" maxlength="4000">${esc(pendingSchedule.instruction)}</textarea></label>
+            <div class="btns"><button class="b ink" data-sched-preview type="button">Review the daily text</button><button class="b out" data-sched-cancel type="button">Cancel</button></div>`
+          : (() => { const d = pendingSchedule.delegation, conn = (d.bot && d.bot.connection) || {};
+            const presence = conn.status === 'active' ? 'connected now' : conn.lastRealCallAt ? 'last heard from ' + BB.when(conn.lastRealCallAt) : 'not heard from yet - it picks the job up when it connects';
+            return `<p class="meta">Destination each day: <b>${esc(d.bot.name)}</b>${d.bot.providerId ? ' (' + esc(d.bot.providerId) + ')' : ''} - ${esc(presence)}. This text leaves Alter to that bot through its own connection once a day. How the bot processes or keeps it is between you and the bot's provider. If your sources or this responsibility change, the schedule pauses until you review the new text.</p>
+            <p class="meta">Instructions (exact text):</p><p class="bz-reviewed">${esc(d.brief)}</p>
+            <p class="meta">Work and sources (exact text):</p><p class="bz-reviewed">${esc(d.context)}</p>
+            <p class="meta">${d.sources && d.sources.length ? 'Included sources: ' + d.sources.map(s => esc(s.title) + ' v' + s.version).join(', ') + '.' : 'No sources are linked to this responsibility - only the instruction text goes.'}${d.omittedSources && d.omittedSources.length ? ' Not included: ' + d.omittedSources.map(s => esc(s.title)).join(', ') + '.' : ''}</p>
+            <div class="btns"><button class="b ink" data-sched-enable type="button">Start the daily schedule</button><button class="b out" data-sched-back type="button">Back</button><button class="b out" data-sched-cancel type="button">Cancel</button></div>`; })()}
+          </div>` : ''}</div>` : ''}
         <div class="btns"><button class="b ink" data-run="${rp.id}">Do this work</button>${rp.status === 'active' ? `<button class="b out" data-resp-pause="${rp.id}">Pause</button>` : `<button class="b out" data-resp-resume="${rp.id}">Resume</button>`}<button class="b out" data-resp-retire="${rp.id}">Retire</button><button class="b danger" data-resp-del="${rp.id}">Delete</button></div>
         ${pendingApproval && pendingApproval.respId === rp.id ? `<div class="bz-card bz-approve"><div class="bz-sech">Approve pages for this run</div>
           <p class="meta">Work being run (exactly as reviewed):</p><p class="bz-reviewed">${esc(pendingApproval.input)}</p>
@@ -240,10 +259,11 @@
     const draftProps = props.filter(p => p.status === 'draft');
     const liveResps = resps.filter(rp => rp.status === 'active'), pausedResps = resps.filter(rp => rp.status === 'paused');
     const needs = [];
-    if (draftProps.length) needs.push({ label: draftProps.length + ' proposal' + (draftProps.length === 1 ? ' is' : 's are') + ' waiting for your review', cta: 'Review', target: 'bz-proposals' });
+    if (draftProps.length) needs.push({ label: draftProps.length + ' proposal' + (draftProps.length === 1 ? ' is' : 's are') + ' waiting for your review', cta: 'Review', target: '#bz-proposals' });
     if (discLive) needs.push({ label: 'A business scan is still working - its proposals appear here when it finishes' });
     if (discFailed) needs.push({ label: 'The last business scan did not finish. No proposals were drafted from it.' });
     if (B.delegate && B.delegate.connection && B.delegate.connection.status !== 'active') needs.push({ label: B.delegate.name + ' is not connected right now - delegated work waits for it to reconnect' });
+    for (const rp of liveResps) if (rp.schedule && rp.schedule.needsReview) needs.push({ label: '"' + rp.title + '" schedule paused - the text it would send changed since your review', cta: 'Review', target: '[data-resp="' + rp.id + '"]' });
     const botRespsNoBot = !B.delegate ? liveResps.filter(rp => rp.bot).length : 0;
     if (botRespsNoBot) needs.push({ label: botRespsNoBot + (botRespsNoBot === 1 ? ' responsibility runs' : ' responsibilities run') + ' on a bot, and no bot is connected', cta: 'Connect a bot', target: 'connect' });
     const plate = liveResps.map(rp => {
@@ -252,7 +272,7 @@
         : (last.status === 'delegated' || last.status === 'running') ? 'a run is with ' + esc((last.bot && last.bot.name) || 'the bot') + ' now'
         : last.status === 'failed' ? 'last run ' + BB.when(last.at) + ' did not finish'
         : 'last draft ' + BB.when(last.at);
-      return `<div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>${lastTxt}${rp.bot ? '' : ' · daily check-in while provider processing is on'}</small></div>${chip(rp.bot ? 'Runs on ' + ((rp.bot && rp.bot.name) || 'the bot') : 'Reasoning engine', 'dim')}</div>`;
+      return `<div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>${lastTxt}${rp.bot ? (rp.schedule ? ' · scheduled daily' : '') : ' · daily check-in while provider processing is on'}</small></div>${chip(rp.bot ? 'Runs on ' + ((rp.bot && rp.bot.name) || 'the bot') : 'Reasoning engine', 'dim')}</div>`;
     }).join('');
     const hqPanel = (srcs.length || profile) ? `<div class="bz-card bz-hq">
       <div class="bz-sech">At a glance</div>
@@ -291,6 +311,8 @@
       proposal_edited: 'Proposal edited', proposal_rejected: 'Proposal rejected: ' + (l.title || ''),
       responsibility_deleted: 'Deleted with its history: ' + (l.title || ''), provider_consent_granted: 'Provider processing allowed: ' + (l.host || '') + ' (' + (l.model || '') + ')', provider_consent_withdrawn: 'Provider processing withdrawn',
       profile_saved: 'Business profile saved: ' + (l.name || ''), profile_cleared: 'Business profile cleared',
+      schedule_enabled: 'Daily schedule set: ' + (l.title || '') + ' → ' + (l.botName || 'the bot'), schedule_disabled: 'Daily schedule turned off: ' + (l.title || ''),
+      schedule_queued: 'Scheduled run sent to ' + (l.botName || 'the bot'), schedule_needs_review: 'Schedule paused, text changed: ' + (l.title || ''), schedule_skipped: 'Scheduled run skipped: no bot connected',
       responsibility_activated: 'Started: ' + (l.title || ''), responsibility_paused: 'Paused: ' + (l.title || ''), responsibility_resumed: 'Resumed: ' + (l.title || ''), responsibility_retired: 'Retired: ' + (l.title || ''),
       run: (l.runKind === 'daily' ? 'Daily check-in' : 'Work run') + (l.usage ? ' · ' + tok(l.usage) + ' tokens' : ''),
       run_delegated: 'Sent to ' + (l.botName || 'the connected bot') + (l.omittedSources ? ' · ' + l.omittedSources + ' linked source(s) did not fit' : ''),
@@ -330,7 +352,26 @@
       ps.disabled = true; const j = await api('/profile', 'POST', { name: $('#bz-prof-name', V).value, blurb: $('#bz-prof-blurb', V).value }); ps.disabled = false;
       if (j.error) return BB.toast(j.error); BB.toast('Saved.'); await load();
     };
-    $$('[data-hq-target]', V).forEach(b => b.onclick = () => { if (b.dataset.hqTarget === 'connect') return BB.openConnect(); const el = document.getElementById(b.dataset.hqTarget); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+    $$('[data-hq-target]', V).forEach(b => b.onclick = () => { if (b.dataset.hqTarget === 'connect') return BB.openConnect(); const el = document.querySelector(b.dataset.hqTarget); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); const rid = el.getAttribute('data-resp'); if (rid && !openResp[rid]) { openResp[rid] = true; paint(); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } } });
+    $$('[data-sched-on]', V).forEach(b => b.onclick = () => { pendingSchedule = { respId: b.dataset.schedOn, instruction: '', delegation: null }; paint(); });
+    $$('[data-sched-edit]', V).forEach(b => b.onclick = () => { const rp = (B.responsibilities || []).find(x => x.id === b.dataset.schedEdit); pendingSchedule = { respId: b.dataset.schedEdit, instruction: (rp && rp.schedule && rp.schedule.instruction) || '', delegation: null }; paint(); });
+    $$('[data-sched-off]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Turn the daily schedule off?', 'The bot stops getting the daily text. You can set it again any time.', 'Turn off')) return; const j = await api('/responsibilities/' + b.dataset.schedOff + '/schedule', 'POST', { op: 'disable' }); if (j.error) return BB.toast(j.error); BB.toast('Schedule off.'); await load(); });
+    {
+      const sc = $('[data-sched-input]', V); if (sc) sc.oninput = () => { if (pendingSchedule) pendingSchedule.instruction = sc.value; };
+      const sp = $('[data-sched-preview]', V); if (sp) sp.onclick = async () => {
+        sp.disabled = true; const j = await api('/responsibilities/' + pendingSchedule.respId + '/schedule', 'POST', { op: 'preview', instruction: pendingSchedule.instruction }); sp.disabled = false;
+        if (j.error) return BB.toast(j.error);
+        pendingSchedule.delegation = j.delegation; paint();
+      };
+      const sb = $('[data-sched-back]', V); if (sb) sb.onclick = () => { pendingSchedule.delegation = null; paint(); };
+      const sx = $('[data-sched-cancel]', V); if (sx) sx.onclick = () => { pendingSchedule = null; paint(); };
+      const se = $('[data-sched-enable]', V); if (se) se.onclick = async () => {
+        se.disabled = true;
+        const j = await api('/responsibilities/' + pendingSchedule.respId + '/schedule', 'POST', { op: 'enable', instruction: pendingSchedule.instruction, delegateHash: pendingSchedule.delegation.hash });
+        if (j.error) { se.disabled = false; if (j.delegation) { pendingSchedule.delegation = j.delegation; paint(); } return BB.toast(j.error); }
+        pendingSchedule = null; BB.toast('Daily schedule on. The first send happens at the next daily check-in.'); await load();
+      };
+    }
     let kind = 'note';
     $$('.bz-kind .b', V).forEach(b => b.onclick = () => { kind = b.dataset.kind; $$('.bz-kind .b', V).forEach(x => x.classList.toggle('ink', x === b)); });
     const add = $('#bz-add', V);

@@ -1808,7 +1808,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/business/discover/delegate-run' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDiscoverDelegateRun(body)); }
     { const bm = path.match(/^\/business\/proposals\/(prop_\w+)\/(edit|reject|activate)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProposalAct(bm[1], bm[2], body)); } }
     if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(body && body.confirm === 'CANCEL' ? await bizOpCancel(body) : await bizDataPurge(body)); }
-    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete|candidates|delegate-preview)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
+    { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run|delete|candidates|delegate-preview|schedule)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
     {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
@@ -2879,8 +2879,8 @@ async function failDelegatedTask(id, reason) {
   if (await r(['EVAL', AGENT_CAS, 1, key, raw, JSON.stringify(next)]) !== 1) return null;
   return next;
 }
-async function bizDelegateRun(resp, srcs, input, bot, f0, payload) {
-  const run = { id: rid('run'), respId: resp.id, kind: 'manual', at: now(), input: String(input).slice(0, 4000),
+async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind) {
+  const run = { id: rid('run'), respId: resp.id, kind: kind === 'auto' ? 'auto' : 'manual', at: now(), input: String(input).slice(0, 4000),
     status: 'delegated', backend: 'linked-bot',
     bot: { id: bot.id, name: String(bot.name || 'bot').slice(0, 40), providerId: bot.providerId || null },
     sourceVersions: Object.fromEntries(payload.sources.map(s => [s.id, s.version])),
@@ -3035,6 +3035,38 @@ async function bizRespAct(id, op, body) {
     const bot = await bizDelegateBot();
     if (!bot) return { status: 409, body: { error: 'No connected bot to send work to.', code: 'no_delegate_bot' } };
     return { status: 200, body: { delegation: await bizDelegatePreview(bot, bizDelegatePayload(resp, await bizSources(), input, bot)) } };
+  }
+  if (op === 'schedule') {
+    // Scheduled automatic runs for bot-delegated responsibilities. The owner reviews the EXACT
+    // standing payload (instruction + current sources) before enabling; the daily check-in then
+    // queues that payload to the connected bot. The hash binds it: any source edit, responsibility
+    // edit or bot change since the review stops the schedule with a needs-review marker instead of
+    // sending text the owner never saw. Drafts-only boundaries are unchanged: the bot cannot send,
+    // post, purchase, book or connect anything, and its report comes back as a draft.
+    const sop = String(body && body.op || '');
+    if (!resp.bot || resp.research) return { status: 400, body: { error: 'Schedules are for responsibilities that run on a connected bot.' } };
+    if (sop === 'disable') {
+      if (!resp.schedule) return { status: 200, body: { responsibility: resp } };
+      const next = { ...resp }; delete next.schedule;
+      if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+      if (!await bizLog('schedule_disabled', { respId: id, title: resp.title }, f0)) return bizFenceConflict();
+      return { status: 200, body: { responsibility: next } };
+    }
+    const instruction = String(body && body.instruction || '').slice(0, 4000);
+    if (!instruction.trim()) return { status: 400, body: { error: 'Write the standing instruction the bot will get each day first' } };
+    const bot = await bizDelegateBot();
+    if (!bot) return { status: 409, body: { error: 'No connected bot to run this on a schedule. Connect it first.', code: 'no_delegate_bot' } };
+    const srcs = await bizSources();
+    const payload = bizDelegatePayload(resp, srcs, instruction, bot);
+    if (sop === 'preview') return { status: 200, body: { delegation: await bizDelegatePreview(bot, payload) } };
+    if (sop === 'enable') {
+      if (String(body.delegateHash || '') !== payload.hash) return { status: 409, body: { error: 'Review exactly what would be sent each day first.', code: 'delegation_review_required', delegation: await bizDelegatePreview(bot, payload) } };
+      const next = { ...resp, schedule: { freq: 'daily', instruction, delegateHash: payload.hash, enabledAt: now(), lastQueuedAt: null, needsReview: null } };
+      if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + id, f0, JSON.stringify(next)])) return bizFenceConflict();
+      if (!await bizLog('schedule_enabled', { respId: id, title: resp.title, botName: bot.name }, f0)) return bizFenceConflict();
+      return { status: 200, body: { responsibility: next } };
+    }
+    return { status: 400, body: { error: 'preview, enable or disable required' } };
   }
   if (op === 'run') {
     const deadline = entryDeadline;
@@ -3488,12 +3520,41 @@ async function bizDailyTick() {
   const out = { workspaces: 0, runs: 0, skipped: 0, errors: 0 };
   for (const ws of wss) {
     await als.run({ ws }, async () => {
-      const eng = await bizEngine(); if (!eng.ok) { out.skipped++; return; }
+      const eng = await bizEngine(); // engine responsibilities need it; bot-delegated schedules do not
       const f0 = await bizEntry(); if (f0 == null) { out.skipped++; return; } // one atomic snapshot; a delete during the tick invalidates persistence
       out.workspaces++;
       for (const resp of await bizResps()) {
         if (resp.status !== 'active') continue;
-        if (resp.bot) { out.skipped++; continue; } // bot/manual-only: the daily engine loop never substitutes for the reviewed bot
+        if (resp.bot) {
+          // Bot/manual-only: the daily engine loop never substitutes for the reviewed bot. A
+          // schedule the owner enabled queues the EXACT reviewed standing payload to the bot -
+          // never the engine, and never text that drifted since the review.
+          const sch = resp.schedule;
+          if (!sch || !sch.delegateHash) { out.skipped++; continue; }
+          if (sch.lastQueuedAt && Date.now() - Date.parse(sch.lastQueuedAt) < BIZ.DAILY_GAP_MS) { out.skipped++; continue; }
+          const bot = await bizDelegateBot();
+          if (!bot) { await bizLog('schedule_skipped', { respId: resp.id, reason: 'no_bot' }, f0); out.skipped++; continue; }
+          const srcs = await bizSources();
+          const payload = bizDelegatePayload(resp, srcs, sch.instruction, bot);
+          if (payload.hash !== sch.delegateHash) {
+            const cur = await getJ('fm:biz:resp:' + resp.id);
+            if (cur && cur.schedule && !cur.schedule.needsReview) {
+              cur.schedule.needsReview = now();
+              await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)]);
+            }
+            await bizLog('schedule_needs_review', { respId: resp.id, title: resp.title }, f0);
+            out.skipped++; continue;
+          }
+          const res = await bizDelegateRun(resp, srcs, sch.instruction, bot, f0, payload, 'auto');
+          if (res.status === 200) {
+            out.runs++;
+            const cur = await getJ('fm:biz:resp:' + resp.id);
+            if (cur && cur.schedule) { cur.schedule.lastQueuedAt = now(); cur.schedule.needsReview = null; await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)]); }
+            await bizLog('schedule_queued', { respId: resp.id, title: resp.title, botName: bot.name }, f0);
+          } else out.errors++;
+          continue;
+        }
+        if (!eng.ok) { out.skipped++; continue; } // engine responsibilities never run without the engine
         const lastIds = await r(['LRANGE', 'fm:biz:runs:' + resp.id, 0, 9]);
         const runs = lastIds.length ? (await r(['MGET', ...lastIds.map(i => 'fm:biz:run:' + i)])).filter(Boolean).map(v => JSON.parse(v)) : [];
         const lastDaily = runs.filter(x => x.kind === 'daily').map(x => Date.parse(x.at)).sort((a, b) => b - a)[0];

@@ -6,7 +6,7 @@
 // Engine endpoint and bot side are exercised through the real internal call path the
 // gateway/MCP adapters use (claimTask/completeTask/stopTask); no real network, no real bot.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizDelegatePayload,bizDelegateRun,bizSettleDelegatedRun,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,reassignAsleepQueuedTasks,reassignTask,gatewayAct,newTask,bizSources,listTasks,setJ,getJ,r,als};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizDelegatePayload,bizDelegateRun,bizSettleDelegatedRun,bizDailyTick,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,reassignAsleepQueuedTasks,reassignTask,gatewayAct,newTask,bizSources,listTasks,setJ,getJ,r,als};';
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:(u,o)=>{const body=JSON.parse(o.body);const sys=body.messages[0].content;
   const reply=content=>Promise.resolve({ok:true,json:async()=>({choices:[{message:{content}}],usage:{prompt_tokens:1,completion_tokens:1}})});
@@ -340,6 +340,65 @@ const ISO=ms=>new Date(ms).toISOString();
   assert.equal(xruns.length,1,'the run was registered before the race');
   const xr=await f.getJ('fm:biz:run:'+xruns[0]);
   assert.equal(xr.status,'failed');assert.equal(xr.failureReason,'workspace_changed','the registered run fails honestly, never a phantom sent');
+ });
+
+ // --- scheduled automatic runs: owner-reviewed standing payload, hash-paused on drift, no engine needed
+ await f.als.run({ws:'wssched'},async()=>{
+  c.process.env.ALTER_MODEL_WS+=',wssched';
+  await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
+  const g=await f.createAgent('Grokbot','Business work','grok',false,{preset:'balanced'});
+  const sr=await f.bizSourceAdd({kind:'note',title:'Estimates',text:'We answer every customer email within a day. We send estimates within two days. Follow up on day three.'});
+  c.process.env.__sid=sr.body.source.id;
+  const p=(await f.bizDiscover()).body.proposals[0];
+  const respS=(await f.bizProposalAct(p.id,'activate',{})).body.responsibility.id;
+  // bot-mapped: schedules only exist for responsibilities that run on the reviewed bot
+  const rec=await f.getJ('fm:biz:resp:'+respS);rec.bot={id:g.agent.id,name:g.agent.name,providerId:'grok'};await f.setJ('fm:biz:resp:'+respS,rec);
+  // an engine-only responsibility (no bot) refuses a bot schedule outright
+  const p0=(await f.bizDiscover()).body.proposals[0];
+  const respE=(await f.bizProposalAct(p0.id,'activate',{})).body.responsibility.id;
+  const nope=await f.bizRespAct(respE,'schedule',{op:'preview',instruction:'x'});
+  assert.equal(nope.status,400,'engine responsibilities get no bot schedule');
+  // engine consent withdrawn: scheduled bot runs must still queue - the engine is never substituted
+  await f.bizConsentAct(false,{});
+
+  const bad=await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:'bogus'});
+  assert.equal(bad.status,409);assert.equal(bad.body.code,'delegation_review_required','enabling without reviewing the exact daily text refuses');
+  const pv=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
+  assert.equal(pv.status,200);assert.ok(pv.body.delegation.hash);
+  const en=await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv.body.delegation.hash});
+  assert.equal(en.status,200);assert.equal(en.body.responsibility.schedule.freq,'daily');
+
+  await f.bizDailyTick();
+  const runs1=await f.r(['LRANGE','fm:biz:runs:'+respS,0,9]);
+  assert.equal(runs1.length,1,'the daily tick queued one scheduled run without engine consent');
+  const run1=await f.getJ('fm:biz:run:'+runs1[0]);
+  assert.equal(run1.kind,'auto','the queued run is marked automatic');
+  assert.equal(run1.status,'delegated');
+  const job1=await f.getJ('fm:task:'+run1.taskId);
+  assert.equal(job1.status,'queued');assert.equal(job1.assignee,g.agent.id);
+  assert.equal(job1.context,pv.body.delegation.context,'the queued payload is byte-identical to the reviewed one');
+
+  await f.bizDailyTick();
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length,1,'the 20h gap blocks a duplicate queue');
+
+  await f.bizSourceEdit(sr.body.source.id,{title:'Estimates',text:'We send estimates within THREE days. Follow up on day five.'});
+  {const recG=await f.getJ('fm:biz:resp:'+respS);recG.schedule.lastQueuedAt=new Date(Date.now()-21*3600e3).toISOString();await f.setJ('fm:biz:resp:'+respS,recG);} // past the gap: the tick must evaluate, not skip
+  await f.bizDailyTick();
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length,1,'a source edit pauses the schedule instead of sending drifted text');
+  const rec2=await f.getJ('fm:biz:resp:'+respS);assert.ok(rec2.schedule.needsReview,'the pause is marked needs-review');
+
+  const pv2=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
+  const en2=await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv2.body.delegation.hash});
+  assert.equal(en2.status,200);assert.equal(en2.body.responsibility.schedule.needsReview,null,'re-reviewing the new text clears the pause');
+  await f.bizDailyTick();
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length,2,'the resumed schedule queues the re-reviewed text');
+
+  const dis=await f.bizRespAct(respS,'schedule',{op:'disable'});
+  assert.equal(dis.status,200);assert.ok(!dis.body.responsibility.schedule,'disable removes the schedule');
+  const before=(await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length;
+  await f.bizDailyTick();
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length,before,'nothing queues after disable');
+
  });
 
  console.log('biz-delegation-regression: all assertions passed');
