@@ -81,6 +81,12 @@ function memEval(script, n, keys, argv) {
     case BIZ_FENCE_SADD: { const s = new Set(mem.kv.get(keys[3]) || []); s.add(argv[1]); mem.kv.set(keys[3], [...s]); return 1; }
     case BIZ_FENCE_SREM: { mem.kv.set(keys[3], (mem.kv.get(keys[3]) || []).filter(v => v !== argv[1])); return 1; }
     case BIZ_FENCE_LPUSH: { const l = memList(keys[3]); l.unshift(argv[1]); mem.lists.set(keys[3], l.slice(0, parseInt(argv[2], 10))); return 1; }
+    case BIZ_FENCE_TASK: {
+      mem.kv.set(keys[3], argv[1]);
+      const st = new Set(mem.kv.get(keys[4]) || []); st.add(argv[2]); mem.kv.set(keys[4], [...st]);
+      const tl = memList(keys[5]); tl.unshift(argv[2]); mem.lists.set(keys[5], tl.slice(0, 60));
+      return 1;
+    }
     case BIZ_FENCE_RUN: {
       mem.kv.set(keys[3], argv[1]);
       const l = memList(keys[4]); l.unshift(argv[2]);
@@ -242,6 +248,12 @@ const BIZ_OP_RELEASE = "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end;
 const BIZ_ENTRY = "if redis.call('EXISTS',KEYS[2])==1 then return {'held'} end; if redis.call('EXISTS',KEYS[3])==1 then return {'pending'} end; return {'ok', redis.call('GET',KEYS[1]) or '0'}";
 // Run persistence in one fenced call: store the run, index it, trim the index AND delete the
 // run objects that fell out of the index, so object lifetime matches index lifetime.
+// Atomic FIRST persistence of a held delegated job: the task record (with its biz attempt
+// identity), the delegated inventory and the global task list land in ONE fenced script. A
+// crash before it leaves nothing; a crash after it leaves a fully inventoried held job that
+// the recovery sweep owns. No state exists where a private payload sits persisted but
+// outside the inventory/purge lifecycle.
+const BIZ_FENCE_TASK = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call('SET',KEYS[4],ARGV[2]); redis.call('SADD',KEYS[5],ARGV[3]); redis.call('LPUSH',KEYS[6],ARGV[3]); redis.call('LTRIM',KEYS[6],0,59); return 1";
 const BIZ_FENCE_RUN = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; redis.call('SET',KEYS[4],ARGV[2]); redis.call('LPUSH',KEYS[5],ARGV[3]); local extra=redis.call('LRANGE',KEYS[5],tonumber(ARGV[4]),-1); redis.call('LTRIM',KEYS[5],0,tonumber(ARGV[4])-1); for _,id in ipairs(extra) do redis.call('DEL',ARGV[5]..id) end; return 1";
 // Fenced compare-and-set for delegated-run lifecycle writes (claim marker + bot settle): the
 // same fence checks as BIZ_FENCE_SET, plus the record must still equal what the caller read -
@@ -2832,11 +2844,13 @@ async function bizDiscoverDelegateRun(body) {
     sourceVersions: Object.fromEntries(payload.sources.map(s => [s.id, s.version])),
     delegateHash: payload.hash };
   // Held first, exactly like delegated runs: invisible to claimants until the discovery
-  // record exists; the biz tag is written before the flip.
-  const t = await newTask({ title: 'Business scan', brief: payload.brief, context: payload.context, assignee: bot.id, createdBy: 'owner', hold: true });
-  t.biz = { kind: 'discover', discId: disc.id, botId: bot.id, sourceIds: payload.sources.map(s => s.id) };
-  await setJ('fm:task:' + t.id, t);
-  await r(['SADD', 'fm:biz:delegated', t.id]);
+  // record exists. The FIRST persistence is one atomic fenced script (BIZ_FENCE_TASK), so no
+  // window exists where the private payload persists without its attempt identity and
+  // inventory registration.
+  const t = { id: rid('task'), title: 'Business scan', brief: String(payload.brief || '').slice(0, 1500), assignee: bot.id, status: 'waiting', parentId: null, context: String(payload.context || '').slice(0, 4000), createdBy: 'owner', createdAt: now(), result: null, assignedAt: now(),
+    biz: { kind: 'discover', discId: disc.id, botId: bot.id, sourceIds: payload.sources.map(s => s.id) } };
+  bust();
+  if (!await r(['EVAL', BIZ_FENCE_TASK, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:task:' + t.id, 'fm:biz:delegated', 'fm:tasklist', f0, JSON.stringify(t), t.id])) return bizFenceConflict();
   disc.taskId = t.id;
   let registered = false;
   const abandon = async why => {
@@ -2948,11 +2962,15 @@ async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind, gate) {
     sourceVersions: Object.fromEntries(payload.sources.map(s => [s.id, s.version])),
     delegateHash: payload.hash };
   // Held first: the job stays invisible to claimants until the run record exists, so a claim
-  // can never race ahead of the record it settles. The biz tag is written before the flip.
-  const t = await newTask({ title: resp.title, brief: payload.brief, context: payload.context, assignee: bot.id, createdBy: 'owner', hold: true });
-  t.biz = { respId: resp.id, runId: run.id, botId: bot.id, sourceIds: payload.sources.map(s => s.id) };
-  await setJ('fm:task:' + t.id, t);
-  await r(['SADD', 'fm:biz:delegated', t.id]);
+  // can never race ahead of the record it settles. The FIRST persistence is one atomic fenced
+  // script (BIZ_FENCE_TASK): held job + biz attempt identity + inventory + task list land
+  // together - a crash before it leaves nothing, a crash after it leaves a fully inventoried
+  // job the recovery sweep owns. No window exists where the private payload persists without
+  // its attempt identity and lifecycle registration.
+  const t = { id: rid('task'), title: String(resp.title || 'Untitled').slice(0, 120), brief: String(payload.brief || '').slice(0, 1500), assignee: bot.id, status: 'waiting', parentId: null, context: String(payload.context || '').slice(0, 4000), createdBy: 'owner', createdAt: now(), result: null, assignedAt: now(),
+    biz: { respId: resp.id, runId: run.id, botId: bot.id, sourceIds: payload.sources.map(s => s.id) } };
+  bust();
+  if (!await r(['EVAL', BIZ_FENCE_TASK, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:task:' + t.id, 'fm:biz:delegated', 'fm:tasklist', f0, JSON.stringify(t), t.id])) return bizFenceConflict();
   run.taskId = t.id;
   let runRegistered = false;
   // Abandon leaves NOTHING behind: the held job record (which carries the payload context)

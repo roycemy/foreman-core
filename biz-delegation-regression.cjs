@@ -6,7 +6,7 @@
 // Engine endpoint and bot side are exercised through the real internal call path the
 // gateway/MCP adapters use (claimTask/completeTask/stopTask); no real network, no real bot.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizDelegatePayload,bizDelegateRun,bizSettleDelegatedRun,bizDailyTick,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,reassignAsleepQueuedTasks,reassignTask,gatewayAct,newTask,bizSources,listTasks,setJ,getJ,r,als,BIZ_SCHED_GATE,BIZ_SCHED_RECOVER,BIZ_SCHED_CLAIM_RECOVER,BIZ};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizDelegatePayload,bizDelegateRun,bizSettleDelegatedRun,bizDailyTick,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,reassignAsleepQueuedTasks,reassignTask,gatewayAct,newTask,bizSources,listTasks,setJ,getJ,r,als,BIZ_SCHED_GATE,BIZ_SCHED_RECOVER,BIZ_SCHED_CLAIM_RECOVER,BIZ_FENCE_TASK,BIZ};';
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:(u,o)=>{const body=JSON.parse(o.body);const sys=body.messages[0].content;
   const reply=content=>Promise.resolve({ok:true,json:async()=>({choices:[{message:{content}}],usage:{prompt_tokens:1,completion_tokens:1}})});
@@ -676,6 +676,25 @@ const ISO=ms=>new Date(ms).toISOString();
    assert.equal(after.length,1,'nothing new went visible from the late attempt');
    const rc2=await f.getJ('fm:biz:resp:'+respS);
    assert.notEqual(rc2.schedule.claimId,lateClaim,"the retry's claim owns the window, never the late original");}
+
+  // --- atomic first persistence: no window exists where a private payload persists without
+  // its attempt identity + inventory registration (reviewer HOLD: orphan waiting tasks with
+  // full payload stranded outside the inventory/purge lifecycle)
+  await f.r(['SET','fm:biz:freeze','1']);
+  {const tl0=(await f.r(['LRANGE','fm:tasklist',0,99])).length, inv0=(await f.r(['SMEMBERS','fm:biz:delegated'])).length;
+   const ref=await f.r(['EVAL',f.BIZ_FENCE_TASK,6,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:task:task_frz','fm:biz:delegated','fm:tasklist',(await f.r(['GET','fm:biz:fence']))||'0',JSON.stringify({id:'task_frz',status:'waiting',biz:{runId:'x'},context:'private payload'}),'task_frz']);
+   assert.equal(ref,0,'a frozen workspace refuses the atomic registration');
+   assert.equal(await f.getJ('fm:task:task_frz'),null,'no payload persisted on refusal');
+   assert.equal((await f.r(['LRANGE','fm:tasklist',0,99])).length,tl0,'the task list is untouched on refusal');
+   assert.equal((await f.r(['SMEMBERS','fm:biz:delegated'])).length,inv0,'the inventory is untouched on refusal');}
+  await f.r(['DEL','fm:biz:freeze']);
+  {const ok=await f.r(['EVAL',f.BIZ_FENCE_TASK,6,'fm:biz:fence','fm:biz:freeze','fm:biz:op_pending','fm:task:task_atomic','fm:biz:delegated','fm:tasklist',(await f.r(['GET','fm:biz:fence']))||'0',JSON.stringify({id:'task_atomic',status:'waiting',biz:{runId:'run_atomic'}}),'task_atomic']);
+   assert.equal(ok,1,'the atomic registration succeeds when unfrozen');
+   const rec=await f.getJ('fm:task:task_atomic');
+   assert.ok(rec && rec.biz && rec.biz.runId==='run_atomic','the payload and its attempt identity landed together');
+   assert.ok((await f.r(['SMEMBERS','fm:biz:delegated'])).includes('task_atomic'),'inventory membership landed in the same op');
+   assert.ok((await f.r(['LRANGE','fm:tasklist',0,99])).includes('task_atomic'),'task list registration landed in the same op');
+   await f.r(['DEL','fm:task:task_atomic']); await f.r(['SREM','fm:biz:delegated','task_atomic']);} // the list id self-heals: listTasks filters missing records
 
   // caps must never be undefined (a swallowed constant would silently uncap daily calls)
   assert.equal(f.BIZ.CALLS_PER_DAY,200,'daily call cap constant exists');
