@@ -5,7 +5,7 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null, draftPending = null;
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null, draftPending = null, draftUnconfirmed = null;
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
   // Tenant identity guard: loaded state belongs to the exact identity (account + workspace)
@@ -431,10 +431,12 @@
       const stamp = identity(), want = appSnap();
       const stillCurrent = () => !(stamp && stamp !== identity()) && (() => { const cur = appSnap(); return want && cur && cur.email === want.email && cur.at === want.at && cur.v === want.v; })();
       const openComposer = (vals) => {
-        const pend = !!(draftPending && draftPending.stamp === stamp); // one in-flight create per reviewed connection, across close/reopen
+        const pend = !!(draftPending && draftPending.stamp === stamp && draftPending.v === (want && want.v)); // one in-flight create per identity+connection, across close/reopen
+        const un = draftUnconfirmed && draftUnconfirmed.stamp === stamp ? draftUnconfirmed : null;
         const form = BB.modal(`<h3>Draft an email</h3>
         <p class="meta">A draft is created in the connected Google account with exactly your words. Nothing is sent - you review and send it in Gmail.</p>
-        ${pend ? `<p class="meta"><b>A draft is already being created in Gmail from this review - wait for its result before creating another.</b> Closing this window does not cancel it.</p>` : ''}
+        ${pend ? `<p class="meta" data-draft-pending="${draftPending.token}"><b>A draft is already being created in Gmail from this review - wait for its result before creating another.</b> Closing this window does not cancel it.</p>` : ''}
+        ${un ? `<p class="meta">An earlier draft attempt for ${esc(un.email || 'the connected account')} did not get a clear answer - it may exist in Gmail. Check the drafts folder there before creating the same draft again.</p>` : ''}
         <label class="fld">To<input class="in" id="bz-draft-to" maxlength="300" value="${esc(vals.to || '')}" placeholder="dana@example.com"></label>
         <label class="fld">Subject<input class="in" id="bz-draft-subject" maxlength="300" value="${esc(vals.subject || '')}" placeholder="Re: Estimate"></label>
         <label class="fld">Words<textarea class="in" id="bz-draft-text" rows="6" maxlength="20000" placeholder="Hi Dana - ">${esc(vals.text || '')}</textarea></label>
@@ -444,8 +446,10 @@
           const to = form.querySelector('#bz-draft-to').value.trim(), subject = form.querySelector('#bz-draft-subject').value, text = form.querySelector('#bz-draft-text').value;
           if (!to || !text.trim()) return BB.toast('A draft needs a recipient and text.');
           const g = B.apps.gmail;
+          const sameUn = un && un.to === to && un.text === text;
           BB.modal(`<h3>Review the exact draft</h3>
           <p class="meta">This creates a draft - nothing is sent.</p>
+          ${sameUn ? `<p class="meta"><b>An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail.</b> Check the drafts folder in Gmail before creating it again.</p>` : ''}
           <div class="bz-log"><div><small>From (the connected account)</small><br><b>${esc(g.email || 'unknown account')}</b></div>
           <div><small>To</small><br><b>${esc(to)}</b></div>
           <div><small>Subject</small><br><b>${esc(subject || '(no subject)')}</b></div>
@@ -459,22 +463,31 @@
             createBtn.disabled = true; backBtn.disabled = true; // a submitted request cannot be undone: Back/Close never pretend otherwise
             createBtn.textContent = 'Creating in Gmail...';
             const liveNote = document.querySelector('#modal [data-draft-live]'); if (liveNote) liveNote.textContent = 'Creating the draft in Gmail - closing this window does not cancel it.';
-            draftPending = { stamp };
+            const opTok = Math.random().toString(36).slice(2) + Date.now().toString(36);
+            draftPending = { stamp, v: want.v, token: opTok };
             const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v });
-            draftPending = null;
+            if (draftPending && draftPending.token === opTok) draftPending = null; // token-owned release: a newer operation's gate is never cleared by an older reply
             if (stamp && stamp !== identity()) return; // changed mid-request: discard the stale reply
+            // A composer reopened while this op was in flight re-arms on the known outcome - words untouched
+            const pn = document.querySelector('#modal [data-draft-pending="' + opTok + '"]');
+            if (pn) { pn.remove(); const rv = document.querySelector('#modal [data-draft-review]'); if (rv) rv.disabled = false; }
             createBtn.disabled = false; backBtn.disabled = false;
             createBtn.textContent = 'Create this draft in Gmail';
             if (liveNote) liveNote.textContent = '';
             const closeIfOurs = () => { if (document.contains(createBtn)) BB.closeModal(); }; // never close a modal that is not this review
             await load(); // refresh BEFORE judging: a replacement that landed mid-request must not get the success copy
             if (stamp && stamp !== identity()) return;
-            if (j.error) { closeIfOurs(); return BB.toast(j.error); }
+            if (j.error) {
+              if (j.code === 'app_draft_unconfirmed') draftUnconfirmed = { stamp, v: want.v, email: want.email, to, text }; // unresolved: retained for reconciliation, never forgotten
+              closeIfOurs(); return BB.toast(j.error);
+            }
             closeIfOurs();
             // The create was bound to the reviewed connection: if it has since been replaced,
             // say where the draft went and let the card show the current state.
             if (!stillCurrent()) return BB.toast('Draft created in Gmail for ' + (want.email || 'the reviewed account') + ' - the connection changed meanwhile; the card shows the current state.');
-            BB.toast(j.note || 'Draft created in Gmail - nothing was sent.');
+            const hadUn = draftUnconfirmed && draftUnconfirmed.stamp === stamp;
+            if (hadUn) draftUnconfirmed = null;
+            BB.toast((j.note || 'Draft created in Gmail - nothing was sent.') + (hadUn ? ' An earlier attempt may also have created a draft - check the drafts folder in Gmail.' : ''));
           };
         };
       };

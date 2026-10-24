@@ -20,9 +20,9 @@ function appFor(mode){
   if(mode==='connectable'||mode==='gone')return {...base,connected:false,status:'not_connected'};
   return null; // omit: status unavailable
 }
-let mode='connected-unconfigured',ident='A',disconnCalls=[],draftCalls=[],oauthHits=0,connectGo=null,disconnGo=null,draftGo=null,withSystems=false;
+let mode='connected-unconfigured',ident='A',disconnCalls=[],draftCalls=[],oauthHits=0,connectGo=null,disconnGo=null,draftGo=null,draftParked=[],draftOutcome='ok',withSystems=false;
 function stateFor(){
-  if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[],proposals:[],responsibilities:[],log:[],opPending:null};
+  if(ident==='B'){const sb={engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[],proposals:[],responsibilities:[],log:[],opPending:null};const gb=appFor(mode);if(gb)sb.apps={gmail:gb};return sb;}
   const s={engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[{id:'src_1',kind:'doc',title:'How we work',version:2,text:'Refunds over $50 need Royce.',updatedAt:'2026-10-23T00:00:00Z'}],proposals:[],responsibilities:withSystems?[{id:'resp_1',title:'Customer reply desk',summary:'Draft replies',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:['src_1'],systems:['Email inbox','QuickBooks'],runs:[]}]:[],log:[],opPending:null};
   const g=appFor(mode);if(g)s.apps={gmail:g};
   return s;
@@ -38,8 +38,9 @@ const server=http.createServer((req,res)=>{
   if(u.pathname==='/__disconnect-parked'){return json({parked:typeof disconnGo==='function'});}
   if(u.pathname==='/__disconnect-release'){const g=disconnGo;disconnGo=null;if(typeof g==='function')g();return json({ok:true});}
   if(u.pathname==='/__park-draft'){draftGo='park';return json({ok:true});}
-  if(u.pathname==='/__draft-parked'){return json({parked:typeof draftGo==='function'});}
-  if(u.pathname==='/__draft-release'){const g=draftGo;draftGo=null;if(typeof g==='function')g();return json({ok:true});}
+  if(u.pathname==='/__draft-parked'){return json({parked:draftParked.length>0,count:draftParked.length});}
+  if(u.pathname==='/__draft-release'){const g=draftParked.shift();if(!draftParked.length)draftGo=null;if(g)g();return json({ok:true});}
+  if(u.pathname==='/__draft-mode'){draftOutcome=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__parked'){return json({parked:typeof connectGo==='function'});}
   if(u.pathname==='/__connect-release'){const g=connectGo;connectGo=null;if(typeof g==='function')g();return json({ok:true});}
   if(u.pathname==='/__oauth-fake'){oauthHits++;res.setHeader('content-type','text/html');return res.end('<title>fake oauth</title>should never load');}
@@ -55,9 +56,11 @@ const server=http.createServer((req,res)=>{
     return;}
   if(u.pathname==='/api/business/apps/gmail/drafts'&&req.method==='POST'){
     let b='';req.on('data',d=>b+=d);req.on('end',async()=>{
-      if(draftGo==='park'){await new Promise(r=>{draftGo=r;});}
+      const reqIdent=ident; // the caller's identity, captured before any park
+      if(draftGo==='park'){await new Promise(r=>{draftParked.push(r);});}
       let body={};try{body=JSON.parse(b||'{}')}catch(e){}
-      draftCalls.push({body,ident});
+      draftCalls.push({body,ident:reqIdent});
+      if(draftOutcome==='unconfirmed')return json({error:'Google could not confirm the draft (HTTP 503). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.',code:'app_draft_unconfirmed'},502);
       return json({provider:'gmail',draftId:'draft_9',account:'royce@northbend.example',to:[body.to],subject:body.subject||'',note:'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.'});});
     return;}
   if(u.pathname==='/api/business/apps/gmail/disconnect'&&req.method==='POST'){
@@ -332,12 +335,72 @@ let PORT=0;
  await ev(`document.querySelector('#bz-app-draft').click();'reopen'`);
  assert(await poll(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('already being created')`),'a reopened composer owns the pending operation');
  assert(await ev(`(document.querySelector('#modal [data-draft-review]')||{disabled:false}).disabled`),'no second submit while the first is unresolved');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='sam@example.com';document.querySelector('#bz-draft-text').value='KEPTWORDS';return 1})()`);
  const draftsBefore=draftCalls.length;
  await ctl('/__draft-release');
  assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Draft created in Gmail')`),'the single create resolves honestly');
  assert.equal(draftCalls.length,draftsBefore+1,'exactly one POST - no duplicate from Back or reopen');
- await ev(`document.querySelector('#bz-app-draft').click();'after'`);
- assert(await poll(`!!document.querySelector('#modal.on [data-draft-review]:not([disabled])')`),'the composer re-arms once the outcome is known');
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-review]:not([disabled])')`),'the open composer re-arms in place on the known outcome');
+ assert(!(await ev(`!!document.querySelector('#modal [data-draft-pending]')`)),'the pending presentation is removed, not left stale');
+ assert(await ev(`(document.querySelector('#modal.on #bz-draft-text')||{value:''}).value==='KEPTWORDS'`),'the newer words survive the settlement');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+
+ // 19. an unconfirmed create is retained for reconciliation: same-op retry warns, unrelated draft does not
+ await ctl('/__draft-mode?to=unconfirmed');
+ assert(await poll(`!!document.querySelector('#bz-app-draft')`),'the apps card paints for test 19');
+ await ev(`document.querySelector('#bz-app-draft').click();'open'`);
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-text').value='the gate brace quote';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review'`);
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-create]')`),'the review opens');
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create'`);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('check the drafts folder')`),'the unconfirmed outcome tells the owner to check Gmail');
+ await ev(`document.querySelector('#bz-app-draft').click();'reopen'`);
+ assert(await poll(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('may exist in Gmail')`),'the unresolved op is never forgotten across close/reopen');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-text').value='the gate brace quote';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review same'`);
+ assert(await poll(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('may already exist in Gmail')`),'a same-op retry carries the reconciliation warning');
+ await ev(`document.querySelector('#modal.on [data-draft-back]').click();'back'`);
+ await ev(`(()=>{document.querySelector('#bz-draft-text').value='a completely different note';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review other'`);
+ assert(!(await ev(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('may already exist in Gmail')`)),'an unrelated new draft is not blocked by the old op');
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+ await ctl('/__draft-mode?to=ok');
+ await ev(`document.querySelector('#bz-app-draft').click();'resolve'`);
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-text').value='the gate brace quote';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'review final'`);
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'create final'`);
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('An earlier attempt may also have created a draft')`),'a successful retry still names the possible earlier draft');
+
+ // 20. A->B: an older identity's completion never clears the newer operation's gate
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
+ await ctl('/__park-draft');
+ await ev(`document.querySelector('#bz-app-draft').click();'A open'`);
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-text').value='A words';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'A review'`);
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'A create'`);
+ {const t0=Date.now();let ok=false;while(Date.now()-t0<5000){const p=await new Promise((res,rej)=>{http.get('http://127.0.0.1:'+PORT+'/__draft-parked',r=>{let d='';r.on('data',ch=>d+=ch);r.on('end',()=>res(JSON.parse(d).count>=1));}).on('error',rej);});if(p){ok=true;break;}await new Promise(r=>setTimeout(r,100));}assert(ok,'A parked');}
+ await flip('B');
+ assert(await poll(`!!document.querySelector('#bz-app-draft')`),'B apps card paints after the flip');
+ await ev(`document.querySelector('#bz-app-draft').click();'B open'`);
+ assert(await poll(`!!document.querySelector('#modal.on #bz-draft-to')`),'B composer opens without the A pending gate');
+ assert(!(await ev(`!!document.querySelector('#modal [data-draft-pending]')`)),'B is never gated by A operation');
+ await ev(`(()=>{document.querySelector('#bz-draft-to').value='sam@example.com';document.querySelector('#bz-draft-text').value='B words';return 1})()`);
+ await ev(`document.querySelector('#modal.on [data-draft-review]').click();'B review'`);
+ await ev(`document.querySelector('#modal.on [data-draft-create]').click();'B create'`);
+ {const t0=Date.now();let ok=false;while(Date.now()-t0<5000){const p=await new Promise((res,rej)=>{http.get('http://127.0.0.1:'+PORT+'/__draft-parked',r=>{let d='';r.on('data',ch=>d+=ch);r.on('end',()=>res(JSON.parse(d).count>=2));}).on('error',rej);});if(p){ok=true;break;}await new Promise(r=>setTimeout(r,100));}assert(ok,'B parked behind A');}
+ await ctl('/__draft-release'); // A completes first
+ await new Promise(r=>setTimeout(r,600));
+ await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`); // B closes its in-flight review
+ await ev(`document.querySelector('#bz-app-draft').click();'B reopen'`);
+ assert(await poll(`!!document.querySelector('#modal [data-draft-pending]')`),'B gate survives A completion - the older reply never clears it');
+ assert(await ev(`(document.querySelector('#modal [data-draft-review]')||{disabled:false}).disabled`),'B cannot duplicate-submit while its own op is unresolved');
+ await ctl('/__draft-release'); // B completes
+ assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('Draft created in Gmail')`),'B create resolves honestly');
+ assert(await poll(`!!document.querySelector('#modal.on [data-draft-review]:not([disabled])')`),'B composer re-arms in place on its own outcome');
+ assert(!(await ev(`!!document.querySelector('#modal [data-draft-pending]')`)),'B pending note clears on B outcome');
+ assert.equal(draftCalls[draftCalls.length-1].ident,'B','the last draft ran under B');
+ assert.equal(draftCalls[draftCalls.length-2].ident,'A','the earlier parked draft ran under A');
+ await flip('A');
  await ev(`(()=>{const m=document.getElementById('modal');if(m)m.classList.remove('on');return 1})()`);
 
  // 17. landing copy separates a known record from unknown/absent; recovery is unconditional
@@ -388,5 +451,5 @@ let PORT=0;
  assert(t.includes('Nothing needs you right now'),'an empty glance is honest when nothing needs the owner');
 
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz apps: stored connection renders unmasked with exact account + removal (unconfigured + needs_reconnect), unknown status makes no absence claims, removal echoes the reviewed connection version, identity switch mid-confirm/mid-connect/mid-draft discards the action (no POST, no redirect, no draft), stale-version refusal surfaces, prior-grant-unconfirmed toast never claims all-removed, OAuth landing markers announce once from live state, a replacement mid-removal gets a neutral line, the draft review names the exact account+recipients+subject+words, Back keeps every typed word, a stale draft success never closes a newer composer nor claims over a replacement, declined/failed landings never deny a live connection, HQ surfaces needs-reconnect/unconfirmed-removal as needs, a pending draft cannot be duplicated via Back/close/reopen, landing copy separates known record from unknown - pixels at /downloads/apps-*-{390,desktop}.png.');
+ console.log('PASS ui biz apps: stored connection renders unmasked with exact account + removal (unconfigured + needs_reconnect), unknown status makes no absence claims, removal echoes the reviewed connection version, identity switch mid-confirm/mid-connect/mid-draft discards the action (no POST, no redirect, no draft), stale-version refusal surfaces, prior-grant-unconfirmed toast never claims all-removed, OAuth landing markers announce once from live state, a replacement mid-removal gets a neutral line, the draft review names the exact account+recipients+subject+words, Back keeps every typed word, a stale draft success never closes a newer composer nor claims over a replacement, declined/failed landings never deny a live connection, HQ surfaces needs-reconnect/unconfirmed-removal as needs, a pending draft cannot be duplicated via Back/close/reopen, landing copy separates known record from unknown, pending ops are token-owned per identity+connection, unconfirmed creates are retained for reconciliation - pixels at /downloads/apps-*-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{cp.kill();}catch(_){/*noop*/}try{server.close();}catch(_){/*noop*/}process.exit(1)});
