@@ -802,23 +802,26 @@
       // chooser state, and the server refuses when the record moved since this review.
       assigningResp = { respId: b.dataset.respAssign, fp: (rp && rp.fp) || null, stamp: identity(), gen: ++assignGen }; paint();
     });
-    $$('[data-assign-cancel]', V).forEach(b => b.onclick = () => { assigningResp = null; assignGen++; paint(); });
-    $$('[data-assign-save]', V).forEach(b => b.onclick = async () => {
-      const a = assigningResp; if (!a || a.respId !== b.dataset.assignSave) return;
+    // Each control binds the chooser object it was CREATED for: a detached node from an
+    // older chooser (cancel, then reopen, then an old node's handler fires) never acts on
+    // the current chooser's review, fingerprint or radio state.
+    $$('[data-assign-cancel]', V).forEach(b => { const own = assigningResp; b.onclick = () => { if (!own || assigningResp !== own) return; assigningResp = null; assignGen++; paint(); }; });
+    $$('[data-assign-save]', V).forEach(b => { const own = assigningResp; b.onclick = async () => {
+      if (!own || assigningResp !== own || own.respId !== b.dataset.assignSave) return;
       const pick = $('[data-assign-bot]:checked', V), botId = pick && pick.value ? pick.value : null;
       assigningResp = null; paint();
-      if (a.stamp && a.stamp !== identity()) return; // identity already moved on: the guard cleared everything - this continuation does nothing
-      const j = await api('/responsibilities/' + a.respId + '/assign', 'POST', { botId, reviewedFp: a.fp });
-      // A stale continuation (identity flip or a newer chooser state while the request was
-      // in flight) never toasts, reloads or claims under the current identity.
-      if ((a.stamp && a.stamp !== identity()) || a.gen !== assignGen) return;
+      if (own.stamp && own.stamp !== identity()) return; // identity already moved on: the guard cleared everything - this continuation does nothing
+      const j = await api('/responsibilities/' + own.respId + '/assign', 'POST', { botId, reviewedFp: own.fp });
+      if (own.stamp && own.stamp !== identity()) return; // identity flipped in flight: the guard cleared everything - nothing toasts or paints under the new identity
+      // Same identity, so the outcome is real: a CONFIRMED mapping change retires every
+      // old-mapping review (painted delegation review, schedule review, in-flight previews)
+      // no matter what the chooser state is now.
+      if (!j.error) { pendingDelegation = null; pendingSchedule = null; schedGen++; mapGen++; }
+      if (own.gen !== assignGen) { await load(); return; } // a newer chooser owns the UI: refresh the truth, but this stale continuation never toasts
       if (j.error) { BB.toast(j.error); await load(); return; } // a refusal (bot gone, record changed since the review) reloads the truth, never a hoped state
-      // The bot mapping just changed: every painted or in-flight review that named the old
-      // mapping is stale - the exact delegation review, the schedule review and previews.
-      pendingDelegation = null; pendingSchedule = null; schedGen++; mapGen++;
       BB.toast(botId ? 'Assignment saved - ' + ((j.responsibility && j.responsibility.assignment && j.responsibility.assignment.botName) || 'that bot') + ' is now assigned. Nothing has run: work starts only when you press Do this work, and drafts come back here for your review.' : 'Assignment cleared - back to the automatic pick.');
       await load();
-    });
+    }; });
     $$('[data-resp-pause]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respPause + '/pause', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Paused. It does nothing while paused.'); await load(); });
     $$('[data-resp-resume]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respResume + '/resume', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Resumed.'); await load(); });
     const cOn = $('#bz-consent-on', V); if (cOn) cOn.onclick = async () => { const eng = (B && B.engine) || {}; const j = await api('/provider-consent', 'POST', { host: eng.host, model: eng.model }); if (j.error) { BB.toast(j.error); if (j.code === 'consent_stale') await load(); return; } BB.toast('Provider processing allowed.'); await load(); };

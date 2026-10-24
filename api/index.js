@@ -3060,12 +3060,14 @@ async function bizState() {
     return out;
   };
   const readDiscoveries = async ids => ids && ids.length ? (await r(['MGET', ...ids.map(i => 'fm:biz:disc:' + i)])).filter(Boolean).map(v => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean) : [];
-  const resps = await bizResps();
-  // Reviewed-snapshot fingerprints over the EXACT stored bytes: a reviewed-record write
-  // (owner assignment) binds the bytes the owner actually reviewed, so a record that changed
-  // since the review refuses instead of accepting a stale decision.
+  // ONE raw read feeds BOTH the displayed objects and their reviewed-snapshot fingerprints:
+  // a second read could observe newer bytes while the objects stayed older - the owner would
+  // review one record and bind another. The fp of what you see is the fp of what was read.
+  const respIds = await r(['SMEMBERS', 'fm:biz:resps']);
+  const respRaws = respIds.length ? await r(['MGET', ...respIds.map(i => 'fm:biz:resp:' + i)]) : [];
+  const resps = respRaws.filter(Boolean).map(v => JSON.parse(v)).sort((x, y) => String(x.createdAt).localeCompare(String(y.createdAt)));
   const respFps = {};
-  if (resps.length) { const raws = await r(['MGET', ...resps.map(rp => 'fm:biz:resp:' + rp.id)]); resps.forEach((rp, i) => { respFps[rp.id] = raws[i] ? sha(raws[i]) : null; }); }
+  respIds.forEach((id, i) => { if (respRaws[i]) respFps[id] = sha(respRaws[i]); });
   let runsByResp = await readRunsByResp(resps);
   for (const rp of resps) for (const run of (runsByResp[rp.id] || [])) if (run.status === 'delegated' || run.status === 'running') await settleTerminalJob(run.taskId);
   const discIds = await r(['LRANGE', 'fm:biz:discoveries', 0, 4]);

@@ -9,7 +9,7 @@ const SRC={id:'src_1',kind:'doc',title:'How we work',version:2,text:'We answer e
 const RESP={id:'resp_1',title:'Customer reply desk',summary:'Draft replies',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:1,sourceIds:['src_1']};
 const BOT={id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}};
 const BOT2={id:'agent_2',name:'Scout',providerId:'custom',connection:{status:'awaiting_bot'}};
-let assigned=null, assignMode='ok', respFp='fp-v1', roster='full', assignParked=false, assignParkHold=null, previewParked=false, previewParkRes=null;
+let assigned=null, assignMode='ok', respFp='fp-v1', roster='full', assignParked=false, assignParkHold=null, previewParked=false, previewParkRes=null, assignPosts=0;
 const PAYLOAD={hash:'hashABC123',brief:'Alter business job - produce a draft for the owner to review.\nBoundary the owner set: Drafts only',context:'<work_item>\nDraft a reply about the $60 refund.\n</work_item>\n\n<source id="src_1" version="2" title="How we work">\nWe answer every customer email within a day. Refunds over $50 need Royce.\n</source>',sources:[{id:'src_1',version:2,title:'How we work',chars:74,totalChars:74}],omittedSources:[],bot:BOT};
 let phase='none'; // none -> queued -> working -> done; 'failed' variant via /__phase?to=failed
 function stateFor(ident){
@@ -24,6 +24,7 @@ function stateFor(ident){
 }
 let ident='A';
 function assignRespond(res,body){
+  assignPosts++;
   const json=o=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(o));};
   if(body.reviewedFp!==respFp)return json({error:'This responsibility changed since you reviewed it - reload and review the current state before assigning. Nothing was overwritten.',code:'resp_changed'});
   if(assignMode==='changed')return json({error:'This responsibility changed while you were assigning - reload and review it before assigning. Nothing was overwritten.',code:'resp_changed'});
@@ -40,6 +41,7 @@ const server=http.createServer((req,res)=>{
   if(u.pathname==='/__resp-fp'){respFp=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__roster'){roster=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__assign-park'){assignParked=true;return json({ok:true});}
+  if(u.pathname==='/__assign-count')return json({n:assignPosts});
   if(u.pathname==='/__assign-release'){assignParked=false;const h=assignParkHold;assignParkHold=null;if(h)assignRespond(h.res,h.body);return json({ok:true});}
   if(u.pathname==='/__preview-park'){previewParked=true;return json({ok:true});}
   if(u.pathname==='/__preview-release'){previewParked=false;const r0=previewParkRes;previewParkRes=null;if(r0){r0.setHeader('content-type','application/json');r0.end(JSON.stringify({delegation:PAYLOAD}));}return json({ok:true});}
@@ -278,6 +280,45 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  await new Promise(r=>setTimeout(r,600));
  assert(!(await ev(`!!document.querySelector('[data-dele-run]')`)),'the old-mapping in-flight preview never paints after the mapping change');
 
+ // a detached save/cancel node from an older chooser never acts on the current chooser
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign-detach'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'chooser opens for the detached-node case');
+ await ev(`window.__oldAssignSave=document.querySelector('[data-assign-save="resp_1"]');window.__oldAssignCancel=document.querySelector('[data-assign-cancel]');'retain'`);
+ const n0=await ev(`fetch('/__assign-count').then(r=>r.json()).then(j=>j.n)`);
+ await ev(`document.querySelector('[data-assign-cancel]').click();'cancel-legit'`);
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign-reopen'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'a fresh chooser reopens');
+ await ev(`window.__oldAssignSave.onclick();'old-save'`);
+ await new Promise(r=>setTimeout(r,400));
+ const n1=await ev(`fetch('/__assign-count').then(r=>r.json()).then(j=>j.n)`);
+ assert(n1===n0,'a detached save node from the older chooser never posts');
+ assert(await ev(`!!document.querySelector('[data-assign-save="resp_1"]')`),'the current chooser survives the old save node');
+ await ev(`window.__oldAssignCancel.onclick();'old-cancel'`);
+ await new Promise(r=>setTimeout(r,300));
+ assert(await ev(`!!document.querySelector('[data-assign-save="resp_1"]')`),'the current chooser survives the old cancel node');
+ await ev(`document.querySelector('[data-assign-cancel]').click();'cancel-current'`);
+
+ // a successful assignment with a NEWER chooser open still retires the old-mapping review,
+ // refreshes the truth, but never toasts from the stale continuation
+ await ev(`(async()=>{const ta=document.querySelector('[data-run-input="resp_1"]');ta.value='Draft a reply about the $60 refund.';document.querySelector('[data-run="resp_1"]').click();})()`);
+ assert(await poll(`!!document.querySelector('[data-dele-run]')`),'old-mapping delegation review paints for the newer-chooser case');
+ await ctl('/__assign-park');
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign-nc'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'chooser one opens');
+ await ev(`document.querySelector('[data-assign-bot][value="agent_1"]').click();document.querySelector('[data-assign-save="resp_1"]').click();'save-nc'`);
+ await new Promise(r=>setTimeout(r,400)); // parked in flight; the save closed chooser one
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign-newer'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'a newer chooser opens while the save is parked');
+ await new Promise(r=>setTimeout(r,4000)); // let any earlier toast expire
+ await ctl('/__assign-release');
+ await new Promise(r=>setTimeout(r,700));
+ assert(!(await ev(`(()=>{const el=document.getElementById('toast');return el&&el.classList.contains('on')&&el.textContent.includes('Assignment saved');})()`)),'the stale continuation never toasts over the newer chooser');
+ assert(!(await ev(`!!document.querySelector('[data-dele-run]')`)),'the old-mapping delegation review still dies on the confirmed mapping change');
+ assert(await ev(`!!document.querySelector('[data-assign-save="resp_1"]')`),'the newer chooser stays open');
+ t=await bizText();
+ assert(t.includes('Grokbot (you assigned it)'),'the truth refreshed under the newer chooser');
+ await ev(`document.querySelector('[data-assign-cancel]').click();'cancel-newer'`);
+
  // an empty roster never hides a saved assignment or its unavailable explanation
  await ctl('/__roster?to=empty');
  await send('Page.navigate',{url:'about:blank'},sessionId);
@@ -297,5 +338,5 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  await ctl('/__roster?to=full');
 
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions, scoped effects claims), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop + team assignment (roster honesty with truthful link labels, connected-only pick, reviewed-snapshot binding, refusals reload truth, identity-flip mid-save and in-flight-preview discards on mapping change, empty roster keeps a saved assignment visible) - pixels at /downloads/delegation-{review,sent,working,done,failed}- and /downloads/assign-{chooser,saved,empty-roster}-{390,desktop}.png.');
+ console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions, scoped effects claims), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop + team assignment (roster honesty with truthful link labels, connected-only pick, reviewed-snapshot binding, refusals reload truth, identity-flip mid-save and in-flight-preview discards on mapping change, detached chooser nodes never act, a newer chooser keeps review-invalidation without stale toasts, empty roster keeps a saved assignment visible) - pixels at /downloads/delegation-{review,sent,working,done,failed}- and /downloads/assign-{chooser,saved,empty-roster}-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{server.close();}catch(_){/*noop*/}process.exit(1)});
