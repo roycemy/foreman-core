@@ -4,7 +4,7 @@
    HTTP cache (max-age=0, must-revalidate on this deployment) always revalidates it.
    /api, /oauth and /receipt are always live network: no work state, approval or receipt is
    ever served from cache. */
-const CACHE = 'alter-shell-v33';
+const CACHE = 'alter-shell-v34';
 const SHELL = [
   '/hq', '/app.html', '/manifest.webmanifest',
   '/brand/favicon.svg', '/brand/alter-icon-light-180.png', '/brand/alter-icon-light-512.png'

@@ -5,7 +5,7 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null, assigningResp = null;
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null, assigningResp = null, assignGen = 0, mapGen = 0;
   // Identity objects are rebuilt on every flip: compare by VALUE, never by reference.
   const sameId = (a, b) => a && b && a.e === b.e && a.w === b.w;
   // Draft operation state is SERVER-OWNED: the deployment durably records each create's intent
@@ -65,7 +65,7 @@
       pendingDelegation = null; // same for a reviewed delegation payload
       pendingDiscovery = null; // and a reviewed discovery scan payload
       pendingSchedule = null; schedGen++; // and a reviewed daily-schedule payload
-      assigningResp = null; // and any open assignment chooser
+      assigningResp = null; assignGen++; // and any open assignment chooser or in-flight assignment save
       if (window.BB && BB.closeModal) BB.closeModal(); // private dialogs (the draft composer carries receipts + typed words) never survive an identity change
       V.innerHTML = ''; // synchronous DOM clear: nothing from the previous identity stays painted
       return true;
@@ -204,13 +204,14 @@
             <p class="meta">${d.sources && d.sources.length ? 'Included sources: ' + d.sources.map(s => esc(s.title) + ' v' + s.version).join(', ') + '.' : 'No sources are linked to this responsibility - only the instruction text goes.'}${d.omittedSources && d.omittedSources.length ? ' Not included: ' + d.omittedSources.map(s => esc(s.title)).join(', ') + '.' : ''}</p>
             <div class="btns"><button class="b ink" data-sched-enable type="button">Save the daily schedule</button><button class="b out" data-sched-back type="button">Back</button><button class="b out" data-sched-cancel type="button">Cancel</button></div>`; })()}
           </div>` : ''}</div>` : ''}
-        ${rp.bot && !rp.research && ((B && B.team) || []).length ? (() => { const asgE = rp.assignment && teamEntry(rp.assignment.botId);
+        ${rp.bot && !rp.research && (((B && B.team) || []).length || rp.assignment) ? (() => { const asgE = rp.assignment && teamEntry(rp.assignment.botId);
           const asgGone = rp.assignment && asgE && asgE.connection.status !== 'active';
           return `<p class="meta">Runs on <b>${rp.assignment ? esc(rp.assignment.botName) + ' (you assigned it)' : esc((B.delegate && B.delegate.name) || 'the connected bot') + ' (automatic pick)'}</b>${rp.assignment && !asgE ? ' - that bot is no longer on your team; work refuses until you reassign or pair it again' : ''}${asgGone ? ' - not connected right now; work refuses until it reconnects or you reassign. The reasoning engine is never substituted.' : ''}</p>
           <div class="btns"><button class="b out sm" data-resp-assign="${rp.id}" type="button">${rp.assignment ? 'Change the assigned bot' : 'Assign a bot'}</button></div>`; })() : ''}
-        ${assigningResp === rp.id ? `<div class="bz-card bz-approve"><div class="bz-sech">Choose which bot runs this work</div>
-          <p class="meta">Only bots connected right now can be picked; a disconnected one is listed so you know it exists, not as an option. Alter never creates bot accounts - pair your own bot first and it appears here once it connects. Assignments are exact: this work only ever goes to the bot you pick, never to a stand-in.</p>
-          ${((B && B.team) || []).map(t => `<label class="bz-urlrow"><input type="radio" name="bz-assign-${esc(rp.id)}" data-assign-bot value="${esc(t.id)}"${t.connection.status !== 'active' ? ' disabled' : ''}${rp.assignment && rp.assignment.botId === t.id ? ' checked' : ''}><span class="bz-url">${esc(t.name)}${t.providerId ? ' (' + esc(t.providerId) + ')' : ''}</span>${t.connection.status === 'active' ? chip('Connected', 'ok') : chip(t.connection.status === 'awaiting_bot' ? 'Paired - not heard from yet' : 'Not connected', 'dim')}</label>`).join('')}
+        ${assigningResp && assigningResp.respId === rp.id ? `<div class="bz-card bz-approve"><div class="bz-sech">Choose which bot runs this work</div>
+          <p class="meta">Only linked bots can be picked; a bot whose link lapsed is listed so you know it exists, not as an option. Linked means a saved connection on record - not a live check that the bot is online this minute. Alter never creates bot accounts - pair your own bot first and it appears here once it links. An assignment is exact: this work only ever goes to the bot you pick, never to a stand-in. With the automatic pick, the exact bot is named for your review before every run.</p>
+          ${!((B && B.team) || []).length ? '<p class="meta">No bots are linked right now - pair one and it appears here once it links.</p>' : ''}
+          ${((B && B.team) || []).map(t => `<label class="bz-urlrow"><input type="radio" name="bz-assign-${esc(rp.id)}" data-assign-bot value="${esc(t.id)}"${t.connection.status !== 'active' ? ' disabled' : ''}${rp.assignment && rp.assignment.botId === t.id ? ' checked' : ''}><span class="bz-url">${esc(t.name)}${t.providerId ? ' (' + esc(t.providerId) + ')' : ''}</span>${t.connection.status === 'active' ? chip('Linked', 'ok') : chip(t.connection.status === 'awaiting_bot' ? 'Paired - not heard from yet' : 'Not linked', 'dim')}</label>`).join('')}
           <label class="bz-urlrow"><input type="radio" name="bz-assign-${esc(rp.id)}" data-assign-bot value=""${!rp.assignment ? ' checked' : ''}><span class="bz-url">Automatic pick</span>${chip('Default', 'dim')}</label>
           <div class="btns"><button class="b ink" data-assign-save="${rp.id}" type="button">Save the assignment</button><button class="b out" data-assign-cancel type="button">Cancel</button></div></div>` : ''}
         <div class="btns"><button class="b ink" data-run="${rp.id}">Do this work</button>${rp.status === 'active' ? `<button class="b out" data-resp-pause="${rp.id}">Pause</button>` : `<button class="b out" data-resp-resume="${rp.id}">Resume</button>`}<button class="b out" data-resp-retire="${rp.id}">Retire</button><button class="b danger" data-resp-del="${rp.id}">Delete</button></div>
@@ -706,9 +707,9 @@
     // review by hash. Same review-discard rules as research approvals across identity changes.
     async function delegateApprove(rp, input, b) {
       b.disabled = true; b.textContent = 'Preparing…';
-      const stamp = identity();
+      const stamp = identity(); const mg = mapGen;
       const c = await api('/responsibilities/' + rp.id + '/delegate-preview', 'POST', { input });
-      if (stamp && stamp !== identity()) return;
+      if ((stamp && stamp !== identity()) || mg !== mapGen) return; // identity flip or an assignment change mid-preview: the old mapping's review never paints
       b.disabled = false; b.textContent = 'Do this work';
       if (c.error) return BB.toast(c.error);
       openResp[rp.id] = true;
@@ -793,14 +794,29 @@
       const pa = pendingApproval; pendingApproval = null; paint();
       if (pa) { const ta = $('[data-run-input="' + pa.respId + '"]', V); if (ta) ta.value = pa.input; }
     });
-    $$('[data-resp-assign]', V).forEach(b => b.onclick = () => { assigningResp = assigningResp === b.dataset.respAssign ? null : b.dataset.respAssign; paint(); });
-    $$('[data-assign-cancel]', V).forEach(b => b.onclick = () => { assigningResp = null; paint(); });
+    $$('[data-resp-assign]', V).forEach(b => b.onclick = () => {
+      if (assigningResp && assigningResp.respId === b.dataset.respAssign) { assigningResp = null; assignGen++; paint(); return; }
+      const rp = (B.responsibilities || []).find(x => x.id === b.dataset.respAssign);
+      // Bind the review: the exact record fingerprint shown, the identity and the chooser
+      // generation. The save below refuses to continue for any other identity or a newer
+      // chooser state, and the server refuses when the record moved since this review.
+      assigningResp = { respId: b.dataset.respAssign, fp: (rp && rp.fp) || null, stamp: identity(), gen: ++assignGen }; paint();
+    });
+    $$('[data-assign-cancel]', V).forEach(b => b.onclick = () => { assigningResp = null; assignGen++; paint(); });
     $$('[data-assign-save]', V).forEach(b => b.onclick = async () => {
-      const respId = b.dataset.assignSave, pick = $('[data-assign-bot]:checked', V), botId = pick && pick.value ? pick.value : null;
-      assigningResp = null;
-      const j = await api('/responsibilities/' + respId + '/assign', 'POST', { botId });
-      if (j.error) { BB.toast(j.error); await load(); return; } // a refusal (bot gone, record changed) reloads the truth, never a hoped state
-      BB.toast(botId ? 'Assignment saved - ' + ((j.responsibility && j.responsibility.assignment && j.responsibility.assignment.botName) || 'that bot') + ' runs this work. The reasoning engine is never substituted for it.' : 'Assignment cleared - back to the automatic pick.');
+      const a = assigningResp; if (!a || a.respId !== b.dataset.assignSave) return;
+      const pick = $('[data-assign-bot]:checked', V), botId = pick && pick.value ? pick.value : null;
+      assigningResp = null; paint();
+      if (a.stamp && a.stamp !== identity()) return; // identity already moved on: the guard cleared everything - this continuation does nothing
+      const j = await api('/responsibilities/' + a.respId + '/assign', 'POST', { botId, reviewedFp: a.fp });
+      // A stale continuation (identity flip or a newer chooser state while the request was
+      // in flight) never toasts, reloads or claims under the current identity.
+      if ((a.stamp && a.stamp !== identity()) || a.gen !== assignGen) return;
+      if (j.error) { BB.toast(j.error); await load(); return; } // a refusal (bot gone, record changed since the review) reloads the truth, never a hoped state
+      // The bot mapping just changed: every painted or in-flight review that named the old
+      // mapping is stale - the exact delegation review, the schedule review and previews.
+      pendingDelegation = null; pendingSchedule = null; schedGen++; mapGen++;
+      BB.toast(botId ? 'Assignment saved - ' + ((j.responsibility && j.responsibility.assignment && j.responsibility.assignment.botName) || 'that bot') + ' is now assigned. Nothing has run: work starts only when you press Do this work, and drafts come back here for your review.' : 'Assignment cleared - back to the automatic pick.');
       await load();
     });
     $$('[data-resp-pause]', V).forEach(b => b.onclick = async () => { const j = await api('/responsibilities/' + b.dataset.respPause + '/pause', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Paused. It does nothing while paused.'); await load(); });

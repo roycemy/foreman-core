@@ -3061,6 +3061,11 @@ async function bizState() {
   };
   const readDiscoveries = async ids => ids && ids.length ? (await r(['MGET', ...ids.map(i => 'fm:biz:disc:' + i)])).filter(Boolean).map(v => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean) : [];
   const resps = await bizResps();
+  // Reviewed-snapshot fingerprints over the EXACT stored bytes: a reviewed-record write
+  // (owner assignment) binds the bytes the owner actually reviewed, so a record that changed
+  // since the review refuses instead of accepting a stale decision.
+  const respFps = {};
+  if (resps.length) { const raws = await r(['MGET', ...resps.map(rp => 'fm:biz:resp:' + rp.id)]); resps.forEach((rp, i) => { respFps[rp.id] = raws[i] ? sha(raws[i]) : null; }); }
   let runsByResp = await readRunsByResp(resps);
   for (const rp of resps) for (const run of (runsByResp[rp.id] || [])) if (run.status === 'delegated' || run.status === 'running') await settleTerminalJob(run.taskId);
   const discIds = await r(['LRANGE', 'fm:biz:discoveries', 0, 4]);
@@ -3087,7 +3092,7 @@ async function bizState() {
     d.job = t ? { status: t.status, startedAt: t.startedAt || null, assignee: t.assignee || null } : { status: 'missing' };
   }
   return { engine, delegate, team, apps: { gmail: await bizAppStatus('gmail') }, profile, sources: srcs, proposals: props.map(p => ({ ...p, stale: bizStale(p, srcs) })),
-    responsibilities: resps.map(rp => ({ ...rp, runs: runsByResp[rp.id] || [] })), discoveries,
+    responsibilities: resps.map(rp => ({ ...rp, fp: respFps[rp.id] || null, runs: runsByResp[rp.id] || [] })), discoveries,
     opPending, log: (logRaw || []).map(x => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean) };
 }
 
@@ -4016,6 +4021,12 @@ async function bizRespAct(id, op, body) {
     // or clear back to automatic. Only real, currently connected bots are assignable - Alter
     // never creates or provisions bot accounts.
     if (resp.research) return { status: 400, body: { error: 'This responsibility reads public pages during runs; those runs use the reasoning engine, not a bot.' } };
+    // Reviewed-snapshot binding: the owner assigns from the record they REVIEWED. If it
+    // changed since that review (any writer, not just assignment drift caught by the CAS
+    // below), the decision is stale and refuses - the reviewed-snapshot gap the CAS window
+    // alone cannot cover.
+    const reviewedFp = String(body && body.reviewedFp || '');
+    if (!reviewedFp || reviewedFp !== sha(respRaw0 || '')) return { status: 409, body: { error: 'This responsibility changed since you reviewed it - reload and review the current state before assigning. Nothing was overwritten.', code: 'resp_changed' } };
     const botId = body && body.botId != null && body.botId !== '' ? String(body.botId) : null;
     let assignment = null;
     if (botId) {

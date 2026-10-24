@@ -22,6 +22,7 @@ const ISO=ms=>new Date(ms).toISOString();
  // A real connection proof for a bot: gateway mode + a seen marker at the current epoch.
 // Delegation/team eligibility is connected-only; an unconnected bot never resolves as available.
 const connect=async ag=>{const a=await f.getJ('fm:agent:'+ag.agent.id);a.connectionMode='gateway';await f.setJ('fm:agent:'+ag.agent.id,a);await f.setJ('fm:gatewaySeen:'+ag.agent.id,{epoch:a.oauthEpoch||0,seenAt:new Date().toISOString()});};
+const respFp=async id=>{const raw=await f.r(['GET','fm:biz:resp:'+id]);return require('crypto').createHash('sha256').update(raw||'').digest('hex');}; // the exact stored bytes, fingerprinted the way the server does
 
 await f.als.run({ws:'wsdel'},async()=>{
   await f.bizConsentAct(true,{host:'api.groq.com',model:'openai/gpt-oss-120b'});
@@ -405,13 +406,13 @@ await f.als.run({ws:'wsdel'},async()=>{
 
   // schedule enable vs a concurrent assignment: the exact-raw CAS refuses the stale write and the newer approved assignment is preserved
   { const pvX=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
-    c.global.__bizScheduleBeforeWrite=async()=>{const ax=await f.bizRespAct(respS,'assign',{botId:g.agent.id});assert.equal(ax.status,200,'the interleaved assignment lands first');}; // test-only interleave, consumed once
+    c.global.__bizScheduleBeforeWrite=async()=>{const ax=await f.bizRespAct(respS,'assign',{botId:g.agent.id,reviewedFp:await respFp(respS)});assert.equal(ax.status,200,'the interleaved assignment lands first');}; // test-only interleave, consumed once
     const enX=await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pvX.body.delegation.hash});
     assert.equal(enX.status,409);assert.equal(enX.body.code,'resp_changed','a schedule save racing an assignment refuses instead of erasing it');
     const recX=await f.getJ('fm:biz:resp:'+respS);
     assert.equal(recX.assignment&&recX.assignment.botId,g.agent.id,'the newer approved assignment is preserved');
     assert.ok(!recX.schedule,'the refused schedule write never landed');
-    const unX=await f.bizRespAct(respS,'assign',{botId:null});assert.equal(unX.status,200,'cleanup: unassigned again'); }
+    const unX=await f.bizRespAct(respS,'assign',{botId:null,reviewedFp:await respFp(respS)});assert.equal(unX.status,200,'cleanup: unassigned again'); }
 
   // --- race hardening: concurrent ticks, emergency stop, and mid-flight owner actions
   const pv3=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
@@ -737,20 +738,37 @@ await f.als.run({ws:'wsdel'},async()=>{
   c.process.env.__sid=s1T.body.source.id;
   const pT0=(await f.bizDiscover()).body.proposals[0];
   const respT=(await f.bizProposalAct(pT0.id,'activate',{})).body.responsibility.id;
-  const bad1=await f.bizRespAct(respT,'assign',{botId:'agent_nonexistent'});
+  const bad1=await f.bizRespAct(respT,'assign',{botId:'agent_nonexistent',reviewedFp:await respFp(respT)});
   assert.equal(bad1.status,409);assert.equal(bad1.body.code,'assign_bot_unavailable','assigning a bot that does not exist is refused');
-  const bad2=await f.bizRespAct(respT,'assign',{botId:pT.agent.id});
+  const bad2=await f.bizRespAct(respT,'assign',{botId:pT.agent.id,reviewedFp:await respFp(respT)});
   assert.equal(bad2.status,409);assert.equal(bad2.body.code,'assign_bot_unavailable','assigning a paused bot is refused');
   assert.ok(/does not create bot accounts/.test(bad2.body.error),'the refusal says honestly that Alter never creates bot accounts');
-  const bad3=await f.bizRespAct(respT,'assign',{botId:hT.agent.id});
+  const bad3=await f.bizRespAct(respT,'assign',{botId:hT.agent.id,reviewedFp:await respFp(respT)});
   assert.equal(bad3.status,409),'';
   const uT=await f.createAgent('Unpaired Uma','Ops','custom',false,{preset:'balanced'}); // real bot, never connected: no gateway, no grants
   const stU=await f.bizState();
   const uEntry=(stU.team||[]).find(x=>x.id===uT.agent.id);
   assert.ok(uEntry,'the team surface still lists a paired-but-unconnected bot - it is never hidden');
   assert.equal(uEntry.connection.status,'awaiting_bot','its live connection state is shown honestly');
-  const badU=await f.bizRespAct(respT,'assign',{botId:uT.agent.id});
+  const badU=await f.bizRespAct(respT,'assign',{botId:uT.agent.id,reviewedFp:await respFp(respT)});
   assert.equal(badU.status,409);assert.equal(badU.body.code,'assign_bot_unavailable','an unconnected bot is never assignable even though it is on the roster');
+  // reviewed-snapshot binding: an assignment binds the exact record bytes the owner reviewed
+  const stF=await f.bizState();
+  const rpF=(stF.responsibilities||[]).find(x=>x.id===respT);
+  assert.ok(rpF&&typeof rpF.fp==='string'&&rpF.fp.length>20,'the state carries a reviewed-snapshot fingerprint per responsibility');
+  assert.equal(rpF.fp,await respFp(respT),'the state fingerprint is the sha of the exact stored bytes');
+  const noFp=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});
+  assert.equal(noFp.status,409);assert.equal(noFp.body.code,'resp_changed','an assignment with no reviewed snapshot is refused');
+  const bogus=await f.bizRespAct(respT,'assign',{botId:gT.agent.id,reviewedFp:'deadbeef'});
+  assert.equal(bogus.status,409);assert.equal(bogus.body.code,'resp_changed','an assignment against an unknown snapshot is refused');
+  const fpStale=await respFp(respT);
+  {const cur=await f.getJ('fm:biz:resp:'+respT);cur.summary='edited between the review and the save';await f.setJ('fm:biz:resp:'+respT,cur);}
+  const stale=await f.bizRespAct(respT,'assign',{botId:gT.agent.id,reviewedFp:fpStale});
+  assert.equal(stale.status,409);assert.equal(stale.body.code,'resp_changed','a record changed since the review refuses the assignment');
+  const recStale=await f.getJ('fm:biz:resp:'+respT);
+  assert.equal(recStale.summary,'edited between the review and the save','the refused assignment never touched the record');
+  assert.ok(!recStale.assignment,'no assignment landed from the stale review');
+  {const cur=await f.getJ('fm:biz:resp:'+respT);cur.summary=rpF.summary;await f.setJ('fm:biz:resp:'+respT,cur);} // restore the reviewed record
   {const aG=await f.getJ('fm:agent:'+gT.agent.id);aG.paused=true;await f.setJ('fm:agent:'+gT.agent.id,aG);
    const aS=await f.getJ('fm:agent:'+sT.agent.id);aS.paused=true;await f.setJ('fm:agent:'+sT.agent.id,aS);
    const pvNone=await f.bizRespAct(respT,'delegate-preview',{input:'Draft a reply about hours.'});
@@ -758,7 +776,7 @@ await f.als.run({ws:'wsdel'},async()=>{
    assert.equal(await f.bizDelegateBot(),null,'the automatic pick is null, never the unconnected bot');
    aG.paused=false;await f.setJ('fm:agent:'+gT.agent.id,aG);
    aS.paused=false;await f.setJ('fm:agent:'+sT.agent.id,aS);}
-  const asg=await f.bizRespAct(respT,'assign',{botId:sT.agent.id});
+  const asg=await f.bizRespAct(respT,'assign',{botId:sT.agent.id,reviewedFp:await respFp(respT)});
   assert.equal(asg.status,200);assert.equal(asg.body.responsibility.assignment.botId,sT.agent.id,'the owner assignment lands on the exact bot');
   assert.equal(asg.body.responsibility.assignment.botName,'Scout','the assignment names the bot');
   const logT=await f.r(['LRANGE','fm:biz:log',0,9]);
@@ -773,7 +791,7 @@ await f.als.run({ws:'wsdel'},async()=>{
   const runGone=await f.bizRespAct(respT,'run',{input:'Draft a reply about hours.',delegateHash:'whatever'});
   assert.equal(runGone.status,409);assert.equal(runGone.body.code,'delegate_bot_gone','a run never substitutes the engine or another bot for the assigned bot');
   assert.equal((await f.listTasks()).filter(t=>t.biz&&t.biz.respId===respT).length,0,'no job was queued to anyone else');
-  const un=await f.bizRespAct(respT,'assign',{botId:null});
+  const un=await f.bizRespAct(respT,'assign',{botId:null,reviewedFp:await respFp(respT)});
   assert.equal(un.status,200);assert.ok(!un.body.responsibility.assignment,'unassigning returns the responsibility to the automatic pick');
   const logT2=await f.r(['LRANGE','fm:biz:log',0,9]);
   assert.ok(logT2.some(x=>x.includes('responsibility_unassigned')),'the unassignment is logged');
@@ -786,17 +804,17 @@ await f.als.run({ws:'wsdel'},async()=>{
   assert.equal(asgR.status,400,'a research responsibility is never assigned to a bot - it reads public pages on the engine path');
   // assignment write is an owned exact-record CAS: a concurrent edit during the assignment refuses, nothing is overwritten
   c.global.__bizAssignBeforeWrite=async()=>{const cur=await f.getJ('fm:biz:resp:'+respT);cur.boundary='edited concurrently - never send anything';await f.setJ('fm:biz:resp:'+respT,cur);}; // test-only interleave, consumed once
-  const race=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});
+  const race=await f.bizRespAct(respT,'assign',{botId:gT.agent.id,reviewedFp:await respFp(respT)});
   assert.equal(race.status,409);assert.equal(race.body.code,'resp_changed','a concurrent edit refuses the assignment instead of being overwritten');
   const afterRace=await f.getJ('fm:biz:resp:'+respT);
   assert.equal(afterRace.boundary,'edited concurrently - never send anything','the newer concurrent edit is preserved');
   assert.ok(!afterRace.assignment,'the refused assignment never landed');
-  const asg2=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});
+  const asg2=await f.bizRespAct(respT,'assign',{botId:gT.agent.id,reviewedFp:await respFp(respT)});
   assert.equal(asg2.status,200,'a fresh assignment on the current record still works');
   // run-counter bump vs a mid-run assignment: the narrow retry-fresh CAS preserves BOTH
   const cntT=(await f.getJ('fm:biz:resp:'+respT)).runsCount||0;
   let bumpHookRan=false;
-  c.global.__bizRunCounterBeforeWrite=async()=>{bumpHookRan=true;const ax=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});assert.equal(ax.status,200,'the interleaved assignment lands mid-run');};
+  c.global.__bizRunCounterBeforeWrite=async()=>{bumpHookRan=true;const ax=await f.bizRespAct(respT,'assign',{botId:gT.agent.id,reviewedFp:await respFp(respT)});assert.equal(ax.status,200,'the interleaved assignment lands mid-run');};
   const pvT2=await f.bizRespAct(respT,'delegate-preview',{input:'Draft a reply about hours.'});
   const runT2=await f.bizRespAct(respT,'run',{input:'Draft a reply about hours.',delegateHash:pvT2.body.delegation.hash});
   assert.equal(runT2.status,200,'the delegated run is accepted');
@@ -806,14 +824,14 @@ await f.als.run({ws:'wsdel'},async()=>{
   assert.equal(recT2.runsCount,cntT+1,'the counter still lands');
   // pause vs assignment: refused, the newer assignment is preserved, status untouched
   {const aS2=await f.getJ('fm:agent:'+sT.agent.id);aS2.paused=false;await f.setJ('fm:agent:'+sT.agent.id,aS2);} // sT is connected again: the interleave is a real A->B swap (byte-visible drift)
-  c.global.__bizRespActBeforeWrite=async()=>{const ax=await f.bizRespAct(respT,'assign',{botId:sT.agent.id});assert.equal(ax.status,200);};
+  c.global.__bizRespActBeforeWrite=async()=>{const ax=await f.bizRespAct(respT,'assign',{botId:sT.agent.id,reviewedFp:await respFp(respT)});assert.equal(ax.status,200);};
   const pzT=await f.bizRespAct(respT,'pause',{});
   assert.equal(pzT.status,409);assert.equal(pzT.body.code,'resp_changed','a pause racing an assignment refuses instead of erasing it');
   const recT3=await f.getJ('fm:biz:resp:'+respT);
   assert.equal(recT3.status,'active','the refused pause never landed');
   assert.equal(recT3.assignment&&recT3.assignment.botId,sT.agent.id,'the newer assignment is preserved after the refused pause');
   // retire vs assignment: refused; a fresh retire on the current record works
-  c.global.__bizRespActBeforeWrite=async()=>{const ax=await f.bizRespAct(respT,'assign',{botId:gT.agent.id});assert.equal(ax.status,200);};
+  c.global.__bizRespActBeforeWrite=async()=>{const ax=await f.bizRespAct(respT,'assign',{botId:gT.agent.id,reviewedFp:await respFp(respT)});assert.equal(ax.status,200);};
   const rtT=await f.bizRespAct(respT,'retire',{});
   assert.equal(rtT.status,409);assert.equal(rtT.body.code,'resp_changed','a retire racing an assignment refuses instead of erasing it');
   const recT4=await f.getJ('fm:biz:resp:'+respT);

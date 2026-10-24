@@ -9,7 +9,7 @@ const SRC={id:'src_1',kind:'doc',title:'How we work',version:2,text:'We answer e
 const RESP={id:'resp_1',title:'Customer reply desk',summary:'Draft replies',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:1,sourceIds:['src_1']};
 const BOT={id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}};
 const BOT2={id:'agent_2',name:'Scout',providerId:'custom',connection:{status:'awaiting_bot'}};
-let assigned=null, assignMode='ok';
+let assigned=null, assignMode='ok', respFp='fp-v1', roster='full', assignParked=false, assignParkHold=null, previewParked=false, previewParkRes=null;
 const PAYLOAD={hash:'hashABC123',brief:'Alter business job - produce a draft for the owner to review.\nBoundary the owner set: Drafts only',context:'<work_item>\nDraft a reply about the $60 refund.\n</work_item>\n\n<source id="src_1" version="2" title="How we work">\nWe answer every customer email within a day. Refunds over $50 need Royce.\n</source>',sources:[{id:'src_1',version:2,title:'How we work',chars:74,totalChars:74}],omittedSources:[],bot:BOT};
 let phase='none'; // none -> queued -> working -> done; 'failed' variant via /__phase?to=failed
 function stateFor(ident){
@@ -19,21 +19,38 @@ function stateFor(ident){
   if(phase==='done')runs.push({id:'run_1',respId:'resp_1',kind:'manual',at:'2026-10-23T01:00:00Z',input:'Draft a reply about the $60 refund.',status:'done',backend:'linked-bot',bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},taskId:'task_1',settledAt:'2026-10-23T01:04:00Z',output:'Draft: we can offer the $60 refund - Royce approved it.'});
   if(phase==='failed')runs.push({id:'run_1',respId:'resp_1',kind:'manual',at:'2026-10-23T01:00:00Z',input:'Draft a reply about the $60 refund.',status:'failed',backend:'linked-bot',bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},taskId:'task_1',settledAt:'2026-10-23T01:04:00Z',output:null,failureReason:'bot_failed',failureDetail:'Missing current refund policy.'});
   if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[],proposals:[],responsibilities:[],log:[],opPending:null};
-  return {engine:{configured:false,enabled:false,consent:null},delegate:BOT,team:[BOT,BOT2],sources:[SRC],proposals:[],responsibilities:[{...RESP,bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},runs,...(assigned?{assignment:assigned}:{})}],log:[],opPending:null};
+  const asg=roster==='empty'?{botId:'agent_9',botName:'Ghost',assignedAt:'2026-10-23T02:00:00Z'}:assigned;
+  return {engine:{configured:false,enabled:false,consent:null},delegate:BOT,team:roster==='full'?[BOT,BOT2]:[],sources:[SRC],proposals:[],responsibilities:[{...RESP,bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},fp:respFp,runs,...(asg?{assignment:asg}:{})}],log:[],opPending:null};
 }
 let ident='A';
+function assignRespond(res,body){
+  const json=o=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(o));};
+  if(body.reviewedFp!==respFp)return json({error:'This responsibility changed since you reviewed it - reload and review the current state before assigning. Nothing was overwritten.',code:'resp_changed'});
+  if(assignMode==='changed')return json({error:'This responsibility changed while you were assigning - reload and review it before assigning. Nothing was overwritten.',code:'resp_changed'});
+  if(body.botId==='agent_2')return json({error:'That bot is not connected right now. Pair or reconnect it first - Alter does not create bot accounts.',code:'assign_bot_unavailable'});
+  assigned=body.botId?{botId:body.botId,botName:body.botId==='agent_1'?'Grokbot':'Scout',assignedAt:new Date().toISOString()}:null;
+  return json({responsibility:{...RESP,bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},...(assigned?{assignment:assigned}:{})}});
+}
 const server=http.createServer((req,res)=>{
   const u=new URL(req.url,'http://x');
   const json=o=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(o));};
   if(u.pathname==='/__ident'){ident=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__phase'){phase=u.searchParams.get('to');return json({ok:true});}
   if(u.pathname==='/__assign-mode'){assignMode=u.searchParams.get('to');return json({ok:true});}
+  if(u.pathname==='/__resp-fp'){respFp=u.searchParams.get('to');return json({ok:true});}
+  if(u.pathname==='/__roster'){roster=u.searchParams.get('to');return json({ok:true});}
+  if(u.pathname==='/__assign-park'){assignParked=true;return json({ok:true});}
+  if(u.pathname==='/__assign-release'){assignParked=false;const h=assignParkHold;assignParkHold=null;if(h)assignRespond(h.res,h.body);return json({ok:true});}
+  if(u.pathname==='/__preview-park'){previewParked=true;return json({ok:true});}
+  if(u.pathname==='/__preview-release'){previewParked=false;const r0=previewParkRes;previewParkRes=null;if(r0){r0.setHeader('content-type','application/json');r0.end(JSON.stringify({delegation:PAYLOAD}));}return json({ok:true});}
   if(u.pathname==='/api/me')return json(ident==='A'?{email:'a@a.test',workspace:'wA'}:{email:'b@b.test',workspace:'wB'});
   if(u.pathname==='/api/state')return json({now:new Date().toISOString()});
   if(u.pathname==='/api/money')return json({requests:[]});
   if(u.pathname==='/api/cards')return json({proposals:[],bots:[],ledger:[]});
   if(u.pathname==='/api/business/state')return json(stateFor(ident));
-  if(u.pathname==='/api/business/responsibilities/resp_1/delegate-preview'&&req.method==='POST')return json({delegation:PAYLOAD});
+  if(u.pathname==='/api/business/responsibilities/resp_1/delegate-preview'&&req.method==='POST'){
+    if(previewParked){previewParkRes=res;return;} // held in flight until /__preview-release
+    return json({delegation:PAYLOAD});}
   if(u.pathname==='/api/business/responsibilities/resp_1/run'&&req.method==='POST'){
     let b='';req.on('data',d=>b+=d);req.on('end',()=>{const body=JSON.parse(b||'{}');
       if(body.delegateHash!==PAYLOAD.hash)return json({error:'Review exactly what would be sent first.',code:'delegation_review_required',delegation:PAYLOAD});
@@ -41,10 +58,8 @@ const server=http.createServer((req,res)=>{
     return;}
   if(u.pathname==='/api/business/responsibilities/resp_1/assign'&&req.method==='POST'){
     let b='';req.on('data',d=>b+=d);req.on('end',()=>{const body=JSON.parse(b||'{}');
-      if(assignMode==='changed')return json({error:'This responsibility changed while you were assigning - reload and review it before assigning. Nothing was overwritten.',code:'resp_changed'});
-      if(body.botId==='agent_2')return json({error:'That bot is not connected right now. Pair or reconnect it first - Alter does not create bot accounts.',code:'assign_bot_unavailable'});
-      assigned=body.botId?{botId:body.botId,botName:body.botId==='agent_1'?'Grokbot':'Scout',assignedAt:new Date().toISOString()}:null;
-      return json({responsibility:{...RESP,bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},...(assigned?{assignment:assigned}:{})}});});
+      if(assignParked){assignParkHold={res,body};return;} // held in flight until /__assign-release
+      assignRespond(res,body);});
     return;}
   if(u.pathname.startsWith('/api/'))return json({});
   if(u.pathname==='/'||u.pathname==='/app.html'||u.pathname==='/index.html'){res.setHeader('content-type','text/html');return res.end(fs.readFileSync('public/app.html'));}
@@ -173,7 +188,9 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(t.includes('could not finish'),'failure names the actor');
  await shot2('delegation-failed',`[...document.querySelectorAll('.bz-run')].pop()`);
 
- // --- team assignment: roster honesty, connected-only picking, refusal reloads truth, saved assignment paints
+ // --- team assignment: roster honesty, truthful link labels, connected-only picking,
+ // reviewed-snapshot binding, identity/generation guards, mapping-change invalidation,
+ // refusal reloads truth, empty roster keeps a saved assignment visible
  if(!(await ev(`!!document.querySelector('[data-run-input="resp_1"]')`)))await ev(`(()=>{const q=document.querySelector('[data-toggle-resp]');if(q)q.click();})();'open'`);
  assert(await poll(`!!document.querySelector('[data-resp-assign="resp_1"]')`),'assign button present on a bot-mapped responsibility');
  t=await bizText();
@@ -186,21 +203,99 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  assert(t.includes('Scout'),'the paired-but-unconnected roster bot is listed, not hidden');
  assert(await ev(`document.querySelector('[data-assign-bot][value="agent_2"]').disabled`),'a disconnected bot is never pickable');
  assert(t.includes('Paired - not heard from yet'),'the disconnected state is named honestly');
+ assert(t.includes('Linked'),'a pickable bot is labeled as a saved link, not a live proof');
+ assert(t.includes('not a live check'),'the label admits it is not online proof');
+ assert(t.includes('named for your review before every run'),'the automatic pick promises a fresh named review, not a fixed bot');
  await shot2('assign-chooser',`document.querySelector('[data-assign-save="resp_1"]')`);
+
+ // a server refusal (record drift) closes the chooser and never claims
  await ctl('/__assign-mode?to=changed');
  await ev(`document.querySelector('[data-assign-bot][value="agent_1"]').click();document.querySelector('[data-assign-save="resp_1"]').click();'save-refused'`);
+ assert(await poll(`document.body.textContent.includes('changed while you were assigning')`),'the drift refusal reason is shown');
  assert(await poll(`!document.querySelector('[data-assign-save="resp_1"]')`),'a refused save closes the chooser');
  t=await bizText();
  assert(!t.includes('you assigned it'),'a refused save never claims the assignment landed');
  await ctl('/__assign-mode?to=ok');
- await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign2'`);
- assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'chooser reopens');
+
+ // reviewed-snapshot binding: the record changed since the chooser's review -> refused, truth reloads
+ await ctl('/__resp-fp?to=fp-v2'); // the stub's record now differs from the fingerprint the next chooser captured
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign-stale'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'chooser reopens for the stale-fingerprint save');
+ // the UI's own copy is stale too: the last load carried fp-v1 while the stub now serves fp-v2
+ await ev(`document.querySelector('[data-assign-bot][value="agent_1"]').click();document.querySelector('[data-assign-save="resp_1"]').click();'save-stale'`);
+ assert(await poll(`document.body.textContent.includes('changed since you reviewed')`),'a stale reviewed snapshot refuses with its reason');
+ assert(await poll(`!document.querySelector('[data-assign-save="resp_1"]')`),'the stale save closes the chooser');
+ t=await bizText();
+ assert(!t.includes('you assigned it'),'the stale save never claims the assignment landed');
+ // the refusal reloaded the truth: the UI fingerprint now matches the stub again
+
+ // a successful assignment retires the painted old-mapping delegation review
+ await ev(`(async()=>{const ta=document.querySelector('[data-run-input="resp_1"]');ta.value='Draft a reply about the $60 refund.';document.querySelector('[data-run="resp_1"]').click();})()`);
+ assert(await poll(`!!document.querySelector('[data-dele-run]')`),'old-mapping delegation review paints');
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign-before-ok'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'chooser reopens beside the review');
  await ev(`document.querySelector('[data-assign-bot][value="agent_1"]').click();document.querySelector('[data-assign-save="resp_1"]').click();'save-ok'`);
  assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('you assigned it')`),'the saved assignment paints');
+ assert(!(await ev(`!!document.querySelector('[data-dele-run]')`)),'the old-mapping delegation review is discarded on the mapping change');
  t=await bizText();
  assert(t.includes('Grokbot (you assigned it)'),'the assigned bot is named');
  await shot2('assign-saved',`document.querySelector('[data-resp-assign="resp_1"]')`);
 
+ // an identity flip mid-save: the stale continuation never toasts or claims under the new identity
+ await ctl('/__assign-park');
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign-parked'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'chooser reopens for the parked save');
+ await ev(`document.querySelector('[data-assign-bot][value="agent_1"]').click();document.querySelector('[data-assign-save="resp_1"]').click();'save-parked'`);
+ await new Promise(r=>setTimeout(r,400)); // the save request is in flight, parked server-side
+ await ctl('/__ident?to=B');
+ await ev(`BB.who=${JSON.stringify({email:'b@b.test',workspace:'wB'})};BB.emit();'flip'`);
+ assert(await poll(`!(document.getElementById('v-business')||{textContent:''}).textContent.includes('Customer reply desk')`),'B identity loads during the parked save');
+ await new Promise(r=>setTimeout(r,4000)); // let any earlier toast expire: a toast after this point belongs to the stale continuation
+ await ctl('/__assign-release');
+ await new Promise(r=>setTimeout(r,600));
+ assert(!(await ev(`(()=>{const el=document.getElementById('toast');return el&&el.classList.contains('on')&&el.textContent.includes('Assignment saved');})()`)),'the stale save continuation never toasts under B');
+ t=await bizText();
+ assert(!t.includes('you assigned it'),'no assignment claim paints under B');
+ await ctl('/__ident?to=A');
+ await ev(`BB.who=${JSON.stringify({email:'a@a.test',workspace:'wA'})};BB.emit();'flip'`);
+ assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('Customer reply desk')`),'A identity back');
+ await ev(`(()=>{const q=document.querySelector('[data-toggle-resp]');if(q)q.click();})();'open-truth'`);
+ assert(await poll(`!!document.querySelector('[data-resp-assign="resp_1"]')`),'resp card open again under A');
+ t=await bizText();
+ assert(t.includes('Grokbot (you assigned it)'),'the assignment that did land server-side shows from the reloaded truth, not the stale continuation');
+
+ // an in-flight delegation preview from the old mapping never paints after a mapping change
+ await ctl('/__preview-park');
+ if(!(await ev(`!!document.querySelector('[data-run-input="resp_1"]')`)))await ev(`(()=>{const q=document.querySelector('[data-toggle-resp]');if(q)q.click();})();'open3'`);
+ assert(await poll(`!!document.querySelector('[data-run-input="resp_1"]')`),'resp card open for the parked preview');
+ await ev(`(async()=>{const ta=document.querySelector('[data-run-input="resp_1"]');ta.value='Draft a reply about the $60 refund.';document.querySelector('[data-run="resp_1"]').click();})()`);
+ await new Promise(r=>setTimeout(r,400)); // the delegate-preview request is in flight, parked
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign-during-preview'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'chooser opens while the preview is parked');
+ await ev(`document.querySelector('[data-assign-bot][value=""]').click();document.querySelector('[data-assign-save="resp_1"]').click();'save-auto'`);
+ assert(await poll(`document.body.textContent.includes('Assignment cleared')`),'the mapping changed back to the automatic pick');
+ await ctl('/__preview-release');
+ await new Promise(r=>setTimeout(r,600));
+ assert(!(await ev(`!!document.querySelector('[data-dele-run]')`)),'the old-mapping in-flight preview never paints after the mapping change');
+
+ // an empty roster never hides a saved assignment or its unavailable explanation
+ await ctl('/__roster?to=empty');
+ await send('Page.navigate',{url:'about:blank'},sessionId);
+ await new Promise(r=>setTimeout(r,300));
+ await send('Page.navigate',{url:'http://127.0.0.1:'+port+'/#business'},sessionId);
+ assert(await poll(`(document.getElementById('v-business')||{textContent:''}).textContent.includes('Customer reply desk')`),'business view paints with an empty roster');
+ await ev(`document.querySelector('[data-toggle-resp]').click();'open4'`);
+ assert(await poll(`!!document.querySelector('[data-resp-assign="resp_1"]')`),'the assignment control stays visible with an empty roster');
+ t=await bizText();
+ assert(t.includes('Ghost (you assigned it)'),'the saved assignment still shows with an empty roster');
+ assert(t.includes('no longer on your team'),'the unavailable explanation stays visible with an empty roster');
+ await ev(`document.querySelector('[data-resp-assign="resp_1"]').click();'assign-empty'`);
+ assert(await poll(`!!document.querySelector('[data-assign-save="resp_1"]')`),'chooser opens with an empty roster');
+ t=await bizText();
+ assert(t.includes('No bots are linked right now'),'the empty roster is named honestly');
+ await shot2('assign-empty-roster',`document.querySelector('[data-assign-save="resp_1"]')`);
+ await ctl('/__roster?to=full');
+
  ws.close();cp.kill();server.close();
- console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions, scoped effects claims), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop + team assignment (roster honesty, connected-only pick, refusal reloads truth, saved state) - pixels at /downloads/delegation-{review,sent,working,done,failed}- and /downloads/assign-{chooser,saved}-{390,desktop}.png.');
+ console.log('PASS ui biz delegation: exact-payload review card (destination, verbatim texts, privacy boundary, source versions, scoped effects claims), identity switch discards the review, sent/working/done/failed states paint honestly with provenance and a working stop + team assignment (roster honesty with truthful link labels, connected-only pick, reviewed-snapshot binding, refusals reload truth, identity-flip mid-save and in-flight-preview discards on mapping change, empty roster keeps a saved assignment visible) - pixels at /downloads/delegation-{review,sent,working,done,failed}- and /downloads/assign-{chooser,saved,empty-roster}-{390,desktop}.png.');
 })().catch(e=>{console.error(e);try{server.close();}catch(_){/*noop*/}process.exit(1)});
