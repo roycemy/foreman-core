@@ -475,10 +475,10 @@
           const toN = to.split(',').map(x => x.trim()).filter(Boolean).join(', ');
           const fp = await draftFpSha(toN, subject, text); // exact payload identity - the same canonicalization the server used when it recorded the attempt
           if (!stillCurrent()) { BB.closeModal(); load(); return BB.toast('The connection changed - review it and try again.'); }
-          const sameUn = unList.find(u0 => u0.connectionVersion === want.v && u0.fp === fp) || null;
+          const sameUnList = unList.filter(u0 => u0.connectionVersion === want.v && u0.fp === fp); // EVERY unresolved same-payload attempt - the owner reviews the exact set, never a sample
           BB.modal(`<h3>Review the exact draft</h3>
           <p class="meta">This creates a draft - nothing is sent.</p>
-          ${sameUn ? `<p class="meta"><b>An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail.</b> Check the drafts folder in Gmail before creating it again.</p>
+          ${sameUnList.length ? `<p class="meta"><b>${sameUnList.length > 1 ? 'Earlier attempts (' + sameUnList.length + ') to create this exact draft did not get a clear answer' : 'An earlier attempt to create this exact draft did not get a clear answer'} - it may already exist in Gmail.</b> Check the drafts folder in Gmail before creating it again.</p>
           <label class="fld bz-check"><input type="checkbox" data-draft-checked> I checked the drafts folder in Gmail for the earlier attempt.</label>` : ''}
           <div class="bz-log"><div><small>From (the connected account)</small><br><b>${esc(g.email || 'unknown account')}</b></div>
           <div><small>To</small><br><b>${esc(to)}</b></div>
@@ -495,7 +495,7 @@
             createBtn.disabled = true; backBtn.disabled = true; // a submitted request cannot be undone: Back/Close never pretend otherwise
             createBtn.textContent = 'Creating in Gmail...';
             const liveNote = document.querySelector('#modal [data-draft-live]'); if (liveNote) liveNote.textContent = 'Creating the draft in Gmail - closing this window does not cancel it.';
-            const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v, checkedGmail: !!(checkedBox && checkedBox.checked) }); // the server records the intent BEFORE the provider effect - a reload here loses nothing; the checked-Gmail decision is enforced server-side too
+            const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v, checkedGmail: !!(checkedBox && checkedBox.checked), reviewedOps: sameUnList.map(o => o.id), decisionRev: (opsJ && opsJ.rev) || '' }); // the server records the intent BEFORE the provider effect - a reload here loses nothing; the decision binds the EXACT reviewed set + revision, enforced server-side
             if (stamp && !sameId(stamp, identity())) return; // changed mid-request: the server owns the operation record; this stale reply touches nothing
             // A composer reopened while this op was in flight re-arms on the known outcome - words untouched
             const pn = j && j.opId ? document.querySelector('#modal [data-draft-pending="' + j.opId + '"]') : null;

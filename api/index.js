@@ -122,6 +122,7 @@ function memEval(script, n, keys, argv) {
     if (['revoked', 'not_revoked', 'connected', 'discarded'].includes(a.status)) delete a.enc; // resolved: drop recovery material
     mem.kv.set(keys[0], JSON.stringify(t)); return 1;
   }
+  if (script === BIZ_DRAFTOP_UNLOCK) { if (mem.kv.get(keys[0]) === argv[0]) { mem.kv.delete(keys[0]); return 1; } return 0; }
   const fence = mem.kv.get(keys[0]) || '0';
   if (fence !== argv[0]) return 0; // a purge/delete bump invalidates stale writers
   if (mem.kv.has(keys[1]) || mem.lists.has(keys[1])) return 0; // a delete/purge freeze excludes ALL writers for its duration
@@ -132,10 +133,22 @@ function memEval(script, n, keys, argv) {
     case BIZ_FENCE_DEL: mem.kv.delete(keys[3]); mem.lists.delete(keys[3]); return 1;
     case BIZ_STATE_SET: mem.kv.set(keys[3], argv[1]); return 1;
     case BIZ_DRAFTOP_BEGIN: {
+      if (mem.kv.get(keys[7]) !== argv[2]) return 7; // the lifecycle lock must still belong to this op
       const ar0 = mem.kv.get(keys[6]); if (ar0 == null) return 3; // the app record is re-read + version-checked in the same call as the intent write
       let arec0 = null; try { arec0 = JSON.parse(ar0); } catch (e) {}
       if (!arec0 || !arec0.connectionId || String(arec0.connectionId) !== String(argv[3])) return 3;
+      if (arec0.status !== 'connected') return 3; // a needs_reconnect record with the same id is not a usable grant
       if (mem.kv.has(keys[5])) return 2; // one in-flight create per tenant+connection version
+      const rev0 = String(mem.kv.get(keys[8]) || '0');
+      if (argv[6] !== '' && rev0 !== argv[6]) return 8; // the reviewed set revision moved: the review is stale
+      const reviewed = new Set((argv[4] || '').split(',').filter(Boolean));
+      const pfx = keys[3].slice(0, keys[3].length - argv[2].length);
+      for (const id of (mem.kv.get(keys[4]) || [])) {
+        const raw = mem.kv.get(pfx + id); if (raw == null) continue;
+        let rec = null; try { rec = JSON.parse(raw); } catch (e) {}
+        if (rec && rec.status === 'unconfirmed' && rec.fp === argv[5] && String(rec.connectionVersion) === String(argv[3]) && !reviewed.has(id)) return 6; // an unresolved same-payload op outside the reviewed set
+      }
+      mem.kv.set(keys[8], String(Number(rev0) + 1));
       mem.kv.set(keys[5], argv[2]); mem.kv.set(keys[3], argv[1]);
       const s0 = new Set(mem.kv.get(keys[4]) || []); s0.add(argv[2]); mem.kv.set(keys[4], [...s0]); return 1;
     }
@@ -143,8 +156,12 @@ function memEval(script, n, keys, argv) {
       const cur0 = mem.kv.get(keys[3]); if (cur0 == null) return 3; // CAS: an absent record is never recreated
       let crec0 = null; try { crec0 = JSON.parse(cur0); } catch (e) {}
       if (!crec0 || crec0.id !== argv[1]) return 4;
+      if (crec0.fp && argv[3] && crec0.fp !== argv[3]) return 4; // payload ownership
+      if (crec0.fence && String(crec0.fence) !== String(argv[0])) return 4; // original-epoch ownership
       if (crec0.status !== 'in_flight') return 5;
       if (mem.kv.get(keys[5]) === argv[1]) mem.kv.delete(keys[5]);
+      if (mem.kv.get(keys[6]) === argv[1]) mem.kv.delete(keys[6]); // release the owned grant lifecycle lock
+      mem.kv.set(keys[7], String(Number(mem.kv.get(keys[7]) || '0') + 1));
       if (argv[2] === '') { mem.kv.delete(keys[3]); mem.kv.set(keys[4], (mem.kv.get(keys[4]) || []).filter(v => v !== argv[1])); }
       else mem.kv.set(keys[3], argv[2]);
       return 1;
@@ -153,7 +170,34 @@ function memEval(script, n, keys, argv) {
       const curA = mem.kv.get(keys[3]); if (curA == null) return 3;
       let arecA = null; try { arecA = JSON.parse(curA); } catch (e) {}
       if (!arecA || arecA.id !== argv[1]) return 4;
+      if (arecA.fp && argv[2] && arecA.fp !== argv[2]) return 4;
       if (arecA.status !== 'unconfirmed') return 5;
+      mem.kv.set(keys[6], String(Number(mem.kv.get(keys[6]) || '0') + 1));
+      mem.kv.delete(keys[3]); mem.kv.set(keys[4], (mem.kv.get(keys[4]) || []).filter(v => v !== argv[1])); return 1;
+    }
+    case BIZ_DRAFTOP_PREFFECT: {
+      if (mem.kv.get(keys[5]) !== argv[1]) return 7;
+      const arP = mem.kv.get(keys[4]); if (arP == null) return 3;
+      let aprec = null; try { aprec = JSON.parse(arP); } catch (e) {}
+      if (!aprec || String(aprec.connectionId) !== String(argv[2])) return 3;
+      if (aprec.status !== 'connected') return 3;
+      const curP = mem.kv.get(keys[3]); if (curP == null) return 3;
+      let prec = null; try { prec = JSON.parse(curP); } catch (e) {}
+      if (!prec || prec.id !== argv[1]) return 4;
+      if (prec.status !== 'in_flight') return 5;
+      if (prec.fp && prec.fp !== argv[3]) return 4;
+      if (prec.fence && String(prec.fence) !== String(argv[0])) return 4;
+      if (mem.kv.get(keys[6]) !== argv[1]) return 4;
+      return 1;
+    }
+    case BIZ_DRAFTOP_ABORT: {
+      const curB = mem.kv.get(keys[3]); if (curB == null) return 3;
+      let brec = null; try { brec = JSON.parse(curB); } catch (e) {}
+      if (!brec || brec.id !== argv[1]) return 4;
+      if (brec.status !== 'in_flight') return 5;
+      if (mem.kv.get(keys[5]) === argv[1]) mem.kv.delete(keys[5]);
+      if (mem.kv.get(keys[6]) === argv[1]) mem.kv.delete(keys[6]);
+      mem.kv.set(keys[7], String(Number(mem.kv.get(keys[7]) || '0') + 1));
       mem.kv.delete(keys[3]); mem.kv.set(keys[4], (mem.kv.get(keys[4]) || []).filter(v => v !== argv[1])); return 1;
     }
     case BIZ_APP_PUT_OWNED: {
@@ -2006,7 +2050,7 @@ async function routes(req, res, path, body, agentPre) {
     if (path === '/business/apps/gmail/callback' && req.method === 'GET') { const aq = Object.fromEntries(new URL(req.url, 'https://local.invalid').searchParams); const out = await bizAppCallback('gmail', aq, origin, String(req.headers.cookie || '')); res.statusCode = 302; res.setHeader('Location', origin + '/hq#business/app-' + bizAppCallbackMarker(out)); return res.end(); }
     if (path === '/business/apps/gmail/disconnect' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDisconnect('gmail', body && typeof body.expectedVersion === 'string' ? body.expectedVersion : null)); }
     if (path === '/business/apps/gmail/sync' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppSync('gmail')); }
-    if (path === '/business/apps/gmail/draft-ops' && req.method === 'GET') { await bizDraftOpSweep(); return send({ status: 200, body: { ops: (await bizDraftOpList()).filter(o => o.status !== 'ok') } }); }
+    if (path === '/business/apps/gmail/draft-ops' && req.method === 'GET') { await bizDraftOpSweep(); return send({ status: 200, body: { ops: (await bizDraftOpList()).filter(o => o.status !== 'ok'), rev: String(await r(['GET', 'fm:biz:draftops:rev']) || '0') } }); }
     { const dm = path.match(/^\/business\/apps\/gmail\/draft-ops\/(dop_[a-f0-9]+)\/reconcile$/); if (dm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizDraftOpReconcile(dm[1])); } }
     if (path === '/business/apps/gmail/drafts' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizAppDraftCreate('gmail', body, body && typeof body.expectedVersion === 'string' ? body.expectedVersion : null)); }
     if (path === '/business/data/delete' && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(body && body.confirm === 'CANCEL' ? await bizOpCancel(body) : await bizDataPurge(body)); }
@@ -2714,9 +2758,12 @@ const BIZ_APP_CTL = /[\x00-\x1f\x7f]/, BIZ_APP_ADDR = /^[^\s@,<>(){}\[\]:"\\]{1,
 // reload or crash mid-create never loses an unresolved operation. One in-flight create per
 // tenant+connection version (atomic marker); unconfirmed outcomes persist until the owner's
 // explicit checked-Gmail acknowledgment - never evicted, never cleared by a later success.
-const BIZ_DRAFTOP_BEGIN = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local ar=redis.call('GET',KEYS[7]); if not ar then return 3 end; local aok,arec=pcall(cjson.decode,ar); if (not aok) or (not arec.connectionId) or tostring(arec.connectionId)~=ARGV[4] then return 3 end; if redis.call('EXISTS',KEYS[6])==1 then return 2 end; redis.call('SET',KEYS[6],ARGV[3]); redis.call('SET',KEYS[4],ARGV[2]); redis.call('SADD',KEYS[5],ARGV[3]); return 1"; // the app record is re-read and version-checked IN THE SAME call as the intent write - a reconnect between the token read and here stops the op, no stale-version intent
-const BIZ_DRAFTOP_SETTLE = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local cur=redis.call('GET',KEYS[4]); if not cur then return 3 end; local cok,crec=pcall(cjson.decode,cur); if (not cok) or crec.id~=ARGV[2] then return 4 end; if crec.status~='in_flight' then return 5 end; if redis.call('GET',KEYS[6])==ARGV[2] then redis.call('DEL',KEYS[6]) end; if ARGV[3]=='' then redis.call('DEL',KEYS[4]); redis.call('SREM',KEYS[5],ARGV[2]); else redis.call('SET',KEYS[4],ARGV[3]); end; return 1"; // CAS on the exact in-flight record: an absent, foreign or already-settled record is never recreated or overwritten
-const BIZ_DRAFTOP_ACK = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local cur=redis.call('GET',KEYS[4]); if not cur then return 3 end; local cok,crec=pcall(cjson.decode,cur); if (not cok) or crec.id~=ARGV[2] then return 4 end; if crec.status~='unconfirmed' then return 5 end; redis.call('DEL',KEYS[4]); redis.call('SREM',KEYS[5],ARGV[2]); return 1"; // CAS: only the exact unconfirmed record leaves - an in-flight or settled op is never undone by a stale acknowledgment
+const BIZ_DRAFTOP_BEGIN = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('GET',KEYS[8])~=ARGV[3] then return 7 end; local ar=redis.call('GET',KEYS[7]); if not ar then return 3 end; local aok,arec=pcall(cjson.decode,ar); if (not aok) or (not arec.connectionId) or tostring(arec.connectionId)~=ARGV[4] then return 3 end; if arec.status~='connected' then return 3 end; if redis.call('EXISTS',KEYS[6])==1 then return 2 end; local rv=redis.call('GET',KEYS[9]) or '0'; if ARGV[7]~='' and rv~=ARGV[7] then return 8 end; local reviewed={}; for w in string.gmatch(ARGV[5],'[^,]+') do reviewed[w]=true end; local pfx=string.sub(KEYS[4],1,#KEYS[4]-#ARGV[3]); for _,id in ipairs(redis.call('SMEMBERS',KEYS[5])) do local raw=redis.call('GET',pfx..id); if raw then local rok,rec=pcall(cjson.decode,raw); if rok and rec.status=='unconfirmed' and rec.fp==ARGV[6] and tostring(rec.connectionVersion)==ARGV[4] and not reviewed[id] then return 6 end end end; redis.call('INCR',KEYS[9]); redis.call('SET',KEYS[6],ARGV[3]); redis.call('SET',KEYS[4],ARGV[2]); redis.call('SADD',KEYS[5],ARGV[3]); return 1"; // one atomic reservation: fence + freeze + pending + OWNED lifecycle lock + exact app record (status 'connected', same connectionId) + no other in-flight + the unresolved same-payload set is EXACTLY the reviewed set at the reviewed set-revision - then the intent lands and the set revision moves
+const BIZ_DRAFTOP_SETTLE = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local cur=redis.call('GET',KEYS[4]); if not cur then return 3 end; local cok,crec=pcall(cjson.decode,cur); if (not cok) or crec.id~=ARGV[2] then return 4 end; if crec.fp and ARGV[4]~='' and crec.fp~=ARGV[4] then return 4 end; if crec.fence and tostring(crec.fence)~=ARGV[1] then return 4 end; if crec.status~='in_flight' then return 5 end; if redis.call('GET',KEYS[6])==ARGV[2] then redis.call('DEL',KEYS[6]) end; if redis.call('GET',KEYS[7])==ARGV[2] then redis.call('DEL',KEYS[7]) end; redis.call('INCR',KEYS[8]); if ARGV[3]=='' then redis.call('DEL',KEYS[4]); redis.call('SREM',KEYS[5],ARGV[2]); else redis.call('SET',KEYS[4],ARGV[3]); end; return 1"; // CAS on the exact in-flight record incl. payload fingerprint + original fence ownership; releases the grant lifecycle lock it owns; moves the set revision. A known provider outcome stays known - this never relabels it
+const BIZ_DRAFTOP_ACK = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local cur=redis.call('GET',KEYS[4]); if not cur then return 3 end; local cok,crec=pcall(cjson.decode,cur); if (not cok) or crec.id~=ARGV[2] then return 4 end; if crec.fp and ARGV[3]~='' and crec.fp~=ARGV[3] then return 4 end; if crec.status~='unconfirmed' then return 5 end; redis.call('INCR',KEYS[7]); redis.call('DEL',KEYS[4]); redis.call('SREM',KEYS[5],ARGV[2]); return 1"; // CAS incl. payload ownership: only the exact unconfirmed record leaves
+const BIZ_DRAFTOP_PREFFECT = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('GET',KEYS[6])~=ARGV[2] then return 7 end; local ar=redis.call('GET',KEYS[5]); if not ar then return 3 end; local aok,arec=pcall(cjson.decode,ar); if (not aok) or tostring(arec.connectionId)~=ARGV[3] then return 3 end; if arec.status~='connected' then return 3 end; local cur=redis.call('GET',KEYS[4]); if not cur then return 3 end; local cok,crec=pcall(cjson.decode,cur); if (not cok) or crec.id~=ARGV[2] then return 4 end; if crec.status~='in_flight' then return 5 end; if crec.fp and crec.fp~=ARGV[4] then return 4 end; if crec.fence and tostring(crec.fence)~=ARGV[1] then return 4 end; if redis.call('GET',KEYS[7])~=ARGV[2] then return 4 end; return 1"; // the last atomic gate BEFORE the provider is called: original epoch + owned lock + exact current app record (still connected) + exact in-flight record. A disconnect completed since the intent stops the create HERE - no stale snapshot ever reaches Google
+const BIZ_DRAFTOP_ABORT = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local cur=redis.call('GET',KEYS[4]); if not cur then return 3 end; local cok,crec=pcall(cjson.decode,cur); if (not cok) or crec.id~=ARGV[2] then return 4 end; if crec.status~='in_flight' then return 5 end; if redis.call('GET',KEYS[6])==ARGV[2] then redis.call('DEL',KEYS[6]) end; if redis.call('GET',KEYS[7])==ARGV[2] then redis.call('DEL',KEYS[7]) end; redis.call('INCR',KEYS[8]); redis.call('DEL',KEYS[4]); redis.call('SREM',KEYS[5],ARGV[2]); return 1"; // a pre-effect refusal leaves NOTHING behind: the intent never produced an external effect, so the record is removed (not marked unconfirmed - there is nothing to check in Gmail), the lock is released, the revision moves
+const BIZ_DRAFTOP_UNLOCK = "if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) else return 0 end"; // owned release only: an expired-and-reacquired lease is never deleted by the stale holder
 const bizDraftFp = (to, subject, text) => crypto.createHash('sha256').update('v1:' + JSON.stringify([to, subject, text])).digest('hex'); // exact payload identity - a collision class like djb2's is not acceptable for effect records
 async function bizDraftOpList() {
   const ids = await r(['SMEMBERS', 'fm:biz:draftops']); if (!ids.length) return [];
@@ -2728,13 +2775,13 @@ async function bizDraftOpSweep() { // an in-flight record older than the request
   for (const op of await bizDraftOpList()) {
     if (op.status !== 'in_flight' || Date.parse(op.at) >= cutoff) continue;
     const next = { ...op, status: 'unconfirmed', settledAt: now(), unknownReason: 'interrupted' };
-    await r(['EVAL', BIZ_DRAFTOP_SETTLE, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + op.id, 'fm:biz:draftops', 'fm:biz:draftif:' + op.connectionVersion, String(op.fence || '0'), op.id, JSON.stringify(next)]); // the op's OWN fence: a purge since the intent bumps the fence and this settle must write nothing
+    await r(['EVAL', BIZ_DRAFTOP_SETTLE, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + op.id, 'fm:biz:draftops', 'fm:biz:draftif:' + op.connectionVersion, 'fm:biz:grantlock:' + (op.provider || 'gmail'), 'fm:biz:draftops:rev', String(op.fence || '0'), op.id, JSON.stringify(next), String(op.fp || '')]); // the op's OWN fence: a purge since the intent bumps the fence and this settle must write nothing
   }
 }
 async function bizDraftOpGet(id) { const v = await r(['GET', 'fm:biz:draftop:' + id]); try { return v ? JSON.parse(v) : null; } catch { return null; } }
 async function bizDraftOpReconcile(opId) { // the owner's explicit checked-Gmail acknowledgment: the record leaves, never by a success and never silently. This says nothing about whether the draft exists in Gmail.
   const op = await bizDraftOpGet(opId); if (!op || op.status !== 'unconfirmed') return { status: 404, body: { error: 'That unresolved draft record is not here - it may already be acknowledged.', code: 'draft_op_not_found' } };
-  const acked = await r(['EVAL', BIZ_DRAFTOP_ACK, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + op.connectionVersion, await bizFence(), opId]);
+  const acked = await r(['EVAL', BIZ_DRAFTOP_ACK, 7, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + op.connectionVersion, 'fm:biz:draftops:rev', await bizFence(), opId, String(op.fp || '')]);
   if (acked === 0) return bizFenceConflict();
   if (acked === 3 || acked === 4 || acked === 5) return { status: 409, body: { error: 'That draft record changed while you were acknowledging it - reload to see the current state.', code: 'draft_op_changed' } }; // the pre-check saw it; the atomic CAS disagreed
   await bizLog('app_draft_acknowledged', { provider: 'gmail', opId, to: (op.to || []).join(', '), subject: op.subject || '' });
@@ -2755,27 +2802,56 @@ async function bizAppDraftCreate(p, body, expectedVersion) {
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) return { status: 400, body: { error: 'The draft text contains control characters.', code: 'app_input_invalid' } };
   if (await bizFrozen()) return bizFrozenConflict();
   const toN0 = tos.join(', '), fp0 = bizDraftFp(toN0, subject, text);
-  const at = await bizAppAccessToken(p); if (at.err) return at.err;
+  const opId = rid('dop'), opAt = now(), opFp = fp0;
+  // Grant lifecycle ownership BEFORE any snapshot: one owned lock (leased, with a deadline)
+  // covers token read -> intent reservation -> provider effect -> settle. A disconnect that
+  // completes anywhere in that window makes the atomic gates refuse; a crashed holder's
+  // lease expires on its own and is never deleted by the stale holder.
+  const lockKey = 'fm:biz:grantlock:' + p, revKey = 'fm:biz:draftops:rev';
+  if (!await r(['SET', lockKey, opId, 'NX', 'PX', 90000])) return { status: 409, body: { error: 'A draft is already being created for this connection - wait for its result before creating another. Nothing new was created.', code: 'app_draft_pending' } };
+  const unlock = () => r(['EVAL', BIZ_DRAFTOP_UNLOCK, 1, lockKey, opId]);
+  const f0 = await bizFence(); // captured BEFORE the token + retry reads, so the original epoch covers every snapshot this create relies on
+  const at = await bizAppAccessToken(p); if (at.err) { await unlock(); return at.err; }
   // Same owner binding as removal: the exact words go to the EXACT account reviewed on
   // screen - a replacement reconnect since the review is never drafted into silently.
   if (expectedVersion !== undefined) {
-    if (expectedVersion === null) return { status: 409, body: { error: 'Reload this page and review the connection before drafting - this review is out of date. Nothing was created.', code: 'app_version_required' } };
-    if (!at.rec.connectionId || String(expectedVersion) !== String(at.rec.connectionId)) return { status: 409, body: { error: 'The connection changed since this page was loaded - reload and review the account before drafting. Nothing was created.', code: 'app_version_mismatch' } };
+    if (expectedVersion === null) { await unlock(); return { status: 409, body: { error: 'Reload this page and review the connection before drafting - this review is out of date. Nothing was created.', code: 'app_version_required' } }; }
+    if (!at.rec.connectionId || String(expectedVersion) !== String(at.rec.connectionId)) { await unlock(); return { status: 409, body: { error: 'The connection changed since this page was loaded - reload and review the account before drafting. Nothing was created.', code: 'app_version_mismatch' } }; }
   }
+  const connId = at.rec.connectionId || null;
   // Server-side retry decision, independent of any client control: creating the EXACT same
-  // payload (same fingerprint on the same connection) while an earlier attempt is unresolved
-  // requires the owner's explicit checked-Gmail decision IN THIS request.
-  const priorSame = (await bizDraftOpList()).find(o => o.status === 'unconfirmed' && o.connectionVersion === (at.rec.connectionId || null) && o.fp === fp0) || null;
-  if (priorSame && !(body && body.checkedGmail === true)) return { status: 409, body: { error: 'An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail. Check the drafts folder there, then confirm and try again. Nothing new was created.', code: 'draft_retry_needs_decision', opId: priorSame.id } };
-  if (priorSame) await bizLog('app_draft_retry_decision', { provider: p, priorOpId: priorSame.id, to: toN0, subject });
-  const opId = rid('dop'), opAt = now(), opFp = fp0;
-  const f0 = await bizFence(); // the operation's OWN fence: every later write in this lifecycle presents IT, so a purge mid-flight can never be followed by a resurrection write
-  const opRec = () => ({ id: opId, at: opAt, provider: p, account: (at.rec && at.rec.email) || null, connectionVersion: at.rec.connectionId || null, to: tos, subject, fp: opFp, fence: f0, ...(priorSame ? { retryOf: priorSame.id } : {}) });
-  { const begun = await r(['EVAL', BIZ_DRAFTOP_BEGIN, 7, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + at.rec.connectionId, 'fm:biz:app:' + p, f0, JSON.stringify({ ...opRec(), status: 'in_flight' }), opId, String(at.rec.connectionId || '')]);
+  // payload (same fingerprint on the same connection) while earlier attempts are unresolved
+  // requires the owner's decision naming the EXACT reviewed set at the EXACT set revision -
+  // a bare boolean cannot bind a review, and a new unknown attempt invalidates an old one.
+  const priorSet = (await bizDraftOpList()).filter(o => o.status === 'unconfirmed' && o.connectionVersion === connId && o.fp === fp0);
+  const rev0 = String(await r(['GET', revKey]) || '0');
+  const reviewedCsv = priorSet.map(o => o.id).sort().join(',');
+  const decisionOk = priorSet.length > 0 && !!(body && body.checkedGmail === true) && Array.isArray(body && body.reviewedOps)
+    && body.reviewedOps.map(String).sort().join(',') === reviewedCsv && String((body && body.decisionRev) || '') === rev0;
+  const decisionRefusal = async () => ({ status: 409, body: { error: 'An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail. Check the drafts folder there, review every listed attempt, then confirm and try again. Nothing new was created.', code: 'draft_retry_needs_decision', ops: (await bizDraftOpList()).filter(o => o.status === 'unconfirmed' && o.connectionVersion === connId && o.fp === fp0).map(o => o.id), rev: String(await r(['GET', revKey]) || '0') } });
+  if (priorSet.length && !decisionOk) { await unlock(); return decisionRefusal(); }
+  const opRec = () => ({ id: opId, at: opAt, provider: p, account: (at.rec && at.rec.email) || null, connectionVersion: connId, to: tos, subject, fp: opFp, fence: f0, ...(priorSet.length ? { retryOf: priorSet.map(o => o.id) } : {}) });
+  const begun = await r(['EVAL', BIZ_DRAFTOP_BEGIN, 9, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, 'fm:biz:app:' + p, lockKey, revKey, f0, JSON.stringify({ ...opRec(), status: 'in_flight' }), opId, String(connId || ''), decisionOk ? reviewedCsv : '', opFp, decisionOk ? rev0 : '']);
+  if (begun !== 1) {
+    if (begun !== 7) await unlock(); // 7: the lease is no longer ours - never delete another holder's lock
     if (begun === 2) return { status: 409, body: { error: 'A draft is already being created for this connection - wait for its result before creating another. Nothing new was created.', code: 'app_draft_pending' } };
     if (begun === 3) return { status: 409, body: { error: 'The connection changed while this create was starting - reload and review the account before drafting. Nothing was created.', code: 'app_version_mismatch' } };
-    if (!begun) return bizFenceConflict(); } // intent is durable BEFORE the provider effect below
-  const opSettle = async (status, extra) => r(['EVAL', BIZ_DRAFTOP_SETTLE, 6, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + at.rec.connectionId, f0, opId, status === 'unconfirmed' ? JSON.stringify({ ...opRec(), status, settledAt: now(), ...(extra || {}) }) : '']); // original fence + exact-record CAS: a settle after a purge writes nothing, and an absent/foreign/settled record is never recreated. ok/failed records are resolved: they leave the store (the activity log keeps the outcome); unconfirmed persists until the owner's explicit acknowledgment
+    if (begun === 6 || begun === 8) return decisionRefusal(); // the unresolved set changed between the review and the reservation - re-review the current set
+    if (begun === 7) return { status: 409, body: { error: 'That draft operation changed hands while starting - reload to see the current state. Nothing new was created.', code: 'draft_op_changed' } };
+    return bizFenceConflict();
+  } // intent is durable BEFORE the provider effect below, and the decision is logged only now - after the reservation actually owns the lifecycle
+  if (priorSet.length) await bizLog('app_draft_retry_decision', { provider: p, priorOpIds: priorSet.map(o => o.id), to: toN0, subject });
+  const opSettle = async (status, extra) => r(['EVAL', BIZ_DRAFTOP_SETTLE, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId, status === 'unconfirmed' ? JSON.stringify({ ...opRec(), status, settledAt: now(), ...(extra || {}) }) : '', opFp]); // original fence + exact-record CAS incl. payload ownership; releases the owned lock. ok/failed records are resolved: they leave the store (the activity log keeps the outcome); unconfirmed persists until the owner's explicit acknowledgment
+  if (global.__bizDraftAfterBegin) { const fn = global.__bizDraftAfterBegin; global.__bizDraftAfterBegin = null; await fn(); } // test-only interleave hook, never set in production
+  // Pre-effect gate: the LAST atomic check before anything reaches Google - original epoch,
+  // owned lock, exact current app record (still connected), exact in-flight record. A
+  // disconnect that completed after the intent stops the create HERE: no stale start.
+  const gate = await r(['EVAL', BIZ_DRAFTOP_PREFFECT, 7, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:app:' + p, lockKey, 'fm:biz:draftif:' + connId, f0, opId, String(connId || ''), opFp]);
+  if (gate !== 1) {
+    await r(['EVAL', BIZ_DRAFTOP_ABORT, 8, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:draftop:' + opId, 'fm:biz:draftops', 'fm:biz:draftif:' + connId, lockKey, revKey, f0, opId]);
+    if (gate === 0) return bizFenceConflict();
+    return { status: 409, body: { error: 'The connection changed before anything was sent to Google. Nothing was created.', code: 'app_changed' } };
+  }
   const mime = 'To: ' + tos.join(', ') + '\r\nSubject: ' + subject + '\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n' + text;
   const raw = Buffer.from(mime, 'utf8').toString('base64url');
   let res = null;

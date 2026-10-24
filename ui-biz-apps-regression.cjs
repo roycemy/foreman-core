@@ -21,7 +21,7 @@ function appFor(mode){
   return null; // omit: status unavailable
 }
 let mode='connected-unconfigured',ident='A',disconnCalls=[],draftCalls=[],oauthHits=0,connectGo=null,disconnGo=null,draftGo=null,draftParked=[],draftOutcome='ok',withSystems=false;
-let draftOpStore={A:[],B:[]},draftOpSeq=0,draftOpsFail=false;
+let draftOpStore={A:[],B:[]},draftOpSeq=0,draftOpsFail=false,stubRev=0;
 function stateFor(){
   if(ident==='B'){const sb={engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[],proposals:[],responsibilities:[],log:[],opPending:null};const gb=appFor(mode);if(gb)sb.apps={gmail:gb};return sb;}
   const s={engine:{configured:false,enabled:false,consent:null},delegate:null,sources:[{id:'src_1',kind:'doc',title:'How we work',version:2,text:'Refunds over $50 need Royce.',updatedAt:'2026-10-23T00:00:00Z'}],proposals:[{id:'prop_act1',title:'Estimate follow-up desk',summary:'Track sent estimates and draft reminders.',boundary:'Draft reminders only.',status:'active',createdAt:'2026-10-23T00:00:00Z',evidence:[],unknowns:[],systems:[]}],responsibilities:withSystems?[{id:'resp_1',title:'Customer reply desk',summary:'Draft replies',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:['src_1'],systems:['Email inbox','QuickBooks'],runs:[]}]:[],log:[],opPending:null};
@@ -62,23 +62,24 @@ const server=http.createServer((req,res)=>{
       const tos=String(body.to||'').split(',').map(x=>x.trim()).filter(Boolean),toN=tos.join(', '),subj=String(body.subject||''),txt=String(body.text||'');
       const fp=crypto.createHash('sha256').update('v1:'+JSON.stringify([toN,subj,txt])).digest('hex'); // exact payload identity, same canonicalization as the server + page
       if(draftOpStore[reqIdent].some(o=>o.status==='in_flight'&&o.connectionVersion===body.expectedVersion))return json({error:'A draft is already being created for this connection - wait for its result before creating another. Nothing new was created.',code:'app_draft_pending'},409);
-      const priorSame=draftOpStore[reqIdent].find(o=>o.status==='unconfirmed'&&o.connectionVersion===body.expectedVersion&&o.fp===fp);
-      if(priorSame&&body.checkedGmail!==true)return json({error:'An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail. Check the drafts folder there, then confirm and try again. Nothing new was created.',code:'draft_retry_needs_decision',opId:priorSame.id},409);
+      const priorSet=draftOpStore[reqIdent].filter(o=>o.status==='unconfirmed'&&o.connectionVersion===body.expectedVersion&&o.fp===fp);
+      const decisionOk=priorSet.length===0||(body.checkedGmail===true&&Array.isArray(body.reviewedOps)&&body.reviewedOps.map(String).sort().join(',')===priorSet.map(o=>o.id).sort().join(',')&&String(body.decisionRev||'')===String(stubRev));
+      if(priorSet.length&&!decisionOk)return json({error:'An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail. Check the drafts folder there, review every listed attempt, then confirm and try again. Nothing new was created.',code:'draft_retry_needs_decision',ops:priorSet.map(o=>o.id),rev:String(stubRev)},409);
       const op={id:'dop_'+(++draftOpSeq),at:new Date().toISOString(),provider:'gmail',account:'royce@northbend.example',connectionVersion:body.expectedVersion||null,to:tos,subject:subj,fp,status:'in_flight'};
-      draftOpStore[reqIdent].unshift(op); // the intent is durable BEFORE the effect below - a reload mid-create loses nothing
+      stubRev++; draftOpStore[reqIdent].unshift(op); // the intent is durable BEFORE the effect below - a reload mid-create loses nothing
       if(draftGo==='park'){await new Promise(r=>{draftParked.push(r);});}
       draftCalls.push({body,ident:reqIdent}); // counted on settle: a duplicate from Back/reopen would add an entry of its own
-      if(draftOutcome==='unconfirmed'){op.status='unconfirmed';op.settledAt=new Date().toISOString();return json({error:'Google could not confirm the draft (HTTP 503). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.',code:'app_draft_unconfirmed',opId:op.id,fp},502);}
-      draftOpStore[reqIdent]=draftOpStore[reqIdent].filter(o=>o.id!==op.id); // a confirmed create is resolved: its record leaves the store
+      if(draftOutcome==='unconfirmed'){stubRev++; op.status='unconfirmed';op.settledAt=new Date().toISOString();return json({error:'Google could not confirm the draft (HTTP 503). It may exist in Gmail - check the drafts folder before trying again, so it is not duplicated.',code:'app_draft_unconfirmed',opId:op.id,fp},502);}
+      stubRev++; draftOpStore[reqIdent]=draftOpStore[reqIdent].filter(o=>o.id!==op.id); // a confirmed create is resolved: its record leaves the store
       return json({provider:'gmail',draftId:'draft_9',account:'royce@northbend.example',to:tos,subject:subj,opId:op.id,fp,note:'Draft created in Gmail with exactly these words. Nothing was sent - review and send it there.'});});
     return;}
   if(u.pathname==='/api/business/apps/gmail/draft-ops'&&req.method==='GET'){
     if(draftOpsFail)return json({error:'Earlier draft attempts could not be checked.',code:'draft_ops_unavailable'},500);
-    return json({ops:draftOpStore[ident]});}
+    return json({ops:draftOpStore[ident],rev:String(stubRev)});}
   {const dm=u.pathname.match(/^\/api\/business\/apps\/gmail\/draft-ops\/(dop_\d+)\/reconcile$/);if(dm&&req.method==='POST'){
     const op=draftOpStore[ident].find(o=>o.id===dm[1]);
     if(!op||op.status!=='unconfirmed')return json({error:'That unresolved draft record is not here - it may already be acknowledged.',code:'draft_op_not_found'},404);
-    draftOpStore[ident]=draftOpStore[ident].filter(o=>o.id!==dm[1]);return json({acknowledged:true,opId:dm[1]});}}
+    stubRev++; draftOpStore[ident]=draftOpStore[ident].filter(o=>o.id!==dm[1]);return json({acknowledged:true,opId:dm[1]});}}
   if(u.pathname.startsWith('/__draftops-fail')){draftOpsFail=u.searchParams.get('on')==='1';return json({ok:true});}
   if(u.pathname==='/api/business/apps/gmail/disconnect'&&req.method==='POST'){
     let b='';req.on('data',d=>b+=d);req.on('end',async()=>{
@@ -396,6 +397,8 @@ let PORT=0;
  assert(await poll(`(document.getElementById('toast')||{textContent:''}).textContent.includes('check the drafts folder')`),'the unconfirmed outcome tells the owner to check Gmail');
  assert(!(await ev(`Object.keys(localStorage).some(k=>k.startsWith('bzDraftUnconf'))`)),'draft operation state never lives in browser storage');
  assert.equal(await ev(`(async()=>{const r=await fetch('/api/business/apps/gmail/drafts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:'dana@example.com',subject:'Estimate',text:'the gate brace quote',expectedVersion:'gen-AAA'})});const j=await r.json();return r.status+':'+(j.code||'')})()`),'409:draft_retry_needs_decision','the server refuses a same-payload retry without the checked-Gmail decision');
+ assert.equal(await ev(`(async()=>{const r=await fetch('/api/business/apps/gmail/drafts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:'dana@example.com',subject:'Estimate',text:'the gate brace quote',expectedVersion:'gen-AAA',checkedGmail:true})});const j=await r.json();return r.status+':'+(j.code||'')})()`),'409:draft_retry_needs_decision','a bare checked-Gmail boolean without the exact reviewed set is refused');
+ assert.equal(await ev(`(async()=>{const ops=await (await fetch('/api/business/apps/gmail/draft-ops')).json();const ids=ops.ops.filter(o=>o.status==='unconfirmed').map(o=>o.id);const r=await fetch('/api/business/apps/gmail/drafts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:'dana@example.com',subject:'Estimate',text:'the gate brace quote',expectedVersion:'gen-AAA',checkedGmail:true,reviewedOps:ids,decisionRev:'999'})});const j=await r.json();return r.status+':'+(j.code||'')})()`),'409:draft_retry_needs_decision','a stale set revision is refused even with the right set');
  await ev(`document.querySelector('#bz-app-draft').click();'reopen'`);
  assert(await poll(`(document.querySelector('#modal.on')||{textContent:''}).textContent.includes('may exist in Gmail')`),'the unresolved op is never forgotten across close/reopen');
  await ev(`(()=>{document.querySelector('#bz-draft-to').value='dana@example.com';document.querySelector('#bz-draft-subject').value='Estimate';document.querySelector('#bz-draft-text').value='the gate brace quote';return 1})()`);
