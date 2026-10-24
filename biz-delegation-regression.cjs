@@ -486,6 +486,43 @@ const ISO=ms=>new Date(ms).toISOString();
   await f.bizDailyTick();
   assert.ok((await f.getJ('fm:biz:resp:'+respS)).schedule.needsReview,'the drifted schedule pauses itself on the next evaluation');
 
+  // --- crash recovery: an interruption between claim and flip leaves a stuck held job
+  const srcNow=await f.getJ('fm:biz:src:'+sr.body.source.id);
+  const pv6=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
+  await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv6.body.delegation.hash});
+  c.global.__bizSchedInterleave=async()=>{ throw new Error('simulated process death'); };
+  await assert.rejects(()=>f.bizDailyTick(),/simulated process death/,'the interrupted tick propagates the failure');
+  const stuckRuns=await f.r(['LRANGE','fm:biz:runs:'+respS,0,9]);
+  const stuckRun=await f.getJ('fm:biz:run:'+stuckRuns[0]);
+  assert.equal(stuckRun.status,'delegated','the crashed attempt left a delegated-looking run');
+  const stuckTask=await f.getJ('fm:task:'+stuckRun.taskId);
+  assert.equal(stuckTask.status,'waiting','the crashed attempt left an invisible held job');
+  {const rc=await f.getJ('fm:biz:resp:'+respS);assert.ok(rc.schedule.lastQueuedAt,'the crashed attempt consumed the daily window');}
+  // a tick right away must NOT clean it up (still plausibly mid-creation) - but the window is consumed, so it skips
+  await f.bizDailyTick();
+  assert.equal((await f.getJ('fm:biz:run:'+stuckRun.id)).status,'delegated','a fresh held job is never reconciled away');
+  // age the stuck job past the stuck threshold: the next tick reconciles and retries cleanly
+  stuckTask.createdAt=new Date(Date.now()-3*60e3).toISOString();await f.setJ('fm:task:'+stuckTask.id,stuckTask);
+  const runsBeforeRecovery=(await f.r(['LRANGE','fm:biz:runs:'+respS,0,19])).length; // the runs list is trimmed at RUNS_KEEP: compare identities, not counts
+  await f.bizDailyTick();
+  const recovered=await f.getJ('fm:biz:run:'+stuckRun.id);
+  assert.equal(recovered.status,'failed','the reconciled run is failed honestly');
+  assert.equal(recovered.failureReason,'interrupted','the failure says interrupted, nothing was sent');
+  assert.ok(!(await f.getJ('fm:task:'+stuckRun.taskId)),'the never-visible held job is removed');
+  assert.equal((await f.r(['SMEMBERS','fm:biz:delegated'])).includes(stuckRun.taskId),false,'the stuck job leaves the inventory');
+  const recoveredRuns=await f.r(['LRANGE','fm:biz:runs:'+respS,0,19]);
+  assert.notEqual(recoveredRuns[0],stuckRun.id,'the same tick retried from current state after the release');
+  assert.ok(!recoveredRuns.slice(1).includes(recoveredRuns[0]),'one retry, not several');
+  const retryRun2=await f.getJ('fm:biz:run:'+recoveredRuns[0]);
+  assert.equal(retryRun2.status,'delegated','the retry queued a fresh run');
+  const retryJob=await f.getJ('fm:task:'+retryRun2.taskId);
+  assert.equal(retryJob.status,'queued','exactly one visible job exists after recovery - no duplicate');
+  assert.equal(retryJob.context,pv6.body.delegation.context,'the retry queues the currently reviewed text, not crash-time bytes');
+  // and a later tick with the job visible queues nothing more
+  await f.bizDailyTick();
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,1]))[0],recoveredRuns[0],'a visible job is never double-queued');
+  assert.equal((await f.getJ('fm:task:'+retryRun2.taskId)).status,'queued','the visible job is untouched by reconciliation');
+
  });
 
  console.log('biz-delegation-regression: all assertions passed');

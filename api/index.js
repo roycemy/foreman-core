@@ -1921,7 +1921,8 @@ async function routes(req, res, path, body, agentPre) {
 // workspaces. With no engine configured every engine path returns an honest 503; there is no fabricated output.
 const BIZ = {
   MAX_SOURCES: 40, MAX_TEXT: 20000, MAX_TITLE: 120, MAX_PROPS: 12, RUNS_KEEP: 50, LOG_KEEP: 100,
-  DAILY_GAP_MS: 20 * 3600e3, CALLS_PER_DAY: 200, SRC_PROMPT_CHARS: 16000,
+  DAILY_GAP_MS: 20 * 3600e3,
+  STUCK_HELD_MS: 2 * 60 * 1000, // a held job older than this never had its flip; it is provably stuck CALLS_PER_DAY: 200, SRC_PROMPT_CHARS: 16000,
   RUN_BUDGET_MS: 27000, FINALIZE_MS: 5000, MAX_FETCHES_PER_RUN: 4, MAX_CONTACTS_PER_RUN: 8, FETCH_ROUNDS: 2, PAGE_PROMPT_CHARS: 3000, MAX_CITES_PER_RUN: 8,
   BOUNDARY: 'Drafts only. Nothing is sent, posted, purchased or connected. The owner reviews every output.'
 };
@@ -3561,6 +3562,34 @@ async function bizDailyTick() {
       const eng = await bizEngine(); // engine responsibilities need it; bot-delegated schedules do not
       const f0 = await bizEntry(); if (f0 == null) { out.skipped++; return; } // one atomic snapshot; a delete during the tick invalidates persistence
       out.workspaces++;
+      // Durable crash recovery: an attempt interrupted between the atomic claim and the
+      // visibility flip leaves a registered 'delegated' run with a held job that can NEVER
+      // become visible (expireStalledTasks covers only running jobs) plus a consumed daily
+      // window. A job still 'waiting' two minutes after creation is provably stuck - the
+      // flip path takes milliseconds. Fail the run honestly, remove the never-visible job,
+      // and release the claim so this same tick re-evaluates from CURRENT state. A job that
+      // did flip (queued/running/done) is untouched, so nothing can ever queue twice.
+      for (const tid of (await r(['SMEMBERS', 'fm:biz:delegated']))) {
+        const tRaw = await r(['GET', 'fm:task:' + tid]);
+        if (!tRaw) { await r(['SREM', 'fm:biz:delegated', tid]); continue; }
+        const t = JSON.parse(tRaw);
+        if (t.status !== 'waiting' || !t.biz || !t.biz.runId) continue;
+        if (!t.createdAt || Date.now() - Date.parse(t.createdAt) < BIZ.STUCK_HELD_MS) continue; // still mid-creation
+        const runRaw = await r(['GET', 'fm:biz:run:' + t.biz.runId]);
+        const run = runRaw && JSON.parse(runRaw);
+        if (run && run.status !== 'delegated') { await r(['SREM', 'fm:biz:delegated', tid]); continue; } // settled already; only the index entry lingered
+        await r(['DEL', 'fm:task:' + tid]);
+        await r(['SREM', 'fm:biz:delegated', tid]);
+        if (run) await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, f0, runRaw, JSON.stringify({ ...run, status: 'failed', output: null, failureReason: 'interrupted', failureDetail: 'The run was interrupted before the job went out. Nothing was sent; the next daily check-in tries again.', settledAt: now() })]);
+        if (run && run.kind === 'auto') {
+          const rpRaw = await r(['GET', 'fm:biz:resp:' + run.respId]);
+          if (rpRaw) {
+            const rp = JSON.parse(rpRaw);
+            if (rp.schedule && rp.schedule.lastQueuedAt) await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + run.respId, f0, rpRaw, JSON.stringify({ ...rp, schedule: { ...rp.schedule, lastQueuedAt: null } })]); // release the window; any owner change since wins instead
+          }
+        }
+        await bizLog('run_interrupted', { respId: run && run.respId, runId: t.biz.runId, taskId: tid }, f0);
+      }
       for (const resp of await bizResps()) {
         if (resp.status !== 'active') continue;
         if (resp.bot) {
