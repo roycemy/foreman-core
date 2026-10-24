@@ -399,6 +399,56 @@ const ISO=ms=>new Date(ms).toISOString();
   await f.bizDailyTick();
   assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length,before,'nothing queues after disable');
 
+  // --- race hardening: concurrent ticks, emergency stop, and mid-flight owner actions
+  const pv3=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
+  const en3=await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv3.body.delegation.hash});
+  assert.equal(en3.status,200,'schedule re-enabled for race tests');
+
+  // two ticks racing the same window: exactly one claim wins, one job queues
+  await Promise.all([f.bizDailyTick(),f.bizDailyTick()]);
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length,before+1,'concurrent ticks queue exactly one scheduled run');
+  {const rc=await f.getJ('fm:biz:resp:'+respS);rc.schedule.lastQueuedAt=new Date(Date.now()-21*3600e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rc);} // past the gap again
+
+  // the emergency stop holds unattended queueing: no run, no job, claim not consumed
+  await f.r(['SET','fm:kill','1']);
+  await f.bizDailyTick();
+  assert.equal((await f.r(['LRANGE','fm:biz:runs:'+respS,0,9])).length,before+1,'kill switch blocks the scheduled queue');
+  {const rk=await f.getJ('fm:biz:resp:'+respS);assert.ok(Date.now()-Date.parse(rk.schedule.lastQueuedAt)>20*3600e3,'kill did not consume the daily window');}
+  await f.r(['DEL','fm:kill']);
+
+  // owner disables between the claim and the visibility flip: the gate refuses, nothing lingers
+  c.global.__bizSchedInterleave=async()=>{ await f.bizRespAct(respS,'schedule',{op:'disable'}); };
+  await f.bizDailyTick();
+  const runsAfterDisable=await f.r(['LRANGE','fm:biz:runs:'+respS,0,9]);
+  assert.equal(runsAfterDisable.length,before+2,'the refused run is recorded honestly');
+  const refused=await f.getJ('fm:biz:run:'+runsAfterDisable[0]);
+  assert.equal(refused.status,'failed','the mid-flight disable fails the run instead of queueing it');
+  assert.ok(!(await f.getJ('fm:task:'+refused.taskId)),'the refused job never becomes visible and does not linger');
+  assert.equal((await f.r(['SMEMBERS','fm:biz:delegated'])).includes(refused.taskId),false,'the refused job leaves the delegated inventory');
+  {const rd=await f.getJ('fm:biz:resp:'+respS);assert.ok(!rd.schedule,'the disable stands after the refused flip');}
+
+  // kill switch landing mid-flight: the gate refuses the same way
+  const pv4=await f.bizRespAct(respS,'schedule',{op:'preview',instruction:'Follow up on open estimates.'});
+  await f.bizRespAct(respS,'schedule',{op:'enable',instruction:'Follow up on open estimates.',delegateHash:pv4.body.delegation.hash});
+  c.global.__bizSchedInterleave=async()=>{ await f.r(['SET','fm:kill','1']); };
+  await f.bizDailyTick();
+  const runsAfterKill=await f.r(['LRANGE','fm:biz:runs:'+respS,0,9]);
+  assert.equal(runsAfterKill.length,before+3,'the kill-refused run is recorded honestly');
+  const killedRun=await f.getJ('fm:biz:run:'+runsAfterKill[0]);
+  assert.equal(killedRun.status,'failed','a kill mid-flight fails the run instead of queueing it');
+  assert.ok(!(await f.getJ('fm:task:'+killedRun.taskId)),'no job becomes visible under the emergency stop');
+  await f.r(['DEL','fm:kill']);
+
+  // a source edit between the claim and the flip: the gate binds reviewed source versions
+  {const rg=await f.getJ('fm:biz:resp:'+respS);rg.schedule.lastQueuedAt=new Date(Date.now()-21*3600e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rg);} // past the gap: the tick must evaluate
+  c.global.__bizSchedInterleave=async()=>{ await f.bizSourceEdit(sr.body.source.id,{title:'Estimates',text:'Follow up on day TEN now.'}); };
+  await f.bizDailyTick();
+  const runsAfterEdit=await f.r(['LRANGE','fm:biz:runs:'+respS,0,9]);
+  assert.equal(runsAfterEdit.length,before+4,'the drift-refused run is recorded honestly');
+  const driftRun=await f.getJ('fm:biz:run:'+runsAfterEdit[0]);
+  assert.equal(driftRun.status,'failed','a source edit mid-flight refuses the flip - old text never queues');
+  assert.ok(!(await f.getJ('fm:task:'+driftRun.taskId)),'the drifted job never becomes visible');
+
  });
 
  console.log('biz-delegation-regression: all assertions passed');

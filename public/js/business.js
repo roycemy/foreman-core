@@ -156,18 +156,18 @@
         <label class="fld">Bring it work<textarea class="in" data-run-input="${rp.id}" rows="3" maxlength="4000" placeholder="Paste an email to answer, a question, a request…"></textarea></label>
         ${B.delegate && !rp.research ? `<p class="meta">Goes to <b>${esc(B.delegate.name)}</b>${B.delegate.connection && B.delegate.connection.status !== 'active' ? ' - not connected right now; it picks work up when it connects' : ''}. You review the exact text before it goes to the bot.</p>` : ''}
         ${rp.bot && !rp.research ? `<div class="bz-sched">${rp.schedule ? `
-          <p class="meta">${chip('Scheduled', 'ok')} Once a day at Alter's daily check-in, the exact text you reviewed goes to <b>${esc(B.delegate ? B.delegate.name : 'the connected bot')}</b>. Its report comes back here as a draft - Alter sends nothing onward.${rp.schedule.lastQueuedAt ? ' Last queued ' + BB.when(rp.schedule.lastQueuedAt) + '.' : ''}</p>
+          <p class="meta">${chip('Schedule saved', 'dim')} <b>Not live yet.</b> Automatic daily sends have no live trigger on this deployment, so nothing is sent for now. Once they are switched on, the exact text you reviewed goes to <b>${esc(B.delegate ? B.delegate.name : 'the connected bot')}</b> once a day, and its report comes back here as a draft - Alter sends nothing onward.${rp.schedule.lastQueuedAt ? ' Last queued ' + BB.when(rp.schedule.lastQueuedAt) + '.' : ''}</p>
           ${rp.schedule.needsReview ? `<p class="bz-blocked">Schedule paused: the sources or this responsibility changed since you reviewed the daily text. Review the new text to resume it.</p>` : ''}
           <div class="btns"><button class="b out sm" data-sched-edit="${rp.id}" type="button">${rp.schedule.needsReview ? 'Review and resume' : 'Change the daily instruction'}</button><button class="b out sm" data-sched-off="${rp.id}" type="button">Turn schedule off</button></div>`
-        : `<p class="meta">Not scheduled. Alter can send a standing instruction to the connected bot once a day at the daily check-in - you review the exact text before the first send, and the schedule pauses itself if anything it would send changes afterward.</p>
+        : `<p class="meta">Not scheduled. You can save a standing daily instruction for the connected bot - you review the exact text first, and the schedule pauses itself if anything it would send changes afterward. Automatic sends are not live on this deployment yet; saving a schedule sends nothing.</p>
           <div class="btns"><button class="b out sm" data-sched-on="${rp.id}" type="button">Set a daily schedule</button></div>`}
           ${pendingSchedule && pendingSchedule.respId === rp.id ? `<div class="bz-card bz-approve"><div class="bz-sech">${pendingSchedule.delegation ? 'Review the exact daily text' : 'Write the daily instruction'}</div>
-            ${!pendingSchedule.delegation ? `<p class="meta">This exact instruction, with the linked sources shown after you review, goes to the bot once a day at the daily check-in. The bot's report comes back here as a draft.</p>
+            ${!pendingSchedule.delegation ? `<p class="meta">Once automatic sends are live, this exact instruction - with the linked sources shown after you review - goes to the bot once a day. The bot's report comes back here as a draft. Saving this schedule sends nothing for now.</p>
             <label class="fld">Standing instruction<textarea class="in" data-sched-input rows="3" maxlength="4000">${esc(pendingSchedule.instruction)}</textarea></label>
             <div class="btns"><button class="b ink" data-sched-preview type="button">Review the daily text</button><button class="b out" data-sched-cancel type="button">Cancel</button></div>`
           : (() => { const d = pendingSchedule.delegation, conn = (d.bot && d.bot.connection) || {};
             const presence = conn.lastRealCallAt && (Date.now() - new Date(conn.lastRealCallAt).getTime()) < 15*60e3 ? 'heard from in the last 15 minutes' : conn.lastRealCallAt ? 'paired - last heard from ' + BB.when(conn.lastRealCallAt) + '; it picks the job up when it connects' : 'paired - not heard from yet; it picks the job up when it connects';
-            return `<p class="meta">Destination each day: <b>${esc(d.bot.name)}</b>${d.bot.providerId ? ' (' + esc(d.bot.providerId) + ')' : ''} - ${esc(presence)}. This text leaves Alter to that bot through its own connection once a day. How the bot processes or keeps it is between you and the bot's provider. If your sources or this responsibility change, the schedule pauses until you review the new text.</p>
+            return `<p class="meta">Destination once automatic sends are live: <b>${esc(d.bot.name)}</b>${d.bot.providerId ? ' (' + esc(d.bot.providerId) + ')' : ''} - ${esc(presence)}. Saving sends nothing now; when live, this text leaves Alter to that bot through its own connection once a day. How the bot processes or keeps it is between you and the bot's provider. If your sources or this responsibility change, the schedule pauses until you review the new text.</p>
             <p class="meta">Instructions (exact text):</p><p class="bz-reviewed">${esc(d.brief)}</p>
             <p class="meta">Work and sources (exact text):</p><p class="bz-reviewed">${esc(d.context)}</p>
             <p class="meta">${d.sources && d.sources.length ? 'Included sources: ' + d.sources.map(s => esc(s.title) + ' v' + s.version).join(', ') + '.' : 'No sources are linked to this responsibility - only the instruction text goes.'}${d.omittedSources && d.omittedSources.length ? ' Not included: ' + d.omittedSources.map(s => esc(s.title)).join(', ') + '.' : ''}</p>
@@ -272,7 +272,7 @@
         : (last.status === 'delegated' || last.status === 'running') ? 'a run is with ' + esc((last.bot && last.bot.name) || 'the bot') + ' now'
         : last.status === 'failed' ? 'last run ' + BB.when(last.at) + ' did not finish'
         : 'last draft ' + BB.when(last.at);
-      return `<div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>${lastTxt}${rp.bot ? (rp.schedule ? ' · scheduled daily' : '') : ' · daily check-in while provider processing is on'}</small></div>${chip(rp.bot ? 'Runs on ' + ((rp.bot && rp.bot.name) || 'the bot') : 'Reasoning engine', 'dim')}</div>`;
+      return `<div class="bz-row"><div class="t"><b>${esc(rp.title)}</b><small>${lastTxt}${rp.bot ? (rp.schedule ? ' · schedule saved (not live yet)' : '') : ' · daily check-in while provider processing is on'}</small></div>${chip(rp.bot ? 'Runs on ' + ((rp.bot && rp.bot.name) || 'the bot') : 'Reasoning engine', 'dim')}</div>`;
     }).join('');
     const hqPanel = (srcs.length || profile) ? `<div class="bz-card bz-hq">
       <div class="bz-sech">At a glance</div>
@@ -364,17 +364,21 @@
     {
       const sc = $('[data-sched-input]', V); if (sc) sc.oninput = () => { if (pendingSchedule) pendingSchedule.instruction = sc.value; };
       const sp = $('[data-sched-preview]', V); if (sp) sp.onclick = async () => {
-        sp.disabled = true; const j = await api('/responsibilities/' + pendingSchedule.respId + '/schedule', 'POST', { op: 'preview', instruction: pendingSchedule.instruction }); sp.disabled = false;
+        const req = pendingSchedule; if (!req) return;
+        sp.disabled = true; const j = await api('/responsibilities/' + req.respId + '/schedule', 'POST', { op: 'preview', instruction: req.instruction }); sp.disabled = false;
+        if (pendingSchedule !== req) return; // canceled, replaced or reloaded mid-flight: discard the stale response
         if (j.error) return BB.toast(j.error);
-        pendingSchedule.delegation = j.delegation; paint();
+        req.delegation = j.delegation; paint();
       };
-      const sb = $('[data-sched-back]', V); if (sb) sb.onclick = () => { pendingSchedule.delegation = null; paint(); };
+      const sb = $('[data-sched-back]', V); if (sb) sb.onclick = () => { const req = pendingSchedule; if (req) { req.delegation = null; paint(); } };
       const sx = $('[data-sched-cancel]', V); if (sx) sx.onclick = () => { pendingSchedule = null; paint(); };
       const se = $('[data-sched-enable]', V); if (se) se.onclick = async () => {
+        const req = pendingSchedule; if (!req || !req.delegation) return;
         se.disabled = true;
-        const j = await api('/responsibilities/' + pendingSchedule.respId + '/schedule', 'POST', { op: 'enable', instruction: pendingSchedule.instruction, delegateHash: pendingSchedule.delegation.hash });
-        if (j.error) { se.disabled = false; if (j.delegation) { pendingSchedule.delegation = j.delegation; paint(); } return BB.toast(j.error); }
-        pendingSchedule = null; BB.toast('Daily schedule on. The first send happens at the next daily check-in.'); await load();
+        const j = await api('/responsibilities/' + req.respId + '/schedule', 'POST', { op: 'enable', instruction: req.instruction, delegateHash: req.delegation.hash });
+        if (pendingSchedule !== req) return; // the review this response belongs to is gone: never enable from a stale continuation
+        if (j.error) { se.disabled = false; if (j.delegation) { req.delegation = j.delegation; paint(); } return BB.toast(j.error); }
+        pendingSchedule = null; BB.toast('Daily schedule saved. Automatic sends are not live yet, so nothing is sent for now.'); await load();
       };
     }
     let kind = 'note';

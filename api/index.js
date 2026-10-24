@@ -90,6 +90,19 @@ function memEval(script, n, keys, argv) {
       return 1;
     }
   }
+  if (script === BIZ_SCHED_GATE) {
+    if (mem.kv.get(keys[3]) !== argv[1]) return 0; // responsibility record changed since the schedule claim (pause/disable/drift/edit)
+    if (mem.kv.get(keys[4]) !== argv[2]) return 0; // the held job is not what this run registered
+    if (mem.kv.has(keys[5])) return 0;             // emergency stop set: nothing unattended becomes visible
+    const n = parseInt(argv[4], 10);               // every reviewed source must still be at its reviewed version
+    for (let i = 0; i < n; i++) {
+      const raw = mem.kv.get(keys[6 + i]); if (raw == null) return 0;
+      let rec; try { rec = JSON.parse(raw); } catch { return 0; }
+      if (String(rec.version) !== String(argv[5 + i])) return 0;
+    }
+    mem.kv.set(keys[4], argv[3]);
+    return 1;
+  }
   throw Error('unsupported local EVAL');
 }
 // In-memory mirror of the atomic operation protocol. The mirror has no TTLs: freeze expiry is
@@ -214,6 +227,12 @@ const BIZ_FENCE_RUN = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] t
 // same fence checks as BIZ_FENCE_SET, plus the record must still equal what the caller read -
 // a concurrent settle, stop or delete wins and is never overwritten by a late bot report.
 const BIZ_FENCE_CAS = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; local old=redis.call('GET',KEYS[4]); if not old then return -1 end; if old~=ARGV[2] then return 0 end; redis.call('SET',KEYS[4],ARGV[3]); return 1";
+// Final gate for scheduled (unattended) runs: the job flips to visible ONLY when the
+// responsibility record is still byte-identical to the claimed schedule state (a pause,
+// disable, retire, re-enable or drift mark in between refuses), the held job is exactly
+// what this run registered, and the emergency stop is not set. One atomic call - the
+// schedule state and the task visibility can never be observed apart.
+const BIZ_SCHED_GATE = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('GET',KEYS[4])~=ARGV[2] then return 0 end; if redis.call('GET',KEYS[5])~=ARGV[3] then return 0 end; if redis.call('EXISTS',KEYS[6])==1 then return 0 end; for i=1,tonumber(ARGV[5]) do local raw=redis.call('GET',KEYS[6+i]); if not raw then return 0 end; local ok,rec=pcall(cjson.decode,raw); if not ok then return 0 end; if tostring(rec.version)~=ARGV[5+i] then return 0 end end; redis.call('SET',KEYS[5],ARGV[4]); return 1";
 async function updateAgent(id, patch) {
   const key='fm:agent:'+id;
   for(let attempt=0;attempt<8;attempt++){
@@ -2879,7 +2898,11 @@ async function failDelegatedTask(id, reason) {
   if (await r(['EVAL', AGENT_CAS, 1, key, raw, JSON.stringify(next)]) !== 1) return null;
   return next;
 }
-async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind) {
+// gate (scheduled runs only): {expectedResp} is the byte-exact responsibility record the tick
+// claimed atomically. Every gated write compares against it, and the final visibility flip
+// re-checks the record through BIZ_SCHED_GATE - an owner action landing anywhere in between
+// refuses the run honestly instead of queueing against stale state.
+async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind, gate) {
   const run = { id: rid('run'), respId: resp.id, kind: kind === 'auto' ? 'auto' : 'manual', at: now(), input: String(input).slice(0, 4000),
     status: 'delegated', backend: 'linked-bot',
     bot: { id: bot.id, name: String(bot.name || 'bot').slice(0, 40), providerId: bot.providerId || null },
@@ -2905,8 +2928,16 @@ async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind) {
   };
   if (!await r(['EVAL', BIZ_FENCE_RUN, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, 'fm:biz:runs:' + resp.id, f0, JSON.stringify(run), run.id, String(BIZ.RUNS_KEEP), 'fm:biz:run:'])) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); }
   runRegistered = true;
-  const cur = await getJ('fm:biz:resp:' + resp.id);
-  if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)])) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); } }
+  if (gate) {
+    const base = JSON.parse(gate.expectedResp);
+    const nextJson = JSON.stringify({ ...base, runsCount: (base.runsCount || 0) + 1, lastRunAt: run.at });
+    // CAS against the claimed record: a pause/disable/edit since the claim refuses the run here.
+    if (await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, gate.expectedResp, nextJson]) !== 1) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); }
+    gate.finalResp = nextJson;
+  } else {
+    const cur = await getJ('fm:biz:resp:' + resp.id);
+    if (cur) { cur.runsCount = (cur.runsCount || 0) + 1; cur.lastRunAt = run.at; if (!await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)])) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); } }
+  }
   if (!await bizLog('run_delegated', { respId: resp.id, runId: run.id, taskId: t.id, botId: bot.id, botName: run.bot.name, sources: payload.sources.map(s => s.id), omittedSources: payload.omittedSources.length || undefined }, f0)) { await abandon('the workspace changed while the run was being created'); return bizFenceConflict(); }
   // Everything recorded: flip queued atomically, only then wake. A claimant always sees a
   // fully recorded run behind its job. The flip MUST land: a purge or delete can win the
@@ -2914,16 +2945,23 @@ async function bizDelegateRun(resp, srcs, input, bot, f0, payload, kind) {
   // already failed). Returning 200 there would show a false "sent" for a job that does not
   // exist - refuse honestly instead, and fail the just-registered run record best-effort
   // (a no-op when a delete already owns it).
+  if (global.__bizSchedInterleave && gate) { const fn = global.__bizSchedInterleave; global.__bizSchedInterleave = null; await fn(); } // test-only interleave hook, never set in production
   if (global.__bizRaceDelete) { global.__bizRaceDelete = null; await r(['DEL', 'fm:task:' + t.id]); } // test-only interleave hook, never set in production
   const raw = await r(['GET', 'fm:task:' + t.id]), live = raw && JSON.parse(raw);
   let flipped = false;
   if (live && live.status === 'waiting') {
     const next = { ...live, status: 'queued' };
-    flipped = await r(['EVAL', AGENT_CAS, 1, 'fm:task:' + t.id, raw, JSON.stringify(next)]) === 1;
+    if (gate) {
+      // Atomic final gate: schedule state, held job and emergency stop checked with the flip itself.
+      flipped = await r(['EVAL', BIZ_SCHED_GATE, 6 + payload.sources.length, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, 'fm:task:' + t.id, 'fm:kill', ...payload.sources.map(x => 'fm:biz:src:' + x.id), f0, gate.finalResp, raw, JSON.stringify(next), String(payload.sources.length), ...payload.sources.map(x => String(x.version))]) === 1;
+    } else {
+      flipped = await r(['EVAL', AGENT_CAS, 1, 'fm:task:' + t.id, raw, JSON.stringify(next)]) === 1;
+    }
     if (flipped) { const ag = await getJ('fm:agent:' + bot.id); if (ag) await maybeWakeBot(ag, t.id).catch(() => {}); }
   }
   if (!flipped) {
     if (!live) await r(['SREM', 'fm:biz:delegated', t.id]); // record gone: nothing left to inventory (a live failed job stays inventoried for purge)
+    else if (gate && live.status === 'waiting') { await r(['DEL', 'fm:task:' + t.id]); await r(['SREM', 'fm:biz:delegated', t.id]); } // gate refused with the job still invisible: remove it so nothing unattended lingers
     await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:run:' + run.id, f0, JSON.stringify(run), JSON.stringify({ ...run, status: 'failed', output: null, failureReason: 'workspace_changed', failureDetail: 'The workspace changed while the run was being created.', settledAt: now() })]);
     return bizFenceConflict();
   }
@@ -3529,29 +3567,44 @@ async function bizDailyTick() {
           // Bot/manual-only: the daily engine loop never substitutes for the reviewed bot. A
           // schedule the owner enabled queues the EXACT reviewed standing payload to the bot -
           // never the engine, and never text that drifted since the review.
-          const sch = resp.schedule;
-          if (!sch || !sch.delegateHash) { out.skipped++; continue; }
+          if (await r(['GET', 'fm:kill'])) { out.skipped++; continue; } // the emergency stop holds every unattended queue, not just manual runs
+          // Re-read the live record: the loop snapshot can be stale against an owner action
+          // (pause, disable, retire, drift review) that landed after the tick started.
+          const schKey = 'fm:biz:resp:' + resp.id;
+          const schRaw = await r(['GET', schKey]);
+          if (!schRaw) { out.skipped++; continue; }
+          const cur = JSON.parse(schRaw);
+          const sch = cur.schedule;
+          if (cur.status !== 'active' || !sch || !sch.delegateHash || sch.needsReview) { out.skipped++; continue; } // a drift pause holds until the owner re-reviews
           if (sch.lastQueuedAt && Date.now() - Date.parse(sch.lastQueuedAt) < BIZ.DAILY_GAP_MS) { out.skipped++; continue; }
           const bot = await bizDelegateBot();
           if (!bot) { await bizLog('schedule_skipped', { respId: resp.id, reason: 'no_bot' }, f0); out.skipped++; continue; }
           const srcs = await bizSources();
-          const payload = bizDelegatePayload(resp, srcs, sch.instruction, bot);
+          const payload = bizDelegatePayload(cur, srcs, sch.instruction, bot);
           if (payload.hash !== sch.delegateHash) {
-            const cur = await getJ('fm:biz:resp:' + resp.id);
-            if (cur && cur.schedule && !cur.schedule.needsReview) {
-              cur.schedule.needsReview = now();
-              await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)]);
-            }
-            await bizLog('schedule_needs_review', { respId: resp.id, title: resp.title }, f0);
+            // CAS the drift mark against the record just read: a concurrent owner change wins,
+            // and a blind write can never resurrect a schedule that was just removed.
+            await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', schKey, f0, schRaw, JSON.stringify({ ...cur, schedule: { ...sch, needsReview: now() } })]);
+            await bizLog('schedule_needs_review', { respId: resp.id, title: cur.title }, f0);
             out.skipped++; continue;
           }
-          const res = await bizDelegateRun(resp, srcs, sch.instruction, bot, f0, payload, 'auto');
+          // Atomic claim: moving lastQueuedAt past the gap gate is compare-and-set on the exact
+          // record read above. Two ticks racing the same window, or an owner action landing
+          // first, change the record - the loser's claim refuses and no second job can queue.
+          const claimed = { ...cur, schedule: { ...sch, lastQueuedAt: now(), needsReview: null } };
+          const claimedJson = JSON.stringify(claimed);
+          if (await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', schKey, f0, schRaw, claimedJson]) !== 1) { out.skipped++; continue; }
+          const res = await bizDelegateRun(claimed, srcs, sch.instruction, bot, f0, payload, 'auto', { expectedResp: claimedJson });
           if (res.status === 200) {
             out.runs++;
-            const cur = await getJ('fm:biz:resp:' + resp.id);
-            if (cur && cur.schedule) { cur.schedule.lastQueuedAt = now(); cur.schedule.needsReview = null; await r(['EVAL', BIZ_FENCE_SET, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', 'fm:biz:resp:' + resp.id, f0, JSON.stringify(cur)]); }
-            await bizLog('schedule_queued', { respId: resp.id, title: resp.title, botName: bot.name }, f0);
-          } else out.errors++;
+            await bizLog('schedule_queued', { respId: resp.id, title: cur.title, botName: bot.name }, f0);
+          } else {
+            out.errors++;
+            await bizLog('schedule_queue_failed', { respId: resp.id, title: cur.title }, f0);
+            // Release the claim when nothing was queued, so the next tick can try again. A record
+            // change since the claim (owner action, another tick) wins instead of the release.
+            await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', schKey, f0, claimedJson, schRaw]);
+          }
           continue;
         }
         if (!eng.ok) { out.skipped++; continue; } // engine responsibilities never run without the engine
