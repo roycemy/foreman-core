@@ -9,11 +9,12 @@ const fs=require('fs'),path=require('path'),http=require('http'),assert=require(
 
 const AGT={id:'agent_1',name:'Grokbot',providerId:'grok',status:'active',lastSeen:'2026-10-24T08:00:00Z',connection:{status:'active'},room:'ops'};
 const RESP1={id:'resp_1',title:'Estimate follow-up desk',summary:'Draft estimate follow-ups',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:3,sourceIds:[],bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},fp:'fp1',runs:[],assignment:{botId:'agent_1',botName:'Grokbot',assignedAt:'2026-10-23T02:00:00Z'}};
-const RESP2={id:'resp_2',title:'Invoice chase desk',summary:'Draft invoice chases',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},fp:'fp2',runs:[]}; // automatic pick: SAME bot, SAME room
+const RESP2={id:'resp_2',title:'Invoice chase desk',summary:'Draft invoice chases',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],bot:{id:'agent_1',name:'Grokbot',providerId:'grok'},fp:'fp2',runs:[],schedule:{enabled:false,needsReview:true}}; // automatic pick, schedule awaiting the owner's review: SAME bot, SAME room
+const RESP4={id:'resp_4',title:'Parts ordering',summary:'Draft parts orders',boundary:'Drafts only',status:'active',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],bot:{id:'agent_2',name:'Oldbot',providerId:'grok'},fp:'fp4',runs:[],assignment:{botId:'agent_2',botName:'Oldbot',assignedAt:'2026-10-23T02:00:00Z'}}; // assigned bot is GONE from the workspace
 const RESP3={id:'resp_3',title:'Weekly summary',summary:'Engine summary',boundary:'Drafts only',status:'paused',createdAt:'2026-10-23T00:00:00Z',runsCount:0,sourceIds:[],fp:'fp3',runs:[]}; // no bot: maps no room
 function bizState(ident){
   if(ident==='B')return {engine:{configured:false,enabled:false,consent:null},delegate:null,team:[],sources:[],proposals:[],responsibilities:[],log:[],opPending:null};
-  return {engine:{configured:false,enabled:false,consent:null},profile:{name:'North Bend Contracting',blurb:'Demo',updatedAt:'2026-10-23T00:00:00Z'},delegate:{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}},team:[{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}}],sources:[],proposals:[],responsibilities:[RESP1,RESP2,RESP3],log:[],opPending:null};
+  return {engine:{configured:false,enabled:false,consent:null},profile:{name:'North Bend Contracting',blurb:'Demo',updatedAt:'2026-10-23T00:00:00Z'},delegate:{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}},team:[{id:'agent_1',name:'Grokbot',providerId:'grok',connection:{status:'active'}}],sources:[],proposals:[],responsibilities:[RESP1,RESP2,RESP3,RESP4],log:[],opPending:null};
 }
 let ident='A';
 const server=http.createServer((req,res)=>{
@@ -61,9 +62,12 @@ function chrome(){for(const b of['google-chrome','google-chrome-stable','chromiu
  await ev(`location.hash='#floor';'go'`);
  assert(await poll(`(()=>{const b=document.getElementById('hqbanner');return b&&!b.hidden&&b.textContent.includes('North Bend Contracting HQ');})()`),'HQ banner names the business');
  let t=await ev(`(document.getElementById('hqbanner')||{textContent:''}).textContent`);
- assert(t.includes('2 active'),'banner counts active responsibilities');
+ assert(t.includes('3 active'),'banner counts active responsibilities');
  assert(t.includes('1 paused'),'banner counts paused responsibilities');
  assert(t.includes('reasoning engine not connected yet'),'banner is honest about the engine');
+ assert(t.includes('2 need you'),'banner surfaces the owner-actionable saved states: needs-review schedule + a mapped bot that is gone');
+ assert(await ev(`(()=>{const a=document.getElementById('hqneeds');return a&&a.getAttribute('href')==='#business'&&a.textContent==='2 need you';})()`),'needs-you count links to the Business view');
+ await shot('floor-hq-needs.png');
  assert(await poll(`(()=>{const p=document.querySelector('#rooms polygon[data-room="ops"] title');return p&&p.textContent==='Estimate follow-up desk';})()`),'room takes the responsibility name');
  assert(await ev(`(()=>{const p=document.querySelector('#rooms polygon[data-room="finance"] title');return p&&p.textContent==='Library';})()`),'unmapped rooms keep their generic names');
  // Tooltip: first responsibility + real run history + the second responsibility sharing the room

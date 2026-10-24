@@ -67,7 +67,9 @@
         botId: rp.assignment ? rp.assignment.botId : (rp.bot ? (B.delegate && B.delegate.id) || null : null),
         botName: rp.assignment ? rp.assignment.botName : (rp.bot ? ((B.delegate && B.delegate.name) || 'the connected bot') : null),
         explicit: !!rp.assignment,
-        runsCount: rp.runsCount || (rp.runs || []).length || 0
+        runsCount: rp.runsCount || (rp.runs || []).length || 0,
+        needsReview: !!(rp.schedule && rp.schedule.needsReview),
+        noPick: !!(rp.bot && !rp.assignment && !B.delegate) // bot-marked, no connected pick: needs an explicit assignment or a connection
       }))
     };
   }

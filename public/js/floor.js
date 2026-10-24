@@ -304,7 +304,12 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
         if (!hq.engineConfigured) bits.push('reasoning engine not connected yet');
         else if (!hq.engineOn) bits.push('provider processing is off');
         bits.push('as of your last Business view'); // the projection refreshes when the Business view loads, not while the Floor is up
-        hb.innerHTML = '<b>' + esc(hq.name ? hq.name + ' HQ' : 'Your business HQ') + '</b><small>' + esc(bits.join(' \u00b7 ')) + '</small>';
+        // Needs-you: saved owner-actionable states only - a paused-schedule review, a
+        // bot-marked responsibility with no connected pick, or a mapped bot that is not
+        // connected. Waiting-on-bot and failed runs are states, not owner actions.
+        const needsYou = rs.filter(rp => rp.needsReview || rp.noPick || (rp.botId && (() => { const a = BB.agent(rp.botId); return !a || BB.presence(a) !== 'connected'; })())).length;
+        const needsBit = needsYou ? ' \u00b7 <a href="#business" id="hqneeds">' + needsYou + (needsYou === 1 ? ' needs you' : ' need you') + '</a>' : '';
+        hb.innerHTML = '<b>' + esc(hq.name ? hq.name + ' HQ' : 'Your business HQ') + '</b><small>' + esc(bits.join(' \u00b7 ')) + needsBit + '</small>';
         hb.hidden = false;
       } else hb.hidden = true;
     }
