@@ -5,7 +5,24 @@
   'use strict';
   const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
   const V = $('#v-business');
-  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null, draftPending = null, draftUnconfirmed = null;
+  let B = null, loading = false, loadErr = null, editingSrc = null, editingProp = null, openResp = {}, pendingApproval = null, pendingDelegation = null, pendingDiscovery = null, pendingSchedule = null, schedGen = 0, pollT = null, draftOps = {};
+  // Identity objects are rebuilt on every flip: compare by VALUE, never by reference.
+  const sameId = (a, b) => a && b && a.e === b.e && a.w === b.w;
+  const opKey = (id, v) => ((id && id.e) || '') + '|' + ((id && id.w) || '') + '|' + (v || '');
+  // An unconfirmed create is remembered across reloads WITHOUT storing the draft body:
+  // account, recipient, subject, time and a non-reversible fingerprint of to+subject+text.
+  const draftFp = (to, subject, text) => { const s0 = to + String.fromCharCode(10) + subject + String.fromCharCode(10) + text; let h = 5381; for (let i = 0; i < s0.length; i++) h = ((h << 5) + h + s0.charCodeAt(i)) >>> 0; return h.toString(36); };
+  // Durable unresolved-draft receipts: a COLLECTION scoped to owner+workspace, surviving
+  // reloads and identity round trips. No draft body is stored - account, connection
+  // version, recipient, subject, time and a non-reversible words fingerprint only. A
+  // receipt is cleared ONLY by the owner's explicit checked-Gmail decision - never by a
+  // later success, never by a newer unresolved op.
+  let unconfMem = {};
+  const unconfStoreKey = (id) => 'bzDraftUnconf:' + ((id && id.w) || 'ws') + ':' + ((id && id.e) || 'who');
+  const readUnconfAll = (scope) => { const k = unconfStoreKey(scope || identity()); try { const j = JSON.parse(localStorage.getItem(k) || 'null'); if (Array.isArray(j)) return j.filter(r => r && r.opId && r.fp); } catch (e) {} return unconfMem[k] || []; };
+  const writeUnconfAll = (list, scope) => { const k = unconfStoreKey(scope || identity()); unconfMem[k] = list; try { localStorage.setItem(k, JSON.stringify(list.slice(0, 10))); } catch (e) {} };
+  const addUnconf = (rec, scope) => { const l = readUnconfAll(scope).filter(r => r.opId !== rec.opId); l.unshift(rec); writeUnconfAll(l, scope); };
+  const clearUnconf = (opId, scope) => writeUnconfAll(readUnconfAll(scope).filter(r => r.opId !== opId), scope);
 
   const api = (p, m, b) => BB.api('/api/business' + p, m, b);
   // Tenant identity guard: loaded state belongs to the exact identity (account + workspace)
@@ -87,6 +104,10 @@
   /* ---------- proposals ---------- */
   function propCard(p) {
     if (p.status === 'rejected') return '';
+    if (p.status === 'active') return `<div class="bz-card" data-prop="${p.id}">
+      <div class="bz-prop-h"><div class="t"><b>${esc(p.title)}</b><small>${p.bot ? 'Mapped by ' + esc(p.bot.name) + ' from your sources' : 'Drafted from your sources'} · ${BB.when(p.createdAt)}</small></div>${chip('Started', 'ok')}</div>
+      <p class="meta">Approved - it runs under your approval in the responsibilities below.</p>
+    </div>`; // a decided proposal is a record, never a pending decision again
     const editing = editingProp === p.id;
     const ev = (p.evidence || []).map(e => e && e.excerptDeleted
       ? `<div class="bz-ev"><blockquote class="bz-ev-del">Quote removed - its source was deleted.</blockquote><small>${esc(e.sourceTitle || 'Source')}</small></div>`
@@ -431,25 +452,27 @@
       const stamp = identity(), want = appSnap();
       const stillCurrent = () => !(stamp && stamp !== identity()) && (() => { const cur = appSnap(); return want && cur && cur.email === want.email && cur.at === want.at && cur.v === want.v; })();
       const openComposer = (vals) => {
-        const pend = !!(draftPending && draftPending.stamp === stamp && draftPending.v === (want && want.v)); // one in-flight create per identity+connection, across close/reopen
-        const un = draftUnconfirmed && draftUnconfirmed.stamp === stamp ? draftUnconfirmed : null;
+        const pend = draftOps[opKey(stamp, want && want.v)] || null; // one in-flight create per identity+connection, across close/reopen - never a singleton another identity can overwrite
+        const unList = readUnconfAll(); // scoped to this identity by its store key; never another owner's ops
         const form = BB.modal(`<h3>Draft an email</h3>
         <p class="meta">A draft is created in the connected Google account with exactly your words. Nothing is sent - you review and send it in Gmail.</p>
-        ${pend ? `<p class="meta" data-draft-pending="${draftPending.token}"><b>A draft is already being created in Gmail from this review - wait for its result before creating another.</b> Closing this window does not cancel it.</p>` : ''}
-        ${un ? `<p class="meta">An earlier draft attempt for ${esc(un.email || 'the connected account')} did not get a clear answer - it may exist in Gmail. Check the drafts folder there before creating the same draft again.</p>` : ''}
+        ${pend ? `<p class="meta" data-draft-pending="${pend.token}"><b>A draft is already being created in Gmail from this review - wait for its result before creating another.</b> Closing this window does not cancel it.</p>` : ''}
+        ${unList.map(u0 => `<p class="meta" data-draft-unconf="${esc(u0.opId)}">An earlier draft attempt for <b>${esc(u0.account || 'the connected account')}</b>${u0.to ? ' to <b>' + esc(u0.to) + '</b>' : ''}${u0.subject ? ' (' + esc(u0.subject) + ')' : ''}${u0.at ? ' · ' + BB.when(u0.at) : ''} did not get a clear answer - it may exist in Gmail. Check the drafts folder there before creating the same draft again. <button class="b out sm" data-draft-reconciled="${esc(u0.opId)}" type="button">I checked Gmail - clear this note</button></p>`).join('')}
         <label class="fld">To<input class="in" id="bz-draft-to" maxlength="300" value="${esc(vals.to || '')}" placeholder="dana@example.com"></label>
         <label class="fld">Subject<input class="in" id="bz-draft-subject" maxlength="300" value="${esc(vals.subject || '')}" placeholder="Re: Estimate"></label>
         <label class="fld">Words<textarea class="in" id="bz-draft-text" rows="6" maxlength="20000" placeholder="Hi Dana - ">${esc(vals.text || '')}</textarea></label>
         <div class="acts"><button class="b ghost" data-close>Cancel</button><button class="b ink" data-draft-review ${pend ? 'disabled' : ''}>Review the exact draft</button></div>`, { label: 'Draft an email' });
+        form.querySelectorAll('[data-draft-reconciled]').forEach(recBtn => recBtn.onclick = () => { clearUnconf(recBtn.getAttribute('data-draft-reconciled')); const n = form.querySelector('[data-draft-unconf="' + recBtn.getAttribute('data-draft-reconciled') + '"]'); if (n) n.remove(); }); // the owner's explicit checked-Gmail decision clears a receipt - nothing else does
         form.querySelector('[data-draft-review]').onclick = () => {
           if (!stillCurrent()) { BB.closeModal(); load(); return BB.toast('The connection changed - review it and try again.'); }
           const to = form.querySelector('#bz-draft-to').value.trim(), subject = form.querySelector('#bz-draft-subject').value, text = form.querySelector('#bz-draft-text').value;
           if (!to || !text.trim()) return BB.toast('A draft needs a recipient and text.');
           const g = B.apps.gmail;
-          const sameUn = un && un.to === to && un.text === text;
+          const sameUn = unList.find(u0 => u0.v === want.v && u0.fp === draftFp(to, subject, text)) || null;
           BB.modal(`<h3>Review the exact draft</h3>
           <p class="meta">This creates a draft - nothing is sent.</p>
-          ${sameUn ? `<p class="meta"><b>An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail.</b> Check the drafts folder in Gmail before creating it again.</p>` : ''}
+          ${sameUn ? `<p class="meta"><b>An earlier attempt to create this exact draft did not get a clear answer - it may already exist in Gmail.</b> Check the drafts folder in Gmail before creating it again.</p>
+          <label class="fld bz-check"><input type="checkbox" data-draft-checked> I checked the drafts folder in Gmail for the earlier attempt.</label>` : ''}
           <div class="bz-log"><div><small>From (the connected account)</small><br><b>${esc(g.email || 'unknown account')}</b></div>
           <div><small>To</small><br><b>${esc(to)}</b></div>
           <div><small>Subject</small><br><b>${esc(subject || '(no subject)')}</b></div>
@@ -457,6 +480,8 @@
           <p class="meta" data-draft-live></p>
           <div class="acts"><button class="b ghost" data-draft-back>Back</button><button class="b ink" data-draft-create>Create this draft in Gmail</button></div>`, { label: 'Review the exact draft' });
           const backBtn = document.querySelector('#modal [data-draft-back]'), createBtn = document.querySelector('#modal [data-draft-create]');
+          const checkedBox = document.querySelector('#modal [data-draft-checked]');
+          if (checkedBox) { createBtn.disabled = true; checkedBox.onchange = () => { createBtn.disabled = !checkedBox.checked; }; } // a same-op retry needs the explicit checked-Gmail decision first
           backBtn.onclick = () => openComposer({ to, subject, text }); // Back keeps every typed word
           createBtn.onclick = async () => {
             if (!stillCurrent()) { BB.closeModal(); load(); return BB.toast('The connection changed - review it and try again.'); }
@@ -464,10 +489,14 @@
             createBtn.textContent = 'Creating in Gmail...';
             const liveNote = document.querySelector('#modal [data-draft-live]'); if (liveNote) liveNote.textContent = 'Creating the draft in Gmail - closing this window does not cancel it.';
             const opTok = Math.random().toString(36).slice(2) + Date.now().toString(36);
-            draftPending = { stamp, v: want.v, token: opTok };
+            const myKey = opKey(stamp, want.v);
+            draftOps[myKey] = { token: opTok, at: Date.now() };
             const j = await api('/apps/gmail/drafts', 'POST', { to, subject, text, expectedVersion: want.v });
-            if (draftPending && draftPending.token === opTok) draftPending = null; // token-owned release: a newer operation's gate is never cleared by an older reply
-            if (stamp && stamp !== identity()) return; // changed mid-request: discard the stale reply
+            if (draftOps[myKey] && draftOps[myKey].token === opTok) delete draftOps[myKey]; // token-owned release: a newer operation's gate is never cleared by an older reply
+            if (j && j.code === 'app_draft_unconfirmed') { // unresolved: record under the op's OWN owner/workspace first - an identity flip never loses it
+              addUnconf({ opId: want.v + ':' + draftFp(to, subject, text), v: want.v, account: want.email || null, to, subject, fp: draftFp(to, subject, text), at: new Date().toISOString() }, stamp);
+            }
+            if (stamp && !sameId(stamp, identity())) return; // changed mid-request: discard the stale reply (value compare - identity objects rebuild on flips)
             // A composer reopened while this op was in flight re-arms on the known outcome - words untouched
             const pn = document.querySelector('#modal [data-draft-pending="' + opTok + '"]');
             if (pn) { pn.remove(); const rv = document.querySelector('#modal [data-draft-review]'); if (rv) rv.disabled = false; }
@@ -476,18 +505,14 @@
             if (liveNote) liveNote.textContent = '';
             const closeIfOurs = () => { if (document.contains(createBtn)) BB.closeModal(); }; // never close a modal that is not this review
             await load(); // refresh BEFORE judging: a replacement that landed mid-request must not get the success copy
-            if (stamp && stamp !== identity()) return;
-            if (j.error) {
-              if (j.code === 'app_draft_unconfirmed') draftUnconfirmed = { stamp, v: want.v, email: want.email, to, text }; // unresolved: retained for reconciliation, never forgotten
-              closeIfOurs(); return BB.toast(j.error);
-            }
+            if (stamp && !sameId(stamp, identity())) return; // value compare: an A->B->A round trip during the request must not strand this op's own settlement
+            if (j.error) { closeIfOurs(); return BB.toast(j.error); } // unresolved ops were already recorded above under their own owner scope
             closeIfOurs();
             // The create was bound to the reviewed connection: if it has since been replaced,
             // say where the draft went and let the card show the current state.
             if (!stillCurrent()) return BB.toast('Draft created in Gmail for ' + (want.email || 'the reviewed account') + ' - the connection changed meanwhile; the card shows the current state.');
-            const hadUn = draftUnconfirmed && draftUnconfirmed.stamp === stamp;
-            if (hadUn) draftUnconfirmed = null;
-            BB.toast((j.note || 'Draft created in Gmail - nothing was sent.') + (hadUn ? ' An earlier attempt may also have created a draft - check the drafts folder in Gmail.' : ''));
+            const hadUn = readUnconfAll().length > 0;
+            BB.toast((j.note || 'Draft created in Gmail - nothing was sent.') + (hadUn ? ' An earlier attempt may also have created a draft - check the drafts folder in Gmail.' : '')); // a success never clears any earlier unknown: only the owner's checked-Gmail decision does
           };
         };
       };
