@@ -498,6 +498,50 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
   assert.equal((await f.r(['KEYS','fm:biz:appstate:*'])).length,0,'pending sign-ins are cancelled');
   assert.equal((await f.bizAppCallback('gmail',{state:cz.nonce,code:'authcode1'},'https://test.local',cz.cookie)).body.code,'app_state_invalid','a cancelled sign-in can never complete');
 
+  // 13d. owner binding: a removal names the EXACT connection reviewed on screen. A page from
+  // before a replacement reconnect (this or another tab) can never remove the grant it never
+  // saw; an unbound owner call is refused; internal lifecycle callers stay unbound.
+  const cb0=await connect();await f.bizAppCallback('gmail',{state:cb0.nonce,code:'authcode1'},'https://test.local',cb0.cookie);
+  const stV=await f.bizAppStatus('gmail');
+  assert.equal(stV.connected,true);assert.ok(stV.connectionVersion,'status exposes the exact connection version');
+  assert.equal(stV.connectionVersion,(await f.getJ('fm:biz:app:gmail')).connectionId,'the exposed version is the stored connection id');
+  const dMiss=await f.bizAppDisconnect('gmail',null); // an owner call without the reviewed version
+  assert.equal(dMiss.status,409);assert.equal(dMiss.body.code,'app_version_required');
+  assert.ok(await f.getJ('fm:biz:app:gmail'),'an unbound removal never touches the record');
+  // a replacement reconnect is a DIFFERENT connection: the stale page's version cannot remove it
+  const staleV=stV.connectionVersion;
+  const cb1=await connect();await f.bizAppCallback('gmail',{state:cb1.nonce,code:'authcode1'},'https://test.local',cb1.cookie);
+  const stV2=await f.bizAppStatus('gmail');
+  assert.ok(stV2.connectionVersion&&stV2.connectionVersion!==staleV,'a replacement reconnect is a new bindable connection');
+  const dStale=await f.bizAppDisconnect('gmail',staleV);
+  assert.equal(dStale.status,409);assert.equal(dStale.body.code,'app_version_mismatch');
+  assert.equal((await f.getJ('fm:biz:app:gmail')).connectionId,stV2.connectionVersion,'the replacement connection survives a stale removal');
+  const dOK=await f.bizAppDisconnect('gmail',stV2.connectionVersion);
+  assert.equal(dOK.status,200);assert.equal(dOK.body.grantStatus,'revoked','the reviewed connection removes');
+  assert.equal(await f.getJ('fm:biz:app:gmail'),null);
+  // the response carries an unresolved PRIOR grant honestly even when the current removal is confirmed
+  E.__G_REVOKE_FAIL='1';
+  const cb2=await connect();await f.bizAppCallback('gmail',{state:cb2.nonce,code:'authcode1'},'https://test.local',cb2.cookie);
+  const dOld=await f.bizAppDisconnect('gmail',(await f.getJ('fm:biz:app:gmail')).connectionId); // unconfirmed, handle retained
+  assert.equal(dOld.body.grantStatus,'revoke_unconfirmed');
+  const cb3=await connect();await f.bizAppCallback('gmail',{state:cb3.nonce,code:'authcode1'},'https://test.local',cb3.cookie);
+  delete E.__G_REVOKE_FAIL;
+  const dNew=await f.bizAppDisconnect('gmail',(await f.getJ('fm:biz:app:gmail')).connectionId); // current confirmed, older retried under the lock
+  assert.equal(dNew.body.grantStatus,'revoked','the current removal is confirmed');
+  assert.ok(dNew.body.priorGrant===null||dNew.body.priorGrant===undefined||dNew.body.priorGrant==='revoked','the retried prior grant is reported as resolved, never silently dropped');
+  // and when the prior retry also fails, priorGrant says unconfirmed so the UI never claims all-removed
+  E.__G_REVOKE_FAIL='1';
+  const cb4=await connect();await f.bizAppCallback('gmail',{state:cb4.nonce,code:'authcode1'},'https://test.local',cb4.cookie);
+  await f.bizAppDisconnect('gmail',(await f.getJ('fm:biz:app:gmail')).connectionId); // unresolved older
+  const cb5=await connect();await f.bizAppCallback('gmail',{state:cb5.nonce,code:'authcode1'},'https://test.local',cb5.cookie);
+  delete E.__G_REVOKE_FAIL;
+  E.__G_REVOKE_FAIL='1';
+  const dBoth=await f.bizAppDisconnect('gmail',(await f.getJ('fm:biz:app:gmail')).connectionId); // current AND prior fail
+  delete E.__G_REVOKE_FAIL;
+  assert.equal(dBoth.body.grantStatus,'revoke_unconfirmed');assert.equal(dBoth.body.priorGrant,'revoke_unconfirmed','an unresolved prior grant is named in the response');
+  assert.ok(/Google account/.test(dBoth.body.note||''),'the recovery path is included');
+  const dDrain=await f.bizAppDisconnect('gmail',null);assert.equal(dDrain.status,200,'drain-only removal stays allowed'); // no live record: cleans pending states
+
   // 14. purge: revokes grants, kills pending states and the epoch, counts honestly
   const c9=await connect(); // a pending state that is never completed
   const c10=await connect();await f.bizAppCallback('gmail',{state:c10.nonce,code:'authcode1'},'https://test.local',c10.cookie);
