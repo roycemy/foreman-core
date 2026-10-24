@@ -2426,7 +2426,10 @@ const bizLockOwned = (key, tok) => r(['EVAL', BIZ_LOCK_OWNED, 1, key, tok]).then
 const bizTombAdd = (p, f0, id, enc, status) => r(['EVAL', BIZ_TOMB_ADD, 4, 'fm:biz:apptomb:' + p, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', id, enc, status, now(), f0]);
 const bizTombFill = (p, f0, id, enc, status) => r(['EVAL', BIZ_TOMB_FILL, 4, 'fm:biz:apptomb:' + p, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', id, enc, status, f0]);
 const bizTombMark = (p, f0, id, status) => r(['EVAL', BIZ_TOMB_MARK, 4, 'fm:biz:apptomb:' + p, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', id, status, f0]);
-const bizTombUnresolved = (t) => bizTombNorm(t).attempts.filter(a => (a.enc && (a.status === 'pending' || a.status === 'revoke_unconfirmed' || a.status === 'undecryptable')) || a.status === 'possibly_issued');
+// Unresolved from CREATION: a fresh awaiting_exchange slot is an in-progress/uncertain
+// grant (the exchange may have completed at the provider), not a neutral placeholder - it
+// is retained, surfaced and counted exactly like a possibly_issued marker.
+const bizTombUnresolved = (t) => bizTombNorm(t).attempts.filter(a => (a.enc && (a.status === 'pending' || a.status === 'revoke_unconfirmed' || a.status === 'undecryptable')) || a.status === 'possibly_issued' || a.status === 'awaiting_exchange');
 // Public-safe view of a connection: NEVER carries tokens, secrets, or message content.
 async function bizAppStatus(p) {
   const c = BIZ_APPS[p]; if (!c) return { status: 404, body: { error: 'Unknown app' } };
@@ -4104,7 +4107,7 @@ async function bizDataPurge(body) {
       for (const a of bizTombUnresolved(tb)) {
         const prov = k.slice(nsKey('fm:biz:apptomb:').length), rt = a.enc ? bizAppDec(a.enc) : null;
         if (rt && BIZ_APPS[prov]) { if (await bizAppRevoke(BIZ_APPS[prov], rt)) counts.grantsRevoked++; else counts.grantsUnconfirmed++; }
-        else if (a.status === 'possibly_issued') counts.grantsUnknown = (counts.grantsUnknown || 0) + 1; // a sign-in may have completed at the provider - check third-party access in the account
+        else if (a.status === 'possibly_issued' || a.status === 'awaiting_exchange') counts.grantsUnknown = (counts.grantsUnknown || 0) + 1; // a sign-in may have completed at the provider - check third-party access in the account
       }
     }
     await fam('fm:biz:apptomb:*', null);

@@ -378,6 +378,17 @@ require('vm').runInNewContext(src,c);const f=c.module.exports.t;F=f;
    let tomb=await f.getJ('fm:biz:apptomb:gmail');
    let att=(tomb.attempts||[]).find(a=>a.status==='awaiting_exchange');
    assert.ok(att&&!att.enc,'the reserved slot survives with no credential handle');
+   // IMMEDIATELY (no aging): the fresh slot is already unresolved-uncertain everywhere
+   {
+     const st0=await f.bizAppStatus('gmail');
+     assert.equal(st0.grantStatus,'revoke_unconfirmed','a fresh interrupted sign-in is surfaced as uncertain from creation');
+     assert.ok(/Google account/.test(st0.grantNote||''),'with the manual-recovery note');
+     const d0=await f.bizAppDisconnect('gmail'); // no connection exists - the slot must still be preserved
+     assert.equal(d0.body.priorGrant,'revoke_unconfirmed','the disconnect outcome stays honest about the uncertain grant');
+     tomb=await f.getJ('fm:biz:apptomb:gmail');
+     att=(tomb.attempts||[]).find(a=>a.id===att.id);
+     assert.ok(att&&att.status==='awaiting_exchange','a disconnect never drops a fresh uncertain slot');
+   }
    // ten minutes later (simulated): the stale slot reconciles into possibly_issued
    tomb.attempts=tomb.attempts.map(a=>({...a,at:new Date(Date.now()-700000).toISOString()}));
    await f.setJ('fm:biz:apptomb:gmail',tomb);
