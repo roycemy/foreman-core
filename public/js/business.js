@@ -52,6 +52,34 @@
     else if (m[1] === 'uncertain') BB.toast('Google did not confirm whether the sign-in finished. ' + (kept ? 'The card shows the current state - ' + kept + ' ' : 'The card shows the current state. ') + 'An older attempt may have left access at Google: check third-party access in the Google account and remove anything you do not recognize, then try again.');
     else BB.toast('The new sign-in could not be finished - ' + (kept || (g ? 'nothing was connected. Start the connection again.' : 'the card shows the current state.')));
   }
+  // Per-business HQ projection for the Floor: a READ-ONLY snapshot of the state this view
+  // already paints for the same verified identity. The Floor only renders it; it never mutates
+  // it. Cleared on every identity change, so one owner's business never paints on another's floor.
+  function publishHQ() {
+    if (!B) { BB.hqState = null; return; }
+    const prof = B.profile || {}, eng = B.engine || {}, resps = (B.responsibilities || []).filter(rp => rp.status !== 'retired');
+    BB.hqState = {
+      name: typeof prof.name === 'string' && prof.name.trim() ? prof.name.trim().slice(0, 80) : null,
+      engineConfigured: !!eng.configured,
+      engineOn: !!(eng.configured && eng.enabled && eng.consent && eng.consent.current),
+      resps: resps.map(rp => ({
+        id: rp.id, title: String(rp.title || '').slice(0, 80), status: rp.status,
+        botId: rp.assignment ? rp.assignment.botId : (rp.bot ? (B.delegate && B.delegate.id) || null : null),
+        botName: rp.assignment ? rp.assignment.botName : (rp.bot ? ((B.delegate && B.delegate.name) || 'the connected bot') : null),
+        explicit: !!rp.assignment,
+        runsCount: rp.runsCount || (rp.runs || []).length || 0
+      }))
+    };
+  }
+  // Read-time validity for the HQ projection: the Floor can be up when the identity flips and
+  // this view's route/sync handlers only run while it is active, so every read re-checks the
+  // live identity against the stamped one. Unknown identity (signed out, /api/me not landed)
+  // shows nothing: a business name only paints under its verified owner.
+  BB.hqCurrent = () => {
+    const e = (BB.who && BB.who.email) || null, w = (BB.who && BB.who.workspace) || null;
+    if ((!e && !w) || !B || !loadedId || loadedId.e !== e || loadedId.w !== w) { BB.hqState = null; return null; }
+    return BB.hqState;
+  };
   function dropIfStaleTenant() {
     identity(); // bumps the generation when the account or workspace changed
     // The shell routes before /api/me lands, so an early load runs under an UNKNOWN identity
@@ -61,6 +89,7 @@
     const stale = (B && known && loadedId !== curId) || (inflightId && inflightId !== curId);
     if (stale) {
       B = null; loadErr = null; editingSrc = null; editingProp = null; openResp = {}; loadedId = null;
+      BB.hqState = null; // the Floor's read-only HQ projection dies with the identity too
       pendingApproval = null; // A's reviewed pages and work text never survive into another identity
       pendingDelegation = null; // same for a reviewed delegation payload
       pendingDiscovery = null; // and a reviewed discovery scan payload
@@ -237,6 +266,7 @@
 
   /* ---------- page ---------- */
   function paint() {
+    publishHQ(); // the Floor's HQ projection always mirrors the exact state being painted here
     if (dropIfStaleTenant()) { load(); return; }
     if (!V.classList.contains('on')) return;
     if (!B) { V.innerHTML = loadErr ? '<div class="page-in narrow"><p style="margin-top:24px">' + esc(loadErr) + '</p><p class="meta"><button class="btn" data-biz-retry type="button">Try again</button></p></div>' : '<div class="page-in narrow"><p class="meta" style="margin-top:24px">Loading…</p></div>'; const rt = $('[data-biz-retry]', V); if (rt) rt.onclick = () => load(); return; }
@@ -843,6 +873,18 @@
     $$('[data-resp-retire]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Retire this responsibility?', 'Its history stays visible.', 'Retire')) return; const j = await api('/responsibilities/' + b.dataset.respRetire + '/retire', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Retired.'); await load(); });
     $$('[data-resp-del]', V).forEach(b => b.onclick = async () => { if (!await askConfirm('Delete this responsibility?', 'Its work history is deleted with it. This cannot be undone.', 'Delete')) return; const j = await api('/responsibilities/' + b.dataset.respDel + '/delete', 'POST', {}); if (j.error) return BB.toast(j.error); BB.toast('Deleted with its history.'); await load(); });
   }
+
+  // Floor -> Business handoff: open this responsibility's card for the owner. Only ids that
+  // exist in the CURRENT identity's loaded state resolve; anything else is a no-op.
+  BB.openBusinessResp = id => {
+    if (!id || !B || !(B.responsibilities || []).some(rp => rp.id === id)) return false;
+    openResp[id] = true;
+    if (location.hash !== '#business') location.hash = '#business';
+    paint();
+    const el = V.querySelector('[data-resp="' + id + '"]');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return true;
+  };
 
   BB.onRoute(r => { if (r.v !== 'business') return; if (dropIfStaleTenant()) { load(); return; } if (!B && !loading) load(); else paint(); });
   BB.on(() => { /* state syncs should not clobber an in-progress edit, but a workspace change invalidates everything */ if (!V.classList.contains('on')) return; if (dropIfStaleTenant()) { load(); return; } if (!B && !loading) load(); });

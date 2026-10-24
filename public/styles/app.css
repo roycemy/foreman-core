@@ -700,3 +700,9 @@ body:not(:has(#v-floor.on)) .dark-bar{display:none}
   .sh-share .review-frame{max-height:calc(100dvh - 10vh - 150px)}
   .sh-share .review-frame .rc{zoom:.68}
 }
+
+/* per-business HQ banner + responsibility rooms (floor.js, state projection only) */
+#hqbanner{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:40;text-align:center;pointer-events:none;background:rgba(251,250,247,.88);border:1px solid #E1DCD1;border-radius:10px;padding:6px 14px}
+#hqbanner b{display:block;font:600 14px/1.25 Geist,ui-sans-serif,sans-serif;color:#1A1A18}
+#hqbanner small{display:block;font:400 11.5px/1.35 Geist,ui-sans-serif,sans-serif;color:#6E6E68;margin-top:1px}
+#rooms polygon.has-resp{cursor:pointer}

@@ -21,6 +21,27 @@
   const ROOM_MAP = Object.assign({ finance: 'library', marketing: 'studio', sales: 'meeting', support: 'meeting', ops: 'workshop', lounge: 'lounge', call: 'callcenter' }, window.HQ_ROOMS || {});
   const typeOf = k => ROOM_TYPES[ROOM_MAP[k]] || ROOM_TYPES.workshop;
   BB.roomName = k => typeOf(k).name;
+  /* per-business HQ: when the Business view has loaded real workspace state for the current
+     identity it publishes a read-only projection on BB.hqState. A room whose responsibility has
+     a mapped bot takes the responsibility's OWN name; everything else keeps the generic room
+     type. Names, counts and engine status are projections of saved state - nothing is simulated. */
+  const hqState = () => (BB.hqCurrent ? BB.hqCurrent() : BB.hqState);
+  const hqResps = () => { const h = hqState(); return h && Array.isArray(h.resps) ? h.resps : []; };
+  // ALL current responsibilities whose mapped bot sits in this room (one bot can carry several;
+  // several bots can share a room). Ghosts (paired, never connected) map nothing.
+  function respsForRoom(k) {
+    const key = k === 'support' ? 'sales' : k, out = [];
+    for (const rp of hqResps()) {
+      if (!rp.botId) continue;
+      const a = BB.agent(rp.botId);
+      if (!a || BB.isGhost(a)) continue;
+      let room = BB.roomOf(a); if (room === 'support') room = 'sales';
+      if (room === key) out.push(rp);
+    }
+    return out;
+  }
+  const respForRoom = k => respsForRoom(k)[0] || null;
+  const roomLabel = k => { const rp = respForRoom(k); return rp && rp.title ? rp.title : typeOf(k).name; };
   BB.ROOMS = ['finance', 'marketing', 'sales', 'ops', 'lounge'];
   BB.roomOf = a => { const as = BB.agents(), i = Math.max(0, as.findIndex(x => x.id === a.id)); const r = a.visibleRoom || a.room; return ROOMK.includes(r) ? r : ROOMK[i % ROOMK.length]; };
   BB.homeRoomOf = a => { const as = BB.agents(), i = Math.max(0, as.findIndex(x => x.id === a.id)); return ROOMK.includes(a.room) ? a.room : ROOMK[i % ROOMK.length]; };
@@ -155,6 +176,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
       + `<svg class="layer" id="rooms" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Rooms">${roomPolys}</svg>`
       + `<svg class="layer" id="fx" viewBox="${PJ.X0} ${PJ.Y0} ${PJ.W} ${PJ.H}" aria-hidden="true"><defs><radialGradient id="pvLamp"><stop offset="0" stop-color="#FFE7B0" stop-opacity=".55"/><stop offset="1" stop-color="#FFE7B0" stop-opacity="0"/></radialGradient></defs><g id="tray">${islandB()}</g><g id="ring"><ellipse cx="0" cy="0" rx="24" ry="9.5" fill="rgba(18,18,18,.06)" stroke="#121212" stroke-opacity=".55" stroke-width="1.3"/></g><g id="collab"></g>${BB.meetGlowSVG ? BB.meetGlowSVG() : ''}</svg>`
       + `<div id="chl"></div><div id="ov"><div class="tip" id="tip" role="tooltip"></div><div class="isl-card" id="islcard" role="region" aria-label="Request at the tray"></div></div>`;
+    const st0 = stageEl(); if (st0 && !$('#hqbanner')) st0.insertAdjacentHTML('afterbegin', '<div id="hqbanner" role="status" hidden></div>');
     const chl = $('#chl');
     propsSVG().forEach(([d, svg, z]) => { const e = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); e.setAttribute('class', 'pv-prop'); e.setAttribute('aria-hidden', 'true'); e.setAttribute('viewBox', PJ.X0 + ' ' + PJ.Y0 + ' ' + PJ.W + ' ' + PJ.H); e.style.zIndex = z; e.innerHTML = svg; chl.appendChild(e); });
     /* rooms: hover or keyboard focus -> 6% vermilion tint, 1.5px edge, one ink tooltip */
@@ -196,9 +218,11 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     const b = BOXW[k], pts = [W2P(b[0], b[1]), W2P(b[2], b[1]), W2P(b[2], b[3]), W2P(b[0], b[3])];
     const cx = pts.reduce((s, q) => s + q[0], 0) / 4, top = Math.min(...pts.map(q => q[1]));
     const tip = $('#tip'), info = roomInfo(k);
-    tip.innerHTML = esc(typeOf(k).name) + '<small>' + esc(info.line) + '</small>';
+    const rps = respsForRoom(k), rp = rps[0];
+    const extra = rp ? ' \u00b7 ' + (rp.runsCount === 1 ? '1 run on record' : (rp.runsCount || 0) + ' runs on record') + (rp.status === 'paused' ? ' \u00b7 paused' : '') + (rps.length > 1 ? ' \u00b7 +' + (rps.length - 1) + ' more responsibilit' + (rps.length === 2 ? 'y' : 'ies') + ' here' : '') : '';
+    tip.innerHTML = esc(roomLabel(k)) + '<small>' + esc(info.line + extra) + '</small>';
     tip.style.left = cx + '%'; tip.style.top = (top - 1) + '%'; tip.classList.add('on');
-    p.setAttribute('aria-label', typeOf(k).name + ': ' + info.line);
+    p.setAttribute('aria-label', roomLabel(k) + ': ' + info.line + extra);
   }
   function hideRoom(k) { if (hoverRoom !== k) return; hoverRoom = null; BB.$$('#rooms polygon').forEach(x => x.classList.remove('hot')); $('#tip').classList.remove('on'); }
   BB.focusRoom = k => { const p = $('#rooms polygon[data-room="' + k + '"]'); if (p) { BB.floorReset(); p.focus(); } };
@@ -269,6 +293,22 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   }
   function render() {
     if (!BB.S) return; build(); fit();
+    const hb = $('#hqbanner'), hq = hqState();
+    if (hb) {
+      const rs = hqResps(), act = rs.filter(r => r.status === 'active').length, pau = rs.length - act;
+      if (hq && (hq.name || rs.length)) {
+        const bits = [rs.length === 1 ? '1 responsibility' : (act + ' active' + (pau ? ' \u00b7 ' + pau + ' paused' : ''))];
+        if (!hq.engineConfigured) bits.push('reasoning engine not connected yet');
+        else if (!hq.engineOn) bits.push('provider processing is off');
+        hb.innerHTML = '<b>' + esc(hq.name ? hq.name + ' HQ' : 'Your business HQ') + '</b><small>' + esc(bits.join(' \u00b7 ')) + '</small>';
+        hb.hidden = false;
+      } else hb.hidden = true;
+    }
+    BB.$$('#rooms polygon').forEach(p => {
+      const t = p.querySelector('title'); if (t) t.textContent = roomLabel(p.dataset.room);
+      p.classList.toggle('has-resp', respsForRoom(p.dataset.room).length > 0);
+      if (!p.dataset.hqClick) { p.dataset.hqClick = '1'; p.addEventListener('click', () => { const rp = respForRoom(p.dataset.room); if (rp && BB.openBusinessResp) BB.openBusinessResp(rp.id); }); }
+    });
     const as = BB.agents(), ids = new Set(as.map(a => a.id));
     Object.keys(F).forEach(id => { if (!ids.has(id)) { const r=F[id];if(!BB.reduced()&&!document.hidden){const out=r.el.cloneNode(true);out.removeAttribute('tabindex');out.removeAttribute('role');out.setAttribute('aria-hidden','true');out.style.pointerEvents='none';out.classList.add('departing');r.el.parentNode.appendChild(out);setTimeout(()=>out.remove(),600);}r.el.remove();delete F[id]; } });
     const waitList = []; waitingItems().forEach(i => { if (!waitList.includes(i.a.id)) waitList.push(i.a.id); });
