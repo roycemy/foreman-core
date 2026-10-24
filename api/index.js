@@ -102,6 +102,14 @@ function memEval(script, n, keys, argv) {
     }
     return 1;
   }
+  if (script === BIZ_SCHED_CLAIM_RECOVER) {
+    if (mem.kv.get(keys[3]) !== argv[1]) return 0; // the responsibility record must be exactly as read
+    if (mem.kv.has(keys[4])) return 0;             // a run registered under this claim: registration won the race
+    let rec; try { rec = JSON.parse(mem.kv.get(keys[3])); } catch { rec = null; }
+    if (!rec || !rec.schedule || String(rec.schedule.claimId) !== String(argv[3])) return 0; // only the claim owner releases
+    mem.kv.set(keys[3], argv[2]);
+    return 1;
+  }
   if (script === BIZ_SCHED_GATE) {
     if (mem.kv.get(keys[3]) !== argv[1]) return 0; // responsibility record changed since the schedule claim (pause/disable/drift/edit)
     if (mem.kv.get(keys[4]) !== argv[2]) return 0; // the held job is not what this run registered
@@ -253,6 +261,14 @@ const BIZ_SCHED_GATE = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] 
 // window when the responsibility record is untouched. Any other outcome returns 0 and the
 // sweep leaves everything alone (a visible job, a settled run, an owner's change).
 const BIZ_SCHED_RECOVER = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('GET',KEYS[4])~=ARGV[2] then return 0 end; if ARGV[3]=='' then if redis.call('EXISTS',KEYS[5])==1 then return 0 end else if redis.call('GET',KEYS[5])~=ARGV[3] then return 0 end end; if ARGV[3]~='' then redis.call('SET',KEYS[5],ARGV[4]) end; redis.call('DEL',KEYS[4]); if ARGV[5]~='' then local rraw=redis.call('GET',KEYS[6]); if rraw==ARGV[5] then local rok,rrec=pcall(cjson.decode,rraw); if rok and rrec.schedule and tostring(rrec.schedule.claimId)==ARGV[7] then redis.call('SET',KEYS[6],ARGV[6]) end end end; return 1";
+// Atomic release of a NAKED schedule claim: an attempt interrupted (or merely slow - the age
+// timeout is a liveness hint, never proof of death) between the claim CAS and run registration
+// leaves only schedule.claimId + a consumed window. Run-absence and the release are decided in
+// ONE script: if the original registers its run anywhere between this sweep's reads, EXISTS
+// wins and the release refuses instead of freeing a successful window into a duplicate queue.
+// If the release wins first, the late original's counter CAS and final gate compare the exact
+// claimed record - changed now - and refuse. Ownership is bound to the claimId in the record.
+const BIZ_SCHED_CLAIM_RECOVER = "local f=redis.call('GET',KEYS[1]) or '0'; if f~=ARGV[1] then return 0 end; if redis.call('EXISTS',KEYS[2])==1 then return 0 end; if redis.call('EXISTS',KEYS[3])==1 then return 0 end; if redis.call('GET',KEYS[4])~=ARGV[2] then return 0 end; if redis.call('EXISTS',KEYS[5])==1 then return 0 end; local pok,prec=pcall(cjson.decode,ARGV[2]); if not pok then return 0 end; if not prec.schedule or tostring(prec.schedule.claimId)~=ARGV[4] then return 0 end; redis.call('SET',KEYS[4],ARGV[3]); return 1";
 async function updateAgent(id, patch) {
   const key='fm:agent:'+id;
   for(let attempt=0;attempt<8;attempt++){
@@ -3597,17 +3613,23 @@ async function bizDailyTick() {
       // Claim-identity recovery, independent of the job inventory: a claim whose attempt died
       // before creating anything leaves only schedule.claimId + a consumed window. With no run
       // record under that id the flip provably never ran (registration precedes it), so the
-      // reservation is released - atomically, bound to the exact record and its claimId.
+      // reservation can be released - but run-absence and the release must be ONE atomic script
+      // (BIZ_SCHED_CLAIM_RECOVER): the age is only a liveness timeout, never proof of death, and
+      // a timed-out original that resumes and registers between this sweep's peek and its write
+      // must win - the script then refuses and the successful window is never freed into a
+      // duplicate queue. Recovery winning first is equally safe: the late original's counter CAS
+      // and final gate compare the exact claimed record, which the release changed.
       for (const rp of await bizResps()) {
         const sch = rp.schedule;
         if (!sch || !sch.claimId || !sch.lastQueuedAt) continue;
-        if (Date.now() - Date.parse(sch.lastQueuedAt) < BIZ.STUCK_HELD_MS) continue; // liveness timeout only
-        if (await r(['GET', 'fm:biz:run:' + sch.claimId])) continue; // a run exists: the job-inventory sweep owns it
+        if (Date.now() - Date.parse(sch.lastQueuedAt) < BIZ.STUCK_HELD_MS) continue; // liveness timeout only, never the safety basis
+        if (await r(['GET', 'fm:biz:run:' + sch.claimId])) continue; // cheap pre-filter: a run exists - the job-inventory sweep owns it (the script re-checks atomically)
+        if (global.__bizSchedSweepInterleave) { const fn = global.__bizSchedSweepInterleave; global.__bizSchedSweepInterleave = null; await fn(); } // test-only interleave hook, never set in production
         const rpKey = 'fm:biz:resp:' + rp.id, rpRaw = await r(['GET', rpKey]);
         if (!rpRaw) continue;
         const cur = JSON.parse(rpRaw);
         if (!cur.schedule || cur.schedule.claimId !== sch.claimId) continue; // someone newer owns the record
-        if (await r(['EVAL', BIZ_FENCE_CAS, 4, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', rpKey, f0, rpRaw, JSON.stringify({ ...cur, schedule: { ...cur.schedule, lastQueuedAt: null, claimId: null } })]) === 1) {
+        if (await r(['EVAL', BIZ_SCHED_CLAIM_RECOVER, 5, 'fm:biz:fence', 'fm:biz:freeze', 'fm:biz:op_pending', rpKey, 'fm:biz:run:' + sch.claimId, f0, rpRaw, JSON.stringify({ ...cur, schedule: { ...cur.schedule, lastQueuedAt: null, claimId: null } }), String(sch.claimId)]) === 1) {
           await bizLog('schedule_claim_released', { respId: rp.id, title: cur.title }, f0); // nothing was ever created or sent
         }
       }

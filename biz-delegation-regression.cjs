@@ -6,7 +6,7 @@
 // Engine endpoint and bot side are exercised through the real internal call path the
 // gateway/MCP adapters use (claimTask/completeTask/stopTask); no real network, no real bot.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizDelegatePayload,bizDelegateRun,bizSettleDelegatedRun,bizDailyTick,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,reassignAsleepQueuedTasks,reassignTask,gatewayAct,newTask,bizSources,listTasks,setJ,getJ,r,als,BIZ_SCHED_GATE,BIZ_SCHED_RECOVER,BIZ};';
+const src=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.t={bizSourceAdd,bizSourceEdit,bizSourceDel,bizDiscover,bizProposalAct,bizRespAct,bizDataPurge,bizConsentAct,bizState,bizDelegateBot,bizDelegatePayload,bizDelegateRun,bizSettleDelegatedRun,bizDailyTick,createAgent,claimTask,completeTask,stopTask,expireStalledTasks,reassignAsleepQueuedTasks,reassignTask,gatewayAct,newTask,bizSources,listTasks,setJ,getJ,r,als,BIZ_SCHED_GATE,BIZ_SCHED_RECOVER,BIZ_SCHED_CLAIM_RECOVER,BIZ};';
 const c={require:(m)=>require(m),module:{exports:{}},process:{env:{}},global:{},console,URL,Buffer,AbortSignal,setTimeout,clearTimeout,
  fetch:(u,o)=>{const body=JSON.parse(o.body);const sys=body.messages[0].content;
   const reply=content=>Promise.resolve({ok:true,json:async()=>({choices:[{message:{content}}],usage:{prompt_tokens:1,completion_tokens:1}})});
@@ -617,6 +617,65 @@ const ISO=ms=>new Date(ms).toISOString();
   assert.ok(!(await f.getJ('fm:task:'+preTaskId)),'the job-without-run attempt is cleaned up');
   const preNew=(await f.listTasks()).filter(x=>x.status==='queued'&&!queuedBeforePre.has(x.id));
   assert.equal(preNew.length,1,'the job-without-run crash released the claim and queued exactly one retry');
+
+  // --- naked-claim recovery vs a resumed original: the timeout is not death. The sweep
+  // observes the run missing, then the ORIGINAL resumes and completes (job visible, counters
+  // updated) before the sweep's release: the release must refuse atomically and no second job
+  // may queue. (Reviewer repro: resume between the sweep's run peek and its release CAS.)
+  {const rc=await f.getJ('fm:biz:resp:'+respS);rc.schedule.lastQueuedAt=new Date(Date.now()-21*3600e3).toISOString();rc.schedule.claimId=null;await f.setJ('fm:biz:resp:'+respS,rc);}
+  c.global.__bizSchedEntryAbort=1;
+  await assert.rejects(()=>f.bizDailyTick(),/simulated process death/);
+  const deadClaim=(await f.getJ('fm:biz:resp:'+respS)).schedule.claimId;
+  assert.ok(deadClaim && !(await f.getJ('fm:biz:run:'+deadClaim)),'the dead attempt left claim identity without a run');
+  {const rc=await f.getJ('fm:biz:resp:'+respS);rc.schedule.lastQueuedAt=new Date(Date.now()-3*60e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rc);} // age past the liveness timeout
+  const deadRawAged=await f.r(['GET','fm:biz:resp:'+respS]);
+  let resumed=null;
+  c.global.__bizSchedSweepInterleave=async()=>{ // the original resumes mid-sweep, after its run peeked missing
+    const rp1=JSON.parse(deadRawAged);
+    const bot=await f.bizDelegateBot();
+    const srcIds=await f.r(['SMEMBERS','fm:biz:sources']);
+    const srcKeys=srcIds.map(i=>'fm:biz:src:'+i);
+    const srcRaws=srcKeys.length?await f.r(['MGET',...srcKeys]):[];
+    const srcs=srcRaws.map(v=>JSON.parse(v)).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt)));
+    const payload=f.bizDelegatePayload(rp1,srcs,rp1.schedule.instruction,bot);
+    resumed=await f.bizDelegateRun(rp1,srcs,rp1.schedule.instruction,bot,(await f.r(['GET','fm:biz:fence']))||'0',payload,'auto',{expectedResp:deadRawAged,srcKeys,srcRaws,botId:bot.id,runId:deadClaim});
+  };
+  const queuedBeforeRace=new Set((await f.listTasks()).filter(x=>x.status==='queued').map(x=>x.id));
+  await f.bizDailyTick();
+  assert.equal(resumed && resumed.status,200,'the resumed original completed: its job went visible');
+  const raceNew=(await f.listTasks()).filter(x=>x.status==='queued'&&!queuedBeforeRace.has(x.id));
+  assert.equal(raceNew.length,1,'exactly one job went out - the resumed original, never a duplicate retry');
+  {const rc=await f.getJ('fm:biz:resp:'+respS);
+   assert.equal(rc.schedule.claimId,deadClaim,'recovery refused atomically: the successful window was never released');
+   assert.ok(rc.schedule.lastQueuedAt,'the consumed window stands');}
+
+  // reverse order: recovery wins first (run provably absent), the same tick retries, and the
+  // LATE original is then refused by the exact-record gates without leaving anything behind
+  {const rc=await f.getJ('fm:biz:resp:'+respS);rc.schedule.lastQueuedAt=new Date(Date.now()-21*3600e3).toISOString();rc.schedule.claimId=null;await f.setJ('fm:biz:resp:'+respS,rc);}
+  c.global.__bizSchedEntryAbort=1;
+  await assert.rejects(()=>f.bizDailyTick(),/simulated process death/);
+  const lateClaim=(await f.getJ('fm:biz:resp:'+respS)).schedule.claimId;
+  {const rc=await f.getJ('fm:biz:resp:'+respS);rc.schedule.lastQueuedAt=new Date(Date.now()-3*60e3).toISOString();await f.setJ('fm:biz:resp:'+respS,rc);}
+  const lateRawAged=await f.r(['GET','fm:biz:resp:'+respS]);
+  const queuedBeforeLate=new Set((await f.listTasks()).filter(x=>x.status==='queued').map(x=>x.id));
+  await f.bizDailyTick(); // recovery releases (run absent), the same tick claims and queues the retry
+  const lateNew=(await f.listTasks()).filter(x=>x.status==='queued'&&!queuedBeforeLate.has(x.id));
+  assert.equal(lateNew.length,1,'recovery released and the tick queued exactly one retry');
+  {const rp1=JSON.parse(lateRawAged); // NOW the original attempt resumes late
+   const bot=await f.bizDelegateBot();
+   const srcIds=await f.r(['SMEMBERS','fm:biz:sources']);
+   const srcKeys=srcIds.map(i=>'fm:biz:src:'+i);
+   const srcRaws=srcKeys.length?await f.r(['MGET',...srcKeys]):[];
+   const srcs=srcRaws.map(v=>JSON.parse(v)).sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt)));
+   const payload=f.bizDelegatePayload(rp1,srcs,rp1.schedule.instruction,bot);
+   const late=await f.bizDelegateRun(rp1,srcs,rp1.schedule.instruction,bot,(await f.r(['GET','fm:biz:fence']))||'0',payload,'auto',{expectedResp:lateRawAged,srcKeys,srcRaws,botId:bot.id,runId:lateClaim});
+   assert.notEqual(late.status,200,'the late original is refused - its claimed record no longer exists');
+   const lateRun=await f.getJ('fm:biz:run:'+lateClaim);
+   assert.ok(!lateRun || lateRun.status==='failed','its run record is failed, never settled');
+   const after=(await f.listTasks()).filter(x=>x.status==='queued'&&!queuedBeforeLate.has(x.id));
+   assert.equal(after.length,1,'nothing new went visible from the late attempt');
+   const rc2=await f.getJ('fm:biz:resp:'+respS);
+   assert.notEqual(rc2.schedule.claimId,lateClaim,"the retry's claim owns the window, never the late original");}
 
   // caps must never be undefined (a swallowed constant would silently uncap daily calls)
   assert.equal(f.BIZ.CALLS_PER_DAY,200,'daily call cap constant exists');
