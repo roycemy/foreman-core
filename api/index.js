@@ -4,6 +4,8 @@ const dns = require('dns');
 const http = require('http');
 const https = require('https');
 const net = require('net');
+// Spend envelope scripts (roycemy/foreman-core spend-envelope.cjs @6eb1a45). Test harnesses load this file without __dirname.
+const ENVELOPE = require(typeof __dirname === 'string' ? require('path').join(__dirname, '..', 'spend-envelope.cjs') : './spend-envelope.cjs');
 const AUTHZ = (()=>{
 // Deterministic policy only. Never a payment rail or a grant of authority.
 const VERSION='rules-v1';
@@ -67,7 +69,8 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'EVAL': { const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
+    case 'HGETALL': return ENVELOPE.localEval(mem.hashes || (mem.hashes = new Map()), c);
+    case 'EVAL': { if(ENVELOPE.SCRIPTS.has(k))return ENVELOPE.localEval(mem.hashes || (mem.hashes = new Map()), c); const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'SET': if(a.includes('NX')&&mem.kv.has(k))return null;mem.kv.set(k, a[0]); return 'OK';
@@ -1121,7 +1124,7 @@ async function mcpHandle(agent, m) {
 // ---------- spend review scaffold: NO payment execution ----------
 // Records owner intent only. No provider adapter or execution token exists here.
 async function listSpendRequests(){const ids=(await r(['SMEMBERS','fm:spendRequests']));if(!ids.length)return [];return (await r(['MGET',...ids.map(id=>'fm:spendRequest:'+id)])).filter(Boolean).map(JSON.parse).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,300);}
-async function spendSummary(){const requests=await listSpendRequests(),bots={};for(const q of requests){const b=bots[q.agentId]||(bots[q.agentId]={agentId:q.agentId,agentName:q.agentName,requestedCents:0,approvedCents:0,deniedCents:0,chargedCents:0,pendingCount:0});b.requestedCents+=q.amountCents;if(q.status==='approved_not_connected')b.approvedCents+=q.amountCents;if(q.status==='denied')b.deniedCents+=q.amountCents;if(q.status==='pending_review')b.pendingCount++;}return {paymentConnected:false,notificationConnected:false,currency:'USD',requests,bots:Object.values(bots),receipts:requests.filter(q=>q.decisionReceipt).map(q=>q.decisionReceipt),metricsScope:'Latest 300 requests. Approved amounts are intent, not charges.'};}
+async function spendSummary(){const requests=await listSpendRequests(),bots={};for(const q of requests){const b=bots[q.agentId]||(bots[q.agentId]={agentId:q.agentId,agentName:q.agentName,requestedCents:0,approvedCents:0,deniedCents:0,chargedCents:0,pendingCount:0});b.requestedCents+=q.amountCents;if(q.status==='approved_not_connected')b.approvedCents+=q.amountCents;if(q.status==='denied')b.deniedCents+=q.amountCents;if(q.status==='pending_review')b.pendingCount++;}return {paymentConnected:false,notificationConnected:false,currency:'USD',requests,bots:Object.values(bots),receipts:requests.filter(q=>q.decisionReceipt).map(q=>q.decisionReceipt),metricsScope:'Latest 300 requests. Approved amounts are intent, not charges.',envelopes:await listEnvelopes()};}
 async function newSpendRequest(agent,body){
  const a=await getJ('fm:agent:'+agent.id);if(!a||a.status!=='active'||await r(['GET','fm:kill']))return {status:403,body:{error:'Worker is off; no spend request accepted'}};
  const text=(v,n)=>typeof v==='string'&&v.trim().length>0&&v.trim().length<=n;
@@ -1142,6 +1145,33 @@ async function reviewSpend(id,decision,detailsHash){const key='fm:spendRequest:'
  q.status=decision==='deny'?'denied':Date.parse(q.expiresAt)<=Date.now()?'expired':blocked?'blocked':'approved_not_connected';q.decidedAt=now();q.decisionReceipt={id:'review_'+id,at:q.decidedAt,requestId:id,agentId:q.agentId,agentName:q.agentName,merchant:q.merchant,amountCents:q.amountCents,currency:q.currency,outcome:q.status,chargedCents:0,kind:'decision_record',detailsHash:q.detailsHash,note:'Decision record only. No payment connection, no charge and no vendor receipt.'};
  const won=await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(q)]);if(won===1){bust();return {status:200,body:{request:q,receipt:q.decisionReceipt}};}}
  return {status:409,body:{error:'Another decision is being saved; refresh'}};
+}
+// ---------- spend envelopes: owner approves an envelope ahead of the ~2s issuer decision. Internal accounting only ----------
+// No upstream file covers it: owner propose/decide over spend-envelope.cjs, listed in the /money approval inbox.
+// The workspace row fm:spendEnvelope:<hash> gates decisions so another workspace cannot act on a guessed hash.
+async function listEnvelopes(){const hashes=await r(['SMEMBERS','fm:spendEnvelopes']);const out=[];for(const h of hashes){const row=await getJ('fm:spendEnvelope:'+h),live=row&&await ENVELOPE.read(r,h);if(row&&live)out.push({...live,accountId:row.accountId,cardId:row.cardId,botName:row.botName,createdAt:row.createdAt});}return out.sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,100);}
+async function envelopePropose(body){
+ if(!/^ic_[A-Za-z0-9]+$/.test(body.cardId||'')||!/^acct_[A-Za-z0-9]+$/.test(body.accountId||'')||!Number.isSafeInteger(body.expiresAtMs)||body.expiresAtMs<=Date.now()||body.expiresAtMs>Date.now()+86400000)return {status:400,body:{error:'Test account/card and an expiry within 24 hours are required'}};
+ const a=await getJ('fm:agent:'+body.botId);if(!a||a.status!=='active'||a.paused||await r(['GET','fm:kill']))return {status:400,body:{error:'Active bot required'}};
+ const terms={botId:a.id,merchantNetworkId:String(body.merchantNetworkId||'').trim(),currency:'usd',maxTotalCents:body.maxTotalCents,expiresAtMs:body.expiresAtMs};
+ let p;try{p=await ENVELOPE.propose(r,terms)}catch{return {status:400,body:{error:'Envelope needs network merchant id, USD max total in cents (1..1000000) and expiry'}}}
+ if(p.code==='duplicate_proposal')return {status:409,body:{error:'duplicate_proposal',bindingHash:p.hash}};
+ if(p.code!=='proposed')return {status:400,body:{error:p.code}};
+ await setJ('fm:spendEnvelope:'+p.hash,{hash:p.hash,botId:a.id,botName:a.name,accountId:body.accountId,cardId:body.cardId,createdAt:now()});await r(['SADD','fm:spendEnvelopes',p.hash]);bust();
+ return {status:201,body:{envelope:await ENVELOPE.read(r,p.hash),note:'Approval reserves internal accounting only. No real card, money or hold moves.'}};
+}
+async function envelopeDecide(hash,decision){
+ const row=await getJ('fm:spendEnvelope:'+hash);if(!row)return {status:404,body:{error:'not found'}};
+ const ck=row.accountId+':'+row.cardId;
+ if(decision==='approve'){
+  const a=await getJ('fm:agent:'+row.botId);if(!a||a.status!=='active'||a.paused||await r(['GET','fm:kill']))return {status:409,body:{error:'Bot is not active; envelope not approved'}};
+  // Adapted from issuerMandate's one-card-per-owner binding (roycemy/foreman-core api/index.js @d67990f).
+  await r(['SET','gl:issuer-envelope-owner:'+ck,wsId(),'NX']);if(await r(['GET','gl:issuer-envelope-owner:'+ck])!==wsId())return {status:409,body:{error:'Card is registered elsewhere'}};
+ }
+ const d=await ENVELOPE.decide(r,hash,decision==='approve'?'approve':'deny');
+ // Alter's own card-to-bot mapping; the issuer webhook reads only this, never merchant or webhook metadata.
+ if(d.code==='approved')await setJ('gl:issuer-envelope-card:'+ck,{ws:wsId(),botId:row.botId,hash,approvedAt:now()});
+ bust();return {status:['approved','denied'].includes(d.code)?200:409,body:{code:d.code,envelope:await ENVELOPE.read(r,hash)}};
 }
 
 // Synthetic card rails. Separate from gateway policy and existing money decisions.
@@ -1598,6 +1628,8 @@ async function routes(req, res, path, body, agentPre) {
       return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, allAsleep, handoffPlan }), routed, unrouted, ...(allAsleep ? { allAsleep: true } : {}) }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
+    if(path==='/money/envelopes'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopePropose(body));}
+    {const em=path.match(/^\/money\/envelopes\/([a-f0-9]{64})\/(approve|deny)$/);if(em&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopeDecide(em[1],em[2]));}}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
     {const wm=path.match(/^\/agents\/(\w+)\/wake$/);if(wm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setOwnerWake(wm[1],body));}}
     {const pm=path.match(/^\/agents\/(\w+)\/pairing$/);if(pm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuePairing(pm[1]));}}
@@ -2246,6 +2278,18 @@ async function issuerProcess(event,deadline){
  return deny('concurrent_admission');
 }
 module.exports.issuerProcess=(event,deadline)=>!URL_?Promise.resolve({approved:false,reason:'durable_storage_required'}):als.run({issuerDeadline:deadline},()=>issuerProcess(event,deadline));
+// No upstream file covers it: resolve an issuer card to its owner-approved envelope via Alter's own mapping.
+// null means no envelope for this card, so the exact-mandate path above still decides.
+async function issuerEnvelopeTarget(event){
+ const auth=event.data?.object,card=typeof auth?.card==='string'?auth.card:auth?.card?.id;
+ if(!/^acct_[A-Za-z0-9]+$/.test(event.account||'')||!/^ic_[A-Za-z0-9]+$/.test(card||''))return null;
+ const m=await getJ('gl:issuer-envelope-card:'+event.account+':'+card);if(!m)return null;
+ const blocked=await als.run({ws:m.ws,issuerDeadline:(als.getStore()||{}).issuerDeadline},async()=>{const a=await getJ('fm:agent:'+m.botId);return !a||a.status!=='active'||!!a.paused||!!await r(['GET','fm:kill'])||!!await r(['GET','fm:cards:kill'])});
+ return {hash:m.hash,botId:m.botId,blocked:blocked?'bot_inactive_or_killed':null};
+}
+const issuerStore=deadline=>cmd=>als.run({issuerDeadline:deadline},()=>r(cmd));
+module.exports.issuerEnvelopeTarget=(event,deadline)=>!URL_?Promise.resolve({blocked:'durable_storage_required'}):als.run({issuerDeadline:deadline},()=>issuerEnvelopeTarget(event));
+module.exports.issuerStore=issuerStore;
 
 // Credential-isolated broker. No reusable credential ever leaves the server.
 // Paid adapters remain hard-disabled until explicit implementation + owner approval.
