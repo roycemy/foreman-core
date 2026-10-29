@@ -1164,7 +1164,7 @@ async function envelopePropose(body){
  let p;try{p=await ENVELOPE.propose(r,terms,Date.now(),ownerActor())}catch{return {status:400,body:{error:'Envelope needs network merchant id, a 3-letter lowercase currency, max total in cents (1..1000000) and expiry'}}}
  if(p.code==='duplicate_proposal')return {status:409,body:{error:'duplicate_proposal',bindingHash:p.hash}};
  if(p.code!=='proposed')return {status:400,body:{error:p.code}};
- await setJ('fm:spendEnvelope:'+p.hash,{hash:p.hash,botId:a.id,botName:a.name,accountId:body.accountId,cardId:body.cardId,createdAt:now()});await r(['SADD','fm:spendEnvelopes',p.hash]);bust();
+ await setJ('fm:spendEnvelope:'+p.hash,{hash:p.hash,botId:a.id,botName:a.name,accountId:body.accountId,cardId:body.cardId,createdAt:now()});await r(['SADD','fm:spendEnvelopes',p.hash]);await r(['SADD','gl:issuer-envelope-acct:'+body.accountId,wsId()+'|'+p.hash]);bust();
  return {status:201,body:{envelope:await ENVELOPE.read(r,p.hash),note:'Approval reserves internal accounting only. No real card, money or hold moves.'}};
 }
 async function envelopeDecide(hash,decision){
@@ -1194,11 +1194,32 @@ async function envelopeAck(hash,body){
 }
 // No upstream file covers it: owner notice for a provider discrepancy (e.g. capture after a provisional manual decline).
 // Written to the owning workspace's activity feed; the unacknowledged notice also stays on the envelope and in "on you".
+// No upstream file covers it: A3/A6 provider reads for held cents. Read-only (GET) and test-mode only; nothing is read without a key.
+// Each past-deadline item costs one provider read per reconcile attempt.
+function envelopeReader(){const key=process.env.STRIPE_ISSUING_TEST_READ_KEY;if(!key)return null;try{return ENVELOPE.stripeReader({fetch,key})}catch{return null}}
+async function envelopeReleaseStranded(hash,authorizationId){
+ const row=await getJ('fm:spendEnvelope:'+hash);if(!row)return {status:404,body:{error:'not found'}};
+ const rd=envelopeReader();if(!rd)return {status:503,body:{error:'provider_read_unavailable',note:'Set STRIPE_ISSUING_TEST_READ_KEY (a read-only test-mode key). Nothing is released without reading the provider.'}};
+ const out=await ENVELOPE.releaseStranded(r,hash,authorizationId,rd,Date.now(),ownerActor());bust();
+ const status=out.code==='released'||out.code==='noop'?200:out.code==='not_found'?404:out.code==='unreadable'?502:409;
+ return {status,body:{code:out.code,settledCents:out.settledCents||0,releasedCents:out.releasedCents||0,providerState:out.providerState,envelope:await ENVELOPE.read(r,hash)}};
+}
+async function envelopeReconcile(hash){
+ const row=await getJ('fm:spendEnvelope:'+hash);if(!row)return {status:404,body:{error:'not found'}};
+ const rd=envelopeReader();if(!rd)return {status:503,body:{error:'provider_read_unavailable'}};
+ const results=await ENVELOPE.reconcileDue(r,hash,rd,Date.now(),'reconcile:owner_sweep:'+ownerActor().replace(/[^A-Za-z0-9_:]/g,''),5);bust();
+ return {status:200,body:{results,envelope:await ENVELOPE.read(r,hash)}};
+}
 async function envelopeNotice(hash,code,e){
  const v=await ENVELOPE.read(r,hash);if(!v)return null;
- const ws=await r(['GET','gl:issuer-envelope-owner:'+v.accountId+':'+v.cardId]);if(!ws)return null;
+ let ws=null;
+ if(v.unassigned){const spaces=new Set((await r(['SMEMBERS','gl:issuer-envelope-acct:'+v.accountId])).map(x=>String(x).split('|')[0]));ws=spaces.size===1?[...spaces][0]:null;}
+ else ws=await r(['GET','gl:issuer-envelope-owner:'+v.accountId+':'+v.cardId]);
+ if(!ws)return null;
  const amt=(Number(e.amountCents)/100).toFixed(2)+' '+String(e.currency||'').toUpperCase();
- const text=code==='discrepancy:capture_differs_from_held'?'Issuer captured '+amt+' on an authorization you declined; the amount differs from what was held. It now counts as spent; anything still held stays held until the network voids it.':'Spend envelope discrepancy: '+code.replace(/^discrepancy:/,'').replace(/_/g,' ')+' ('+amt+').';
+ const cardTail=String(e.cardId||'').slice(-6),named=cardTail?' on card …'+cardTail:'';
+ const text=code==='discrepancy:unreserved_approval'?(e.how==='unassigned'?'Could not match an approval of '+amt+named+' to any envelope. It is recorded under Unassigned; no card was assumed. It could not be declined.':'An approval of '+amt+named+' arrived that Alter never reserved'+(e.how==='merchant'?' (matched to this envelope by merchant, not by card)':'')+'. It now counts against the envelope; it could not be declined.'):code==='discrepancy:unreserved_capture'?(e.how==='unassigned'?'Could not match a capture of '+amt+named+' to any envelope. It is recorded under Unassigned; no card was assumed.':'A capture of '+amt+named+' that Alter never reserved now counts as spent'+(e.how==='merchant'?' (matched to this envelope by merchant, not by card)':'')+'.'):code==='discrepancy:capture_differs_from_held'?'Issuer captured '+amt+' on an authorization you declined; the amount differs from what was held. It now counts as spent; anything still held stays held until the network voids it.':'Spend envelope discrepancy: '+code.replace(/^discrepancy:/,'').replace(/_/g,' ')+' ('+amt+').';
+ if(v.unassigned)return ws; // the notice is the envelope's own notice list (Unassigned row); there is no bot to attribute a feed event to
  await als.run({ws},()=>event(v.botId,'blocked',text,{kind:'BLOCKED',envelopeHash:hash,authorizationId:e.authorizationId,discrepancy:code}));
  return ws;
 }
@@ -1660,6 +1681,8 @@ async function routes(req, res, path, body, agentPre) {
     if(path.startsWith('/money/envelopes')&&!envelopesOn())return res.status(404).json({error:'not found'});
     if(path==='/money/envelopes'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopePropose(body));}
     {const em=path.match(/^\/money\/envelopes\/([a-f0-9]{64})\/(approve|deny|revoke)$/);if(em&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopeDecide(em[1],em[2]));}}
+    {const rm=path.match(/^\/money\/envelopes\/([a-f0-9]{64})\/authorizations\/(iauth_[A-Za-z0-9]+)\/release-stranded$/);if(rm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopeReleaseStranded(rm[1],rm[2]));}}
+    {const cm=path.match(/^\/money\/envelopes\/([a-f0-9]{64})\/reconcile$/);if(cm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopeReconcile(cm[1]));}}
     {const am=path.match(/^\/money\/envelopes\/([a-f0-9]{64})\/authorizations\/(iauth_[A-Za-z0-9]+)\/adjudicate$/);if(am&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopeAdjudicate(am[1],am[2],body));}}
     {const km=path.match(/^\/money\/envelopes\/([a-f0-9]{64})\/notices\/ack$/);if(km&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopeAck(km[1],body));}}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
@@ -2325,18 +2348,27 @@ async function issuerEnvelopeTarget(event){
  const blocked=await als.run({ws:m.ws,issuerDeadline:(als.getStore()||{}).issuerDeadline},async()=>{const a=await getJ('fm:agent:'+m.botId);return !a||a.status!=='active'||!!a.paused||!!await r(['GET','fm:kill'])||!!await r(['GET','fm:cards:kill'])});
  return {hash:m.hash,botId:m.botId,blocked:blocked?'bot_inactive_or_killed':null};
 }
-// No upstream file covers it: route an asynchronous provider event to the envelope that reserved the authorization
-// (index written before reserve), else to the card's mapped envelope (provider-only authorizations and force captures).
-async function issuerEnvelopeForEvent(authorizationId,account,card){
+// No upstream file covers it: route an asynchronous provider event to an envelope. Order (B3): the envelope that reserved this
+// authorization, then the card's mapped envelope, then the single approved envelope bound to the same merchant in the account, then the
+// account's Unassigned bucket. Never guessed silently: every non-card attribution is reported in 'how' and raises a notice naming the card.
+// An account with no envelopes returns null, so cards that use the exact-mandate path are never pulled into envelope accounting.
+async function issuerEnvelopeForEvent(authorizationId,account,card,merchant){
  if(!envelopesOn())return null;
- const idx=/^iauth_[A-Za-z0-9]+$/.test(authorizationId||'')&&await r(['GET','gl:issuer-envelope-auth:'+authorizationId]);if(idx)return idx;
- if(!/^acct_[A-Za-z0-9]+$/.test(account||'')||!/^ic_[A-Za-z0-9]+$/.test(card||''))return null;
- const m=await getJ('gl:issuer-envelope-card:'+account+':'+card);return m?m.hash:null;
+ const idx=/^iauth_[A-Za-z0-9]+$/.test(authorizationId||'')&&await r(['GET','gl:issuer-envelope-auth:'+authorizationId]);if(idx)return {hash:idx,how:'authorization'};
+ if(!/^acct_[A-Za-z0-9]+$/.test(account||''))return null;
+ const members=(await r(['SMEMBERS','gl:issuer-envelope-acct:'+account])).map(x=>String(x).split('|'));if(!members.length)return null;
+ if(/^ic_[A-Za-z0-9]+$/.test(card||'')){const m=await getJ('gl:issuer-envelope-card:'+account+':'+card);if(m)return {hash:m.hash,how:'card',ws:m.ws};}
+ const want=typeof merchant==='string'&&merchant.trim()?ENVELOPE.canon(merchant):null,hits=[];
+ if(want)for(const [ws,hash] of members){const f=await r(['HMGET',ENVELOPE.envelopeKey(hash),'status','merchant']);if(f&&f[0]==='approved'&&ENVELOPE.canon(f[1]||'')===want)hits.push({hash,ws});}
+ if(hits.length===1)return {hash:hits[0].hash,how:'merchant',ws:hits[0].ws};
+ const spaces=new Set(members.map(x=>x[0])),ws=spaces.size===1?[...spaces][0]:null,hash=await ENVELOPE.ensureUnassigned(r,account,'usd',Date.now());if(!hash)return null;
+ if(ws)await als.run({ws},async()=>{await r(['SET','fm:spendEnvelope:'+hash,JSON.stringify({hash,botId:'unassigned',botName:'Unassigned',accountId:account,cardId:'ic_unassigned',createdAt:now()}),'NX']);await r(['SADD','fm:spendEnvelopes',hash]);});
+ return {hash,how:'unassigned',ws};
 }
 const issuerStore=deadline=>cmd=>als.run({issuerDeadline:deadline},()=>r(cmd));
 module.exports.envelopesEnabled=envelopesOn;
 module.exports.issuerEnvelopeTarget=(event,deadline)=>!envelopesOn()?Promise.resolve(null):!URL_?Promise.resolve({blocked:'durable_storage_required'}):als.run({issuerDeadline:deadline},()=>issuerEnvelopeTarget(event));
-module.exports.issuerEnvelopeForEvent=(authorizationId,account,card)=>!envelopesOn()||!URL_?Promise.resolve(null):als.run({},()=>issuerEnvelopeForEvent(authorizationId,account,card));
+module.exports.issuerEnvelopeForEvent=(authorizationId,account,card,merchant)=>!envelopesOn()||!URL_?Promise.resolve(null):als.run({},()=>issuerEnvelopeForEvent(authorizationId,account,card,merchant));
 module.exports.issuerStore=issuerStore;
 module.exports.envelopeNotice=(hash,code,e)=>!envelopesOn()?Promise.resolve(null):als.run({},()=>envelopeNotice(hash,code,e));
 

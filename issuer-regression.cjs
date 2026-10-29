@@ -1,4 +1,5 @@
-const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');const src=fs.readFileSync(__dirname+'/api/index.js','utf8')+'\nmodule.exports.t={r,setJ,getJ,als,issuerMandate,issuerProcess,createAgent,newTask,issuerEnvelopeTarget,issuerStore,envelopePropose,envelopeDecide,envelopeAdjudicate,spendSummary,issuerEnvelopeForEvent,envelopesOn,routes,mem,envelopeNotice};';const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:()=>{throw Error('NO NETWORK OR PAYMENT')},setTimeout,clearTimeout,URL,AbortSignal};vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');const fetchLog=[];let fetchImpl=()=>{throw Error('NO NETWORK OR PAYMENT')}; // the only fetch the sandbox allows is the read-only Stripe authorization GET, installed by the stranded-hold tests
+const src=fs.readFileSync(__dirname+'/api/index.js','utf8')+'\nmodule.exports.t={r,setJ,getJ,als,issuerMandate,issuerProcess,createAgent,newTask,issuerEnvelopeTarget,issuerStore,envelopePropose,envelopeDecide,envelopeAdjudicate,spendSummary,issuerEnvelopeForEvent,envelopesOn,routes,mem,envelopeNotice};';const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:(u,o)=>{fetchLog.push([u,o&&o.method]);return fetchImpl(u,o)},setTimeout,clearTimeout,URL,AbortSignal};vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
 const secret='whsec_disposable_fixture_not_a_real_secret',handlerCtx={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:e=>f.issuerEnvelopeTarget(e),issuerEnvelopeForEvent:f.issuerEnvelopeForEvent,issuerStore:f.issuerStore,envelopesEnabled:f.envelopesOn,envelopeNotice:f.envelopeNotice}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),handlerCtx);const h=handlerCtx.module.exports;
 const event=(id='evt_fixture',amount=1000,extra={})=>({id,account:'acct_fixture',type:'issuing_authorization.request',livemode:false,data:{object:{id:'iauth_'+id.replace(/[^A-Za-z0-9]/g,''),livemode:false,card:'ic_fixture',pending_request:{amount,currency:'usd'},merchant_data:{network_id:'merchant_fixture',category:'computer_software_stores'},...extra}}});
 async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON.stringify(e)),t=Math.floor(Date.now()/1000),sig='t='+t+',v1='+crypto.createHmac('sha256',secret).update(t+'.').update(raw).digest('hex');let out;const hd={};await h({method:'POST',body:raw,headers:{'stripe-signature':signature?sig:'t=0,v1=bad'}},{setHeader(k,v){hd[k]=v},status(n){this.code=n;return this},json(j){out={status:this.code,body:j,headers:hd}}});return out}
@@ -116,11 +117,77 @@ async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON
   const ak=await route('/money/envelopes/'+sd.hash+'/notices/ack',{seq:nv.notices[0].seq});assert.deepEqual([ak.code,ak.j.code,ak.j.envelope.notices.length],[200,'acknowledged',0]);
   assert.equal(ak.j.envelope.history.slice(-1)[0].actor,'owner:user_fixture');}
  for(const hh of [env.hash,rev2.hash,late.hash,sd.hash]){const au=await SE.audit(f.r,hh);assert(au.ok,au.errors.join('; '));}
+ // ---- Defect A through the owner routes: the provider read is a GET with a test-mode key; nothing is released without it.
+ const summaryOf=hash=>owner(async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===hash));
+ const rel=(h,id)=>route('/money/envelopes/'+h+'/authorizations/'+id+'/release-stranded',{});
+ let provider={status:'pending'};fetchImpl=async u=>{const id=/authorizations\/(iauth_[A-Za-z0-9]+)/.exec(u)[1];return {ok:true,status:200,json:async()=>({id,currency:'usd',...provider})}};
+ const str=(await route('/money/envelopes',{...base,cardId:'ic_envstr'})).j.envelope;await route('/money/envelopes/'+str.hash+'/approve',{});
+ assert.equal(await reason(ev('evt_str1',800,'ic_envstr')),'APPROVED');assert.equal(await evidence(authEv('evt_str2','iauth_evtstr1',800,true,'pending','ic_envstr')),'confirmed');
+ assert.equal(await evidence(txEv('evt_str3','ipi_str1','iauth_evtstr1',700,'capture','ic_envstr')),'capture');assert.deepEqual(await tot(str.hash),[0,100,700,3200]);
+ {const m=f.mem.hashes.get(SE.envelopeKey(str.hash)),x0=(await summaryOf(str.hash)).authorizations.find(x=>x.authorizationId==='iauth_evtstr1');assert.equal(x0.deadlineMs-x0.heldSinceMs,SE.HELD_WINDOW_MS,'7-day deadline from the stored held_since');
+  assert.equal((await summaryOf(str.hash)).pastDeadlineCount,0);m.set('a:iauth_evtstr1:deadline',String(Date.now()-1));
+  const sv=await summaryOf(str.hash);assert.deepEqual([sv.pastDeadlineCount,sv.pastDeadlineHeld,sv.buckets[0].heldCents],[1,[{currency:'usd',heldCents:100}],100],'past-deadline count is its own figure');
+  fetchLog.length=0;delete ctx.process.env.STRIPE_ISSUING_TEST_READ_KEY;
+  let r1=await rel(str.hash,'iauth_evtstr1');assert.deepEqual([r1.code,r1.j.error],[503,'provider_read_unavailable']);
+  ctx.process.env.STRIPE_ISSUING_TEST_READ_KEY='sk_live_notallowed1';r1=await rel(str.hash,'iauth_evtstr1');assert.equal(r1.code,503);assert.equal(fetchLog.length,0,'no provider call without a test-mode key');
+  assert.deepEqual(await tot(str.hash),[0,100,700,3200]);
+  ctx.process.env.STRIPE_ISSUING_TEST_READ_KEY='sk_test_disposable1';
+  provider={status:'pending'};r1=await rel(str.hash,'iauth_evtstr1');assert.deepEqual([r1.code,r1.j.code],[409,'refused_provider_open']);assert.deepEqual(await tot(str.hash),[0,100,700,3200]);
+  assert.equal((await summaryOf(str.hash)).authorizations.find(x=>x.authorizationId==='iauth_evtstr1').providerStuckAtMs>0,true,'still open at the provider -> marked stuck');
+  fetchImpl=async()=>{throw new Error('provider down')};r1=await rel(str.hash,'iauth_evtstr1');assert.deepEqual([r1.code,r1.j.code],[502,'unreadable']);assert.deepEqual(await tot(str.hash),[0,100,700,3200]);
+  fetchImpl=async u=>({ok:true,status:200,json:async()=>({id:/authorizations\/(iauth_[A-Za-z0-9]+)/.exec(u)[1],currency:'usd',...provider})});
+  provider={status:'closed',approved:true,transactions:{data:[{amount:-700}]}};r1=await rel(str.hash,'iauth_evtstr1');
+  assert.deepEqual([r1.code,r1.j.code,r1.j.releasedCents,r1.j.settledCents,r1.j.envelope.pastDeadlineCount],[200,'released',100,0,0]);assert.deepEqual(await tot(str.hash),[0,0,700,3300]);
+  assert(fetchLog.length>=3&&fetchLog.every(x=>x[1]==='GET'&&x[0].startsWith('https://api.stripe.com/v1/issuing/authorizations/')),'reads only');
+  assert.equal(await evidence(authEv('evt_str4','iauth_evtstr1',0,true,'closed','ic_envstr')),'noop_already_released','the late void webhook does not release twice');assert.deepEqual(await tot(str.hash),[0,0,700,3300]);
+  // owner sweep: one provider read per past-deadline item
+  assert.equal(await reason(ev('evt_str5',500,'ic_envstr')),'APPROVED');assert.equal(await evidence(authEv('evt_str6','iauth_evtstr5',500,true,'pending','ic_envstr')),'confirmed');
+  assert.equal(await evidence(txEv('evt_str7','ipi_str5','iauth_evtstr5',400,'capture','ic_envstr')),'capture');m.set('a:iauth_evtstr5:deadline',String(Date.now()-1));
+  provider={status:'expired'};fetchLog.length=0;const sw=await route('/money/envelopes/'+str.hash+'/reconcile',{});
+  assert.deepEqual([sw.code,sw.j.results.map(x=>[x.authorizationId,x.code,x.releasedCents])],[200,[['iauth_evtstr5','released',100]]]);assert.equal(fetchLog.length,1,'one provider read per past-deadline item');
+  assert.deepEqual(await tot(str.hash),[0,0,1100,2900]);const au=await SE.audit(f.r,str.hash);assert(au.ok,au.errors.join('; '));}
+ // ---- Defect B through signed webhooks. Attribution order: authorization, card, merchant binding, then the Unassigned bucket.
+ const withMerchant=(e,m)=>{e.data.object.merchant_data={network_id:m};return e};
+ const feedFor=hash=>owner(()=>f.r(['LRANGE','fm:events',0,40])).then(x=>x.map(y=>JSON.parse(y)).filter(y=>y.envelopeHash===hash));
+ const unr=(await route('/money/envelopes',{...base,cardId:'ic_envunr'})).j.envelope;await route('/money/envelopes/'+unr.hash+'/approve',{});
+ // TB1 unreserved approval ($3 against $10... here a $40 envelope): consumed at once, marked unreserved, never declined, notice names the card
+ {const body=(await call(authEv('evt_u1','iauth_unr1',300,true,'pending','ic_envunr'))).body;
+  assert.deepEqual([body.envelope,body.how,body.ownerNotified,'approved' in body],['discrepancy:unreserved_approval','card',true,false],'consumed and notified; no decline is attempted');
+  assert.deepEqual(await tot(unr.hash),[0,300,0,3700]);let v=await summaryOf(unr.hash);assert.deepEqual(v.unreserved.map(x=>[x.authorizationId,x.source]),[['iauth_unr1','approval']]);
+  assert.match(v.history.find(h=>h.kind==='discrepancy:unreserved_approval').note,/^card=ic_envunr source=approval how=card overspend_realized=0$/);
+  const fd=await feedFor(unr.hash);assert.match(fd[0].text,/approval of 3\.00 USD on card …envunr arrived that Alter never reserved.*could not be declined/);
+  // TB2: a reserve after TB1 sees $37, not $40
+  assert.equal(await reason(ev('evt_u2',3800,'ic_envunr')),'insufficient_available');assert.equal(await reason(ev('evt_u3',3700,'ic_envunr')),'APPROVED');assert.deepEqual(await tot(unr.hash),[3700,300,0,0]);
+  // TB4: duplicates consume once
+  assert.equal(await evidence(authEv('evt_u1','iauth_unr1',300,true,'pending','ic_envunr')),'duplicate');assert.deepEqual(await tot(unr.hash),[3700,300,0,0]);}
+ // TB3: orphan capture settles; crossing the limit realizes overspend, available stays 0
+ {const body=(await call(txEv('evt_u4','ipi_u4','iauth_unr9',500,'capture','ic_envunr'))).body;assert.deepEqual([body.envelope,body.how],['discrepancy:unreserved_capture','card']);
+  const b=await usd(unr.hash);assert.deepEqual([b.settledCents,b.availableCents,b.overspendCents],[500,0,500]);
+  assert.match((await summaryOf(unr.hash)).history.filter(h=>h.kind==='discrepancy:unreserved_capture').pop().note,/source=capture how=card overspend_realized=500$/);
+  assert.equal(await evidence(txEv('evt_u5','ipi_u4','iauth_unr9',500,'capture','ic_envunr')),'duplicate','same transaction id, new event id: consumed once');assert.equal((await usd(unr.hash)).settledCents,500);}
+ // merchant binding: an unmapped card whose merchant is bound to exactly one approved envelope in the account
+ const uniq=(await route('/money/envelopes',{...base,cardId:'ic_envuniq',merchantNetworkId:'merchant_unique'})).j.envelope;await route('/money/envelopes/'+uniq.hash+'/approve',{});
+ {assert.equal(await f.getJ('gl:issuer-envelope-card:acct_env:ic_envstray'),null);
+  const body=(await call(withMerchant(authEv('evt_u6','iauth_stray1',200,true,'pending','ic_envstray'),'merchant_unique'))).body;
+  assert.deepEqual([body.envelope,body.how,body.ownerNotified],['discrepancy:unreserved_approval','merchant',true]);assert.deepEqual(await tot(uniq.hash),[0,200,0,3800]);
+  assert.match((await feedFor(uniq.hash))[0].text,/on card …vstray arrived .*matched to this envelope by merchant, not by card/);assert.equal(await f.getJ('gl:issuer-envelope-card:acct_env:ic_envstray'),null,'a card mapping is never created by a guess');}
+ // TB5: unattributable (merchant shared by several approved envelopes, or unknown) -> Unassigned bucket, notice naming the card, no silent card assignment
+ {const before=JSON.stringify([await tot(env.hash),await tot(unr.hash),await tot(uniq.hash)]);
+  for(const [id,m,suffix] of [['evt_u7','merchant_env','ic_envamb1'],['evt_u8','merchant_nobody','ic_envamb2']]){
+   const body=(await call(withMerchant(authEv(id,'iauth_'+id.replace('_',''),250,true,'pending',suffix),m))).body;assert.deepEqual([body.envelope,body.how,body.ownerNotified],['discrepancy:unreserved_approval','unassigned',true],id);}
+  assert.equal(JSON.stringify([await tot(env.hash),await tot(unr.hash),await tot(uniq.hash)]),before,'no envelope absorbed the unattributed cents');
+  assert.equal(await f.getJ('gl:issuer-envelope-card:acct_env:ic_envamb1'),null);assert.equal(await f.getJ('gl:issuer-envelope-card:acct_env:ic_envamb2'),null);
+  const un=(await owner(async()=>(await f.spendSummary()).envelopes)).find(x=>x.unassigned);assert.deepEqual([un.botName,un.status,un.buckets[0].reservedCents],['Unassigned','unassigned',500]);
+  assert.deepEqual(un.notices.map(n=>/card=(\S+) source=approval how=unassigned/.exec(n.note)[1]),['ic_envamb1','ic_envamb2'],'each notice names its card');
+  assert.equal(await reason(ev('evt_u9',100,'ic_envamb1')),'unmapped_card','nothing can be approved against the Unassigned bucket or a guessed card');
+  assert.equal(await evidence(withMerchant(authEv('evt_u10','iauth_other1',100,true,'pending','ic_envx'),'merchant_env')&&{...authEv('evt_u10','iauth_other1',100,true,'pending','ic_envx'),account:'acct_noenv'}),'not_an_envelope_card','an account with no envelopes is not pulled into envelope accounting');
+  const au=await SE.audit(f.r,un.hash);assert(au.ok,au.errors.join('; '));}
+ for(const hh of [unr.hash,uniq.hash]){const au=await SE.audit(f.r,hh);assert(au.ok,au.errors.join('; '));}
  // Timeout: a hung envelope lookup declines at the internal deadline.
 
  {const slowCtx={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:()=>new Promise(()=>{}),issuerEnvelopeForEvent:f.issuerEnvelopeForEvent,issuerStore:f.issuerStore,envelopesEnabled:f.envelopesOn,envelopeNotice:f.envelopeNotice}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),slowCtx);
   const began=performance.now(),o=await postTo(slowCtx.module.exports,ev('evt_env9',100));assert.deepEqual([o.approved,o.metadata.alter_reason],[false,'internal_deadline']);assert(performance.now()-began<1500);}
  {let o;await ctx.module.exports({url:'/api/money/envelopes',method:'POST',headers:{host:'localhost'},body:base},{setHeader(){},status(n){this.code=n;return this},json(j){o={code:this.code,j}}});assert.equal(o.code,401);}
- console.log('PASS envelope (ALTER_SPEND_ENVELOPES): flag off = 404 routes, no /money fields, mapping ignored, evidence skipped; flag on: owner propose/duplicate/approve with owner identity, cross-workspace 404, request approves into unresolved, replayed event/authorization, over-limit, wrong merchant/bot, kill decline; signed provider evidence confirms, partial capture, duplicates once, close, refund; revoke between mint and use declines (pre-check and inside RESERVE), missing envelope and expiry decline with no fallback; late reserve declines and stays unresolved until evidence; store-down evidence returns 500 and keeps unresolved; stuck item adjudicated by owner with audit entry; manual decline keeps cents held as declined_pending (no budget freed, request over available declines insufficient_available, no partial reservation), capture equal to held settles with no notice, capture beyond its own reservation = discrepancy + overspend + owner feed notice, ack route clears it without releasing; audit replay ok; hung lookup declines; unauthenticated route 401. chargedCents 0.');
+ console.log('PASS envelope (ALTER_SPEND_ENVELOPES): flag off = 404 routes, no /money fields, mapping ignored, evidence skipped; flag on: owner propose/duplicate/approve with owner identity, cross-workspace 404, request approves into unresolved, replayed event/authorization, over-limit, wrong merchant/bot, kill decline; signed provider evidence confirms, partial capture, duplicates once, close, refund; revoke between mint and use declines (pre-check and inside RESERVE), missing envelope and expiry decline with no fallback; late reserve declines and stays unresolved until evidence; store-down evidence returns 500 and keeps unresolved; stuck item adjudicated by owner with audit entry; stranded held cents release only after a read-only test-mode provider GET (refused while open, 503 without a test key, one read per past-deadline item, late void webhook is a no-op); unreserved approvals and captures consume at once, are marked with their source, never declined, attributed by card then merchant then Unassigned with a notice naming the card; manual decline keeps cents held as declined_pending (no budget freed, request over available declines insufficient_available, no partial reservation), capture equal to held settles with no notice, capture beyond its own reservation = discrepancy + overspend + owner feed notice, ack route clears it without releasing; audit replay ok; hung lookup declines; unauthenticated route 401. chargedCents 0.');
  console.log('PASS signed raw body, stale/bad signatures, live-mode refusal, exact mandate, concurrent atomic budget reservation, replay decline, independent issuer-test job cap, synchronous direct response and deadline. ZERO network/payment calls. Local latency '+baseLatency+'ms, not Stripe delivery proof.');
 })().catch(e=>{console.error(e);process.exit(1)});
