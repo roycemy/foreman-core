@@ -242,6 +242,91 @@ const audited=async h=>{const a=await E.audit(call,h);assert(a.ok,a.errors.join(
   const b=await usd(h);assert.deepEqual([b.unresolvedCents,b.declinedPendingCents,b.usedCents,b.availableCents,b.overspendCents],[1000,2000,3000,0,0]);
   const mix=await Promise.all(Array.from({length:40},(_,i)=>i%2?E.fence(call2,h,'iauth_t8f'+i,AT):E.reserve(call,h,auth('t8g'+i,100),NOW)));
   assert(mix.every(x=>['fenced','insufficient_available'].includes(x.code)));assert.deepEqual(await tot(h),[1000,0,0,0,0]);assert.equal(await dpOf(h),2000);await audited(h);}
+ // ---- Defect A: held cents cannot strand. held_since is recorded with the first held cents; past the stored deadline (default 7 days) an item
+ // is eligible for a PROVIDER-AUTHORITATIVE reconcile. Nothing releases on time alone: a reader that cannot answer, or answers open, moves nothing.
+ const HW=E.HELD_WINDOW_MS,DL=NOW+HW,rd=(state,capturedCents=0,currency='usd')=>async()=>({state,capturedCents,currency});
+ const strand=async(id)=>{const h=await approved(terms({maxTotalCents:1000,expiresAtMs:NOW+HW*3+(++seq)}));await E.reserve(call,h,auth(id,800),NOW);await decline(h,id);
+  assert.equal((await E.provider(call,h,pe(1000+(++seq),'capture',id,700,{transactionId:'ipi_'+id}),AT)).code,'discrepancy:capture_differs_from_held');return h}; // $7 of the $8 settled; $1 held, void never delivered
+ // TA1: past-deadline item, provider confirms expired -> remainder released once, available returns, item closes.
+ {const h=await strand('ta1a');assert.deepEqual(await tot(h),[0,0,700,200,0]);
+  const x0=(await E.read(call,h,NOW)).authorizations.find(x=>x.authorizationId==='iauth_ta1a');assert.deepEqual([x0.heldSinceMs,x0.deadlineMs],[NOW,DL],'held_since and deadline recorded from the stored timestamp');
+  assert.equal((await E.read(call,h,DL-1)).pastDeadlineCount,0);assert.deepEqual(await E.reconcileDue(call,h,rd('expired'),DL-1),[],'before the deadline nothing is eligible');
+  let v=await E.read(call,h,DL);assert.deepEqual([v.pastDeadlineCount,v.pastDeadlineHeld,v.buckets[0].heldCents,v.pastDeadline[0].heldAgeMs],[1,[{currency:'usd',heldCents:100}],100,HW],'past-deadline count and held kept apart from the normal held figure');
+  assert.deepEqual((await E.reconcileDue(call,h,rd('expired'),DL)).map(x=>[x.authorizationId,x.code,x.settledCents,x.releasedCents]),[['iauth_ta1a','released',0,100]]);
+  v=await E.read(call,h,DL);assert.deepEqual(await tot(h),[0,0,700,300,0]);assert.deepEqual([v.pastDeadlineCount,v.buckets[0].heldCents,v.authorizations.find(x=>x.authorizationId==='iauth_ta1a').state],[0,0,'closed']);
+  assert.match(v.authorizations.find(x=>x.authorizationId==='iauth_ta1a').releasedBy,/^reconcile:sweep:iauth_ta1a$/);
+  assert.deepEqual((await E.reconcileDue(call,h,rd('expired'),DL)),[],'a closed item is no longer eligible');await audited(h);}
+ // TA2: release via reconcile, then the void webhook arrives -> no second release, note recorded. And the other order.
+ {const h=await strand('ta2a');await E.reconcile(call,h,'iauth_ta2a',rd('voided'),DL,'reconcile:one');
+  assert.equal((await E.provider(call,h,pe(95,'auth','ta2a',0,{approved:true,status:'closed'}),DL+1)).code,'noop_already_released');
+  assert.deepEqual(await tot(h),[0,0,700,300,0]);const v=await E.read(call,h,DL+1);
+  assert.deepEqual(v.history.filter(e=>e.kind==='release_noop').map(e=>e.note),['already released by reconcile:one']);
+  assert.equal(v.history.filter(e=>e.authorizationId==='iauth_ta2a'&&e.dd<0&&e.kind!=='discrepancy:capture_differs_from_held').length,1,'exactly one release');await audited(h);
+  const g=await strand('ta2b');assert.equal((await E.provider(call,g,pe(96,'auth','ta2b',0,{approved:true,status:'closed'}),DL)).code,'closed');
+  const late=await E.reconcile(call,g,'iauth_ta2b',rd('expired'),DL+1,'reconcile:two');assert.deepEqual([late.code,late.by],['noop','webhook:evt_p96']);assert.deepEqual(await tot(g),[0,0,700,300,0]);await audited(g);}
+ // TA3: past deadline, provider still open -> held stays held, item marked stuck, no release. An unreadable provider changes nothing either.
+ {const h=await strand('ta3a');const r1=await E.reconcile(call,h,'iauth_ta3a',rd('open'),DL,'reconcile:three');assert.equal(r1.code,'open');
+  let v=await E.read(call,h,DL);assert.deepEqual(await tot(h),[0,0,700,200,0]);const x=v.authorizations.find(y=>y.authorizationId==='iauth_ta3a');assert.deepEqual([x.heldCents,x.providerStuckAtMs,x.state,v.pastDeadlineCount],[100,DL,'open',1]);
+  const r2=await E.reconcile(call,h,'iauth_ta3a',async()=>{throw new Error('provider down')},DL+5,'reconcile:four');assert.equal(r2.code,'unreadable');
+  assert.deepEqual(await tot(h),[0,0,700,200,0]);v=await E.read(call,h,DL+5);assert.equal(v.authorizations.find(y=>y.authorizationId==='iauth_ta3a').providerStuckAtMs,DL,'unreadable does not move the mark');
+  assert.equal((await E.read(call,h,NOW+HW*50)).pastDeadlineCount,1,'fifty windows later it is still held: time alone releases nothing');await audited(h);}
+ // TA4: two concurrent reconciles -> one outcome, one release (the apply script serializes on the one key).
+ {const h=await strand('ta4a');const out=await Promise.all([E.reconcile(call,h,'iauth_ta4a',rd('expired'),DL,'reconcile:a'),E.reconcile(call2,h,'iauth_ta4a',rd('expired'),DL,'reconcile:b')]);
+  assert.deepEqual(out.map(x=>x.code).sort(),['noop','released']);assert.deepEqual(await tot(h),[0,0,700,300,0]);
+  const v=await E.read(call,h,DL);assert.equal(v.history.filter(e=>e.kind==='reconcile:expired'&&e.dd<0).length,1);assert.equal(v.history.filter(e=>e.kind==='release_noop').length,1);await audited(h);
+  // same race when the provider says closed with more captured than we settled: the extra settles once
+  const g=await strand('ta4b');const two=await Promise.all([E.reconcile(call,g,'iauth_ta4b',rd('closed',800),DL,'reconcile:c'),E.reconcile(call2,g,'iauth_ta4b',rd('closed',800),DL,'reconcile:d')]);
+  assert.deepEqual(two.map(x=>x.code).sort(),['noop','released']);assert.deepEqual(await tot(g),[0,0,800,200,0]);await audited(g);}
+ // Provider-authoritative settlement: closed with captured cents settles what was not yet settled, then releases the remainder.
+ {const h=await approved(terms({maxTotalCents:1000}));await E.reserve(call,h,auth('ta6a',800),NOW);await decline(h,'ta6a');
+  const r=await E.reconcile(call,h,'iauth_ta6a',rd('closed',800),AT,'reconcile:e');assert.deepEqual([r.code,r.settledCents,r.releasedCents],['released',800,800]);assert.deepEqual(await tot(h),[0,0,800,200,0]);
+  const g=await approved(terms({maxTotalCents:1000}));await E.reserve(call,g,auth('ta6b',800),NOW);await decline(g,'ta6b');
+  await E.reconcile(call,g,'iauth_ta6b',rd('closed',1200),AT,'reconcile:f');const b=await usd(g);assert.deepEqual([b.settledCents,b.heldCents,b.overspendCents,b.availableCents],[1200,0,200,0],'a provider capture beyond the held cents enters settled; overspend only past the limit');
+  assert.equal((await E.reconcile(call,g,'iauth_ta6b',rd('closed',1200),AT,'reconcile:g')).code,'noop');await audited(h);await audited(g);}
+ // TA5: owner "release stranded hold" on an item the provider still shows open -> refused, nothing moves; the same action releases once the provider says so.
+ {const h=await strand('ta5a');const before=JSON.stringify(await tot(h));
+  const refused=await E.releaseStranded(call,h,'iauth_ta5a',rd('open'),DL,'user_fixture');assert.equal(refused.code,'refused_provider_open');assert.equal(JSON.stringify(await tot(h)),before);assert.equal((await usd(h)).heldCents,100);
+  const ok=await E.releaseStranded(call,h,'iauth_ta5a',rd('voided'),DL+1,'user_fixture');assert.deepEqual([ok.code,ok.releasedCents],['released',100]);assert.deepEqual(await tot(h),[0,0,700,300,0]);
+  assert.equal((await E.read(call,h,DL+1)).authorizations.find(x=>x.authorizationId==='iauth_ta5a').releasedBy,'owner_release:user_fixture');await audited(h);}
+ // Read-only Stripe reader: GET only, test-mode key only, never guesses captured cents.
+ {const seen=[],fx=resp=>async(url,o)=>{seen.push([url,o.method,o.headers.Authorization.slice(0,12)]);return {ok:true,status:200,json:async()=>resp}};
+  assert.throws(()=>E.stripeReader({fetch:fx({}),key:'sk_live_notallowed1'}),/test-mode/);
+  const mk=(r)=>E.stripeReader({fetch:fx(r),key:'sk_test_disposable1'});
+  assert.deepEqual(await mk({id:'iauth_r1',status:'pending',currency:'USD'})('iauth_r1'),{state:'open',capturedCents:0,currency:'usd'});
+  assert.deepEqual(await mk({id:'iauth_r1',status:'reversed'})('iauth_r1'),{state:'voided',capturedCents:0,currency:'usd'});
+  assert.deepEqual(await mk({id:'iauth_r1',status:'expired'})('iauth_r1'),{state:'expired',capturedCents:0,currency:'usd'});
+  assert.deepEqual(await mk({id:'iauth_r1',status:'closed',approved:true,transactions:{data:[{amount:-700},{amount:-200},{amount:100}]}})('iauth_r1'),{state:'closed',capturedCents:800,currency:'usd'});
+  await assert.rejects(mk({id:'iauth_r1',status:'closed',approved:true})('iauth_r1'),/transactions_not_expanded/);await assert.rejects(mk({id:'iauth_other',status:'pending'})('iauth_r1'),/id_mismatch/);
+  assert(seen.length>0&&seen.every(x=>x[1]==='GET'&&x[0].startsWith('https://api.stripe.com/v1/issuing/authorizations/iauth_r1?expand[]=transactions')&&x[2]==='Bearer sk_te'),'reads only');}
+ // ---- Defect B: cents Alter never reserved. They consume available when recorded, are marked unreserved with their source, and the realized
+ // overspend is written into the entry. An unreserved approval is never declined: it consumes and notifies.
+ const note=(v,kind)=>{const e=v.history.find(h=>h.kind===kind);return e&&e.note};
+ // TB1: unreserved approval against $10 available, $3 -> available $7, marked unreserved, notice names the card.
+ {const h=await approved(terms({maxTotalCents:1000}));assert.deepEqual(await tot(h),[0,0,0,1000,0]);
+  assert.equal((await E.provider(call,h,pe(100,'auth','tb1a',300,{approved:true,status:'pending',cardId:'ic_tbcard1',how:'card'}),NOW)).code,'discrepancy:unreserved_approval');
+  assert.deepEqual(await tot(h),[0,300,0,700,0]);const v=await E.read(call,h,NOW);
+  assert.deepEqual(v.unreserved.map(x=>[x.authorizationId,x.source]),[['iauth_tb1a','approval']]);assert.equal(note(v,'discrepancy:unreserved_approval'),'card=ic_tbcard1 source=approval how=card overspend_realized=0');
+  assert.deepEqual(v.notices.map(n=>n.kind),['discrepancy:unreserved_approval'],'a notice that names the card');
+  // TB2: a reserve after TB1 sees $7, not $10.
+  const big=await E.reserve(call,h,auth('tb2a',800),NOW);assert.equal(big.code,'insufficient_available');
+  const fit=await E.reserve(call,h,auth('tb2b',700),NOW);assert.deepEqual([fit.code,fit.remainingCents],['reserved',0]);await audited(h);}
+ // TB3: orphan capture $3 -> settled, available $7; when it crosses max the overspend is realized, clamped at zero, never negative.
+ {const h=await approved(terms({maxTotalCents:1000}));
+  assert.equal((await E.provider(call,h,pe(101,'capture','tb3a',300,{transactionId:'ipi_tb3a',cardId:'ic_tbcard1',how:'card'}),NOW)).code,'discrepancy:unreserved_capture');
+  assert.deepEqual(await tot(h),[0,0,300,700,0]);assert.equal(note(await E.read(call,h,NOW),'discrepancy:unreserved_capture'),'card=ic_tbcard1 source=capture how=card overspend_realized=0');
+  await E.reserve(call,h,auth('tb3b',600),NOW);assert.deepEqual(await tot(h),[600,0,300,100,0]);
+  assert.equal((await E.provider(call,h,pe(102,'capture','tb3c',300,{transactionId:'ipi_tb3c',cardId:'ic_tbcard1',how:'card'}),NOW)).code,'discrepancy:unreserved_capture');
+  const b=await usd(h);assert.deepEqual([b.settledCents,b.unresolvedCents,b.overspendCents,b.availableCents],[600,600,200,0],'realized overspend, available clamped at 0');
+  assert.equal(note(await E.read(call,h,NOW),'discrepancy:unreserved_capture'),'card=ic_tbcard1 source=capture how=card overspend_realized=0');
+  assert((await E.read(call,h,NOW)).history.some(e=>e.kind==='discrepancy:unreserved_capture'&&/overspend_realized=200$/.test(e.note)),'the second entry records overspend_realized=200');
+  const r=await E.reserve(call,h,auth('tb3d',1),NOW);assert.deepEqual([r.code,r.remainingCents>=0],['insufficient_available',true]);await audited(h);}
+ // TB4: a duplicate unreserved webhook consumes once (by event id, by transaction id, and by authorization id).
+ {const h=await approved(terms({maxTotalCents:1000}));const a1=pe(103,'auth','tb4a',300,{approved:true,status:'pending',cardId:'ic_tbcard1',how:'card'});
+  assert.equal((await E.provider(call,h,a1,NOW)).code,'discrepancy:unreserved_approval');assert.equal((await E.provider(call,h,a1,NOW)).code,'duplicate');
+  assert.notEqual((await E.provider(call,h,pe(104,'auth','tb4a',300,{approved:true,status:'pending',cardId:'ic_tbcard1',how:'card'}),NOW)).code,'discrepancy:unreserved_approval','a second event for the same authorization is not consumed again');
+  const c1=pe(105,'capture','tb4b',200,{transactionId:'ipi_tb4b',cardId:'ic_tbcard1',how:'card'});
+  assert.equal((await E.provider(call,h,c1,NOW)).code,'discrepancy:unreserved_capture');assert.equal((await E.provider(call,h,c1,NOW)).code,'duplicate');assert.equal((await E.provider(call,h,pe(106,'capture','tb4b',200,{transactionId:'ipi_tb4b',cardId:'ic_tbcard1',how:'card'}),NOW)).code,'duplicate');
+  assert.deepEqual(await tot(h),[0,300,200,500,0]);await audited(h);}
  // Shuffled delivery: every order of the same provider events ends in identical totals; duplicates mixed in apply once.
  const evs=[pe(40,'auth','sh',1000,{approved:true,status:'pending'}),pe(41,'capture','sh',600,{transactionId:'ipi_sh1'}),pe(42,'auth','sh',0,{approved:true,status:'closed'}),pe(43,'refund','sh',100,{transactionId:'ipi_sh2'})];
  const perms=a=>a.length<2?[a]:a.flatMap((v,i)=>perms([...a.slice(0,i),...a.slice(i+1)]).map(r=>[v,...r]));
@@ -258,5 +343,5 @@ const audited=async h=>{const a=await E.audit(call,h);assert(a.ok,a.errors.join(
  if(!real)assert.throws(()=>E.localEval(store,['EVAL',E.RESERVE,'2','{a}x','{b}y']),/CROSSSLOT/);
  assert(calls.every(c=>['EVAL','HGETALL','HGET','HMGET','HSET'].includes(c)));
  const evals=calls.filter(c=>c==='EVAL').length;if(real){real.close();real2.close();}
- console.log('PASS binding hash (7 terms, per-currency), duplicate proposal, first decision wins, $40 atomic reservation (accepted cents unresolved until provider evidence), term mismatch, expiry, signed replay; fence both orders + 40 concurrent fence/reserve pairs ('+wonR+' reserve-first, '+wonF+' fence-first, never both); per-cent partial capture; duplicate event/transaction ids once; refunds reduce settled; capture after decline/release as discrepancy; capture beyond reserved only overspends past max; store-down unresolved persists 7 days and shows stuck; owner adjudication with audit entry; declined_pending stays held (T1-T6, T8, T11, T12: captures settle only what they capture), canonical merchant hash v2 with v1 fallback (T7); 24 shuffled orders identical; per-currency buckets; audit catches corruption. '+evals+' EVALs, single-slot keys, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
+ console.log('PASS binding hash (7 terms, per-currency), duplicate proposal, first decision wins, $40 atomic reservation (accepted cents unresolved until provider evidence), term mismatch, expiry, signed replay; fence both orders + 40 concurrent fence/reserve pairs ('+wonR+' reserve-first, '+wonF+' fence-first, never both); per-cent partial capture; duplicate event/transaction ids once; refunds reduce settled; capture after decline/release as discrepancy; capture beyond reserved only overspends past max; store-down unresolved persists 7 days and shows stuck; owner adjudication with audit entry; declined_pending stays held (T1-T6, T8, T11, T12: captures settle only what they capture); stranded holds reconcile against the provider (TA1-TA5, never on time alone); unreserved cents consume and are marked (TB1-TB4), canonical merchant hash v2 with v1 fallback (T7); 24 shuffled orders identical; per-currency buckets; audit catches corruption. '+evals+' EVALs, single-slot keys, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
 })().catch(e=>{console.error(e);process.exit(1)});
