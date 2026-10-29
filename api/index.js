@@ -71,7 +71,7 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'HGETALL': case 'HGET': return ENVELOPE.localEval(mem.hashes || (mem.hashes = new Map()), c);
+    case 'HGETALL': case 'HGET': case 'HMGET': return ENVELOPE.localEval(mem.hashes || (mem.hashes = new Map()), c);
     case 'EVAL': { if(ENVELOPE.SCRIPTS.has(k))return ENVELOPE.localEval(mem.hashes || (mem.hashes = new Map()), c); const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
@@ -1198,7 +1198,7 @@ async function envelopeNotice(hash,code,e){
  const v=await ENVELOPE.read(r,hash);if(!v)return null;
  const ws=await r(['GET','gl:issuer-envelope-owner:'+v.accountId+':'+v.cardId]);if(!ws)return null;
  const amt=(Number(e.amountCents)/100).toFixed(2)+' '+String(e.currency||'').toUpperCase();
- const text=code==='discrepancy:capture_after_adjudicated_declined'?'Issuer captured '+amt+' on an authorization you marked declined. It now counts as spent.':'Spend envelope discrepancy: '+code.replace(/^discrepancy:/,'').replace(/_/g,' ')+' ('+amt+').';
+ const text=code==='discrepancy:capture_differs_from_held'?'Issuer captured '+amt+' on an authorization you declined; the amount differs from what was held. It now counts as spent.':'Spend envelope discrepancy: '+code.replace(/^discrepancy:/,'').replace(/_/g,' ')+' ('+amt+').';
  await als.run({ws},()=>event(v.botId,'blocked',text,{kind:'BLOCKED',envelopeHash:hash,authorizationId:e.authorizationId,discrepancy:code}));
  return ws;
 }

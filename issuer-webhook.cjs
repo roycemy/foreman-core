@@ -7,7 +7,8 @@ const VERSION='2025-03-31.basil';
 // every code but 'reserved' declines, and a mapped card never falls back to the exact-mandate path. Flag off: unchanged path.
 // Envelope and bot come only from Alter's card mapping. Reservations are internal accounting only.
 // Accepted cents stay unresolved until provider evidence (issuing_authorization.created/updated, issuing_transaction.created)
-// or owner adjudication. A late, failed or timed-out reserve is never released here: the response declines and the record,
+// or owner adjudication. R2: approve only if the amount fits available (max - settled - held); no partial reservation. The binding is
+// re-verified at card use (hash_version 2 first, 1 for approvals written before the canonical merchant hash). A late, failed or timed-out reserve is never released here: the response declines and the record,
 // if it landed, stays unresolved and visible.
 const cardOf=o=>typeof o?.card==='string'?o.card:o?.card?.id;
 async function decide(event,deadline){
@@ -18,6 +19,7 @@ async function decide(event,deadline){
  if(auth?.livemode!==false)return {approved:false,reason:'live_mode_disabled'};
  const a={eventId:event.id,authorizationId:auth?.id,botId:target.botId,accountId:event.account,cardId:cardOf(auth),merchantNetworkId:auth?.merchant_data?.network_id,currency:p?.currency,amountCents:p?.amount};
  const store=core.issuerStore(deadline);
+ if(!(await ENVELOPE.verify(store,target.hash)).ok)return {approved:false,reason:'binding_invalid'};
  // Route later provider events for this authorization to this envelope even if the card mapping changes.
  if(/^iauth_[A-Za-z0-9]+$/.test(a.authorizationId||''))await store(['SET','gl:issuer-envelope-auth:'+a.authorizationId,target.hash,'NX']);
  const out=await ENVELOPE.reserve(store,target.hash,a);

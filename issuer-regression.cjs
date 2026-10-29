@@ -43,7 +43,7 @@ async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON
  assert.equal(await reason(ev('evt_env1',2500)),'APPROVED');assert.deepEqual(await tot(env.hash),[2500,0,0,1500]);
  assert.equal(await reason(ev('evt_env1',2500)),'replay_declined');
  assert.equal(await reason(ev('evt_env1b',100,'ic_env',{id:'iauth_evtenv1'})),'replay_declined');
- assert.equal(await reason(ev('evt_env2',2000)),'insufficient_envelope');
+ assert.equal(await reason(ev('evt_env2',2000)),'insufficient_available');
  assert.equal(await reason(ev('evt_env3',100,'ic_env',{merchant_data:{network_id:'merchant_other',category:'computer_software_stores'}})),'envelope_mismatch');
  const mapKey='gl:issuer-envelope-card:acct_env:ic_env',mapping=await f.getJ(mapKey);
  await f.setJ(mapKey,{...mapping,botId:b2.id});assert.equal(await reason(ev('evt_env4',100)),'envelope_mismatch');await f.setJ(mapKey,mapping);
@@ -91,16 +91,28 @@ async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON
   assert.equal((await route('/money/envelopes/'+sd.hash+'/authorizations/iauth_evtdown1/adjudicate',{decision:'declined'})).code,400);
   const adj=await route('/money/envelopes/'+sd.hash+'/authorizations/iauth_evtdown1/adjudicate',{decision:'declined',note:'issuer shows declined'});assert.deepEqual([adj.code,adj.j.code],[200,'adjudicated']);
   const entry=adj.j.envelope.history.find(x=>x.kind==='manual_adjudication:declined');assert.deepEqual([entry.actor,entry.note,entry.du],['owner:user_fixture','issuer shows declined',-800]);
-  assert.deepEqual(await tot(sd.hash),[0,0,0,4000]);
-  // Manual decline is provisional: the summary labels it, budget is back, and a later capture is a discrepancy with an owner notice.
-  {const v=await owner(async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===sd.hash));assert.deepEqual(v.provisional.map(x=>[x.authorizationId,x.manual]),[['iauth_evtdown1','declined']]);}
-  assert.equal(await reason(ev('evt_down4',3500,'ic_envdown')),'APPROVED');assert.deepEqual(await tot(sd.hash),[3500,0,0,500]);
-  const cap=await call(txEv('evt_down3','ipi_down1','iauth_evtdown1',800,'capture','ic_envdown'));
-  assert.deepEqual([cap.status,cap.body.envelope,cap.body.ownerNotified],[200,'discrepancy:capture_after_adjudicated_declined',true]);
-  const ub=await usd(sd.hash);assert.deepEqual([ub.unresolvedCents,ub.settledCents,ub.availableCents,ub.overspendCents],[3500,800,0,300]);
+  // R3: the decline keeps the cents held. Available does not move; the item is declined_pending and shows a persistent notice.
+  const dpOf=async hh=>(await usd(hh)).declinedPendingCents,sdView=()=>owner(async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===sd.hash));
+  assert.deepEqual(await tot(sd.hash),[0,0,0,3200]);assert.equal(await dpOf(sd.hash),800);
+  {const v=await sdView();assert.deepEqual(v.declinedPending.map(x=>x.authorizationId),['iauth_evtdown1']);assert.deepEqual(v.notices.map(n=>n.kind),['manual_adjudication:declined']);}
+  // R2: a request larger than available declines with insufficient_available; no partial reservation.
+  assert.equal(await reason(ev('evt_down6',3500,'ic_envdown')),'insufficient_available');assert.deepEqual(await tot(sd.hash),[0,0,0,3200]);
+  assert.equal(await reason(ev('evt_down4',2400,'ic_envdown')),'APPROVED');assert.deepEqual(await tot(sd.hash),[2400,0,0,800]);
+  // R4: a capture equal to the held amount settles it and closes the item. No discrepancy, no owner notice, and the declined notice clears.
+  {const cap=await call(txEv('evt_down3','ipi_down1','iauth_evtdown1',800,'capture','ic_envdown'));
+   assert.deepEqual([cap.status,cap.body.envelope,cap.body.ownerNotified],[200,'capture_resolved_declined_pending',undefined]);
+   assert.deepEqual(await tot(sd.hash),[2400,0,800,800]);assert.equal(await dpOf(sd.hash),0);const v=await sdView();assert.equal(v.notices.length,0);assert.equal(v.declinedPending.length,0);}
+  // A capture larger than its own reservation is the remaining overspend path (R8): discrepancy entry, owner feed notice, ack never releases.
+  assert.equal(await reason(ev('evt_down5',700,'ic_envdown')),'APPROVED');assert.deepEqual(await tot(sd.hash),[3100,0,800,100]);
+  f.mem.hashes.get(k).set('a:iauth_evtdown5:at',String(Date.now()-SE.STUCK_MS-1));
+  assert.equal((await route('/money/envelopes/'+sd.hash+'/authorizations/iauth_evtdown5/adjudicate',{decision:'declined',note:'issuer shows declined'})).j.code,'adjudicated');
+  assert.deepEqual(await tot(sd.hash),[2400,0,800,100]);assert.equal(await dpOf(sd.hash),700);
+  const cap2=await call(txEv('evt_down7','ipi_down5','iauth_evtdown5',900,'capture','ic_envdown'));
+  assert.deepEqual([cap2.status,cap2.body.envelope,cap2.body.ownerNotified],[200,'discrepancy:capture_differs_from_held',true]);
+  const ub=await usd(sd.hash);assert.deepEqual([ub.unresolvedCents,ub.settledCents,ub.declinedPendingCents,ub.availableCents,ub.overspendCents],[2400,1700,0,0,100]);
   const feed=(await owner(()=>f.r(['LRANGE','fm:events',0,20]))).map(x=>JSON.parse(x)).find(x=>x.envelopeHash===sd.hash);
-  assert.deepEqual([feed.kind,feed.discrepancy,feed.agentId,feed.text],['BLOCKED','discrepancy:capture_after_adjudicated_declined',a.id,'Issuer captured 8.00 USD on an authorization you marked declined. It now counts as spent.']);
-  const nv=await owner(async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===sd.hash));assert.deepEqual(nv.notices.map(n=>n.kind),['discrepancy:capture_after_adjudicated_declined']);assert.equal(nv.provisional.length,0);
+  assert.deepEqual([feed.kind,feed.discrepancy,feed.agentId,feed.text],['BLOCKED','discrepancy:capture_differs_from_held',a.id,'Issuer captured 9.00 USD on an authorization you declined; the amount differs from what was held. It now counts as spent.']);
+  const nv=await sdView();assert.deepEqual(nv.notices.map(n=>n.kind),['discrepancy:capture_differs_from_held']);
   const ak=await route('/money/envelopes/'+sd.hash+'/notices/ack',{seq:nv.notices[0].seq});assert.deepEqual([ak.code,ak.j.code,ak.j.envelope.notices.length],[200,'acknowledged',0]);
   assert.equal(ak.j.envelope.history.slice(-1)[0].actor,'owner:user_fixture');}
  for(const hh of [env.hash,rev2.hash,late.hash,sd.hash]){const au=await SE.audit(f.r,hh);assert(au.ok,au.errors.join('; '));}
@@ -109,6 +121,6 @@ async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON
  {const slowCtx={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:()=>new Promise(()=>{}),issuerEnvelopeForEvent:f.issuerEnvelopeForEvent,issuerStore:f.issuerStore,envelopesEnabled:f.envelopesOn,envelopeNotice:f.envelopeNotice}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),slowCtx);
   const began=performance.now(),o=await postTo(slowCtx.module.exports,ev('evt_env9',100));assert.deepEqual([o.approved,o.metadata.alter_reason],[false,'internal_deadline']);assert(performance.now()-began<1500);}
  {let o;await ctx.module.exports({url:'/api/money/envelopes',method:'POST',headers:{host:'localhost'},body:base},{setHeader(){},status(n){this.code=n;return this},json(j){o={code:this.code,j}}});assert.equal(o.code,401);}
- console.log('PASS envelope (ALTER_SPEND_ENVELOPES): flag off = 404 routes, no /money fields, mapping ignored, evidence skipped; flag on: owner propose/duplicate/approve with owner identity, cross-workspace 404, request approves into unresolved, replayed event/authorization, over-limit, wrong merchant/bot, kill decline; signed provider evidence confirms, partial capture, duplicates once, close, refund; revoke between mint and use declines (pre-check and inside RESERVE), missing envelope and expiry decline with no fallback; late reserve declines and stays unresolved until evidence; store-down evidence returns 500 and keeps unresolved; stuck item adjudicated by owner with audit entry; manual decline labelled provisional, later capture = discrepancy + overspend + owner feed notice, ack route clears it; audit replay ok; hung lookup declines; unauthenticated route 401. chargedCents 0.');
+ console.log('PASS envelope (ALTER_SPEND_ENVELOPES): flag off = 404 routes, no /money fields, mapping ignored, evidence skipped; flag on: owner propose/duplicate/approve with owner identity, cross-workspace 404, request approves into unresolved, replayed event/authorization, over-limit, wrong merchant/bot, kill decline; signed provider evidence confirms, partial capture, duplicates once, close, refund; revoke between mint and use declines (pre-check and inside RESERVE), missing envelope and expiry decline with no fallback; late reserve declines and stays unresolved until evidence; store-down evidence returns 500 and keeps unresolved; stuck item adjudicated by owner with audit entry; manual decline keeps cents held as declined_pending (no budget freed, request over available declines insufficient_available, no partial reservation), capture equal to held settles with no notice, capture beyond its own reservation = discrepancy + overspend + owner feed notice, ack route clears it without releasing; audit replay ok; hung lookup declines; unauthenticated route 401. chargedCents 0.');
  console.log('PASS signed raw body, stale/bad signatures, live-mode refusal, exact mandate, concurrent atomic budget reservation, replay decline, independent issuer-test job cap, synchronous direct response and deadline. ZERO network/payment calls. Local latency '+baseLatency+'ms, not Stripe delivery proof.');
 })().catch(e=>{console.error(e);process.exit(1)});
