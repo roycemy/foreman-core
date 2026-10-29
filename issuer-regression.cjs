@@ -46,10 +46,28 @@ async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON
  await new Promise(s=>setTimeout(s,350));assert.equal(await reason(ev('evt_env7',100,'ic_envshort')),'expired');
  assert.equal(await reason(ev('evt_env8',500)),'APPROVED');
  await f.als.run({ws:'issuerfixture'},async()=>{const live=(await f.spendSummary()).envelopes.find(x=>x.hash===env.hash);assert.deepEqual([live.reservedCents,live.chargedCents,live.status],[3000,0,'approved'])});
+ // Late decline: reserve() lands after the 1000ms deadline -> webhook declines, then the reservation is released (idempotent), and the ids stay burned.
+ const SE=require('./spend-envelope.cjs');
+ const mkHandler=wrap=>{const c={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:e=>f.issuerEnvelopeTarget(e),issuerStore:wrap}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),c);return c.module.exports};
+ const postTo=async(handler,e)=>{const raw=Buffer.from(JSON.stringify(e)),t=Math.floor(Date.now()/1000),sg='t='+t+',v1='+crypto.createHmac('sha256',secret).update(t+'.').update(raw).digest('hex');let o;await handler({method:'POST',body:raw,headers:{'stripe-signature':sg}},{setHeader(){},status(n){this.code=n;return this},json(j){o=j}});return o};
+ const reserved=async hash=>f.als.run({ws:'issuerfixture'},async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===hash).reservedCents);
+ const approveEnv=async card=>f.als.run({ws:'issuerfixture'},async()=>{const e=(await f.envelopePropose({...base,cardId:card})).body.envelope;assert.equal((await f.envelopeDecide(e.hash,'approve')).body.code,'approved');return e});
+ const lateEnv=await approveEnv('ic_envlate'),lateH=mkHandler(deadline=>{const s=f.issuerStore(deadline);return async cmd=>{const out=await s(cmd);if(deadline&&cmd[1]===SE.RESERVE)await new Promise(x=>setTimeout(x,1200));return out}});
+ {const began=performance.now(),o=await postTo(lateH,ev('evt_late1',1000,'ic_envlate'));assert.equal(o.approved,false);assert.equal(o.metadata.alter_reason,'internal_deadline');assert(performance.now()-began<1150);
+  assert.equal(await reserved(lateEnv.hash),1000);
+  for(let i=0;i<40&&await reserved(lateEnv.hash)!==0;i++)await new Promise(x=>setTimeout(x,100));assert.equal(await reserved(lateEnv.hash),0);}
+ assert.equal(await reason(ev('evt_late1',1000,'ic_envlate')),'replay_declined');
+ assert.equal(await reason(ev('evt_late1b',1000,'ic_envlate',{id:'iauth_evtlate1'})),'replay_declined');
+ {const again=await SE.release(f.issuerStore(null),lateEnv.hash,{eventId:'evt_late1',authorizationId:'iauth_evtlate1'});assert.equal(again.code,'noop');assert.equal(await reserved(lateEnv.hash),0);}
+ assert.equal(await reason(ev('evt_late2',4000,'ic_envlate')),'APPROVED');
+ // Error after the reserve was applied (connection lost): decline, release, ids burned.
+ const errEnv=await approveEnv('ic_enverr'),errH=mkHandler(deadline=>{const s=f.issuerStore(deadline);return async cmd=>{const out=await s(cmd);if(deadline&&cmd[1]===SE.RESERVE)throw Error('connection reset');return out}});
+ {const o=await postTo(errH,ev('evt_err1',1000,'ic_enverr'));assert.equal(o.approved,false);assert.equal(o.metadata.alter_reason,'internal_error');assert.equal(await reserved(errEnv.hash),0);}
+ assert.equal(await reason(ev('evt_err1',1000,'ic_enverr')),'replay_declined');
  // Timeout: a hung envelope lookup declines at the internal deadline.
  const slowCtx={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:()=>new Promise(()=>{}),issuerStore:f.issuerStore}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),slowCtx);
  {const raw=Buffer.from(JSON.stringify(ev('evt_env9',100))),t0=Math.floor(Date.now()/1000),s='t='+t0+',v1='+crypto.createHmac('sha256',secret).update(t0+'.').update(raw).digest('hex');let o;const began=performance.now();await slowCtx.module.exports({method:'POST',body:raw,headers:{'stripe-signature':s}},{setHeader(){},status(n){this.code=n;return this},json(j){o=j}});assert.equal(o.approved,false);assert.equal(o.metadata.alter_reason,'internal_deadline');assert(performance.now()-began<1500);}
  {let o;await ctx.module.exports({url:'/api/money/envelopes',method:'POST',headers:{host:'localhost'},body:base},{setHeader(){},status(n){this.code=n;return this},json(j){o={code:this.code,j}}});assert.equal(o.code,401);}
- console.log('PASS envelope: owner propose/duplicate/decide, cross-workspace 404, approved envelope approves, unapproved/over-limit/wrong merchant/wrong bot/expired/killed/replayed event/replayed authorization decline, hung lookup declines at deadline, unauthenticated route 401. chargedCents 0.');
+ console.log('PASS envelope: owner propose/duplicate/decide, cross-workspace 404, approved envelope approves, unapproved/over-limit/wrong merchant/wrong bot/expired/killed/replayed event/replayed authorization decline, late reserve declines then releases (repeat release no-op, replay after release declines, freed cents spendable), reserve error releases, hung lookup declines at deadline, cards bound into the hash, unauthenticated route 401. chargedCents 0.');
  console.log('PASS signed raw body, stale/bad signatures, live-mode refusal, exact mandate, concurrent atomic budget reservation, replay decline, independent issuer-test job cap, synchronous direct response and deadline. ZERO network/payment calls. Local latency '+baseLatency+'ms, not Stripe delivery proof.');
 })().catch(e=>{console.error(e);process.exit(1)});

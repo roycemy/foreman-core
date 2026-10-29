@@ -45,6 +45,15 @@ const RESERVE="local s=redis.call('HMGET',KEYS[1],'hash','status','botId','accou
  "if ARGV[10]=='1' then redis.call('HSET',KEYS[1],'status','closed','releasedCents',tostring(remaining)) remaining=0 end\n"+
  "redis.call('HSET',KEYS[1],evt,'reserved:'..amt,auth,'reserved:'..amt)\n"+
  "return {'reserved',res,remaining}";
+// Adapted from formancehq/wallets pkg/numscript/cancel-hold.num + pkg/api/handler_holds_void.go @3177b665175c33867cf4a1a02b0c792d7d3d2dfd (void returns a hold's remainder to the source):
+// returns one authorization's reserved cents to the envelope. Idempotent per authorization id: only a 'reserved:<n>' record is released, once.
+// The event and authorization records stay in the hash, so a replay after release still declines (replay_declined).
+const RELEASE="local v=redis.call('HGET',KEYS[1],'auth:'..ARGV[2])\n"+
+ "if not v or string.sub(v,1,9)~='reserved:' then return {'noop'} end\n"+
+ "local amt=tonumber(string.sub(v,10))\n"+
+ "local res=redis.call('HINCRBY',KEYS[1],'reservedCents','-'..amt)\n"+
+ "redis.call('HSET',KEYS[1],'auth:'..ARGV[2],'released:'..amt,'evt:'..ARGV[3],'released:'..amt)\n"+
+ "return {'released',res,amt}";
 // call is a Redis command function (e.g. api/index.js r). Every script declares its single key in KEYS.
 async function propose(call,terms,nowMs=Date.now()){const hash=bindingHash(terms),key=envelopeKey(hash);const out=await call(['EVAL',PROPOSE,'1',key,hash,terms.botId,terms.accountId,terms.cardId,terms.merchantNetworkId.trim(),terms.currency,String(terms.maxTotalCents),String(terms.expiresAtMs),String(nowMs)]);return {hash,key,code:out[0]};}
 async function decide(call,hash,decision,nowMs=Date.now()){if(!/^[a-f0-9]{64}$/.test(hash||''))return {code:'binding_mismatch'};const out=await call(['EVAL',DECIDE,'1',envelopeKey(hash),hash,decision==='approve'?'approve':'deny',String(nowMs)]);return {code:out[0],status:out[1]};}
@@ -55,6 +64,12 @@ async function reserve(call,hash,a,nowMs=Date.now()){
  const out=await call(['EVAL',RESERVE,'1',envelopeKey(hash),hash,a.eventId,a.authorizationId,String(a.botId),String(a.accountId),String(a.cardId),String(a.merchantNetworkId),String(a.currency),String(a.amountCents),a.final?'1':'0',String(nowMs)]);
  return {code:out[0],reservedCents:out[1],remainingCents:out[2],chargedCents:0};
 }
+// Same key as reserve(), so the single-slot rule holds. Safe to call for an authorization that never reserved: it is a no-op.
+async function release(call,hash,a){
+ if(!/^[a-f0-9]{64}$/.test(hash||'')||!/^evt_[A-Za-z0-9]+$/.test(a.eventId||'')||!/^iauth_[A-Za-z0-9]+$/.test(a.authorizationId||''))return {code:'noop'};
+ const out=await call(['EVAL',RELEASE,'1',envelopeKey(hash),hash,a.authorizationId,a.eventId]);
+ return {code:out[0],reservedCents:out[1],releasedCents:out[2]};
+}
 // No upstream file covers it: owner-facing row view; per-event decision fields are counted, not listed.
 async function read(call,hash){
  const flat=await call(['HGETALL',envelopeKey(hash)])||[],o={};for(let i=0;i<flat.length;i+=2)o[flat[i]]=flat[i+1];
@@ -63,7 +78,7 @@ async function read(call,hash){
 }
 // No upstream file covers it: in-process EVAL for the memory store and tests. Runs the same Lua text in fengari
 // (devDependency, loaded lazily) over a Map of Redis hashes, refusing keys outside KEYS and KEYS that span hash slots.
-const SCRIPTS=new Set([PROPOSE,DECIDE,RESERVE]),slot=k=>{const m=/\{([^}]+)\}/.exec(k);return m?m[1]:k};
+const SCRIPTS=new Set([PROPOSE,DECIDE,RESERVE,RELEASE]),slot=k=>{const m=/\{([^}]+)\}/.exec(k);return m?m[1]:k};
 function hashCmd(store,declared,[op,k,...a]){
  if(!declared.includes(k))throw Error('undeclared key '+k);
  const h=store.get(k);
@@ -72,6 +87,7 @@ function hashCmd(store,declared,[op,k,...a]){
   case 'HSET':{const m=h||new Map();let n=0;for(let i=0;i<a.length;i+=2){if(!m.has(a[i]))n++;m.set(a[i],a[i+1])}store.set(k,m);return n}
   case 'HMGET':return a.map(f=>h&&h.has(f)?h.get(f):null);
   case 'HEXISTS':return h&&h.has(a[0])?1:0;
+  case 'HGET':return h&&h.has(a[0])?h.get(a[0]):null;
   case 'HINCRBY':{const m=h||new Map(),v=parseInt(m.get(a[0])||'0',10)+parseInt(a[1],10);m.set(a[0],String(v));store.set(k,m);return v}
  }
  throw Error('unsupported '+op);
@@ -96,4 +112,4 @@ function localEval(store,cmd){
  if(lauxlib.luaL_loadstring(L,to_luastring(cmd[1]))!==lua.LUA_OK||lua.lua_pcall(L,0,1,0)!==lua.LUA_OK)throw Error('lua: '+lua.lua_tojsstring(L,-1));
  return reply(L,lua.lua_gettop(L));
 }
-module.exports={bindingHash,envelopeKey,propose,decide,reserve,read,localEval,SCRIPTS,PROPOSE,DECIDE,RESERVE};
+module.exports={bindingHash,envelopeKey,propose,decide,reserve,release,read,localEval,SCRIPTS,PROPOSE,DECIDE,RESERVE,RELEASE};

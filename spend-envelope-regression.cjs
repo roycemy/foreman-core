@@ -83,8 +83,23 @@ async function approved(t){const p=await E.propose(call,t,NOW);assert.equal(p.co
  h=await f('TestHoldsConfirmWithTooHighAmount',3);assert.equal((await E.reserve(call,h,auth('fh',500),NOW)).code,'insufficient_envelope');assert.equal((await row(h)).reservedCents,'0');
  h=await f('TestHoldsConfirmWithClosedHold',4);await E.reserve(call,h,auth('fx',100),NOW);assert.equal((await E.reserve(call,h,auth('fy',1),NOW)).code,'closed_envelope');
  h=await f('TestHoldsPartialConfirmWithFinal',5);x=await E.reserve(call,h,auth('ff',50,{final:true}),NOW);assert.deepEqual([x.code,x.reservedCents,x.remainingCents],['reserved',50,0]);assert.equal((await row(h)).status,'closed');assert.equal((await row(h)).releasedCents,'50');assert.equal((await E.reserve(call,h,auth('fg',10),NOW)).code,'closed_envelope');
+ // Release: returns one authorization's cents once; repeat is a no-op; replay after release still declines.
+ h=await approved(terms({maxTotalCents:4000,expiresAtMs:NOW+1300000}));
+ await E.reserve(call,h,auth('r1',1500),NOW);x=await E.reserve(call,h,auth('r2',1000),NOW);assert.equal(x.reservedCents,2500);
+ let rel=await E.release(call,h,auth('r2',1000));assert.deepEqual([rel.code,rel.reservedCents,rel.releasedCents],['released',1500,1000]);assert.equal((await row(h)).reservedCents,'1500');
+ assert.equal((await E.release(call,h,auth('r2',1000))).code,'noop');assert.equal((await row(h)).reservedCents,'1500');
+ assert.equal((await Promise.all([E.release(call,h,auth('r1',1500)),E.release(call,h,auth('r1',1500))])).filter(y=>y.code==='released').length,1);assert.equal((await row(h)).reservedCents,'0');
+ assert.equal((await E.release(call,h,auth('never',100))).code,'noop');
+ assert.equal((await E.reserve(call,h,auth('r2',1000),NOW)).code,'replay_declined');
+ assert.equal((await E.reserve(call,h,auth('r2b',1000,{authorizationId:'iauth_r2'}),NOW)).code,'replay_declined');
+ assert.equal((await E.reserve(call,h,auth('x9',1000,{eventId:'evt_r2'}),NOW)).code,'replay_declined');
+ assert.equal((await row(h)).reservedCents,'0');
+ // A declined (not reserved) authorization has nothing to release, and released cents are spendable by a new authorization.
+ await E.reserve(call,h,auth('big',9000),NOW);assert.equal((await E.release(call,h,auth('big',9000))).code,'noop');
+ x=await E.reserve(call,h,auth('r3',4000),NOW);assert.deepEqual([x.code,x.reservedCents,x.remainingCents],['reserved',4000,0]);
+ assert.equal((await E.release(call,'0'.repeat(64),auth('r3',4000))).code,'noop');
  if(!real)assert.throws(()=>E.localEval(store,['EVAL',E.RESERVE,'2','{a}x','{b}y']),/CROSSSLOT/);
  assert(calls.every(c=>c==='EVAL'||c==='HGETALL'));
  const evals=calls.filter(c=>c==='EVAL').length;if(real)real.close();
- console.log('PASS binding hash over bot/issuer account/card/merchant/currency/max/expiry (same terms on another card is a separate envelope), duplicate proposal rejected, owner approval bound to hash, first decision wins, $40 atomic reservation with concurrent overdraw refused, envelope term mismatch, expiry, signed webhook replay rejected (event and authorization id), 5 ported Formance hold-confirm cases. '+evals+' EVALs, single-slot keys only, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
+ console.log('PASS binding hash over bot/issuer account/card/merchant/currency/max/expiry (same terms on another card is a separate envelope), duplicate proposal rejected, owner approval bound to hash, first decision wins, $40 atomic reservation with concurrent overdraw refused, envelope term mismatch, expiry, signed webhook replay rejected (event and authorization id), 5 ported Formance hold-confirm cases, idempotent per-authorization release (repeat no-op, replay after release declined). '+evals+' EVALs, single-slot keys only, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
 })().catch(e=>{console.error(e);process.exit(1)});
