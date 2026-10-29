@@ -4,8 +4,10 @@ const dns = require('dns');
 const http = require('http');
 const https = require('https');
 const net = require('net');
-// Spend envelope scripts (roycemy/foreman-core spend-envelope.cjs @6eb1a45). Test harnesses load this file without __dirname.
-const ENVELOPE = require(typeof __dirname === 'string' ? require('path').join(__dirname, '..', 'spend-envelope.cjs') : './spend-envelope.cjs');
+// Spend envelope scripts (roycemy/foreman-core spend-envelope.cjs). Both requires are string literals so Vercel's file tracing bundles the module.
+// On Vercel this file is api/index.js, so '../spend-envelope.cjs' resolves; the regression harnesses evaluate it from the repo root, where only './spend-envelope.cjs' does.
+// No upstream file covers it.
+const ENVELOPE = (() => { try { return require('../spend-envelope.cjs'); } catch (e) { if (e && e.code === 'MODULE_NOT_FOUND') return require('./spend-envelope.cjs'); throw e; } })();
 const AUTHZ = (()=>{
 // Deterministic policy only. Never a payment rail or a grant of authority.
 const VERSION='rules-v1';
