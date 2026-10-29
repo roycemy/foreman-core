@@ -1198,7 +1198,7 @@ async function envelopeNotice(hash,code,e){
  const v=await ENVELOPE.read(r,hash);if(!v)return null;
  const ws=await r(['GET','gl:issuer-envelope-owner:'+v.accountId+':'+v.cardId]);if(!ws)return null;
  const amt=(Number(e.amountCents)/100).toFixed(2)+' '+String(e.currency||'').toUpperCase();
- const text=code==='discrepancy:capture_differs_from_held'?'Issuer captured '+amt+' on an authorization you declined; the amount differs from what was held. It now counts as spent.':'Spend envelope discrepancy: '+code.replace(/^discrepancy:/,'').replace(/_/g,' ')+' ('+amt+').';
+ const text=code==='discrepancy:capture_differs_from_held'?'Issuer captured '+amt+' on an authorization you declined; the amount differs from what was held. It now counts as spent; anything still held stays held until the network voids it.':'Spend envelope discrepancy: '+code.replace(/^discrepancy:/,'').replace(/_/g,' ')+' ('+amt+').';
  await als.run({ws},()=>event(v.botId,'blocked',text,{kind:'BLOCKED',envelopeHash:hash,authorizationId:e.authorizationId,discrepancy:code}));
  return ws;
 }

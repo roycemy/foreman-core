@@ -125,11 +125,15 @@ const PROVIDER=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_enve
  " if not st then redis.call('HSET',K,'a:'..a,'closed','a:'..a..':at',now) move(a,c,0,0,amt) hist(now,actor,'discrepancy:capture_without_alter_record',a,c,0,0,amt,ref,'') return {'discrepancy'} end\n"+
  " local cc=math.min(num(p..'c'),amt)\n"+
  " if d>0 and st=='open' then\n"+
- // R4: a capture settles a declined_pending item and closes it. Cents beyond the capture are released with it; a capture that differs
- // from what was held is a discrepancy entry (and a notice). Settled gets the full captured amount, net of refund credit.
- "  move(a,c,-u,-r,amt-cc,-d) add(p..'c',-cc) redis.call('HSET',K,'a:'..a,'closed')\n"+
+ // R4 (revised): a capture settles only the cents captured, drawing them from declined_pending. Unmatched held cents stay held and are
+ // released only by void, reversal or expiry (the auth branch above), never by a capture. The item closes when held reaches 0, so a
+ // second capture draws from what is left. A capture that differs from what was held is a discrepancy entry; any excess beyond the
+ // held cents enters settled (the remaining overspend path). Settled gets the full captured amount, net of refund credit.
+ "  local fd=math.min(amt,d)\n"+
+ "  move(a,c,0,0,amt-cc,-fd) add(p..'c',-cc)\n"+
+ "  if d-fd==0 and u==0 and r==0 then redis.call('HSET',K,'a:'..a,'closed') end\n"+
  "  local kd='capture_resolved_declined_pending' if amt~=d then kd='discrepancy:capture_differs_from_held' end\n"+
- "  hist(now,actor,kd,a,c,-u,-r,amt-cc,ref,tostring(amt),-cc,-d)\n"+
+ "  hist(now,actor,kd,a,c,0,0,amt-cc,ref,tostring(amt),-cc,-fd)\n"+
  "  return {kd}\n"+
  " end\n"+
  " local fr=math.min(amt,r) local rest=amt-fr local fu=math.min(rest,u) rest=rest-fu\n"+
@@ -150,7 +154,8 @@ const PROVIDER=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_enve
 // No upstream file covers it: owner adjudication of a stuck unresolved authorization, with an audit entry naming the owner.
 // Only unresolved cents move; only after the stuck threshold; nothing here is time-triggered. Marks 'a:'..id..':manual'.
 // R3: a manual decline moves unresolved -> declined_pending (bucket 'd'). The cents stay held, available does not move, and the
-// authorization stays open. It resolves only through PROVIDER (capture -> settled, void/expiry -> released). R5: no timer.
+// authorization stays open. It resolves only through PROVIDER (each capture settles what it captures; void/reversal/expiry releases
+// what is still held). R5: no timer.
 // ARGV: hash, authId, decision (approved|declined), now, actor, note, stuckMs
 const ADJUDICATE=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_envelope'} end\n"+
  "local a=ARGV[2] local st=redis.call('HGET',K,'a:'..a)\n"+

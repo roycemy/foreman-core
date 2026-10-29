@@ -151,19 +151,40 @@ const audited=async h=>{const a=await E.audit(call,h);assert(a.ok,a.errors.join(
   // expiry/reversal of another declined item releases it the same way (any non-pending terminal status).
   const g=await approved(terms({maxTotalCents:1000}));await E.reserve(call,g,auth('t2c',600),NOW);await decline(g,'t2c');
   assert.equal((await E.provider(call,g,pe(73,'auth','t2c',0,{approved:true,status:'reversed'}),AT)).code,'closed');assert.deepEqual(await tot(g),[0,0,0,1000,0]);await audited(g);}
- // T3: decline, then timeout (days pass, no provider event), then capture. Nothing releases on time (R5); the capture settles with a
- // discrepancy entry because it differs from what was held; no double release when the issuer later closes the authorization.
+ // T3: decline, then timeout (days pass, no provider event), then capture $7 of the $8 held. Nothing releases on time (R5); the capture
+ // settles only $7 with a discrepancy entry and $1 stays held; the later void releases that $1 (a second release, not none).
  {const h=await approved(terms({maxTotalCents:1000}));
   await E.reserve(call,h,auth('t3a',800),NOW);await decline(h,'t3a');
   const later=NOW+86400000*7,bl=(await E.read(call,h,later)).buckets[0];assert.deepEqual([bl.declinedPendingCents,bl.availableCents],[800,200]);
   assert.deepEqual((await E.read(call,h,later)).notices.map(n=>n.kind),['manual_adjudication:declined']);
   assert.equal((await E.provider(call,h,pe(74,'capture','t3a',700,{transactionId:'ipi_t3'}),later)).code,'discrepancy:capture_differs_from_held');
-  let v=await E.read(call,h,later),b=v.buckets[0];assert.deepEqual([b.settledCents,b.heldCents,b.availableCents,b.overspendCents],[700,0,300,0]);
-  assert.equal(v.discrepancies.length,1);assert.deepEqual(v.notices.map(n=>n.kind),['discrepancy:capture_differs_from_held']);
+  let v=await E.read(call,h,later),b=v.buckets[0];assert.deepEqual([b.settledCents,b.heldCents,b.declinedPendingCents,b.availableCents,b.overspendCents],[700,100,100,200,0]);
+  assert.equal(v.discrepancies.length,1);assert.deepEqual(v.notices.map(n=>n.kind),['manual_adjudication:declined','discrepancy:capture_differs_from_held']);
+  assert.equal(v.authorizations.find(x=>x.authorizationId==='iauth_t3a').state,'open','item stays open while cents are held');
   assert.equal((await E.provider(call,h,pe(75,'auth','t3a',0,{approved:true,status:'closed'}),later)).code,'closed');
-  v=await E.read(call,h,later);assert.deepEqual(await tot(h),[0,0,700,300,0]);
-  assert.equal(v.history.reduce((n,e)=>n+e.dd,0),0,'declined_pending cents were released exactly once (+800 then -800)');
+  v=await E.read(call,h,later);assert.deepEqual(await tot(h),[0,0,700,300,0]);assert.equal(v.buckets[0].heldCents,0);
+  const rel=v.history.filter(e=>e.authorizationId==='iauth_t3a'&&e.dd<0).map(e=>[e.kind,e.dd]);
+  assert.deepEqual(rel,[['discrepancy:capture_differs_from_held',-700],['provider_closed',-100]],'two draws from declined_pending: the capture and the void');
+  assert.equal(v.history.reduce((n,e)=>n+e.dd,0),0,'declined_pending nets to 0: +800, -700 (capture), -100 (void)');
+  assert.deepEqual(v.notices.map(n=>n.kind),['discrepancy:capture_differs_from_held'],'declined notice clears once nothing is held');
   assert.equal((await E.ack(call,h,v.notices[0].seq,later,'owner_fixture')).code,'acknowledged');assert.equal((await E.read(call,h,later)).notices.length,0);await audited(h);}
+ // T11: $10 limit, $8 approved, decline, capture $7 -> settled $7, held $1, available $2, overspend $0. Capture $1 more -> settled $8,
+ // held 0, available $2, overspend $0; the item closes when held reaches 0.
+ {const h=await approved(terms({maxTotalCents:1000}));
+  await E.reserve(call,h,auth('t11a',800),NOW);await decline(h,'t11a');
+  assert.equal((await E.provider(call,h,pe(80,'capture','t11a',700,{transactionId:'ipi_t11a'}),AT)).code,'discrepancy:capture_differs_from_held');
+  let b=await usd(h);assert.deepEqual([b.settledCents,b.heldCents,b.availableCents,b.overspendCents],[700,100,200,0]);
+  assert.equal((await E.provider(call,h,pe(81,'capture','t11a',100,{transactionId:'ipi_t11b'}),AT)).code,'capture_resolved_declined_pending');
+  b=await usd(h);assert.deepEqual([b.settledCents,b.heldCents,b.availableCents,b.overspendCents],[800,0,200,0]);
+  const v=await E.read(call,h,AT);assert.equal(v.authorizations.find(x=>x.authorizationId==='iauth_t11a').state,'closed');assert.equal(v.declinedPending.length,0);await audited(h);}
+ // T12: $10 limit, $8 approved, decline, capture $7, capture $8 -> settled $15, held 0, overspend $5, discrepancy recorded, no negative available.
+ {const h=await approved(terms({maxTotalCents:1000}));
+  await E.reserve(call,h,auth('t12a',800),NOW);await decline(h,'t12a');
+  assert.equal((await E.provider(call,h,pe(82,'capture','t12a',700,{transactionId:'ipi_t12a'}),AT)).code,'discrepancy:capture_differs_from_held');
+  assert.equal((await E.provider(call,h,pe(83,'capture','t12a',800,{transactionId:'ipi_t12b'}),AT)).code,'discrepancy:capture_differs_from_held');
+  const b=await usd(h);assert.deepEqual([b.settledCents,b.heldCents,b.overspendCents,b.availableCents],[1500,0,500,0]);assert(b.availableCents>=0);
+  const v=await E.read(call,h,AT);assert.equal(v.discrepancies.length,2);assert.equal(v.authorizations.find(x=>x.authorizationId==='iauth_t12a').state,'closed');
+  assert.equal((await E.reserve(call,h,auth('t12b',1),NOW)).code,'insufficient_available');const r2=await E.reserve(call,h,auth('t12c',1),NOW);assert(r2.remainingCents>=0);await audited(h);}
  // T4: decline, acknowledgement, capture. Acknowledging hides the notice and never releases (R6).
  {const h=await approved(terms({maxTotalCents:1000}));
   await E.reserve(call,h,auth('t4a',800),NOW);await decline(h,'t4a');
@@ -237,5 +258,5 @@ const audited=async h=>{const a=await E.audit(call,h);assert(a.ok,a.errors.join(
  if(!real)assert.throws(()=>E.localEval(store,['EVAL',E.RESERVE,'2','{a}x','{b}y']),/CROSSSLOT/);
  assert(calls.every(c=>['EVAL','HGETALL','HGET','HMGET','HSET'].includes(c)));
  const evals=calls.filter(c=>c==='EVAL').length;if(real){real.close();real2.close();}
- console.log('PASS binding hash (7 terms, per-currency), duplicate proposal, first decision wins, $40 atomic reservation (accepted cents unresolved until provider evidence), term mismatch, expiry, signed replay; fence both orders + 40 concurrent fence/reserve pairs ('+wonR+' reserve-first, '+wonF+' fence-first, never both); per-cent partial capture; duplicate event/transaction ids once; refunds reduce settled; capture after decline/release as discrepancy; capture beyond reserved only overspends past max; store-down unresolved persists 7 days and shows stuck; owner adjudication with audit entry; declined_pending stays held (T1-T6, T8), canonical merchant hash v2 with v1 fallback (T7); 24 shuffled orders identical; per-currency buckets; audit catches corruption. '+evals+' EVALs, single-slot keys, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
+ console.log('PASS binding hash (7 terms, per-currency), duplicate proposal, first decision wins, $40 atomic reservation (accepted cents unresolved until provider evidence), term mismatch, expiry, signed replay; fence both orders + 40 concurrent fence/reserve pairs ('+wonR+' reserve-first, '+wonF+' fence-first, never both); per-cent partial capture; duplicate event/transaction ids once; refunds reduce settled; capture after decline/release as discrepancy; capture beyond reserved only overspends past max; store-down unresolved persists 7 days and shows stuck; owner adjudication with audit entry; declined_pending stays held (T1-T6, T8, T11, T12: captures settle only what they capture), canonical merchant hash v2 with v1 fallback (T7); 24 shuffled orders identical; per-currency buckets; audit catches corruption. '+evals+' EVALs, single-slot keys, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
 })().catch(e=>{console.error(e);process.exit(1)});

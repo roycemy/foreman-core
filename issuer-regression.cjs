@@ -111,7 +111,7 @@ async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON
   assert.deepEqual([cap2.status,cap2.body.envelope,cap2.body.ownerNotified],[200,'discrepancy:capture_differs_from_held',true]);
   const ub=await usd(sd.hash);assert.deepEqual([ub.unresolvedCents,ub.settledCents,ub.declinedPendingCents,ub.availableCents,ub.overspendCents],[2400,1700,0,0,100]);
   const feed=(await owner(()=>f.r(['LRANGE','fm:events',0,20]))).map(x=>JSON.parse(x)).find(x=>x.envelopeHash===sd.hash);
-  assert.deepEqual([feed.kind,feed.discrepancy,feed.agentId,feed.text],['BLOCKED','discrepancy:capture_differs_from_held',a.id,'Issuer captured 9.00 USD on an authorization you declined; the amount differs from what was held. It now counts as spent.']);
+  assert.deepEqual([feed.kind,feed.discrepancy,feed.agentId,feed.text],['BLOCKED','discrepancy:capture_differs_from_held',a.id,'Issuer captured 9.00 USD on an authorization you declined; the amount differs from what was held. It now counts as spent; anything still held stays held until the network voids it.']);
   const nv=await sdView();assert.deepEqual(nv.notices.map(n=>n.kind),['discrepancy:capture_differs_from_held']);
   const ak=await route('/money/envelopes/'+sd.hash+'/notices/ack',{seq:nv.notices[0].seq});assert.deepEqual([ak.code,ak.j.code,ak.j.envelope.notices.length],[200,'acknowledged',0]);
   assert.equal(ak.j.envelope.history.slice(-1)[0].actor,'owner:user_fixture');}
