@@ -27,4 +27,7 @@ jobs:
             echo "::endgroup::"
           done < <(git ls-files '*-regression.cjs')
           echo "suites=$n failed:${failed:- none}"
-          test -z "$failed"
+          # Guard against a glob that matches nothing: 76 baseline suites + envelope-ui-regression.cjs.
+          if [ "$n" -lt 77 ]; then echo "::error::only $n suites found, expected at least 77"; exit 1; fi
+          if [ -n "$failed" ]; then echo "::error::suites=$n failed:$failed"; exit 1; fi
+          echo "::notice::suites=$n passed=$n failed=0"
