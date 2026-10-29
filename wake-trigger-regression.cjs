@@ -3,7 +3,8 @@
 // GitHub trigger issue closed right after creation (the notification is the wake signal).
 // No task details, no instructions, one ping per 30s per bot, silent no-op without a channel, schedule stays the backup.
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');
-let src=fs.readFileSync(require('path').join(__dirname,'api/index.js'),'utf8');
+// Source-text assertions below match LF; Windows checkouts (core.autocrlf) see CRLF, so normalize before matching.
+let src=fs.readFileSync(require('path').join(__dirname,'api/index.js'),'utf8').replace(/\r\n/g,'\n');
 src+='\nmodule.exports.t={maybeWakeBot,newTask,assignTask,reassignTaskUnlocked,getJ,setJ,r,als,mem,wakeTargetFrom,noteWakeTarget};';
 const sends=[],slacks=[],slackUrls=[],whooks=[],ghPosts=[],ghPatches=[];let fetchFail=false;
 const ctx={require,module:{exports:{}},process:{env:{RESEND_API_KEY:'test-key',WAKE_EMAIL_FROM:'Alter <wake@alter.test>'}},global:{},console,
