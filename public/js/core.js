@@ -319,7 +319,9 @@
     });
     BB.tasks().forEach(t => { const b = BB.budgetBlock(t); if (b) items.push({ type: 'budget', id: 'budget:' + t.id + ':' + b.id, at: b.at, a: BB.agent(t.assignee), t, r: b }); });
     BB.tasks().filter(t => t.status === 'queued' && !t.assignee).forEach(t => items.push({ type: 'unassigned', id: 'task:' + t.id, at: t.createdAt, t }));
-    const rank = { approval: 0, spend: 0, card: 0, budget: 0, reconnect: 1, dark: 1, asleep: 1, unassigned: 2 };
+    /* spend envelope discrepancies (ALTER_SPEND_ENVELOPES), until the owner acknowledges them */
+    ((BB.money && BB.money.envelopesEnabled && BB.money.envelopes) || []).filter(e => e.notices && e.notices.length).forEach(e => items.push({ type: 'envelope', id: 'envelope:' + e.hash + ':' + e.notices[e.notices.length - 1].seq, at: new Date(e.notices[e.notices.length - 1].at).toISOString(), a: BB.agent(e.botId), e }));
+    const rank = { approval: 0, spend: 0, card: 0, budget: 0, envelope: 0, reconnect: 1, dark: 1, asleep: 1, unassigned: 2 };
     return items.sort((x, y) => rank[x.type] - rank[y.type] || String(y.at || '').localeCompare(String(x.at || '')));
   };
   /* One summary for the crew pill, the pop-down, the rail and the phone Inbox, all on the 60-second activity rule.
@@ -343,6 +345,7 @@
     let j;
     if (item.type === 'approval') j = await BB.api('/api/requests/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST');
     else if (item.type === 'spend') j = await BB.api('/api/money/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
+    else if (item.type === 'envelope') j = await BB.api('/api/money/envelopes/' + item.e.hash + '/notices/ack', 'POST', { seq: item.e.notices[item.e.notices.length - 1].seq });
     else if (item.type === 'card') j = await BB.api('/api/cards/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     BB.toast(BB.outcome(item, j, d)); await BB.sync(true); return j;
   };
@@ -357,6 +360,7 @@
       return 'Decision saved.';
     }
     if (item.type === 'spend') { const s = j.request && j.request.status; return s === 'denied' ? 'Spend denied.' : s === 'approved_not_connected' ? 'Spend approved. No payment rail is connected, so nothing was charged.' : 'Spend ' + String(s || 'updated').replace(/_/g, ' ') + '.'; }
+    if (item.type === 'envelope') return j.code === 'acknowledged' ? 'Acknowledged. It stays in the envelope history.' : 'Not confirmed: ' + String(j.code || 'try again').replace(/_/g, ' ');
     if (item.type === 'card') { const s = j.proposal && j.proposal.status; return s === 'simulated' ? 'Approved on the example card. No real money moved.' : s === 'denied' ? 'Card charge denied.' : s === 'limit_blocked' ? 'Over the daily limit. Not charged.' : 'Card request ' + String(s || 'updated').replace(/_/g, ' ') + '.'; }
     return 'Done.';
   };

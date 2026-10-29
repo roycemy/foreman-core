@@ -126,6 +126,25 @@ const audited=async h=>{const a=await E.audit(call,h);assert(a.ok,a.errors.join(
  assert.equal((await E.provider(call,S,pe(31,'capture','s1',800,{transactionId:'ipi_s1'}),NOW)).code,'discrepancy:capture_after_adjudicated_declined');
  await E.reserve(call,S,auth('s2',100),NOW);assert.equal((await E.adjudicate(call,S,'iauth_s2','approved',NOW+E.STUCK_MS,'owner_fixture','issuer approved')).code,'adjudicated');
  assert.deepEqual(await tot(S),[0,100,800,3100,0]);await audited(S);
+ // Manual decline is provisional: budget returns, the authorization stays open to provider capture; a later capture is a
+ // discrepancy in settled, overspends once C crosses max, and raises an owner notice until acknowledged.
+ const MD=await approved(terms({maxTotalCents:1000}));
+ await E.reserve(call,MD,auth('md1',800),NOW);
+ assert.equal((await E.adjudicate(call,MD,'iauth_md1','declined',NOW+E.STUCK_MS,'owner_fixture','issuer shows declined')).code,'adjudicated');
+ {const v=await E.read(call,MD,NOW+E.STUCK_MS);assert.deepEqual(v.provisional.map(x=>[x.authorizationId,x.manual]),[['iauth_md1','declined']]);assert.equal(v.notices.length,0);}
+ assert.deepEqual(await tot(MD),[0,0,0,1000,0]);
+ assert.equal((await E.reserve(call,MD,auth('md2',900),NOW)).code,'reserved');assert.deepEqual(await tot(MD),[900,0,0,100,0]);
+ assert.equal((await E.provider(call,MD,pe(60,'capture','md1',800,{transactionId:'ipi_md1'}),NOW)).code,'discrepancy:capture_after_adjudicated_declined');
+ {const v=await E.read(call,MD,NOW),b=v.buckets[0];assert.deepEqual([b.unresolvedCents,b.settledCents,b.availableCents,b.overspendCents],[900,800,0,700]);
+  assert.deepEqual(v.notices.map(n=>[n.kind,n.authorizationId,n.ds]),[['discrepancy:capture_after_adjudicated_declined','iauth_md1',800]]);assert.equal(v.provisional.length,0);
+  assert.equal((await E.ack(call,MD,v.notices[0].seq,NOW,'owner_fixture')).code,'acknowledged');assert.equal((await E.ack(call,MD,v.notices[0].seq,NOW,'owner_fixture')).code,'already_acknowledged');assert.equal((await E.ack(call,MD,99999,NOW)).code,'invalid_seq');}
+ assert.equal((await E.read(call,MD,NOW)).notices.length,0);await audited(MD);
+ // Same rule when the authorization still holds other cents (partial capture before the manual decline).
+ const MP=await approved(terms());
+ await E.reserve(call,MP,auth('mp1',500),NOW);await E.provider(call,MP,pe(61,'capture','mp1',200,{transactionId:'ipi_mp1'}),NOW);
+ assert.equal((await E.adjudicate(call,MP,'iauth_mp1','declined',NOW+E.STUCK_MS,'owner_fixture','rest declined at issuer')).code,'adjudicated');assert.deepEqual(await tot(MP),[0,0,200,3800,0]);
+ assert.equal((await E.provider(call,MP,pe(62,'capture','mp1',100,{transactionId:'ipi_mp2'}),NOW)).code,'discrepancy:capture_after_adjudicated_declined');assert.deepEqual(await tot(MP),[0,0,300,3700,0]);
+ assert.equal((await E.read(call,MP,NOW)).notices.length,1);await audited(MP);
  // Shuffled delivery: every order of the same provider events ends in identical totals; duplicates mixed in apply once.
  const evs=[pe(40,'auth','sh',1000,{approved:true,status:'pending'}),pe(41,'capture','sh',600,{transactionId:'ipi_sh1'}),pe(42,'auth','sh',0,{approved:true,status:'closed'}),pe(43,'refund','sh',100,{transactionId:'ipi_sh2'})];
  const perms=a=>a.length<2?[a]:a.flatMap((v,i)=>perms([...a.slice(0,i),...a.slice(i+1)]).map(r=>[v,...r]));
@@ -142,5 +161,5 @@ const audited=async h=>{const a=await E.audit(call,h);assert(a.ok,a.errors.join(
  if(!real)assert.throws(()=>E.localEval(store,['EVAL',E.RESERVE,'2','{a}x','{b}y']),/CROSSSLOT/);
  assert(calls.every(c=>c==='EVAL'||c==='HGETALL'));
  const evals=calls.filter(c=>c==='EVAL').length;if(real){real.close();real2.close();}
- console.log('PASS binding hash (7 terms, per-currency), duplicate proposal, first decision wins, $40 atomic reservation (accepted cents unresolved until provider evidence), term mismatch, expiry, signed replay; fence both orders + 40 concurrent fence/reserve pairs ('+wonR+' reserve-first, '+wonF+' fence-first, never both); per-cent partial capture; duplicate event/transaction ids once; refunds reduce settled; capture after decline/release as discrepancy; capture beyond reserved only overspends past max; store-down unresolved persists 7 days and shows stuck; owner adjudication with audit entry; 24 shuffled orders identical; per-currency buckets; audit catches corruption. '+evals+' EVALs, single-slot keys, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
+ console.log('PASS binding hash (7 terms, per-currency), duplicate proposal, first decision wins, $40 atomic reservation (accepted cents unresolved until provider evidence), term mismatch, expiry, signed replay; fence both orders + 40 concurrent fence/reserve pairs ('+wonR+' reserve-first, '+wonF+' fence-first, never both); per-cent partial capture; duplicate event/transaction ids once; refunds reduce settled; capture after decline/release as discrepancy; capture beyond reserved only overspends past max; store-down unresolved persists 7 days and shows stuck; owner adjudication with audit entry; manual decline provisional (later capture = discrepancy + overspend + notice, ack once); 24 shuffled orders identical; per-currency buckets; audit catches corruption. '+evals+' EVALs, single-slot keys, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
 })().catch(e=>{console.error(e);process.exit(1)});

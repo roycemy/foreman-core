@@ -1187,6 +1187,21 @@ async function envelopeAdjudicate(hash,authorizationId,body){
  const out=await ENVELOPE.adjudicate(r,hash,authorizationId,body.decision,Date.now(),ownerActor(),body.note.trim());bust();
  return {status:out.code==='adjudicated'?200:409,body:{code:out.code,envelope:await ENVELOPE.read(r,hash)}};
 }
+async function envelopeAck(hash,body){
+ const row=await getJ('fm:spendEnvelope:'+hash);if(!row)return {status:404,body:{error:'not found'}};
+ const out=await ENVELOPE.ack(r,hash,body.seq,Date.now(),ownerActor());bust();
+ return {status:out.code==='acknowledged'?200:409,body:{code:out.code,envelope:await ENVELOPE.read(r,hash)}};
+}
+// No upstream file covers it: owner notice for a provider discrepancy (e.g. capture after a provisional manual decline).
+// Written to the owning workspace's activity feed; the unacknowledged notice also stays on the envelope and in "on you".
+async function envelopeNotice(hash,code,e){
+ const v=await ENVELOPE.read(r,hash);if(!v)return null;
+ const ws=await r(['GET','gl:issuer-envelope-owner:'+v.accountId+':'+v.cardId]);if(!ws)return null;
+ const amt=(Number(e.amountCents)/100).toFixed(2)+' '+String(e.currency||'').toUpperCase();
+ const text=code==='discrepancy:capture_after_adjudicated_declined'?'Issuer captured '+amt+' on an authorization you marked declined. It now counts as spent.':'Spend envelope discrepancy: '+code.replace(/^discrepancy:/,'').replace(/_/g,' ')+' ('+amt+').';
+ await als.run({ws},()=>event(v.botId,'blocked',text,{kind:'BLOCKED',envelopeHash:hash,authorizationId:e.authorizationId,discrepancy:code}));
+ return ws;
+}
 
 // Synthetic card rails. Separate from gateway policy and existing money decisions.
 // Provider contract: execute({id, amountCents, currency, merchant, purpose, botId}).
@@ -1646,6 +1661,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/money/envelopes'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopePropose(body));}
     {const em=path.match(/^\/money\/envelopes\/([a-f0-9]{64})\/(approve|deny|revoke)$/);if(em&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopeDecide(em[1],em[2]));}}
     {const am=path.match(/^\/money\/envelopes\/([a-f0-9]{64})\/authorizations\/(iauth_[A-Za-z0-9]+)\/adjudicate$/);if(am&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopeAdjudicate(am[1],am[2],body));}}
+    {const km=path.match(/^\/money\/envelopes\/([a-f0-9]{64})\/notices\/ack$/);if(km&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await envelopeAck(km[1],body));}}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
     {const wm=path.match(/^\/agents\/(\w+)\/wake$/);if(wm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setOwnerWake(wm[1],body));}}
     {const pm=path.match(/^\/agents\/(\w+)\/pairing$/);if(pm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuePairing(pm[1]));}}
@@ -2322,6 +2338,7 @@ module.exports.envelopesEnabled=envelopesOn;
 module.exports.issuerEnvelopeTarget=(event,deadline)=>!envelopesOn()?Promise.resolve(null):!URL_?Promise.resolve({blocked:'durable_storage_required'}):als.run({issuerDeadline:deadline},()=>issuerEnvelopeTarget(event));
 module.exports.issuerEnvelopeForEvent=(authorizationId,account,card)=>!envelopesOn()||!URL_?Promise.resolve(null):als.run({},()=>issuerEnvelopeForEvent(authorizationId,account,card));
 module.exports.issuerStore=issuerStore;
+module.exports.envelopeNotice=(hash,code,e)=>!envelopesOn()?Promise.resolve(null):als.run({},()=>envelopeNotice(hash,code,e));
 
 // Credential-isolated broker. No reusable credential ever leaves the server.
 // Paid adapters remain hard-disabled until explicit implementation + owner approval.

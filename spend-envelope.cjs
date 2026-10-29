@@ -118,7 +118,8 @@ const PROVIDER=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_enve
  " local fr=math.min(amt,r) local rest=amt-fr local fu=math.min(rest,u) rest=rest-fu\n"+
  " local cc=math.min(num(p..'c'),amt)\n"+
  " move(a,c,-fu,-fr,amt-cc) add(p..'c',-cc)\n"+
- " local kind='capture' if st~='open' then kind='discrepancy:capture_after_'..st elseif rest>0 then kind='discrepancy:capture_beyond_reserved' end\n"+
+ " local man=redis.call('HGET',K,'a:'..a..':manual')\n"+
+ " local kind='capture' if st~='open' then kind='discrepancy:capture_after_'..st elseif man=='declined' then kind='discrepancy:capture_after_adjudicated_declined' elseif rest>0 then kind='discrepancy:capture_beyond_reserved' end\n"+
  " hist(now,actor,kind,a,c,-fu,-fr,amt-cc,ref,tostring(amt),-cc)\n"+
  " return {kind}\n"+
  "end\n"+
@@ -132,7 +133,9 @@ const PROVIDER=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_enve
  "end\n"+
  "return {'unsupported_kind'}";
 // No upstream file covers it: owner adjudication of a stuck unresolved authorization, with an audit entry naming the owner.
-// Only unresolved cents move; only after the stuck threshold; nothing here is time-triggered.
+// Only unresolved cents move; only after the stuck threshold; nothing here is time-triggered. Marks 'a:'..id..':manual'.
+// A manual decline is provisional: budget returns now, but a later provider capture still enters settled as
+// discrepancy:capture_after_adjudicated_declined (overspend if C crosses max) and raises an owner notice.
 // ARGV: hash, authId, decision (approved|declined), now, actor, note, stuckMs
 const ADJUDICATE=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_envelope'} end\n"+
  "local a=ARGV[2] local st=redis.call('HGET',K,'a:'..a)\n"+
@@ -144,8 +147,18 @@ const ADJUDICATE=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_en
  " if u>0 then moved=moved+u if ARGV[3]=='approved' then move(a,c,-u,u,0) else move(a,c,-u,0,0) end hist(ARGV[4],ARGV[5],'manual_adjudication:'..ARGV[3],a,c,-u,(ARGV[3]=='approved' and u or 0),0,'',ARGV[6]) end\n"+
  "end\n"+
  "if moved==0 then return {'not_unresolved'} end\n"+
+ "redis.call('HSET',K,'a:'..a..':manual',ARGV[3])\n"+
  "if ARGV[3]~='approved' and other==0 then redis.call('HSET',K,'a:'..a,'adjudicated_declined') end\n"+
  "return {'adjudicated',moved}";
+// No upstream file covers it: owner acknowledges discrepancy notices up to a history sequence number (audit entry kept).
+// ARGV: hash, seq, now, actor
+const ACK=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_envelope'} end\n"+
+ "local seq=tonumber(ARGV[2]) local top=tonumber(redis.call('HGET',K,'hseq') or '0')\n"+
+ "if not seq or seq<1 or seq>top then return {'invalid_seq'} end\n"+
+ "if seq<=tonumber(redis.call('HGET',K,'noticeAck') or '0') then return {'already_acknowledged'} end\n"+
+ "redis.call('HSET',K,'noticeAck',tostring(seq))\n"+
+ "hist(ARGV[3],ARGV[4],'notices_acknowledged','','',0,0,0,'',ARGV[2])\n"+
+ "return {'acknowledged'}";
 const clean=s=>String(s==null?'':s).replace(/[|,\r\n]/g,' ').slice(0,200);
 const okHash=h=>/^[a-f0-9]{64}$/.test(h||''),okAuth=x=>/^iauth_[A-Za-z0-9]+$/.test(x||'');
 // call is a Redis command function (e.g. api/index.js r). Every script declares its single key in KEYS.
@@ -165,6 +178,7 @@ async function provider(call,hash,e,nowMs=Date.now(),actor='provider'){
  const out=await call(['EVAL',PROVIDER,'1',envelopeKey(hash),hash,e.kind,e.eventId,e.authorizationId,e.currency,String(Number.isSafeInteger(e.amountCents)?e.amountCents:0),e.approved?'1':'0',clean(e.status||''),clean(e.transactionId||''),String(nowMs),clean(actor)]);
  return {code:out[0]};
 }
+async function ack(call,hash,seq,nowMs=Date.now(),actor='owner'){if(!okHash(hash)||!Number.isSafeInteger(seq))return {code:'invalid_seq'};const out=await call(['EVAL',ACK,'1',envelopeKey(hash),hash,String(seq),String(nowMs),clean(actor)]);return {code:out[0]};}
 async function adjudicate(call,hash,authorizationId,decision,nowMs=Date.now(),actor='owner',note='',stuckMs=STUCK_MS){
  if(!okHash(hash)||!okAuth(authorizationId)||!['approved','declined'].includes(decision))return {code:'invalid'};
  const out=await call(['EVAL',ADJUDICATE,'1',envelopeKey(hash),hash,authorizationId,decision,String(nowMs),clean(actor),clean(note),String(stuckMs)]);
@@ -178,9 +192,9 @@ async function read(call,hash,nowMs=Date.now(),stuckMs=STUCK_MS){
  const o=parse(await call(['HGETALL',envelopeKey(hash)])||[]);if(!o.hash)return null;
  const max=Number(o.maxCents),curs=[...new Set([o.currency,...String(o.curs||'').split(',').filter(Boolean)])];
  const buckets=curs.map(c=>{const u=Number(o['b:'+c+':u']||0),r=Number(o['b:'+c+':r']||0),s=Number(o['b:'+c+':s']||0),C=u+r+s,m=c===o.currency?max:0;return {currency:c,maxCents:m,unresolvedCents:u,reservedCents:r,settledCents:s,usedCents:C,availableCents:Math.max(0,m-C),overspendCents:Math.max(0,C-m)}});
- const auths=Object.keys(o).filter(k=>/^a:iauth_[A-Za-z0-9]+$/.test(k)).map(k=>{const id=k.slice(2),at=Number(o[k+':at']||0),per=String(o[k+':curs']||'').split(',').filter(Boolean).map(c=>({currency:c,unresolvedCents:Number(o[k+':'+c+':u']||0),reservedCents:Number(o[k+':'+c+':r']||0),settledCents:Number(o[k+':'+c+':s']||0)}));const unresolved=per.some(x=>x.unresolvedCents>0);return {authorizationId:id,state:o[k],at,amounts:per,unresolved,stuck:unresolved&&at+stuckMs<=nowMs}});
- const hist=history(o);
- return {hash:o.hash,status:o.status,botId:o.botId,accountId:o.accountId,cardId:o.cardId,merchantNetworkId:o.merchant,currency:o.currency,maxTotalCents:max,expiresAtMs:Number(o.expiresAtMs),proposedBy:o.proposedBy||null,decidedBy:o.decidedBy||null,decidedAtMs:o.decidedAtMs?Number(o.decidedAtMs):null,revokedBy:o.revokedBy||null,buckets,authorizations:auths,stuck:auths.filter(x=>x.stuck),history:hist,discrepancies:hist.filter(h=>h.kind.startsWith('discrepancy:')),chargedCents:0};
+ const auths=Object.keys(o).filter(k=>/^a:iauth_[A-Za-z0-9]+$/.test(k)).map(k=>{const id=k.slice(2),at=Number(o[k+':at']||0),per=String(o[k+':curs']||'').split(',').filter(Boolean).map(c=>({currency:c,unresolvedCents:Number(o[k+':'+c+':u']||0),reservedCents:Number(o[k+':'+c+':r']||0),settledCents:Number(o[k+':'+c+':s']||0)}));const unresolved=per.some(x=>x.unresolvedCents>0),manual=o[k+':manual']||null;return {authorizationId:id,state:o[k],at,amounts:per,unresolved,stuck:unresolved&&at+stuckMs<=nowMs,manual,provisional:manual==='declined'&&!per.some(x=>x.settledCents>0)}});
+ const hist=history(o),ackSeq=Number(o.noticeAck||0);
+ return {hash:o.hash,status:o.status,botId:o.botId,accountId:o.accountId,cardId:o.cardId,merchantNetworkId:o.merchant,currency:o.currency,maxTotalCents:max,expiresAtMs:Number(o.expiresAtMs),proposedBy:o.proposedBy||null,decidedBy:o.decidedBy||null,decidedAtMs:o.decidedAtMs?Number(o.decidedAtMs):null,revokedBy:o.revokedBy||null,buckets,authorizations:auths,stuck:auths.filter(x=>x.stuck),history:hist,discrepancies:hist.filter(h=>h.kind.startsWith('discrepancy:')),notices:hist.filter(h=>h.kind.startsWith('discrepancy:')&&h.seq>ackSeq),noticeAck:ackSeq,provisional:auths.filter(x=>x.provisional),chargedCents:0};
 }
 // No upstream file covers it: the falsifiable checks. (1) Each cent is in exactly one bucket: every per-authorization per-currency
 // bucket amount is non-negative and equals the replay of history deltas. (2) Sum of buckets equals C: the envelope totals equal
@@ -197,7 +211,7 @@ async function audit(call,hash){
 }
 // No upstream file covers it: in-process EVAL for the memory store and tests. Runs the same Lua text in fengari
 // (devDependency, loaded lazily) over a Map of Redis hashes, refusing keys outside KEYS and KEYS that span hash slots.
-const SCRIPTS=new Set([PROPOSE,DECIDE,RESERVE,FENCE,PROVIDER,ADJUDICATE]),slot=k=>{const m=/\{([^}]+)\}/.exec(k);return m?m[1]:k};
+const SCRIPTS=new Set([PROPOSE,DECIDE,RESERVE,FENCE,PROVIDER,ADJUDICATE,ACK]),slot=k=>{const m=/\{([^}]+)\}/.exec(k);return m?m[1]:k};
 function hashCmd(store,declared,[op,k,...a]){
  if(!declared.includes(k))throw Error('undeclared key '+k);
  const h=store.get(k);
@@ -232,4 +246,4 @@ function localEval(store,cmd){
  if(lauxlib.luaL_loadstring(L,to_luastring(cmd[1]))!==lua.LUA_OK||lua.lua_pcall(L,0,1,0)!==lua.LUA_OK)throw Error('lua: '+lua.lua_tojsstring(L,-1));
  return reply(L,lua.lua_gettop(L));
 }
-module.exports={STUCK_MS,bindingHash,envelopeKey,propose,decide,reserve,fence,provider,adjudicate,read,audit,localEval,SCRIPTS,PROPOSE,DECIDE,RESERVE,FENCE,PROVIDER,ADJUDICATE};
+module.exports={STUCK_MS,bindingHash,envelopeKey,propose,decide,reserve,fence,provider,adjudicate,ack,read,audit,localEval,SCRIPTS,PROPOSE,DECIDE,RESERVE,FENCE,PROVIDER,ADJUDICATE,ACK};

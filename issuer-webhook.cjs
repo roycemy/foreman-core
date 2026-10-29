@@ -34,7 +34,10 @@ async function evidence(event){
  const hash=await core.issuerEnvelopeForEvent(authorizationId,event.account,cardOf(o));if(!hash)return {skipped:'not_an_envelope_card'};
  const kind=isTx?(o.type==='refund'?'refund':o.type==='capture'?'capture':null):'auth';if(!kind)return {skipped:'unsupported_transaction_type'};
  const e={kind,eventId:event.id,authorizationId,currency:String(o.currency||'').toLowerCase(),amountCents:Number.isSafeInteger(o.amount)?Math.abs(o.amount):0,approved:o.approved===true,status:o.status==='expired'?'closed':o.status,transactionId:isTx?o.id:''};
- return {envelope:(await ENVELOPE.provider(core.issuerStore(null),hash,e)).code};
+ const code=(await ENVELOPE.provider(core.issuerStore(null),hash,e)).code;
+ // A notice failure never changes the accounting already written; it is reported in the response for the provider log.
+ let notified=null;if(code.startsWith('discrepancy:')){try{notified=!!(await core.envelopeNotice(hash,code,e))}catch{notified=false}}
+ return {envelope:code,...(notified===null?{}:{ownerNotified:notified})};
 }
 const EVIDENCE=new Set(['issuing_authorization.created','issuing_authorization.updated','issuing_transaction.created']);
 function verify(raw,header,secret,clock=Date.now()){
