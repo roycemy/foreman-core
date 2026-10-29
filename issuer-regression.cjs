@@ -1,5 +1,5 @@
-const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');const src=fs.readFileSync(__dirname+'/api/index.js','utf8')+'\nmodule.exports.t={r,setJ,getJ,als,issuerMandate,issuerProcess,createAgent,newTask,issuerEnvelopeTarget,issuerStore,envelopePropose,envelopeDecide,spendSummary};';const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:()=>{throw Error('NO NETWORK OR PAYMENT')},setTimeout,clearTimeout,URL,AbortSignal};vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
-const secret='whsec_disposable_fixture_not_a_real_secret',handlerCtx={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:e=>f.issuerEnvelopeTarget(e),issuerStore:f.issuerStore}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),handlerCtx);const h=handlerCtx.module.exports;
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');const src=fs.readFileSync(__dirname+'/api/index.js','utf8')+'\nmodule.exports.t={r,setJ,getJ,als,issuerMandate,issuerProcess,createAgent,newTask,issuerEnvelopeTarget,issuerStore,envelopePropose,envelopeDecide,envelopeAdjudicate,spendSummary,issuerEnvelopeForEvent,envelopesOn,routes,mem};';const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:()=>{throw Error('NO NETWORK OR PAYMENT')},setTimeout,clearTimeout,URL,AbortSignal};vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
+const secret='whsec_disposable_fixture_not_a_real_secret',handlerCtx={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:e=>f.issuerEnvelopeTarget(e),issuerEnvelopeForEvent:f.issuerEnvelopeForEvent,issuerStore:f.issuerStore,envelopesEnabled:f.envelopesOn}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),handlerCtx);const h=handlerCtx.module.exports;
 const event=(id='evt_fixture',amount=1000,extra={})=>({id,account:'acct_fixture',type:'issuing_authorization.request',livemode:false,data:{object:{id:'iauth_'+id.replace(/[^A-Za-z0-9]/g,''),livemode:false,card:'ic_fixture',pending_request:{amount,currency:'usd'},merchant_data:{network_id:'merchant_fixture',category:'computer_software_stores'},...extra}}});
 async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON.stringify(e)),t=Math.floor(Date.now()/1000),sig='t='+t+',v1='+crypto.createHmac('sha256',secret).update(t+'.').update(raw).digest('hex');let out;const hd={};await h({method:'POST',body:raw,headers:{'stripe-signature':signature?sig:'t=0,v1=bad'}},{setHeader(k,v){hd[k]=v},status(n){this.code=n;return this},json(j){out={status:this.code,body:j,headers:hd}}});return out}
 (async()=>{let a,t;await f.als.run({ws:'issuerfixture'},async()=>{a=(await f.createAgent('Fixture','Ops','custom',false,{preset:'balanced'})).agent;t=await f.newTask({title:'Fixture',assignee:a.id});t.status='running';await f.setJ('fm:task:'+t.id,t);const b={confirmed:true,cardId:'ic_fixture',accountId:'acct_fixture',botId:a.id,taskId:t.id,amountCents:1000,jobBudgetCents:1500,merchantNetworkId:'merchant_fixture',category:'computer_software_stores'};assert.equal((await f.issuerMandate({...b,confirmed:false})).status,400);assert.equal((await f.issuerMandate(b)).status,200);assert.equal((await f.issuerMandate(b)).status,409);});
@@ -11,63 +11,94 @@ async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON
  assert.equal((await call(event('evt_currency',1000,{pending_request:{amount:1000,currency:'eur'}}))).body.approved,false);
  const raw=Buffer.from('{}'),old=Math.floor(Date.now()/1000)-301,sig=crypto.createHmac('sha256',secret).update(old+'.').update(raw).digest('hex');assert.equal(h.verify(raw,'t='+old+',v1='+sig,secret),false);
  const baseLatency=(performance.now()-start).toFixed(1);
- // Envelope path (spend-envelope.cjs): owner approves an envelope ahead of time; the webhook approves only on 'reserved'.
+ // Envelope path (spend-envelope.cjs), behind ALTER_SPEND_ENVELOPES (default off).
+ const SE=require('./spend-envelope.cjs'),owner=fn=>f.als.run({ws:'issuerfixture',uid:'user_fixture'},fn);
+ const route=(path,body)=>owner(async()=>{let o;await f.routes({method:'POST',url:'/api'+path,headers:{host:'localhost',origin:'http://localhost'}},{setHeader(){},status(n){this.code=n;return this},json(j){o={code:this.code,j}}},path,body,null);return o});
  const ev=(id,amount,card='ic_env',extra={})=>({id,account:'acct_env',type:'issuing_authorization.request',livemode:false,data:{object:{id:'iauth_'+id.replace(/[^A-Za-z0-9]/g,''),livemode:false,card,pending_request:{amount,currency:'usd'},merchant_data:{network_id:'merchant_env',category:'computer_software_stores'},...extra}}});
+ const authEv=(id,authId,amount,approved,status,card='ic_env')=>({id,account:'acct_env',type:'issuing_authorization.'+(status==='pending'?'created':'updated'),livemode:false,data:{object:{id:authId,livemode:false,card,approved,status,amount,currency:'usd'}}});
+ const txEv=(id,txId,authId,amount,type='capture',card='ic_env')=>({id,account:'acct_env',type:'issuing_transaction.created',livemode:false,data:{object:{id:txId,type,amount:type==='capture'?-amount:amount,currency:'usd',authorization:authId,card}}});
  const reason=async e=>{const o=await call(e);assert.equal(o.status,200);return o.body.approved?'APPROVED':o.body.metadata.alter_reason};
- const base={botId:a.id,accountId:'acct_env',cardId:'ic_env',merchantNetworkId:'merchant_env',maxTotalCents:4000,expiresAtMs:Date.now()+600000};let env,b2,pend,short;
- await f.als.run({ws:'issuerfixture'},async()=>{
-  assert.equal((await f.envelopePropose({...base,expiresAtMs:Date.now()-1})).status,400);assert.equal((await f.envelopePropose({...base,botId:'agent_missing'})).status,400);
-  env=(await f.envelopePropose(base)).body.envelope;assert.equal(env.status,'pending_approval');
-  const dup=await f.envelopePropose(base);assert.equal(dup.status,409);assert.equal(dup.body.error,'duplicate_proposal');
-  assert.equal((await f.spendSummary()).envelopes[0].hash,env.hash);
-  b2=(await f.createAgent('Fixture Two','Ops','custom',false,{preset:'balanced'})).agent;
- });
+ const evidence=async e=>{const o=await call(e);assert.equal(o.status,200);return o.body.envelope||o.body.skipped};
+ const usd=async hash=>owner(async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===hash).buckets.find(b=>b.currency==='usd'));
+ const tot=async hash=>{const b=await usd(hash);return [b.unresolvedCents,b.reservedCents,b.settledCents,b.availableCents]};
+ const base={botId:a.id,accountId:'acct_env',cardId:'ic_env',merchantNetworkId:'merchant_env',maxTotalCents:4000,expiresAtMs:Date.now()+600000};
+ // Flag off: owner routes 404, /money has no envelope fields, a card mapping is ignored (mandate path decides), provider events skipped.
+ assert.equal(ctx.process.env.ALTER_SPEND_ENVELOPES,undefined);
+ assert.equal((await route('/money/envelopes',base)).code,404);
+ await owner(async()=>{const m=await f.spendSummary();assert.equal(m.envelopesEnabled,false);assert.equal(m.envelopes,undefined);});
+ await f.setJ('gl:issuer-envelope-card:acct_env:ic_env',{ws:'issuerfixture',botId:a.id,hash:'0'.repeat(64)});
+ assert.equal(await f.issuerEnvelopeTarget(ev('evt_off',100)),null);assert.equal(await reason(ev('evt_off',100)),'unmapped_card');
+ assert.equal(await evidence(authEv('evt_offa','iauth_evtoff',100,true,'pending')),'flag_off');
+ await f.r(['DEL','gl:issuer-envelope-card:acct_env:ic_env']);
+ ctx.process.env.ALTER_SPEND_ENVELOPES='1';
+ let env,b2,rev;
+ {const bad=await route('/money/envelopes',{...base,expiresAtMs:Date.now()-1});assert.equal(bad.code,400);assert.equal((await route('/money/envelopes',{...base,botId:'agent_missing'})).code,400);
+  const made=await route('/money/envelopes',base);assert.equal(made.code,201);env=made.j.envelope;assert.equal(env.status,'pending_approval');assert.equal(env.proposedBy,'owner:user_fixture');
+  const dup=await route('/money/envelopes',base);assert.deepEqual([dup.code,dup.j.error],[409,'duplicate_proposal']);
+  await owner(async()=>{const m=await f.spendSummary();assert.equal(m.envelopesEnabled,true);assert.equal(m.envelopes[0].hash,env.hash);assert(m.envelopeEligible.bots.some(x=>x.id===a.id));b2=(await f.createAgent('Fixture Two','Ops','custom',false,{preset:'balanced'})).agent;});}
  await f.als.run({ws:'other-owner'},async()=>{assert.equal((await f.envelopeDecide(env.hash,'approve')).status,404)});
  assert.notEqual(await reason(ev('evt_env0',1000)),'APPROVED');
- await f.als.run({ws:'issuerfixture'},async()=>{const d=await f.envelopeDecide(env.hash,'approve');assert.equal(d.body.code,'approved');assert.equal((await f.envelopeDecide(env.hash,'deny')).body.code,'already_decided');});
- assert.equal(await reason(ev('evt_env1',2500)),'APPROVED');
+ {const d=await route('/money/envelopes/'+env.hash+'/approve',{});assert.deepEqual([d.code,d.j.code,d.j.envelope.decidedBy],[200,'approved','owner:user_fixture']);assert.equal((await route('/money/envelopes/'+env.hash+'/deny',{})).j.code,'already_decided');}
+ // Approve at request time: accepted cents are unresolved until provider evidence.
+ assert.equal(await reason(ev('evt_env1',2500)),'APPROVED');assert.deepEqual(await tot(env.hash),[2500,0,0,1500]);
  assert.equal(await reason(ev('evt_env1',2500)),'replay_declined');
  assert.equal(await reason(ev('evt_env1b',100,'ic_env',{id:'iauth_evtenv1'})),'replay_declined');
  assert.equal(await reason(ev('evt_env2',2000)),'insufficient_envelope');
  assert.equal(await reason(ev('evt_env3',100,'ic_env',{merchant_data:{network_id:'merchant_other',category:'computer_software_stores'}})),'envelope_mismatch');
  const mapKey='gl:issuer-envelope-card:acct_env:ic_env',mapping=await f.getJ(mapKey);
  await f.setJ(mapKey,{...mapping,botId:b2.id});assert.equal(await reason(ev('evt_env4',100)),'envelope_mismatch');await f.setJ(mapKey,mapping);
- await f.als.run({ws:'issuerfixture'},async()=>{await f.r(['SET','fm:kill','1'])});assert.equal(await reason(ev('evt_env5',100)),'bot_inactive_or_killed');await f.als.run({ws:'issuerfixture'},async()=>{await f.r(['DEL','fm:kill'])});
- await f.als.run({ws:'issuerfixture'},async()=>{
-  // The issuer account and card are bound terms: identical terms on another card are a separate envelope, not a duplicate.
-  const sameTermsOtherCard=await f.envelopePropose({...base,cardId:'ic_envpending'});assert.equal(sameTermsOtherCard.status,201);assert.notEqual(sameTermsOtherCard.body.envelope.hash,env.hash);
-  assert.equal((await f.envelopePropose({...base,cardId:'ic_envpending'})).status,409);
-  pend=sameTermsOtherCard.body.envelope;
-  short=(await f.envelopePropose({...base,cardId:'ic_envshort',expiresAtMs:Date.now()+300})).body.envelope;assert.equal((await f.envelopeDecide(short.hash,'approve')).body.code,'approved');
- });
- await f.setJ('gl:issuer-envelope-card:acct_env:ic_envpending',{ws:'issuerfixture',botId:a.id,hash:pend.hash});assert.equal(await reason(ev('evt_env6',100,'ic_envpending')),'not_approved');
- // A mapping that points at another card's envelope cannot be spent from this card: the signed event's card must equal the approved term.
- await f.setJ('gl:issuer-envelope-card:acct_env:ic_envpending',{ws:'issuerfixture',botId:a.id,hash:env.hash});assert.equal(await reason(ev('evt_env6b',100,'ic_envpending')),'envelope_mismatch');await f.setJ('gl:issuer-envelope-card:acct_env:ic_envpending',{ws:'issuerfixture',botId:a.id,hash:pend.hash});
- await new Promise(s=>setTimeout(s,350));assert.equal(await reason(ev('evt_env7',100,'ic_envshort')),'expired');
- assert.equal(await reason(ev('evt_env8',500)),'APPROVED');
- await f.als.run({ws:'issuerfixture'},async()=>{const live=(await f.spendSummary()).envelopes.find(x=>x.hash===env.hash);assert.deepEqual([live.reservedCents,live.chargedCents,live.status],[3000,0,'approved'])});
- // Late decline: reserve() lands after the 1000ms deadline -> webhook declines, then the reservation is released (idempotent), and the ids stay burned.
- const SE=require('./spend-envelope.cjs');
- const mkHandler=wrap=>{const c={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:e=>f.issuerEnvelopeTarget(e),issuerStore:wrap}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),c);return c.module.exports};
- const postTo=async(handler,e)=>{const raw=Buffer.from(JSON.stringify(e)),t=Math.floor(Date.now()/1000),sg='t='+t+',v1='+crypto.createHmac('sha256',secret).update(t+'.').update(raw).digest('hex');let o;await handler({method:'POST',body:raw,headers:{'stripe-signature':sg}},{setHeader(){},status(n){this.code=n;return this},json(j){o=j}});return o};
- const reserved=async hash=>f.als.run({ws:'issuerfixture'},async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===hash).reservedCents);
- const approveEnv=async card=>f.als.run({ws:'issuerfixture'},async()=>{const e=(await f.envelopePropose({...base,cardId:card})).body.envelope;assert.equal((await f.envelopeDecide(e.hash,'approve')).body.code,'approved');return e});
- const lateEnv=await approveEnv('ic_envlate'),lateH=mkHandler(deadline=>{const s=f.issuerStore(deadline);return async cmd=>{const out=await s(cmd);if(deadline&&cmd[1]===SE.RESERVE)await new Promise(x=>setTimeout(x,1200));return out}});
- {const began=performance.now(),o=await postTo(lateH,ev('evt_late1',1000,'ic_envlate'));assert.equal(o.approved,false);assert.equal(o.metadata.alter_reason,'internal_deadline');assert(performance.now()-began<1150);
-  assert.equal(await reserved(lateEnv.hash),1000);
-  for(let i=0;i<40&&await reserved(lateEnv.hash)!==0;i++)await new Promise(x=>setTimeout(x,100));assert.equal(await reserved(lateEnv.hash),0);}
+ await owner(async()=>{await f.r(['SET','fm:kill','1'])});assert.equal(await reason(ev('evt_env5',100)),'bot_inactive_or_killed');await owner(async()=>{await f.r(['DEL','fm:kill'])});
+ // Provider evidence through the signed webhook: confirm, partial capture (reserved and settled at once), duplicates once, close.
+ assert.equal(await evidence(authEv('evt_c1','iauth_evtenv1',2500,true,'pending')),'confirmed');assert.deepEqual(await tot(env.hash),[0,2500,0,1500]);
+ assert.equal(await evidence(txEv('evt_c2','ipi_cap1','iauth_evtenv1',1000)),'capture');assert.deepEqual(await tot(env.hash),[0,1500,1000,1500]);
+ assert.equal(await evidence(txEv('evt_c2','ipi_cap1','iauth_evtenv1',1000)),'duplicate');assert.equal(await evidence(txEv('evt_c3','ipi_cap1','iauth_evtenv1',1000)),'duplicate');
+ assert.equal(await evidence(authEv('evt_c4','iauth_evtenv1',0,true,'closed')),'closed');assert.deepEqual(await tot(env.hash),[0,0,1000,3000]);
+ assert.equal(await evidence(txEv('evt_c5','ipi_ref1','iauth_evtenv1',400,'refund')),'refund');assert.deepEqual(await tot(env.hash),[0,0,600,3400]);
+ // Fix 3: revoke between mint and use. The mapping stays; card use re-checks state and declines; never the mandate path.
+ rev=(await route('/money/envelopes',{...base,cardId:'ic_envrev'})).j.envelope;assert.equal((await route('/money/envelopes/'+rev.hash+'/approve',{})).j.code,'approved');
+ assert.equal((await f.getJ('gl:issuer-envelope-card:acct_env:ic_envrev')).hash,rev.hash);
+ assert.equal((await route('/money/envelopes/'+rev.hash+'/revoke',{})).j.code,'revoked');
+ assert.equal(await reason(ev('evt_rev1',100,'ic_envrev')),'envelope_revoked');
+ // Revoke lands after the use-time pre-check but before RESERVE: the reserve script's own state check refuses.
+ const rev2=(await route('/money/envelopes',{...base,cardId:'ic_envrev2'})).j.envelope;await route('/money/envelopes/'+rev2.hash+'/approve',{});
+ const SEs=require('./spend-envelope.cjs');
+ const mkHandler=wrap=>{const c={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:e=>f.issuerEnvelopeTarget(e),issuerEnvelopeForEvent:f.issuerEnvelopeForEvent,issuerStore:wrap,envelopesEnabled:f.envelopesOn}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),c);return c.module.exports};
+ const postTo=async(handler,e)=>{const raw=Buffer.from(JSON.stringify(e)),t=Math.floor(Date.now()/1000),sg='t='+t+',v1='+crypto.createHmac('sha256',secret).update(t+'.').update(raw).digest('hex');let o;await handler({method:'POST',body:raw,headers:{'stripe-signature':sg}},{setHeader(){},status(n){this.code=n;return this},json(j){o={code:this.code,...j}}});return o};
+ const raceH=mkHandler(deadline=>{const s=f.issuerStore(deadline);return async cmd=>{if(cmd[0]==='EVAL'&&cmd[1]===SEs.RESERVE)await owner(()=>f.envelopeDecide(rev2.hash,'revoke'));return s(cmd)}});
+ {const o=await postTo(raceH,ev('evt_rev2',100,'ic_envrev2'));assert.deepEqual([o.approved,o.metadata.alter_reason],[false,'envelope_revoked']);assert.deepEqual(await tot(rev2.hash),[0,0,0,4000]);}
+ // Missing envelope behind a mapping declines as mapping_unavailable (no fallback); expiry at use declines.
+ await f.setJ('gl:issuer-envelope-card:acct_env:ic_envgone',{ws:'issuerfixture',botId:a.id,hash:'f'.repeat(64)});assert.equal(await reason(ev('evt_gone',100,'ic_envgone')),'mapping_unavailable');
+ const short=(await route('/money/envelopes',{...base,cardId:'ic_envshort',expiresAtMs:Date.now()+300})).j.envelope;await route('/money/envelopes/'+short.hash+'/approve',{});
+ await new Promise(s=>setTimeout(s,350));assert.equal(await reason(ev('evt_env7',100,'ic_envshort')),'envelope_expired');
+ // Late reserve: lands after the 1000ms deadline. Webhook declines; nothing is released locally; the cents stay unresolved until evidence.
+ const late=(await route('/money/envelopes',{...base,cardId:'ic_envlate'})).j.envelope;await route('/money/envelopes/'+late.hash+'/approve',{});
+ const lateH=mkHandler(deadline=>{const s=f.issuerStore(deadline);return async cmd=>{const out=await s(cmd);if(deadline&&cmd[1]===SEs.RESERVE)await new Promise(x=>setTimeout(x,1200));return out}});
+ {const began=performance.now(),o=await postTo(lateH,ev('evt_late1',1000,'ic_envlate'));assert.deepEqual([o.approved,o.metadata.alter_reason],[false,'internal_deadline']);assert(performance.now()-began<1150);}
+ await new Promise(x=>setTimeout(x,300));assert.deepEqual(await tot(late.hash),[1000,0,0,3000]);
  assert.equal(await reason(ev('evt_late1',1000,'ic_envlate')),'replay_declined');
+ assert.equal(await evidence(authEv('evt_late2','iauth_evtlate1',1000,false,'closed','ic_envlate')),'released');assert.deepEqual(await tot(late.hash),[0,0,0,4000]);
  assert.equal(await reason(ev('evt_late1b',1000,'ic_envlate',{id:'iauth_evtlate1'})),'replay_declined');
- {const again=await SE.release(f.issuerStore(null),lateEnv.hash,{eventId:'evt_late1',authorizationId:'iauth_evtlate1'});assert.equal(again.code,'noop');assert.equal(await reserved(lateEnv.hash),0);}
- assert.equal(await reason(ev('evt_late2',4000,'ic_envlate')),'APPROVED');
- // Error after the reserve was applied (connection lost): decline, release, ids burned.
- const errEnv=await approveEnv('ic_enverr'),errH=mkHandler(deadline=>{const s=f.issuerStore(deadline);return async cmd=>{const out=await s(cmd);if(deadline&&cmd[1]===SE.RESERVE)throw Error('connection reset');return out}});
- {const o=await postTo(errH,ev('evt_err1',1000,'ic_enverr'));assert.equal(o.approved,false);assert.equal(o.metadata.alter_reason,'internal_error');assert.equal(await reserved(errEnv.hash),0);}
- assert.equal(await reason(ev('evt_err1',1000,'ic_enverr')),'replay_declined');
+ // Store down while provider evidence arrives: 500 (provider retries), the item stays unresolved and reduces available.
+ const sd=(await route('/money/envelopes',{...base,cardId:'ic_envdown'})).j.envelope;await route('/money/envelopes/'+sd.hash+'/approve',{});
+ assert.equal(await reason(ev('evt_down1',800,'ic_envdown')),'APPROVED');
+ const downH=mkHandler(()=>async()=>{throw Error('store unreachable')});
+ {const o=await postTo(downH,authEv('evt_down2','iauth_evtdown1',800,false,'closed','ic_envdown'));assert.deepEqual([o.code,o.received],[500,false]);}
+ assert.deepEqual(await tot(sd.hash),[800,0,0,3200]);
+ // Stuck state and owner adjudication with an audit entry (age the record past the threshold instead of sleeping 2 minutes).
+ {const k=SE.envelopeKey(sd.hash);assert.equal((await route('/money/envelopes/'+sd.hash+'/authorizations/iauth_evtdown1/adjudicate',{decision:'declined',note:'issuer shows declined'})).j.code,'not_stuck');
+  f.mem.hashes.get(k).set('a:iauth_evtdown1:at',String(Date.now()-SE.STUCK_MS-1));
+  const view=await owner(async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===sd.hash));assert.deepEqual(view.stuck.map(x=>x.authorizationId),['iauth_evtdown1']);
+  assert.equal((await route('/money/envelopes/'+sd.hash+'/authorizations/iauth_evtdown1/adjudicate',{decision:'declined'})).code,400);
+  const adj=await route('/money/envelopes/'+sd.hash+'/authorizations/iauth_evtdown1/adjudicate',{decision:'declined',note:'issuer shows declined'});assert.deepEqual([adj.code,adj.j.code],[200,'adjudicated']);
+  const entry=adj.j.envelope.history.find(x=>x.kind==='manual_adjudication:declined');assert.deepEqual([entry.actor,entry.note,entry.du],['owner:user_fixture','issuer shows declined',-800]);
+  assert.deepEqual(await tot(sd.hash),[0,0,0,4000]);
+  assert.equal(await evidence(txEv('evt_down3','ipi_down1','iauth_evtdown1',800,'capture','ic_envdown')),'discrepancy:capture_after_adjudicated_declined');assert.deepEqual(await tot(sd.hash),[0,0,800,3200]);}
+ for(const hh of [env.hash,rev2.hash,late.hash,sd.hash]){const au=await SE.audit(f.r,hh);assert(au.ok,au.errors.join('; '));}
  // Timeout: a hung envelope lookup declines at the internal deadline.
- const slowCtx={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:()=>new Promise(()=>{}),issuerStore:f.issuerStore}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),slowCtx);
- {const raw=Buffer.from(JSON.stringify(ev('evt_env9',100))),t0=Math.floor(Date.now()/1000),s='t='+t0+',v1='+crypto.createHmac('sha256',secret).update(t0+'.').update(raw).digest('hex');let o;const began=performance.now();await slowCtx.module.exports({method:'POST',body:raw,headers:{'stripe-signature':s}},{setHeader(){},status(n){this.code=n;return this},json(j){o=j}});assert.equal(o.approved,false);assert.equal(o.metadata.alter_reason,'internal_deadline');assert(performance.now()-began<1500);}
+
+ {const slowCtx={require:p=>p==='./api/index'?{issuerProcess:f.issuerProcess,issuerEnvelopeTarget:()=>new Promise(()=>{}),issuerEnvelopeForEvent:f.issuerEnvelopeForEvent,issuerStore:f.issuerStore,envelopesEnabled:f.envelopesOn}:require(p),module:{exports:{}},process:{env:{STRIPE_ISSUING_TEST_WEBHOOK_SECRET:secret}},console,Buffer,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(__dirname+'/issuer-webhook.cjs','utf8'),slowCtx);
+  const began=performance.now(),o=await postTo(slowCtx.module.exports,ev('evt_env9',100));assert.deepEqual([o.approved,o.metadata.alter_reason],[false,'internal_deadline']);assert(performance.now()-began<1500);}
  {let o;await ctx.module.exports({url:'/api/money/envelopes',method:'POST',headers:{host:'localhost'},body:base},{setHeader(){},status(n){this.code=n;return this},json(j){o={code:this.code,j}}});assert.equal(o.code,401);}
- console.log('PASS envelope: owner propose/duplicate/decide, cross-workspace 404, approved envelope approves, unapproved/over-limit/wrong merchant/wrong bot/expired/killed/replayed event/replayed authorization decline, late reserve declines then releases (repeat release no-op, replay after release declines, freed cents spendable), reserve error releases, hung lookup declines at deadline, cards bound into the hash, unauthenticated route 401. chargedCents 0.');
+ console.log('PASS envelope (ALTER_SPEND_ENVELOPES): flag off = 404 routes, no /money fields, mapping ignored, evidence skipped; flag on: owner propose/duplicate/approve with owner identity, cross-workspace 404, request approves into unresolved, replayed event/authorization, over-limit, wrong merchant/bot, kill decline; signed provider evidence confirms, partial capture, duplicates once, close, refund; revoke between mint and use declines (pre-check and inside RESERVE), missing envelope and expiry decline with no fallback; late reserve declines and stays unresolved until evidence; store-down evidence returns 500 and keeps unresolved; stuck item adjudicated by owner with audit entry; audit replay ok; hung lookup declines; unauthenticated route 401. chargedCents 0.');
  console.log('PASS signed raw body, stale/bad signatures, live-mode refusal, exact mandate, concurrent atomic budget reservation, replay decline, independent issuer-test job cap, synchronous direct response and deadline. ZERO network/payment calls. Local latency '+baseLatency+'ms, not Stripe delivery proof.');
 })().catch(e=>{console.error(e);process.exit(1)});

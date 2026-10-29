@@ -214,6 +214,7 @@ function hashCmd(store,declared,[op,k,...a]){
 function localEval(store,cmd){
  const op=String(cmd[0]).toUpperCase();
  if(op==='HGETALL'){const h=store.get(cmd[1]);return h?[...h].flat():[]}
+ if(op==='HGET'){const h=store.get(cmd[1]);return h&&h.has(cmd[2])?h.get(cmd[2]):null}
  if(op!=='EVAL'||!SCRIPTS.has(cmd[1]))throw Error('unsupported local envelope command');
  const {lua,lauxlib,lualib,to_luastring}=require('fengari');
  const n=Number(cmd[2]),keys=cmd.slice(3,3+n).map(String),argv=cmd.slice(3+n).map(String);
