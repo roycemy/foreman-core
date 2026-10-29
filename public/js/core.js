@@ -319,9 +319,11 @@
     });
     BB.tasks().forEach(t => { const b = BB.budgetBlock(t); if (b) items.push({ type: 'budget', id: 'budget:' + t.id + ':' + b.id, at: b.at, a: BB.agent(t.assignee), t, r: b }); });
     BB.tasks().filter(t => t.status === 'queued' && !t.assignee).forEach(t => items.push({ type: 'unassigned', id: 'task:' + t.id, at: t.createdAt, t }));
-    /* spend envelope discrepancies (ALTER_SPEND_ENVELOPES), until the owner acknowledges them */
+    /* stuck spend-envelope authorizations (ALTER_SPEND_ENVELOPES): the owner can mark them approved or decline them (the budget stays held) */
+    ((BB.money && BB.money.envelopesEnabled && BB.money.envelopes) || []).forEach(e => (e.stuck || []).forEach(s => items.push({ type: 'envelope_stuck', id: 'envstuck:' + e.hash + ':' + s.authorizationId, at: new Date(s.at).toISOString(), a: BB.agent(e.botId), e, s })));
+    /* spend envelope notices (declined awaiting the network, discrepancies), until resolved or acknowledged */
     ((BB.money && BB.money.envelopesEnabled && BB.money.envelopes) || []).filter(e => e.notices && e.notices.length).forEach(e => items.push({ type: 'envelope', id: 'envelope:' + e.hash + ':' + e.notices[e.notices.length - 1].seq, at: new Date(e.notices[e.notices.length - 1].at).toISOString(), a: BB.agent(e.botId), e }));
-    const rank = { approval: 0, spend: 0, card: 0, budget: 0, envelope: 0, reconnect: 1, dark: 1, asleep: 1, unassigned: 2 };
+    const rank = { approval: 0, spend: 0, card: 0, budget: 0, envelope: 0, envelope_stuck: 0, reconnect: 1, dark: 1, asleep: 1, unassigned: 2 };
     return items.sort((x, y) => rank[x.type] - rank[y.type] || String(y.at || '').localeCompare(String(x.at || '')));
   };
   /* One summary for the crew pill, the pop-down, the rail and the phone Inbox, all on the 60-second activity rule.
