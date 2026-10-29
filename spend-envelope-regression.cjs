@@ -23,9 +23,9 @@ async function call(cmd){
  if(cmd[0]==='EVAL'){const keys=cmd.slice(3,3+Number(cmd[2]));assert(new Set(keys.map(slot)).size===1,'cross-slot keys')}
  return real?real.send(cmd):E.localEval(store,cmd);
 }
-const NOW=Date.parse('2026-10-29T12:00:00Z'),bot='agent_fixture',merchant='merchant_fixture';
-const terms=(extra={})=>({botId:bot,merchantNetworkId:merchant,currency:'usd',maxTotalCents:4000,expiresAtMs:NOW+600000,...extra});
-const auth=(id,amountCents,extra={})=>({eventId:'evt_'+id,authorizationId:'iauth_'+id,botId:bot,merchantNetworkId:merchant,currency:'usd',amountCents,...extra});
+const NOW=Date.parse('2026-10-29T12:00:00Z'),bot='agent_fixture',merchant='merchant_fixture',acct='acct_fixture',card='ic_fixture';
+const terms=(extra={})=>({botId:bot,accountId:acct,cardId:card,merchantNetworkId:merchant,currency:'usd',maxTotalCents:4000,expiresAtMs:NOW+600000,...extra});
+const auth=(id,amountCents,extra={})=>({eventId:'evt_'+id,authorizationId:'iauth_'+id,botId:bot,accountId:acct,cardId:card,merchantNetworkId:merchant,currency:'usd',amountCents,...extra});
 const row=async hash=>{const flat=await call(['HGETALL',E.envelopeKey(hash)]),o={};for(let i=0;i<flat.length;i+=2)o[flat[i]]=flat[i+1];return o};
 async function approved(t){const p=await E.propose(call,t,NOW);assert.equal(p.code,'proposed');assert.equal((await E.decide(call,p.hash,'approve',NOW)).code,'approved');return p.hash}
 (async()=>{
@@ -33,12 +33,16 @@ async function approved(t){const p=await E.propose(call,t,NOW);assert.equal(p.co
  if(real){await real.send(['FLUSHALL']);const info=await real.send(['INFO','server']),ci=await real.send(['INFO','cluster']);mode='Redis '+/redis_version:(\S+)/.exec(info)[1]+(/cluster_enabled:1/.test(ci)?' cluster mode':' standalone')+' at '+process.env.REDIS_URL;}
  // 1. Binding hash: deterministic, and every bound term changes it.
  const base=E.bindingHash(terms());assert.equal(base,E.bindingHash(terms()));
- for(const [k,v] of [['botId','agent_other'],['merchantNetworkId','merchant_other'],['maxTotalCents',4001],['expiresAtMs',NOW+600001]])assert.notEqual(E.bindingHash(terms({[k]:v})),base,k);
- assert.throws(()=>E.bindingHash(terms({currency:'eur'})));assert.throws(()=>E.bindingHash(terms({maxTotalCents:40.5})));
+ for(const [k,v] of [['botId','agent_other'],['accountId','acct_other'],['cardId','ic_other'],['merchantNetworkId','merchant_other'],['maxTotalCents',4001],['expiresAtMs',NOW+600001]])assert.notEqual(E.bindingHash(terms({[k]:v})),base,k);
+ assert.throws(()=>E.bindingHash(terms({currency:'eur'})));assert.throws(()=>E.bindingHash(terms({maxTotalCents:40.5})));assert.throws(()=>E.bindingHash(terms({cardId:'card_1'})));assert.throws(()=>E.bindingHash(terms({accountId:undefined})));
  // 3. Duplicate proposal rejected; expired proposal refused.
  const p=await E.propose(call,terms(),NOW);assert.equal(p.code,'proposed');assert.equal((await row(p.hash)).status,'pending_approval');
  assert.equal((await E.propose(call,terms(),NOW)).code,'duplicate_proposal');
  assert.equal((await E.propose(call,terms({expiresAtMs:NOW}),NOW)).code,'expired');
+ // Identical terms on another card or issuer account are a separate envelope, not a duplicate.
+ const otherCard=await E.propose(call,terms({cardId:'ic_other'}),NOW);assert.equal(otherCard.code,'proposed');assert.notEqual(otherCard.hash,p.hash);
+ assert.equal((await E.propose(call,terms({accountId:'acct_other'}),NOW)).code,'proposed');
+ assert.equal((await E.propose(call,terms({cardId:'ic_other'}),NOW)).code,'duplicate_proposal');
  // Approval row binds to the hash the owner saw; no reservation before approval; first decision wins.
  assert.equal((await E.reserve(call,p.hash,auth('early',100),NOW)).code,'not_approved');
  assert.equal((await E.decide(call,'0'.repeat(64),'approve',NOW)).code,'not_found');
@@ -57,6 +61,8 @@ async function approved(t){const p=await E.propose(call,t,NOW);assert.equal(p.co
  assert.equal((await E.reserve(call,p2,auth('m1',100,{merchantNetworkId:'merchant_other'}),NOW)).code,'envelope_mismatch');
  assert.equal((await E.reserve(call,p2,auth('m2',100,{botId:'agent_other'}),NOW)).code,'envelope_mismatch');
  assert.equal((await E.reserve(call,p2,auth('m3',100,{currency:'eur'}),NOW)).code,'envelope_mismatch');
+ assert.equal((await E.reserve(call,p2,auth('m5',100,{cardId:'ic_other'}),NOW)).code,'envelope_mismatch');
+ assert.equal((await E.reserve(call,p2,auth('m6',100,{accountId:'acct_other'}),NOW)).code,'envelope_mismatch');
  assert.equal((await E.reserve(call,p2,auth('m4',100),NOW+900000)).code,'expired');assert.equal((await row(p2)).reservedCents,'0');
  // 4. Replayed signed webhook is rejected, using the existing issuer-webhook.cjs verify().
  const secret='whsec_disposable_fixture_not_a_real_secret',hctx={require:q=>q==='./api/index'?{}:require(q),module:{exports:{}},process:{env:{}},console,Buffer,setTimeout,clearTimeout};
@@ -64,7 +70,7 @@ async function approved(t){const p=await E.propose(call,t,NOW);assert.equal(p.co
  const p3=await approved(terms({expiresAtMs:NOW+1200000}));
  const raw=Buffer.from(JSON.stringify({id:'evt_replay',account:'acct_fixture',type:'issuing_authorization.request',livemode:false,data:{object:{id:'iauth_replay',livemode:false,card:'ic_fixture',pending_request:{amount:1000,currency:'usd'},merchant_data:{network_id:merchant}}}}));
  const ts=Math.floor(Date.now()/1000),sig='t='+ts+',v1='+crypto.createHmac('sha256',secret).update(ts+'.').update(raw).digest('hex');
- const deliver=async(body,eventId)=>{assert(verify(body,sig,secret));const ev=JSON.parse(body),o=ev.data.object;return E.reserve(call,p3,{eventId:eventId||ev.id,authorizationId:o.id,botId:bot,merchantNetworkId:o.merchant_data.network_id,currency:o.pending_request.currency,amountCents:o.pending_request.amount},NOW)};
+ const deliver=async(body,eventId)=>{assert(verify(body,sig,secret));const ev=JSON.parse(body),o=ev.data.object;return E.reserve(call,p3,{eventId:eventId||ev.id,authorizationId:o.id,botId:bot,accountId:ev.account,cardId:o.card,merchantNetworkId:o.merchant_data.network_id,currency:o.pending_request.currency,amountCents:o.pending_request.amount},NOW)};
  assert.equal((await deliver(raw)).code,'reserved');
  assert.equal((await deliver(raw)).code,'replay_declined');
  assert.equal((await deliver(raw,'evt_redelivered')).code,'replay_declined');
@@ -80,5 +86,5 @@ async function approved(t){const p=await E.propose(call,t,NOW);assert.equal(p.co
  if(!real)assert.throws(()=>E.localEval(store,['EVAL',E.RESERVE,'2','{a}x','{b}y']),/CROSSSLOT/);
  assert(calls.every(c=>c==='EVAL'||c==='HGETALL'));
  const evals=calls.filter(c=>c==='EVAL').length;if(real)real.close();
- console.log('PASS binding hash over bot/merchant/currency/max/expiry, duplicate proposal rejected, owner approval bound to hash, first decision wins, $40 atomic reservation with concurrent overdraw refused, envelope term mismatch, expiry, signed webhook replay rejected (event and authorization id), 5 ported Formance hold-confirm cases. '+evals+' EVALs, single-slot keys only, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
+ console.log('PASS binding hash over bot/issuer account/card/merchant/currency/max/expiry (same terms on another card is a separate envelope), duplicate proposal rejected, owner approval bound to hash, first decision wins, $40 atomic reservation with concurrent overdraw refused, envelope term mismatch, expiry, signed webhook replay rejected (event and authorization id), 5 ported Formance hold-confirm cases. '+evals+' EVALs, single-slot keys only, ZERO network/payment calls beyond the test store. Lua run in '+mode+', not Upstash.');
 })().catch(e=>{console.error(e);process.exit(1)});

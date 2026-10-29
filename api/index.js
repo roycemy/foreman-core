@@ -1153,7 +1153,7 @@ async function listEnvelopes(){const hashes=await r(['SMEMBERS','fm:spendEnvelop
 async function envelopePropose(body){
  if(!/^ic_[A-Za-z0-9]+$/.test(body.cardId||'')||!/^acct_[A-Za-z0-9]+$/.test(body.accountId||'')||!Number.isSafeInteger(body.expiresAtMs)||body.expiresAtMs<=Date.now()||body.expiresAtMs>Date.now()+86400000)return {status:400,body:{error:'Test account/card and an expiry within 24 hours are required'}};
  const a=await getJ('fm:agent:'+body.botId);if(!a||a.status!=='active'||a.paused||await r(['GET','fm:kill']))return {status:400,body:{error:'Active bot required'}};
- const terms={botId:a.id,merchantNetworkId:String(body.merchantNetworkId||'').trim(),currency:'usd',maxTotalCents:body.maxTotalCents,expiresAtMs:body.expiresAtMs};
+ const terms={botId:a.id,accountId:body.accountId,cardId:body.cardId,merchantNetworkId:String(body.merchantNetworkId||'').trim(),currency:'usd',maxTotalCents:body.maxTotalCents,expiresAtMs:body.expiresAtMs};
  let p;try{p=await ENVELOPE.propose(r,terms)}catch{return {status:400,body:{error:'Envelope needs network merchant id, USD max total in cents (1..1000000) and expiry'}}}
  if(p.code==='duplicate_proposal')return {status:409,body:{error:'duplicate_proposal',bindingHash:p.hash}};
  if(p.code!=='proposed')return {status:400,body:{error:p.code}};

@@ -10,9 +10,9 @@ async function decide(event,deadline){
  const target=await core.issuerEnvelopeTarget(event,deadline);
  if(!target)return core.issuerProcess(event,deadline);
  if(target.blocked)return {approved:false,reason:target.blocked};
- const auth=event.data?.object,p=auth?.pending_request;
+ const auth=event.data?.object,p=auth?.pending_request,card=typeof auth?.card==='string'?auth.card:auth?.card?.id;
  if(auth?.livemode!==false)return {approved:false,reason:'live_mode_disabled'};
- const out=await ENVELOPE.reserve(core.issuerStore(deadline),target.hash,{eventId:event.id,authorizationId:auth?.id,botId:target.botId,merchantNetworkId:auth?.merchant_data?.network_id,currency:p?.currency,amountCents:p?.amount});
+ const out=await ENVELOPE.reserve(core.issuerStore(deadline),target.hash,{eventId:event.id,authorizationId:auth?.id,botId:target.botId,accountId:event.account,cardId:card,merchantNetworkId:auth?.merchant_data?.network_id,currency:p?.currency,amountCents:p?.amount});
  if(Date.now()>=deadline)return {approved:false,reason:'internal_deadline'};
  return out.code==='reserved'?{approved:true,reason:'envelope_reserved'}:{approved:false,reason:out.code};
 }

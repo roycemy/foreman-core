@@ -34,12 +34,15 @@ async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON
  await f.setJ(mapKey,{...mapping,botId:b2.id});assert.equal(await reason(ev('evt_env4',100)),'envelope_mismatch');await f.setJ(mapKey,mapping);
  await f.als.run({ws:'issuerfixture'},async()=>{await f.r(['SET','fm:kill','1'])});assert.equal(await reason(ev('evt_env5',100)),'bot_inactive_or_killed');await f.als.run({ws:'issuerfixture'},async()=>{await f.r(['DEL','fm:kill'])});
  await f.als.run({ws:'issuerfixture'},async()=>{
-  // The card is not a bound term, so identical terms on another card are still a duplicate proposal.
+  // The issuer account and card are bound terms: identical terms on another card are a separate envelope, not a duplicate.
+  const sameTermsOtherCard=await f.envelopePropose({...base,cardId:'ic_envpending'});assert.equal(sameTermsOtherCard.status,201);assert.notEqual(sameTermsOtherCard.body.envelope.hash,env.hash);
   assert.equal((await f.envelopePropose({...base,cardId:'ic_envpending'})).status,409);
-  pend=(await f.envelopePropose({...base,cardId:'ic_envpending',maxTotalCents:4001})).body.envelope;
-  short=(await f.envelopePropose({...base,cardId:'ic_envshort',maxTotalCents:4002,expiresAtMs:Date.now()+300})).body.envelope;assert.equal((await f.envelopeDecide(short.hash,'approve')).body.code,'approved');
+  pend=sameTermsOtherCard.body.envelope;
+  short=(await f.envelopePropose({...base,cardId:'ic_envshort',expiresAtMs:Date.now()+300})).body.envelope;assert.equal((await f.envelopeDecide(short.hash,'approve')).body.code,'approved');
  });
  await f.setJ('gl:issuer-envelope-card:acct_env:ic_envpending',{ws:'issuerfixture',botId:a.id,hash:pend.hash});assert.equal(await reason(ev('evt_env6',100,'ic_envpending')),'not_approved');
+ // A mapping that points at another card's envelope cannot be spent from this card: the signed event's card must equal the approved term.
+ await f.setJ('gl:issuer-envelope-card:acct_env:ic_envpending',{ws:'issuerfixture',botId:a.id,hash:env.hash});assert.equal(await reason(ev('evt_env6b',100,'ic_envpending')),'envelope_mismatch');await f.setJ('gl:issuer-envelope-card:acct_env:ic_envpending',{ws:'issuerfixture',botId:a.id,hash:pend.hash});
  await new Promise(s=>setTimeout(s,350));assert.equal(await reason(ev('evt_env7',100,'ic_envshort')),'expired');
  assert.equal(await reason(ev('evt_env8',500)),'APPROVED');
  await f.als.run({ws:'issuerfixture'},async()=>{const live=(await f.spendSummary()).envelopes.find(x=>x.hash===env.hash);assert.deepEqual([live.reservedCents,live.chargedCents,live.status],[3000,0,'approved'])});
