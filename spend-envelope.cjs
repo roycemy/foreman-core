@@ -55,4 +55,45 @@ async function reserve(call,hash,a,nowMs=Date.now()){
  const out=await call(['EVAL',RESERVE,'1',envelopeKey(hash),hash,a.eventId,a.authorizationId,String(a.botId),String(a.merchantNetworkId),String(a.currency),String(a.amountCents),a.final?'1':'0',String(nowMs)]);
  return {code:out[0],reservedCents:out[1],remainingCents:out[2],chargedCents:0};
 }
-module.exports={bindingHash,envelopeKey,propose,decide,reserve,PROPOSE,DECIDE,RESERVE};
+// No upstream file covers it: owner-facing row view; per-event decision fields are counted, not listed.
+async function read(call,hash){
+ const flat=await call(['HGETALL',envelopeKey(hash)])||[],o={};for(let i=0;i<flat.length;i+=2)o[flat[i]]=flat[i+1];
+ if(!o.hash)return null;
+ return {hash:o.hash,status:o.status,botId:o.botId,merchantNetworkId:o.merchant,currency:o.currency,maxTotalCents:Number(o.maxCents),reservedCents:Number(o.reservedCents),releasedCents:Number(o.releasedCents||0),expiresAtMs:Number(o.expiresAtMs),decisionCount:Object.keys(o).filter(k=>k.startsWith('evt:')).length,chargedCents:0};
+}
+// No upstream file covers it: in-process EVAL for the memory store and tests. Runs the same Lua text in fengari
+// (devDependency, loaded lazily) over a Map of Redis hashes, refusing keys outside KEYS and KEYS that span hash slots.
+const SCRIPTS=new Set([PROPOSE,DECIDE,RESERVE]),slot=k=>{const m=/\{([^}]+)\}/.exec(k);return m?m[1]:k};
+function hashCmd(store,declared,[op,k,...a]){
+ if(!declared.includes(k))throw Error('undeclared key '+k);
+ const h=store.get(k);
+ switch(String(op).toUpperCase()){
+  case 'EXISTS':return store.has(k)?1:0;
+  case 'HSET':{const m=h||new Map();let n=0;for(let i=0;i<a.length;i+=2){if(!m.has(a[i]))n++;m.set(a[i],a[i+1])}store.set(k,m);return n}
+  case 'HMGET':return a.map(f=>h&&h.has(f)?h.get(f):null);
+  case 'HEXISTS':return h&&h.has(a[0])?1:0;
+  case 'HINCRBY':{const m=h||new Map(),v=parseInt(m.get(a[0])||'0',10)+parseInt(a[1],10);m.set(a[0],String(v));store.set(k,m);return v}
+ }
+ throw Error('unsupported '+op);
+}
+function localEval(store,cmd){
+ const op=String(cmd[0]).toUpperCase();
+ if(op==='HGETALL'){const h=store.get(cmd[1]);return h?[...h].flat():[]}
+ if(op!=='EVAL'||!SCRIPTS.has(cmd[1]))throw Error('unsupported local envelope command');
+ const {lua,lauxlib,lualib,to_luastring}=require('fengari');
+ const n=Number(cmd[2]),keys=cmd.slice(3,3+n).map(String),argv=cmd.slice(3+n).map(String);
+ if(new Set(keys.map(slot)).size!==1)throw Error('CROSSSLOT');
+ const push=(L,v)=>{if(v===null)lua.lua_pushboolean(L,false);else if(typeof v==='number')lua.lua_pushinteger(L,v);else if(Array.isArray(v)){lua.lua_createtable(L,v.length,0);v.forEach((x,i)=>{push(L,x);lua.lua_rawseti(L,-2,i+1)})}else lua.lua_pushstring(L,to_luastring(String(v)))};
+ // Redis reply conversion: number -> integer, string -> bulk, table -> array up to first nil/false.
+ const reply=(L,i)=>{const t=lua.lua_type(L,i);
+  if(t===lua.LUA_TNUMBER)return Math.trunc(lua.lua_tonumber(L,i));
+  if(t===lua.LUA_TSTRING)return lua.lua_tojsstring(L,i);
+  if(t===lua.LUA_TTABLE){const out=[];for(let j=1;;j++){lua.lua_geti(L,i,j);if(lua.lua_isnil(L,-1)||(lua.lua_isboolean(L,-1)&&!lua.lua_toboolean(L,-1))){lua.lua_pop(L,1);break}out.push(reply(L,lua.lua_gettop(L)));lua.lua_pop(L,1)}return out}
+  return null};
+ const L=lauxlib.luaL_newstate();lualib.luaL_openlibs(L);
+ push(L,keys);lua.lua_setglobal(L,to_luastring('KEYS'));push(L,argv);lua.lua_setglobal(L,to_luastring('ARGV'));
+ lua.lua_createtable(L,0,1);lua.lua_pushjsfunction(L,L=>{const args=[];for(let i=1;i<=lua.lua_gettop(L);i++)args.push(lua.lua_tojsstring(L,i));push(L,hashCmd(store,keys,args));return 1});lua.lua_setfield(L,-2,to_luastring('call'));lua.lua_setglobal(L,to_luastring('redis'));
+ if(lauxlib.luaL_loadstring(L,to_luastring(cmd[1]))!==lua.LUA_OK||lua.lua_pcall(L,0,1,0)!==lua.LUA_OK)throw Error('lua: '+lua.lua_tojsstring(L,-1));
+ return reply(L,lua.lua_gettop(L));
+}
+module.exports={bindingHash,envelopeKey,propose,decide,reserve,read,localEval,SCRIPTS,PROPOSE,DECIDE,RESERVE};
