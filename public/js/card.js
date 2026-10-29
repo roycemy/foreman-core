@@ -36,6 +36,7 @@
     const trustRow = b => { const x = b.trust || {}, n = x.sampleCount || 0; return `<div class="trow">${BB.av(b, 's30')}<b>${esc(b.name)}</b><span class="num">${n < 5 ? 'Not enough data yet' : n + ' decisions · ' + (x.policyBlockedCount || 0) + ' blocked'}</span></div>`; };
     V.insertAdjacentHTML('beforeend', `<section class="trust"><h3 class="h">Bot trust</h3><p class="meta">Sandbox decisions</p><div class="tlist">${(D.bots || []).map(trustRow).join('')}</div><p class="meta">A signal only, never a score. It never changes what a bot is allowed to do.</p>
       <p class="meta links">Sandbox. No real money moves. <a href="/authorization.html">Open authorization demo</a> · <a href="/interception.html">Interception coverage and review</a> · <button class="b out sm" type="button" data-rules>Sandbox rules</button></p></section>`);
+    envelopes();
     V.querySelector('[data-rules]').onclick = rules;
     V.querySelector('[data-limit]').onclick = limits;
     V.querySelector('[data-freeze]').onclick = async () => { const j = await BB.api('/api/cards/control', 'POST', { killed: !D.killed }); if (j.error) return BB.toast(j.error); BB.cards = j; BB.toast(j.killed ? 'Card frozen. Card requests are blocked.' : 'Card unfrozen.'); paint(); BB.emit(); };
@@ -84,6 +85,65 @@
       const j=await BB.api('/api/cards/control','POST',body);if(j.error){err.textContent=j.error;return;}
       BB.cards=j;BB.closeModal();await BB.sync(true);BB.emit();BB.toast('Sandbox rules saved. No real money moves.');
     }catch(e){err.textContent=e.message;}};
+  }
+  /* Spend envelopes (ALTER_SPEND_ENVELOPES): rendered only when /api/money says envelopesEnabled. Existing classes only.
+     Labels: Reserved = issuer-confirmed, not captured; Unsettled = outcome not yet confirmed (counts against Available); Spent = captured net of refunds. */
+  const money = (c, cur) => cur === 'usd' ? BB.usd(c) : (c / 100).toFixed(2) + ' ' + esc(String(cur).toUpperCase());
+  const tail = id => esc(String(id || '').slice(-6));
+  const why = j => j.code ? String(j.code).replace(/_/g, ' ') : j.error;
+  function envelopes() {
+    const M = BB.money || {};
+    if (!M.envelopesEnabled) return;
+    const list = M.envelopes || [], who = id => (BB.agent(id) || {}).name || 'A bot';
+    const bucket = b => `<div class="spend" style="margin-top:10px"><div class="lbl">${esc(b.currency.toUpperCase())}${b.maxCents ? ' · limit ' + money(b.maxCents, b.currency) : ' · no limit in this currency'}</div><div style="display:flex;align-items:baseline;gap:8px;margin-top:6px"><span class="big num">${money(b.availableCents, b.currency)}</span><span class="meta" style="font-size:14px">available</span></div><div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="${b.maxCents}" aria-valuenow="${b.usedCents}" aria-label="Used of envelope"><i style="width:${b.maxCents ? Math.min(100, b.usedCents / b.maxCents * 100) : 100}%"></i></div><div class="row2"><span>Reserved ${money(b.reservedCents, b.currency)}</span><span>Unsettled ${money(b.unresolvedCents, b.currency)}</span><span>Spent ${money(b.settledCents, b.currency)}</span></div>${b.overspendCents ? `<p class="err">Over the limit by ${money(b.overspendCents, b.currency)} (issuer captured more than was reserved).</p>` : ''}</div>`;
+    const stuckRow = (e, s) => `<div class="row"><span class="merch" aria-hidden="true">!</span><span class="t"><b>Unsettled ${s.amounts.map(x => money(x.unresolvedCents, x.currency)).join(', ')}</b><small>Authorization …${tail(s.authorizationId)} · no issuer confirmation since ${esc(BB.when(new Date(s.at).toISOString()))}</small></span><span class="btns"><button class="b out sm" type="button" data-adj="approved" data-env="${esc(e.hash)}" data-auth="${esc(s.authorizationId)}">Mark approved</button><button class="b ghost sm" type="button" data-adj="declined" data-env="${esc(e.hash)}" data-auth="${esc(s.authorizationId)}">Mark declined</button></span></div>`;
+    const histRow = h => `<div class="row"><span class="t"><b>${esc(h.kind.replace(/[:_]/g, ' '))}</b><small>${esc(BB.when(new Date(h.at).toISOString()))} · ${esc(h.actor)}${h.authorizationId ? ' · …' + tail(h.authorizationId) : ''}${h.note ? ' · ' + esc(h.note) : ''}</small></span><span class="amt">${h.du || h.dr || h.ds ? [h.du && 'U ' + money(h.du, h.currency), h.dr && 'R ' + money(h.dr, h.currency), h.ds && 'S ' + money(h.ds, h.currency)].filter(Boolean).join(' ') : ''}</span></div>`;
+    const card = e => `<div class="charges" style="margin-top:12px"><div class="row"><span class="merch" aria-hidden="true">${esc((who(e.botId) || '?')[0])}</span><span class="t"><b>${esc(e.botName || who(e.botId))} · ${esc(e.merchantNetworkId)}</b><small>Card …${tail(e.cardId)} · ${esc(e.status.replace(/_/g, ' '))}${e.activeForCard ? ' · active for this card' : ''} · approved by ${esc(e.decidedBy || 'nobody yet')} · expires ${esc(BB.when(new Date(e.expiresAtMs).toISOString()))}</small></span><span class="btns">${e.status === 'pending_approval' ? `<button class="b ink sm" type="button" data-dec="approve" data-env="${esc(e.hash)}">Approve</button><button class="b ghost sm" type="button" data-dec="deny" data-env="${esc(e.hash)}">Deny</button>` : e.status === 'approved' ? `<button class="b ghost sm" type="button" data-dec="revoke" data-env="${esc(e.hash)}">Revoke</button>` : ''}</span></div>
+      ${e.buckets.map(bucket).join('')}
+      ${e.stuck.length ? `<h3 class="h">Stuck</h3>${e.stuck.map(s => stuckRow(e, s)).join('')}` : ''}
+      <details><summary class="meta">History (${e.history.length})</summary>${e.history.slice().reverse().map(histRow).join('')}</details></div>`;
+    V.insertAdjacentHTML('beforeend', `<section class="trust"><h3 class="h">Spend envelopes</h3><p class="meta">You approve a bounded limit ahead of time; the card decides within it. Internal accounting only. No real money moves.</p>
+      ${list.length ? list.map(card).join('') : '<div class="list-empty"><b>No envelopes yet</b>Pick a bot and test card, review the terms, then approve a limit.</div>'}
+      <div class="btns" style="margin-top:12px"><button class="b out" type="button" data-env-new>New envelope</button></div></section>`);
+    V.querySelector('[data-env-new]').onclick = proposeEnvelope;
+    V.querySelectorAll('[data-dec]').forEach(b => b.onclick = async () => { const j = await BB.api('/api/money/envelopes/' + b.dataset.env + '/' + b.dataset.dec, 'POST', {}); if (j.error || !['approved', 'denied', 'revoked'].includes(j.code)) return BB.toast(why(j)); await BB.sync(true); BB.toast('Envelope ' + j.code + '.'); });
+    V.querySelectorAll('[data-adj]').forEach(b => b.onclick = () => adjudicate(b.dataset.env, b.dataset.auth, b.dataset.adj));
+  }
+  function adjudicate(hash, authId, decision) {
+    const box = BB.modal(`<h3>Mark ${decision}</h3><p>Use this only when the issuer dashboard shows the outcome. It is recorded with your name. ${decision === 'declined' ? 'The unsettled amount returns to available.' : 'The unsettled amount becomes reserved.'}</p>
+      <div class="rrow"><label for="adj-note">What you checked</label><input id="adj-note" class="t" type="text" maxlength="200"></div><p class="err" id="adj-e"></p>
+      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="button" id="adj-ok">Record</button></div>`, { label: 'Adjudicate authorization' });
+    box.querySelector('#adj-ok').onclick = async () => { const j = await BB.api('/api/money/envelopes/' + hash + '/authorizations/' + authId + '/adjudicate', 'POST', { decision, note: box.querySelector('#adj-note').value }); if (j.error || j.code !== 'adjudicated') { box.querySelector('#adj-e').textContent = why(j); return; } BB.closeModal(); await BB.sync(true); BB.toast('Recorded.'); };
+  }
+  function proposeEnvelope() {
+    const E = (BB.money && BB.money.envelopeEligible) || { bots: [], cards: [] };
+    if (!E.bots.length) return BB.toast('Connect a bot first.');
+    let botId = E.bots[0].id;
+    const box = BB.modal(`<h3>New envelope</h3><p>One bot, one test card, one merchant, a limit and an expiry. You approve the exact terms below.</p>
+      <div class="seg" role="tablist" aria-label="Bot">${E.bots.map(b => `<button type="button" role="tab" data-ebot="${esc(b.id)}">${esc(b.name)}</button>`).join('')}</div>
+      ${E.cards.length ? `<div class="rrow"><label for="env-card">Test card</label><select id="env-card" class="t">${E.cards.map(c => `<option value="${esc(c.accountId + ':' + c.cardId)}">…${tail(c.cardId)} (${esc(c.accountId)})</option>`).join('')}</select></div>` : `<div class="rrow"><label for="env-acct">Test account id</label><input id="env-acct" class="t" type="text" placeholder="acct_…"></div><div class="rrow"><label for="env-cardid">Test card id</label><input id="env-cardid" class="t" type="text" placeholder="ic_…"></div>`}
+      <div class="rrow"><label for="env-merch">Merchant network id</label><input id="env-merch" class="t" type="text" maxlength="100"></div>
+      <div class="rrow"><label for="env-max">Limit</label><span class="inline-input">$<input id="env-max" type="text" inputmode="decimal" placeholder="40.00"></span></div>
+      <div class="rrow"><label for="env-hours">Expires in (hours)</label><input id="env-hours" type="number" min="1" max="${E.maxExpiryHours || 24}" step="1" value="24"></div>
+      <div id="env-review" hidden></div><p class="err" id="env-e"></p>
+      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b out" type="button" id="env-rev">Review terms</button><button class="b ink" type="button" id="env-ok" hidden>Approve limit</button></div>`, { label: 'New envelope' });
+    const $q = q => box.querySelector(q), err = $q('#env-e');
+    const sel = () => box.querySelectorAll('[data-ebot]').forEach(t => t.setAttribute('aria-selected', t.dataset.ebot === botId ? 'true' : 'false'));
+    box.querySelectorAll('[data-ebot]').forEach(t => t.onclick = () => { botId = t.dataset.ebot; sel(); $q('#env-review').hidden = true; $q('#env-ok').hidden = true; }); sel();
+    let terms = null;
+    $q('#env-rev').onclick = () => { err.textContent = ''; terms = null;
+      const [accountId, cardId] = E.cards.length ? $q('#env-card').value.split(':') : [$q('#env-acct').value.trim(), $q('#env-cardid').value.trim()];
+      const max = String($q('#env-max').value).trim(), hours = Number($q('#env-hours').value), merchant = $q('#env-merch').value.trim();
+      if (!/^\d+(\.\d{1,2})?$/.test(max) || Number(max) <= 0 || Math.round(Number(max) * 100) > (E.maxTotalCentsLimit || 1000000)) return err.textContent = 'Limit must be a dollar amount up to ' + BB.usd(E.maxTotalCentsLimit || 1000000) + '.';
+      if (!(hours >= 1 && hours <= (E.maxExpiryHours || 24))) return err.textContent = 'Expiry must be 1 to ' + (E.maxExpiryHours || 24) + ' hours.';
+      if (!merchant) return err.textContent = 'Merchant network id is required.';
+      terms = { botId, accountId, cardId, merchantNetworkId: merchant, currency: 'usd', maxTotalCents: Math.round(Number(max) * 100), expiresAtMs: Date.now() + hours * 3600000 };
+      $q('#env-review').innerHTML = `<div class="charges"><div class="row"><span class="t"><b>${esc((E.bots.find(b => b.id === botId) || {}).name)} may spend up to ${BB.usd(terms.maxTotalCents)}</b><small>Merchant ${esc(merchant)} · card …${tail(cardId)} · account ${esc(accountId)} · USD · until ${esc(BB.when(new Date(terms.expiresAtMs).toISOString()))}</small></span></div></div>`;
+      $q('#env-review').hidden = false; $q('#env-ok').hidden = false; };
+    $q('#env-ok').onclick = async () => { if (!terms) return; err.textContent = '';
+      const p = await BB.api('/api/money/envelopes', 'POST', terms); if (p.error) return err.textContent = p.error;
+      const d = await BB.api('/api/money/envelopes/' + p.envelope.hash + '/approve', 'POST', {}); if (d.error || d.code !== 'approved') return err.textContent = why(d);
+      BB.closeModal(); await BB.sync(true); BB.toast('Envelope approved. Internal accounting only.'); };
   }
   /* daily limit: one cap per bot (UTC day); the card's limit is their sum */
   function limits() {
