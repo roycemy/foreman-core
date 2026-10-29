@@ -1,0 +1,30 @@
+name: regression
+on:
+  push: {}
+  pull_request: {}
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - name: Run every *-regression.cjs (each suite blocking)
+        shell: bash
+        run: |
+          set -u
+          n=0; failed=""
+          while IFS= read -r f; do
+            n=$((n+1))
+            echo "::group::$f"
+            if node "$f"; then echo "PASS $f"; else echo "::error::FAILED $f"; failed="$failed $f"; fi
+            echo "::endgroup::"
+          done < <(git ls-files '*-regression.cjs')
+          echo "suites=$n failed:${failed:- none}"
+          test -z "$failed"
