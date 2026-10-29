@@ -14,10 +14,15 @@ const crypto=require('crypto');
 const TERMS=['botId','accountId','cardId','merchantNetworkId','currency','maxTotalCents','expiresAtMs'];
 const STUCK_MS=120000;
 // No upstream file covers it: canonical sha256 over exactly the seven approved envelope terms (bot, issuer account, card, merchant, currency, max, expiry), in fixed order.
-function bindingHash(t){
+// hash_version 2 hashes the merchant canonicalized (trim, whitespace runs -> one space, case kept). hash_version 1 (envelopes written before
+// this change) hashed it raw; bindingHashV1 and verify() keep those approvals valid. Existing rows are never rewritten.
+const HASH_VERSION=2,canon=m=>String(m).replace(/\s+/g,' ').trim();
+const hashOf=(t,m)=>crypto.createHash('sha256').update(JSON.stringify(TERMS.map(k=>k==='merchantNetworkId'?m:t[k]))).digest('hex');
+function validTerms(t){
  if(!t||typeof t.botId!=='string'||!/^[A-Za-z0-9_]{1,120}$/.test(t.botId)||!/^acct_[A-Za-z0-9]+$/.test(t.accountId||'')||!/^ic_[A-Za-z0-9]+$/.test(t.cardId||'')||typeof t.merchantNetworkId!=='string'||!t.merchantNetworkId.trim()||t.merchantNetworkId.length>100||/[|,]/.test(t.merchantNetworkId)||!/^[a-z]{3}$/.test(t.currency||'')||!Number.isSafeInteger(t.maxTotalCents)||t.maxTotalCents<1||t.maxTotalCents>1000000||!Number.isSafeInteger(t.expiresAtMs))throw Error('Envelope needs botId, issuer accountId, cardId, merchantNetworkId, a 3-letter lowercase currency, integer maxTotalCents (1..1000000) and integer expiresAtMs');
- return crypto.createHash('sha256').update(JSON.stringify(TERMS.map(k=>t[k]))).digest('hex');
 }
+const bindingHash=t=>{validTerms(t);return hashOf(t,canon(t.merchantNetworkId))};
+const bindingHashV1=t=>{validTerms(t);return hashOf(t,t.merchantNetworkId)};
 // One key per envelope; the {hash} tag pins every script to a single slot. gl: keys are never workspace-prefixed by nsKey.
 const envelopeKey=hash=>'gl:spend-envelope:{'+hash+'}';
 // No upstream file covers it: shared Lua helpers. Every bucket change goes through move(), which updates the per-authorization
@@ -26,13 +31,14 @@ const PRELUDE="local K=KEYS[1]\n"+
  "local function num(f) return tonumber(redis.call('HGET',K,f) or '0') or 0 end\n"+
  "local function add(f,d) if d~=0 then redis.call('HINCRBY',K,f,d) end end\n"+
  "local function addcur(f,c) local l=redis.call('HGET',K,f) or '' if not string.find(','..l..',',','..c..',',1,true) then if l=='' then redis.call('HSET',K,f,c) else redis.call('HSET',K,f,l..','..c) end end end\n"+
- "local function move(a,c,du,dr,ds) addcur('curs',c) addcur('a:'..a..':curs',c) local p='a:'..a..':'..c..':' add(p..'u',du) add(p..'r',dr) add(p..'s',ds) add('b:'..c..':u',du) add('b:'..c..':r',dr) add('b:'..c..':s',ds) end\n"+
- "local function hist(now,actor,kind,a,c,du,dr,ds,ref,note,dc) local n=redis.call('HINCRBY',K,'hseq',1) redis.call('HSET',K,'h:'..n,table.concat({now,actor,kind,a,c,du,dr,ds,ref,note,dc or 0},'|')) end\n";
+ "local function move(a,c,du,dr,ds,dd) dd=dd or 0 addcur('curs',c) addcur('a:'..a..':curs',c) local p='a:'..a..':'..c..':' add(p..'u',du) add(p..'r',dr) add(p..'s',ds) add(p..'d',dd) add('b:'..c..':u',du) add('b:'..c..':r',dr) add('b:'..c..':s',ds) add('b:'..c..':d',dd) end\n"+
+ "local function hist(now,actor,kind,a,c,du,dr,ds,ref,note,dc,dd) local n=redis.call('HINCRBY',K,'hseq',1) redis.call('HSET',K,'h:'..n,table.concat({now,actor,kind,a,c,du,dr,ds,ref,note,dc or 0,dd or 0},'|')) end\n";
 // No upstream file covers it: SET-NX style create on a Redis hash, rejecting a duplicate proposal of the same terms.
-// ARGV: hash, bot, account, card, merchant, currency, max, expiresAt, now, actor
+// ARGV: hash, bot, account, card, merchant (canonical), currency, max, expiresAt, now, actor, hash_version ('' for a pre-version row)
 const PROPOSE=PRELUDE+"if redis.call('EXISTS',K)==1 then return {'duplicate_proposal'} end\n"+
  "if tonumber(ARGV[8])<=tonumber(ARGV[9]) then return {'expired'} end\n"+
  "redis.call('HSET',K,'hash',ARGV[1],'botId',ARGV[2],'accountId',ARGV[3],'cardId',ARGV[4],'merchant',ARGV[5],'currency',ARGV[6],'maxCents',ARGV[7],'expiresAtMs',ARGV[8],'status','pending_approval','createdAtMs',ARGV[9],'proposedBy',ARGV[10])\n"+
+ "if ARGV[11]~='' then redis.call('HSET',K,'hash_version',ARGV[11]) end\n"+
  "hist(ARGV[9],ARGV[10],'envelope_proposed','','',0,0,0,'',ARGV[7]..' '..ARGV[6])\n"+
  "return {'proposed'}";
 // Adapted from this repo, api/index.js AGENT_CAS + reviewSpend detailsHash check (roycemy/foreman-core@d67990f): the owner's decision binds to the hash they reviewed; first decision wins.
@@ -49,7 +55,8 @@ const DECIDE=PRELUDE+"local s=redis.call('HMGET',K,'hash','status','expiresAtMs'
  "hist(ARGV[3],ARGV[4],'envelope_'..st,'','',0,0,0,'','')\n"+
  "return {st}";
 // Adapted from formancehq/wallets pkg/hold.go (ConfirmHold.resolveAmount, ExpandedDebitHold.IsClosed) @3177b665175c33867cf4a1a02b0c792d7d3d2dfd:
-// no capacity left rejects, amount above remaining rejects (ErrInsufficientFund).
+// amount above what remains rejects (ErrInsufficientFund). R1: available = max - settled - held, held = unresolved + reserved + declined_pending.
+// R2: approve only if amount <= available; otherwise decline insufficient_available. The approve path never reserves a partial amount.
 // Fence re-check: the authorization record ('a:'..id) is read and written inside this one script, so a fence or provider
 // record written first makes a later reserve refuse, and a reserve written first is what the fence finds. No check-then-write gap.
 // Accepted cents go to unresolved until provider evidence confirms them.
@@ -58,24 +65,25 @@ const RESERVE=PRELUDE+"local s=redis.call('HMGET',K,'hash','status','botId','acc
  "if not s[1] then return {'no_envelope'} end\n"+
  "local a,c,now=ARGV[3],ARGV[8],ARGV[10]\n"+
  "if redis.call('HEXISTS',K,'e:'..ARGV[2])==1 or redis.call('HEXISTS',K,'a:'..a)==1 then return {'replay_declined'} end\n"+
+ "local function cn(x) x=string.gsub(x,'%s+',' ') x=string.gsub(x,'^ ','') x=string.gsub(x,' $','') return x end\n"+
  "local max,amt=tonumber(s[8]),tonumber(ARGV[9])\n"+
- "local used=num('b:'..s[7]..':u')+num('b:'..s[7]..':r')+num('b:'..s[7]..':s')\n"+
+ "local used=num('b:'..s[7]..':u')+num('b:'..s[7]..':r')+num('b:'..s[7]..':s')+num('b:'..s[7]..':d')\n"+
  "local code\n"+
  "if s[1]~=ARGV[1] then code='binding_mismatch'\n"+
  "elseif s[2]~='approved' then code='envelope_'..s[2]\n"+
  "elseif tonumber(s[9])<=tonumber(now) then code='envelope_expired'\n"+
- "elseif s[3]~=ARGV[4] or s[4]~=ARGV[5] or s[5]~=ARGV[6] or s[6]~=ARGV[7] or s[7]~=c then code='envelope_mismatch'\n"+
+ "elseif s[3]~=ARGV[4] or s[4]~=ARGV[5] or s[5]~=ARGV[6] or cn(s[6])~=cn(ARGV[7]) or s[7]~=c then code='envelope_mismatch'\n"+
  "elseif not amt or amt<1 or amt%1~=0 then code='invalid_amount'\n"+
- "elseif used>=max then code='closed_envelope'\n"+
- "elseif used+amt>max then code='insufficient_envelope' end\n"+
+ "elseif amt>max-used then code='insufficient_available' end\n"+
  "redis.call('HSET',K,'e:'..ARGV[2],a)\n"+
- "if code then redis.call('HSET',K,'a:'..a,'declined') hist(now,ARGV[11],'declined:'..code,a,c,0,0,0,ARGV[2],'') return {code,used,max-used} end\n"+
+ "if code then redis.call('HSET',K,'a:'..a,'declined') hist(now,ARGV[11],'declined:'..code,a,c,0,0,0,ARGV[2],'') return {code,used,math.max(0,max-used)} end\n"+
  "redis.call('HSET',K,'a:'..a,'open','a:'..a..':at',now)\n"+
  "move(a,c,amt,0,0)\n"+
  "hist(now,ARGV[11],'reserve_unresolved',a,c,amt,0,0,ARGV[2],'')\n"+
- "return {'reserved',used+amt,max-used-amt}";
+ "return {'reserved',used+amt,math.max(0,max-used-amt)}";
 // No upstream file covers it: reconciler fence. Same key and same 'a:'..id field RESERVE checks, so exactly one of
-// "reserve then fence (fence finds it)" or "fence then reserve (reserve refuses)" happens. A found record is never freed here.
+// "reserve then fence (fence finds it)" or "fence then reserve (reserve refuses)" happens. A found record is never freed here;
+// R7: an item in declined_pending keeps its record, so FENCE finds it and its cents stay held.
 // ARGV: hash, authId, now, actor, ref
 const FENCE=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_envelope'} end\n"+
  "local st=redis.call('HGET',K,'a:'..ARGV[2])\n"+
@@ -97,45 +105,52 @@ const PROVIDER=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_enve
  "local a,c,amt,now,actor,ref=ARGV[4],ARGV[5],tonumber(ARGV[6]),ARGV[10],ARGV[11],ARGV[3]\n"+
  "local st=redis.call('HGET',K,'a:'..a)\n"+
  "local p='a:'..a..':'..c..':'\n"+
- "local u,r,s=num(p..'u'),num(p..'r'),num(p..'s')\n"+
+ "local u,r,s,d=num(p..'u'),num(p..'r'),num(p..'s'),num(p..'d')\n"+
  "if ARGV[2]=='auth' then\n"+
  " local approved,status=ARGV[7]=='1',ARGV[8]\n"+
  " if not st then\n"+
  "  if approved and status=='pending' then redis.call('HSET',K,'a:'..a,'open','a:'..a..':at',now) move(a,c,0,amt,0) hist(now,actor,'discrepancy:approved_without_alter_reservation',a,c,0,amt,0,ref,'') return {'discrepancy'} end\n"+
  "  redis.call('HSET',K,'a:'..a,'fenced') hist(now,actor,'fence:provider_'..status,a,c,0,0,0,ref,'') return {'fenced'}\n"+
  " end\n"+
- " if not approved then move(a,c,-u,-r,0) if s==0 then redis.call('HSET',K,'a:'..a,'released') end hist(now,actor,'provider_declined',a,c,-u,-r,0,ref,'') return {'released'} end\n"+
+ " if not approved then move(a,c,-u,-r,0,-d) if s==0 then redis.call('HSET',K,'a:'..a,'released') end hist(now,actor,'provider_declined',a,c,-u,-r,0,ref,'',0,-d) return {'released'} end\n"+
  " if status=='pending' then\n"+
  "  if u>0 then local keep=math.min(amt,u) move(a,c,-u,keep,0) hist(now,actor,'provider_approved',a,c,-u,keep,0,ref,'') return {'confirmed'} end\n"+
  "  if st=='open' and r>amt then move(a,c,0,amt-r,0) hist(now,actor,'partial_reversal',a,c,0,amt-r,0,ref,'') return {'reduced'} end\n"+
  "  hist(now,actor,'ignored_snapshot',a,c,0,0,0,ref,st) return {'ignored'}\n"+
  " end\n"+
- " move(a,c,-u,-r,0) redis.call('HSET',K,'a:'..a,'closed') hist(now,actor,'provider_'..status,a,c,-u,-r,0,ref,'') return {'closed'}\n"+
+ " move(a,c,-u,-r,0,-d) redis.call('HSET',K,'a:'..a,'closed') hist(now,actor,'provider_'..status,a,c,-u,-r,0,ref,'',0,-d) return {'closed'}\n"+
  "end\n"+
  "if not amt or amt<1 or amt%1~=0 then hist(now,actor,'discrepancy:invalid_amount',a,c,0,0,0,ref,ARGV[6]) return {'invalid_amount'} end\n"+
  "if ARGV[2]=='capture' then\n"+
  " if not st then redis.call('HSET',K,'a:'..a,'closed','a:'..a..':at',now) move(a,c,0,0,amt) hist(now,actor,'discrepancy:capture_without_alter_record',a,c,0,0,amt,ref,'') return {'discrepancy'} end\n"+
- " local fr=math.min(amt,r) local rest=amt-fr local fu=math.min(rest,u) rest=rest-fu\n"+
  " local cc=math.min(num(p..'c'),amt)\n"+
+ " if d>0 and st=='open' then\n"+
+ // R4: a capture settles a declined_pending item and closes it. Cents beyond the capture are released with it; a capture that differs
+ // from what was held is a discrepancy entry (and a notice). Settled gets the full captured amount, net of refund credit.
+ "  move(a,c,-u,-r,amt-cc,-d) add(p..'c',-cc) redis.call('HSET',K,'a:'..a,'closed')\n"+
+ "  local kd='capture_resolved_declined_pending' if amt~=d then kd='discrepancy:capture_differs_from_held' end\n"+
+ "  hist(now,actor,kd,a,c,-u,-r,amt-cc,ref,tostring(amt),-cc,-d)\n"+
+ "  return {kd}\n"+
+ " end\n"+
+ " local fr=math.min(amt,r) local rest=amt-fr local fu=math.min(rest,u) rest=rest-fu\n"+
  " move(a,c,-fu,-fr,amt-cc) add(p..'c',-cc)\n"+
- " local man=redis.call('HGET',K,'a:'..a..':manual')\n"+
- " local kind='capture' if st~='open' then kind='discrepancy:capture_after_'..st elseif man=='declined' then kind='discrepancy:capture_after_adjudicated_declined' elseif rest>0 then kind='discrepancy:capture_beyond_reserved' end\n"+
+ " local kind='capture' if st~='open' then kind='discrepancy:capture_after_'..st elseif rest>0 then kind='discrepancy:capture_beyond_reserved' end\n"+
  " hist(now,actor,kind,a,c,-fu,-fr,amt-cc,ref,tostring(amt),-cc)\n"+
  " return {kind}\n"+
  "end\n"+
  // A refund larger than what is settled so far (refund delivered before its capture, or beyond it) keeps the excess as a
  // per-authorization credit: not a bucket, never part of C, applied against the next capture so delivery order cannot change totals.
  "if ARGV[2]=='refund' then\n"+
- " local d=math.min(amt,s) move(a,c,0,0,-d) add(p..'c',amt-d)\n"+
- " local kind='refund' if amt>d then kind='discrepancy:refund_exceeds_settled' end\n"+
- " hist(now,actor,kind,a,c,0,0,-d,ref,tostring(amt),amt-d)\n"+
+ " local rf=math.min(amt,s) move(a,c,0,0,-rf) add(p..'c',amt-rf)\n"+
+ " local kind='refund' if amt>rf then kind='discrepancy:refund_exceeds_settled' end\n"+
+ " hist(now,actor,kind,a,c,0,0,-rf,ref,tostring(amt),amt-rf)\n"+
  " return {kind}\n"+
  "end\n"+
  "return {'unsupported_kind'}";
 // No upstream file covers it: owner adjudication of a stuck unresolved authorization, with an audit entry naming the owner.
 // Only unresolved cents move; only after the stuck threshold; nothing here is time-triggered. Marks 'a:'..id..':manual'.
-// A manual decline is provisional: budget returns now, but a later provider capture still enters settled as
-// discrepancy:capture_after_adjudicated_declined (overspend if C crosses max) and raises an owner notice.
+// R3: a manual decline moves unresolved -> declined_pending (bucket 'd'). The cents stay held, available does not move, and the
+// authorization stays open. It resolves only through PROVIDER (capture -> settled, void/expiry -> released). R5: no timer.
 // ARGV: hash, authId, decision (approved|declined), now, actor, note, stuckMs
 const ADJUDICATE=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_envelope'} end\n"+
  "local a=ARGV[2] local st=redis.call('HGET',K,'a:'..a)\n"+
@@ -144,12 +159,11 @@ const ADJUDICATE=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_en
  "local moved=0 local other=0\n"+
  "for c in string.gmatch(redis.call('HGET',K,'a:'..a..':curs') or '','[^,]+') do\n"+
  " local p='a:'..a..':'..c..':' local u=num(p..'u') other=other+num(p..'r')+num(p..'s')\n"+
- " if u>0 then moved=moved+u if ARGV[3]=='approved' then move(a,c,-u,u,0) else move(a,c,-u,0,0) end hist(ARGV[4],ARGV[5],'manual_adjudication:'..ARGV[3],a,c,-u,(ARGV[3]=='approved' and u or 0),0,'',ARGV[6]) end\n"+
+ " if u>0 then moved=moved+u if ARGV[3]=='approved' then move(a,c,-u,u,0) else move(a,c,-u,0,0,u) end hist(ARGV[4],ARGV[5],'manual_adjudication:'..ARGV[3],a,c,-u,(ARGV[3]=='approved' and u or 0),0,'',ARGV[6],0,(ARGV[3]=='declined' and u or 0)) end\n"+
  "end\n"+
  "if moved==0 then return {'not_unresolved'} end\n"+
  "redis.call('HSET',K,'a:'..a..':manual',ARGV[3])\n"+
- "if ARGV[3]~='approved' and other==0 then redis.call('HSET',K,'a:'..a,'adjudicated_declined') end\n"+
- "return {'adjudicated',moved}";
+  "return {'adjudicated',moved}";
 // No upstream file covers it: owner acknowledges discrepancy notices up to a history sequence number (audit entry kept).
 // ARGV: hash, seq, now, actor
 const ACK=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_envelope'} end\n"+
@@ -162,13 +176,18 @@ const ACK=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_envelope'
 const clean=s=>String(s==null?'':s).replace(/[|,\r\n]/g,' ').slice(0,200);
 const okHash=h=>/^[a-f0-9]{64}$/.test(h||''),okAuth=x=>/^iauth_[A-Za-z0-9]+$/.test(x||'');
 // call is a Redis command function (e.g. api/index.js r). Every script declares its single key in KEYS.
-async function propose(call,terms,nowMs=Date.now(),actor='owner'){const hash=bindingHash(terms),key=envelopeKey(hash);const out=await call(['EVAL',PROPOSE,'1',key,hash,terms.botId,terms.accountId,terms.cardId,terms.merchantNetworkId.trim(),terms.currency,String(terms.maxTotalCents),String(terms.expiresAtMs),String(nowMs),clean(actor)]);return {hash,key,code:out[0]};}
+async function propose(call,terms,nowMs=Date.now(),actor='owner'){
+ const hash=bindingHash(terms),key=envelopeKey(hash),m=canon(terms.merchantNetworkId);
+ // Same merchant proposed before this change (hash_version 1, merchant hashed trimmed-only by the API): still a duplicate.
+ const legacy=bindingHashV1({...terms,merchantNetworkId:String(terms.merchantNetworkId).trim()});
+ if(legacy!==hash&&await call(['HGET',envelopeKey(legacy),'hash']))return {hash:legacy,key:envelopeKey(legacy),code:'duplicate_proposal'};
+ const out=await call(['EVAL',PROPOSE,'1',key,hash,terms.botId,terms.accountId,terms.cardId,m,terms.currency,String(terms.maxTotalCents),String(terms.expiresAtMs),String(nowMs),clean(actor),String(HASH_VERSION)]);return {hash,key,code:out[0]};}
 async function decide(call,hash,decision,nowMs=Date.now(),actor='owner'){if(!okHash(hash))return {code:'binding_mismatch'};const d=['approve','revoke'].includes(decision)?decision:'deny';const out=await call(['EVAL',DECIDE,'1',envelopeKey(hash),hash,d,String(nowMs),clean(actor)]);return {code:out[0],status:out[1]};}
 // botId must come from Alter's own card/bot mapping, never from merchant or webhook metadata; account, card and currency come from the signed event.
 async function reserve(call,hash,a,nowMs=Date.now(),actor='issuer_webhook'){
  if(!okHash(hash)||!/^evt_[A-Za-z0-9]+$/.test(a.eventId||'')||!okAuth(a.authorizationId))return {code:'invalid_or_unsupported_request'};
  if(!Number.isSafeInteger(a.amountCents)||a.amountCents<1)return {code:'invalid_amount'};
- const out=await call(['EVAL',RESERVE,'1',envelopeKey(hash),hash,a.eventId,a.authorizationId,clean(a.botId),clean(a.accountId),clean(a.cardId),clean(a.merchantNetworkId),clean(a.currency),String(a.amountCents),String(nowMs),clean(actor)]);
+ const out=await call(['EVAL',RESERVE,'1',envelopeKey(hash),hash,a.eventId,a.authorizationId,clean(a.botId),clean(a.accountId),clean(a.cardId),canon(clean(a.merchantNetworkId)),clean(a.currency),String(a.amountCents),String(nowMs),clean(actor)]);
  return {code:out[0],usedCents:out[1],remainingCents:out[2],chargedCents:0};
 }
 async function fence(call,hash,authorizationId,nowMs=Date.now(),actor='reconciler',ref=''){if(!okHash(hash)||!okAuth(authorizationId))return {code:'invalid'};const out=await call(['EVAL',FENCE,'1',envelopeKey(hash),hash,authorizationId,String(nowMs),clean(actor),clean(ref)]);return {code:out[0],state:out[1]};}
@@ -184,29 +203,40 @@ async function adjudicate(call,hash,authorizationId,decision,nowMs=Date.now(),ac
  const out=await call(['EVAL',ADJUDICATE,'1',envelopeKey(hash),hash,authorizationId,decision,String(nowMs),clean(actor),clean(note),String(stuckMs)]);
  return {code:out[0],movedCents:out[1]};
 }
-const HFIELDS=['at','actor','kind','authorizationId','currency','du','dr','ds','ref','note','dc'];
+const HFIELDS=['at','actor','kind','authorizationId','currency','du','dr','ds','ref','note','dc','dd'];
 function parse(flat){const o={};for(let i=0;i<flat.length;i+=2)o[flat[i]]=flat[i+1];return o}
-function history(o){return Object.keys(o).filter(k=>/^h:\d+$/.test(k)).map(k=>[Number(k.slice(2)),o[k].split('|')]).sort((x,y)=>x[0]-y[0]).map(([n,v])=>{const h={seq:n};HFIELDS.forEach((f,i)=>h[f]=['at','du','dr','ds','dc'].includes(f)?Number(v[i]||0):v[i]);return h})}
+function history(o){return Object.keys(o).filter(k=>/^h:\d+$/.test(k)).map(k=>[Number(k.slice(2)),o[k].split('|')]).sort((x,y)=>x[0]-y[0]).map(([n,v])=>{const h={seq:n};HFIELDS.forEach((f,i)=>h[f]=['at','du','dr','ds','dc','dd'].includes(f)?Number(v[i]||0):v[i]);return h})}
+// No upstream file covers it: card-use check that the stored terms still hash to the key. v2 first; v1 only for rows not stamped
+// hash_version 2 (envelopes approved before this change). Read-only: nothing is rewritten.
+async function verify(call,hash){
+ if(!okHash(hash))return {ok:false,code:'invalid_hash'};
+ const f=await call(['HMGET',envelopeKey(hash),'hash','botId','accountId','cardId','merchant','currency','maxCents','expiresAtMs','hash_version']);
+ if(!f||!f[0])return {ok:false,code:'no_envelope'};
+ const t={botId:f[1],accountId:f[2],cardId:f[3],merchantNetworkId:f[4],currency:f[5],maxTotalCents:Number(f[6]),expiresAtMs:Number(f[7])};
+ try{if(f[0]===hash&&bindingHash(t)===hash)return {ok:true,version:2};if(f[8]!=='2'&&f[0]===hash&&bindingHashV1(t)===hash)return {ok:true,version:1};}catch{}
+ return {ok:false,code:'binding_invalid'};
+}
 // No upstream file covers it: owner-facing view. Per currency: available, reserved, unsettled (unresolved), spent (settled), overspend.
 async function read(call,hash,nowMs=Date.now(),stuckMs=STUCK_MS){
  const o=parse(await call(['HGETALL',envelopeKey(hash)])||[]);if(!o.hash)return null;
  const max=Number(o.maxCents),curs=[...new Set([o.currency,...String(o.curs||'').split(',').filter(Boolean)])];
- const buckets=curs.map(c=>{const u=Number(o['b:'+c+':u']||0),r=Number(o['b:'+c+':r']||0),s=Number(o['b:'+c+':s']||0),C=u+r+s,m=c===o.currency?max:0;return {currency:c,maxCents:m,unresolvedCents:u,reservedCents:r,settledCents:s,usedCents:C,availableCents:Math.max(0,m-C),overspendCents:Math.max(0,C-m)}});
- const auths=Object.keys(o).filter(k=>/^a:iauth_[A-Za-z0-9]+$/.test(k)).map(k=>{const id=k.slice(2),at=Number(o[k+':at']||0),per=String(o[k+':curs']||'').split(',').filter(Boolean).map(c=>({currency:c,unresolvedCents:Number(o[k+':'+c+':u']||0),reservedCents:Number(o[k+':'+c+':r']||0),settledCents:Number(o[k+':'+c+':s']||0)}));const unresolved=per.some(x=>x.unresolvedCents>0),manual=o[k+':manual']||null;return {authorizationId:id,state:o[k],at,amounts:per,unresolved,stuck:unresolved&&at+stuckMs<=nowMs,manual,provisional:manual==='declined'&&!per.some(x=>x.settledCents>0)}});
+ const buckets=curs.map(c=>{const u=Number(o['b:'+c+':u']||0),r=Number(o['b:'+c+':r']||0),s=Number(o['b:'+c+':s']||0),d=Number(o['b:'+c+':d']||0),C=u+r+d+s,m=c===o.currency?max:0;return {currency:c,maxCents:m,unresolvedCents:u,reservedCents:r,declinedPendingCents:d,heldCents:u+r+d,settledCents:s,usedCents:C,availableCents:Math.max(0,m-C),overspendCents:Math.max(0,C-m)}});
+ const auths=Object.keys(o).filter(k=>/^a:iauth_[A-Za-z0-9]+$/.test(k)).map(k=>{const id=k.slice(2),at=Number(o[k+':at']||0),per=String(o[k+':curs']||'').split(',').filter(Boolean).map(c=>({currency:c,unresolvedCents:Number(o[k+':'+c+':u']||0),reservedCents:Number(o[k+':'+c+':r']||0),declinedPendingCents:Number(o[k+':'+c+':d']||0),settledCents:Number(o[k+':'+c+':s']||0)}));const unresolved=per.some(x=>x.unresolvedCents>0),manual=o[k+':manual']||null;return {authorizationId:id,state:o[k],at,amounts:per,unresolved,stuck:unresolved&&at+stuckMs<=nowMs,manual,declinedPending:per.some(x=>x.declinedPendingCents>0)}});
  const hist=history(o),ackSeq=Number(o.noticeAck||0);
- return {hash:o.hash,status:o.status,botId:o.botId,accountId:o.accountId,cardId:o.cardId,merchantNetworkId:o.merchant,currency:o.currency,maxTotalCents:max,expiresAtMs:Number(o.expiresAtMs),proposedBy:o.proposedBy||null,decidedBy:o.decidedBy||null,decidedAtMs:o.decidedAtMs?Number(o.decidedAtMs):null,revokedBy:o.revokedBy||null,buckets,authorizations:auths,stuck:auths.filter(x=>x.stuck),history:hist,discrepancies:hist.filter(h=>h.kind.startsWith('discrepancy:')),notices:hist.filter(h=>h.kind.startsWith('discrepancy:')&&h.seq>ackSeq),noticeAck:ackSeq,provisional:auths.filter(x=>x.provisional),chargedCents:0};
+ const dp=new Set(auths.filter(x=>x.declinedPending).map(x=>x.authorizationId));
+ return {hash:o.hash,hashVersion:o.hash_version?Number(o.hash_version):1,status:o.status,botId:o.botId,accountId:o.accountId,cardId:o.cardId,merchantNetworkId:o.merchant,currency:o.currency,maxTotalCents:max,expiresAtMs:Number(o.expiresAtMs),proposedBy:o.proposedBy||null,decidedBy:o.decidedBy||null,decidedAtMs:o.decidedAtMs?Number(o.decidedAtMs):null,revokedBy:o.revokedBy||null,buckets,authorizations:auths,stuck:auths.filter(x=>x.stuck),history:hist,discrepancies:hist.filter(h=>h.kind.startsWith('discrepancy:')),notices:hist.filter(h=>h.seq>ackSeq&&(h.kind.startsWith('discrepancy:')||(h.kind==='manual_adjudication:declined'&&dp.has(h.authorizationId)))),noticeAck:ackSeq,declinedPending:auths.filter(x=>x.declinedPending),chargedCents:0};
 }
 // No upstream file covers it: the falsifiable checks. (1) Each cent is in exactly one bucket: every per-authorization per-currency
 // bucket amount is non-negative and equals the replay of history deltas. (2) Sum of buckets equals C: the envelope totals equal
 // the per-authorization sums, per currency.
 async function audit(call,hash){
- const o=parse(await call(['HGETALL',envelopeKey(hash)])||[]),errors=[],replay={},totals={};
- for(const h of history(o)){if(!h.authorizationId||!h.currency)continue;const k=h.authorizationId+':'+h.currency,x=replay[k]||(replay[k]={u:0,r:0,s:0,c:0});x.u+=h.du;x.r+=h.dr;x.s+=h.ds;x.c+=h.dc;}
- // 'c' is the refund credit: replay-checked like a bucket but never part of C.
- for(const f of Object.keys(o)){const m=/^a:(iauth_[A-Za-z0-9]+):([a-z]{3}):([ursc])$/.exec(f);if(!m)continue;const v=Number(o[f]),k=m[1]+':'+m[2];if(v<0)errors.push('negative '+f);if((replay[k]||{u:0,r:0,s:0,c:0})[m[3]]!==v)errors.push('replay mismatch '+f+' stored '+v+' replayed '+((replay[k]||{})[m[3]]||0));if(m[3]==='c')continue;const t=totals[m[2]]||(totals[m[2]]={u:0,r:0,s:0});t[m[3]]+=v;}
- for(const k of Object.keys(replay)){const [id,c]=k.split(':');for(const b of ['u','r','s','c'])if(replay[k][b]!==Number(o['a:'+id+':'+c+':'+b]||0))errors.push('history without stored field a:'+k+':'+b);}
- const curs=new Set([...Object.keys(totals),...Object.keys(o).map(f=>(/^b:([a-z]{3}):[urs]$/.exec(f)||[])[1]).filter(Boolean)]);
- for(const c of curs)for(const b of ['u','r','s']){const stored=Number(o['b:'+c+':'+b]||0),sum=(totals[c]||{u:0,r:0,s:0})[b];if(stored!==sum)errors.push('bucket total b:'+c+':'+b+' '+stored+' != per-authorization sum '+sum);}
+ const o=parse(await call(['HGETALL',envelopeKey(hash)])||[]),errors=[],replay={},totals={},Z=()=>({u:0,r:0,s:0,d:0,c:0});
+ for(const h of history(o)){if(!h.authorizationId||!h.currency)continue;const k=h.authorizationId+':'+h.currency,x=replay[k]||(replay[k]=Z());x.u+=h.du;x.r+=h.dr;x.s+=h.ds;x.c+=h.dc;x.d+=h.dd;}
+ // 'c' is the refund credit: replay-checked like a bucket but never part of C. 'd' is declined_pending and is part of C.
+ for(const f of Object.keys(o)){const m=/^a:(iauth_[A-Za-z0-9]+):([a-z]{3}):([ursdc])$/.exec(f);if(!m)continue;const v=Number(o[f]),k=m[1]+':'+m[2];if(v<0)errors.push('negative '+f);if((replay[k]||Z())[m[3]]!==v)errors.push('replay mismatch '+f+' stored '+v+' replayed '+((replay[k]||{})[m[3]]||0));if(m[3]==='c')continue;const t=totals[m[2]]||(totals[m[2]]=Z());t[m[3]]+=v;}
+ for(const k of Object.keys(replay)){const [id,c]=k.split(':');for(const b of ['u','r','s','d','c'])if(replay[k][b]!==Number(o['a:'+id+':'+c+':'+b]||0))errors.push('history without stored field a:'+k+':'+b);}
+ const curs=new Set([...Object.keys(totals),...Object.keys(o).map(f=>(/^b:([a-z]{3}):[ursd]$/.exec(f)||[])[1]).filter(Boolean)]);
+ for(const c of curs)for(const b of ['u','r','s','d']){const stored=Number(o['b:'+c+':'+b]||0),sum=(totals[c]||Z())[b];if(stored!==sum)errors.push('bucket total b:'+c+':'+b+' '+stored+' != per-authorization sum '+sum);}
  return {ok:errors.length===0,errors};
 }
 // No upstream file covers it: in-process EVAL for the memory store and tests. Runs the same Lua text in fengari
@@ -229,6 +259,7 @@ function localEval(store,cmd){
  const op=String(cmd[0]).toUpperCase();
  if(op==='HGETALL'){const h=store.get(cmd[1]);return h?[...h].flat():[]}
  if(op==='HGET'){const h=store.get(cmd[1]);return h&&h.has(cmd[2])?h.get(cmd[2]):null}
+ if(op==='HMGET'){const h=store.get(cmd[1]);return cmd.slice(2).map(x=>h&&h.has(x)?h.get(x):null)}
  if(op!=='EVAL'||!SCRIPTS.has(cmd[1]))throw Error('unsupported local envelope command');
  const {lua,lauxlib,lualib,to_luastring}=require('fengari');
  const n=Number(cmd[2]),keys=cmd.slice(3,3+n).map(String),argv=cmd.slice(3+n).map(String);
@@ -246,4 +277,4 @@ function localEval(store,cmd){
  if(lauxlib.luaL_loadstring(L,to_luastring(cmd[1]))!==lua.LUA_OK||lua.lua_pcall(L,0,1,0)!==lua.LUA_OK)throw Error('lua: '+lua.lua_tojsstring(L,-1));
  return reply(L,lua.lua_gettop(L));
 }
-module.exports={STUCK_MS,bindingHash,envelopeKey,propose,decide,reserve,fence,provider,adjudicate,ack,read,audit,localEval,SCRIPTS,PROPOSE,DECIDE,RESERVE,FENCE,PROVIDER,ADJUDICATE,ACK};
+module.exports={STUCK_MS,HASH_VERSION,canon,bindingHash,bindingHashV1,verify,envelopeKey,propose,decide,reserve,fence,provider,adjudicate,ack,read,audit,localEval,SCRIPTS,PROPOSE,DECIDE,RESERVE,FENCE,PROVIDER,ADJUDICATE,ACK};
