@@ -38,6 +38,8 @@ function makeBudget({ task, kv, now = Date.now }) {
     }
     return { ok: false, code: 'busy' };
   }
+  // Why a run is refused before any spend: not_assigned (the job is not this bot's), no_job_budget (the job has no active sandboxGrant for this bot,
+  // so there is no cap to enforce and nothing may run), else budget_exceeded / job_killed / job_blocked_overrun from the reservation itself.
   function grantOf(t, agentId) {
     if (!t || !agentId || t.assignee !== agentId) return { code: 'not_assigned' };
     const g = t.sandboxGrant;

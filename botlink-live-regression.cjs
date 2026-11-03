@@ -9,18 +9,49 @@ const rawRun=(R,jobId)=>R.store.get('w:'+WS+':fm:jobrun:'+jobId).then(x=>x&&JSON
 const total=stub=>stub.ledger().reduce((n,x)=>n+x.cents,0);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const OPEN=new Set(); // every stub, so a failing case still closes its sockets before exit
-async function rig({budgetCents=1000,spentCents=0,target=null,opts={}}={}){
+async function rig({budgetCents=1000,spentCents=0,target=null,opts={},scopeSecret=SECRET}={}){
  const clock={t:Date.UTC(2026,9,14,12)},store=memoryStore(()=>clock.t),tasks={},recorded=[];
  const stub=await startStubDownstream({secret:SECRET,now:()=>clock.t});OPEN.add(stub);
  const budget=makeBudget({task:async(ws,id)=>tasks[ws+':'+id]||null,kv:ws=>kvOf(store,clock,ws),now:()=>clock.t});
  const receipts=makeReceipts({record:async(ws,r,mapped)=>{recorded.push({ws,mapped,...r});},kv:ws=>kvOf(store,clock,ws),now:()=>clock.t});
  const sent=[],base=target||httpRunTarget(stub.url),runTarget=(req,o)=>{sent.push(req.scope);return base(req,o);};
- const bl=new BotLink({store,now:()=>clock.t,onBotCreated:async()=>'ag_live',runTarget,scopeSecret:SECRET,budget,receipt:(ws,r,ctx)=>receipts.write(ws,r,ctx),opts:{runTimeoutMs:1500,runMarginMs:1000,...opts}});
+ const bl=new BotLink({store,now:()=>clock.t,onBotCreated:async()=>'ag_live',runTarget,scopeSecret,budget,receipt:(ws,r,ctx)=>receipts.write(ws,r,ctx),opts:{runTimeoutMs:1500,runMarginMs:1000,...opts}});
  const c=await connect(bl,'instinct');
  const job=(id,extra={})=>{tasks[WS+':'+id]={id,assignee:'ag_live',status:'running',sandboxGrant:{botId:'ag_live',status:'active',budgetCents,spentCents,...extra}};return id;};
  let key=c.key;const run=async(body)=>{const r=await bl.call(key,{op:'run',...body});if(r.body&&r.body.nextKey)key=r.body.nextKey;return r;};
  const liveBot=()=>bl.getJ('bl:bot:'+c.botId);
  return {stub,clock,store,bl,budget,receipts,recorded,tasks,job,run,c,sent,liveBot,lease:1500+1000};
+}
+// Real api/index.js handler behind a real node:http server on 127.0.0.1:<ephemeral>. Memory store, no network except loopback.
+// The run target and scope secret are injected on the vm-loaded botLink instance (production wires neither). Owner session via the same fixture
+// records botlink-gateway-e2e-regression.cjs uses; the bot is paired through the real BotLink, then called over HTTP with its link key.
+async function httpRig(){
+ const fs=require('fs'),vm=require('vm'),http=require('http'),crypto=require('crypto');
+ const src=fs.readFileSync(__dirname+'/api/index.js','utf8')+'\nmodule.exports.t={r,setJ,getJ,als,botLink,jobBudget};';
+ const quiet={...console,log(){},error(){},warn(){}};
+ const ctx={require,module:{exports:{}},process:{env:{}},global:{},console:quiet,fetch:()=>{throw Error('NO NETWORK')},setTimeout,clearTimeout,URL,URLSearchParams,Buffer,AbortSignal};
+ vm.runInNewContext(src,ctx);const handler=ctx.module.exports,f=handler.t,ORIGIN='https://foreman-core.vercel.app',ws='wsA';
+ const stub=await startStubDownstream({secret:SECRET});OPEN.add(stub);
+ f.botLink.runTarget=httpRunTarget(stub.url);f.botLink.scopeSecret=SECRET;
+ const sh=s=>crypto.createHash('sha256').update(s).digest('hex'),session='fixture-session-job002';
+ await f.setJ('gl:sess:'+sh(session),{uid:'u1',email:'owner@example.test',ws});await f.setJ('gl:user:'+sh('owner@example.test'),{id:'u1',email:'owner@example.test',ws});
+ const server=await new Promise(ok=>{const s=http.createServer((req,res)=>{let raw='';req.on('data',d=>raw+=d);req.on('end',async()=>{
+  let body={};try{body=raw?JSON.parse(raw):{}}catch{}
+  const out={code:200};const shim={setHeader(k,v){res.setHeader(k,v)},status(n){out.code=n;return shim},json(j){res.writeHead(out.code,{'Content-Type':'application/json'});res.end(JSON.stringify(j))},send(x){res.writeHead(out.code,{'Content-Type':'text/plain'});res.end(String(x))},end(){res.end()}};
+  try{await handler({url:req.url,method:req.method,body,headers:req.headers},shim)}catch(e){res.writeHead(500);res.end(String(e&&e.message))}
+  if(!res.writableEnded)res.end();});});s.listen(0,'127.0.0.1',()=>ok(s));});
+ const port=server.address().port;
+ const http_=(method,path,body,headers={})=>new Promise((ok,no)=>{const b=body==null?'':JSON.stringify(body);
+  const q=http.request({host:'127.0.0.1',port,path,method,agent:false,headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b),host:'foreman-core.vercel.app',...headers}},res=>{let d='';res.on('data',x=>d+=x);res.on('end',()=>{let j={};try{j=d?JSON.parse(d):{}}catch{}ok({status:res.statusCode,json:j});});});
+  q.on('error',no);q.end(b);});
+ const link=(await connect(f.botLink,'instinct',{ws}));let key=link.key;
+ const agentId=(await f.botLink.getJ('bl:bot:'+link.botId)).agentId;
+ const H={f,stub,ORIGIN,C:{cookie:'fm_sess='+session},W:{cookie:'fm_sess='+session,origin:ORIGIN},http:http_,
+  async link(body){const r=await http_('POST','/api/link/call',body,{Authorization:'Bearer '+key});if(r.json&&r.json.nextKey)key=r.json.nextKey;return r;},
+  job(id,{budgetCents=1000}={}){f.als.run({ws},()=>f.setJ('fm:task:'+id,{id,assignee:agentId,status:'running',sandboxGrant:{botId:agentId,status:'active',budgetCents,spentCents:0}}));return id;},
+  rawKey:k=>f.als.run({ws},()=>f.r(['GET',k])),lrange:k=>f.als.run({ws},()=>f.r(['LRANGE',k,0,50])),
+  close:async()=>{await stub.close();await new Promise(r=>{server.closeAllConnections&&server.closeAllConnections();server.close(()=>r());});}};
+ return H;
 }
 const cases={
  // D1 cap enforced before spend. Then a run that fits, to prove the reserve is real and not a no-op that let calls through.
@@ -109,7 +140,53 @@ const cases={
   release();const r=(await p).body.result;const v=await rawRun(R,jobId);
   const got=[v.settledCents,r.costCents,r.overrun,r.settle];assert.deepEqual(got,[expect.settled,expect.cost,expect.overrun,'reconciled'],'A='+A+', R=500: want settled/cost/overrun/settle '+JSON.stringify([expect.settled,expect.cost,expect.overrun,'reconciled'])+', got '+JSON.stringify(got)+' (never R + A)');
   await R.stub.close();}},
+ // ---- Gaps closed after review. D10/D11 drive the REAL api/index.js handler behind a real node:http server (ephemeral loopback port).
+ // D10 kill route over HTTP: POST /api/jobs/<id>/kill-run aborts a run in progress; receipt outcome killed at cost so far; reservation settled at that.
+ async D10(){const H=await httpRig();const jobId='job_http_kill';H.job(jobId,{budgetCents:5000});H.stub.control({mode:'slow',costCents:100,chunks:8,delayMs:60});
+  const KR='/api/jobs/'+jobId+'/kill-run';
+  assert.equal((await H.http('POST',KR,{},{origin:H.ORIGIN})).status,401,'no session -> 401');
+  assert.equal((await H.http('POST',KR,{},{...H.C})).status,403,'no Origin -> 403');
+  assert.equal((await H.http('POST',KR,{},{...H.C,origin:'https://evil.example'})).status,403,'foreign Origin -> 403');
+  assert.equal((await H.http('POST','/api/jobs/job_does_not_exist/kill-run',{},H.W)).status,404,'unknown job -> 404');
+  assert.equal(await H.rawKey('fm:jobrun:'+jobId),null,'refused kills wrote nothing');
+  const run=H.link({op:'run',jobId,maxCents:800,input:'kill me over http'});
+  while(H.stub.ledger().length<1)await sleep(5);
+  const k=await H.http('POST',KR,{},H.W);assert.deepEqual([k.status,k.json.killed],[200,true],'owner kill route answers 200 {killed:true}');
+  const r=(await run).json.result;
+  assert.equal(r.outcome,'killed','the run in progress aborted');assert(r.output.chunksCompleted<8,'aborted before the end');
+  assert.equal(r.costCents,total(H.stub),'cost so far = what the downstream charged');
+  const jr=JSON.parse(await H.rawKey('fm:jobrun:'+jobId));assert.deepEqual([jr.killed,jr.reservations.length,jr.reservations[0].status,jr.reservations[0].chargedCents,jr.settledCents],[true,1,'settled',r.costCents,r.costCents],'reservation settled at cost so far');
+  const per=JSON.parse(await H.rawKey('fm:jobreceipt:'+jobId)).runs;assert.deepEqual(per.map(x=>[x.outcome,x.costCents]),[['killed',r.costCents]],'per-job receipt: killed at cost so far');
+  const feed=(await H.lrange('fm:receipts')).map(x=>JSON.parse(x)).filter(x=>x.taskId===jobId);assert.deepEqual(feed.map(x=>[x.run.outcome,x.outcome,x.costCents]),[['killed','blocked',r.costCents]],'fm:receipts entry via receipt()');
+  await sleep(300);assert.equal(total(H.stub),r.costCents,'nothing charged after the abort');
+  const again=(await H.link({op:'run',jobId,maxCents:10,input:'after kill'})).json.result;assert.equal(again.error,'job_killed');
+  await H.close();},
+ // D11 link-route passthrough: jobId, maxCents and input must reach the run op over HTTP (else every run is bad_job_id / estimate_required).
+ async D11(){const H=await httpRig();const jobId=H.job('job_http_pass',{budgetCents:900});let seen=null;
+  H.f.botLink.runTarget=async req=>{seen=req;return {status:200,body:{ok:true,output:'seen',costCents:7}};};
+  const r=(await H.link({op:'run',jobId,maxCents:300,input:'hello passthrough'})).json;
+  assert(r.result,'link route answered '+JSON.stringify(r).slice(0,140)+' (jobId/maxCents/input did not reach the run op)');
+  assert.equal(r.result.outcome,'done');assert.deepEqual([seen&&seen.jobId,seen&&seen.input],[jobId,'hello passthrough']);assert.equal(r.result.costCents,7);
+  const miss=(await H.link({op:'run',jobId,input:'no estimate'})).json;assert.equal(miss.error,'estimate_required','no default estimate: 400 estimate_required');
+  await H.close();},
+ // D12 fail closed: spend unknown (stream cut with no final line, or a timeout) is charged the FULL reservation, never zero or cost-so-far.
+ async D12(){const R=await rig({budgetCents:1000});R.stub.control({mode:'slow',costCents:50,chunks:2,delayMs:5,cut:true});
+  const jobId=R.job('job_d12');const r=(await R.run({jobId,maxCents:400,input:'cut'})).body.result;
+  assert.deepEqual([r.outcome,r.output.error,r.costCents],['failed','downstream_failed',400],'cut stream must be charged the full reservation (400); got outcome/error/cost '+JSON.stringify([r.outcome,r.output.error,r.costCents]));
+  assert(total(R.stub)<400,'the downstream really charged less than that: this is the deliberate fail-closed over-charge');
+  assert.equal((await R.budget.view(WS,jobId)).settledCents,400);await R.stub.close();},
+ // D13 scope secret unset: a deployment with a target but no ALTER_RUN_SCOPE_SECRET answers 501 and touches nothing.
+ async D13(){const R=await rig({budgetCents:1000,scopeSecret:null});const jobId=R.job('job_d13');
+  const r=await R.run({jobId,maxCents:100,input:'x'});assert.deepEqual([r.status,r.body.error],[501,'no_run_target']);
+  assert.equal(R.stub.ledger().length,0);assert.equal(await rawRun(R,jobId),null,'no reservation written');await R.stub.close();},
+ // D14 a job with no sandbox grant is refused with no_job_budget (403) before any spend; and a job that is not this bot's is not_assigned.
+ async D14(){const R=await rig({budgetCents:1000});R.tasks[WS+':job_d14']={id:'job_d14',assignee:'ag_live',status:'running'};
+  const r=(await R.run({jobId:'job_d14',maxCents:100,input:'x'})).body.result;assert.deepEqual([r.outcome,r.httpStatus,r.error],['rejected',403,'no_job_budget']);
+  R.tasks[WS+':job_d14b']={id:'job_d14b',assignee:'someone_else',status:'running',sandboxGrant:{botId:'someone_else',status:'active',budgetCents:900,spentCents:0}};
+  const q=(await R.run({jobId:'job_d14b',maxCents:100,input:'x'})).body.result;assert.deepEqual([q.httpStatus,q.error],[403,'not_assigned']);
+  assert.equal(R.stub.ledger().length,0);assert.equal(await rawRun(R,'job_d14'),null);
+  assert.deepEqual(R.recorded.map(x=>[x.jobId,x.outcome,x.output.error]),[['job_d14','rejected','no_job_budget'],['job_d14b','rejected','not_assigned']]);await R.stub.close();},
 };
 (async()=>{const names=ONLY?[ONLY]:Object.keys(cases);for(const n of names)await cases[n]();
- console.log('PASS job-002 live run: '+names.join(' ')+(ONLY?'':' (cap before spend with a real reservation, boundary, concurrent reserve, bypass pair, lease expiry charged in full, ceiling abort and overrun block, kill mid-job, receipts on every terminal, double-settle reconciled).'));
+ console.log('PASS job-002 live run: '+names.join(' ')+(ONLY?'':' (cap before spend with a real reservation, boundary, concurrent reserve, bypass pair, lease expiry charged in full, ceiling abort and overrun block, kill mid-job, receipts on every terminal, double-settle reconciled, kill route over HTTP, link-route passthrough, fail-closed on a cut stream, scope secret unset, no_job_budget).'));
 })().catch(async e=>{console.error(e);await Promise.all([...OPEN].map(s=>s.close().catch(()=>{})));process.exit(1)});

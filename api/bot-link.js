@@ -223,6 +223,7 @@ class BotLink {
       if (typeof req.action !== 'string' || !this.actions().includes(req.action)) return err(400, 'unsupported_action', { supported: this.actions() });
     }
     if (op === 'run') {
+      // Inert until wired: no runTarget, no scope secret (ALTER_RUN_SCOPE_SECRET unset in production) or no budget -> 501, before the key or any budget is touched.
       if (!this.runTarget || !this.scopeSecret || !this.budget) return err(501, 'no_run_target', { note: 'No run target is wired in this deployment. The run op is inert until one is.' });
       if (typeof req.jobId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(req.jobId)) return err(400, 'bad_job_id');
       if (!Number.isSafeInteger(req.maxCents) || req.maxCents < 1) return err(400, 'estimate_required', { note: 'maxCents (a positive integer) is required. There is no default.' });
@@ -295,6 +296,9 @@ class BotLink {
     if (!res.ok) return this.rejectRun(bot, jobId, res.code, res.remainingCents, leaseMs);
     const scope = this.mintScope({ jobId, botId: bot.id, maxCents, exp: res.expiresAt });
     let cum = 0, chunks = 0, stop = null;
+    // Metering. Against a STRICT downstream the scope's maxCents caps the ledger, so it never exceeds maxCents. Against a PERMISSIVE one Alter can only
+    // stop the stream when it sees the chunk that crosses maxCents, so the ledger can end one chunk past it: that chunk is charged as actual, the
+    // receipt says overrun:true, and the job is blocked for further runs.
     const onChunk = async m => {
       if (Number.isSafeInteger(m.cumulative)) cum = m.cumulative; chunks = Number.isSafeInteger(m.chunk) ? m.chunk + 1 : chunks + 1;
       if (cum > maxCents) { stop = 'ceiling'; return false; }                     // past the reservation: stop now
@@ -306,6 +310,7 @@ class BotLink {
     let outcome, actual, output;
     if (stop === 'killed') { outcome = 'killed'; actual = cum; output = { error: 'killed', chunksCompleted: chunks }; }
     else if (stop === 'ceiling') { outcome = 'failed'; actual = cum; output = { error: 'aborted_at_ceiling', status: o.status || 0 }; }
+    // Spend unknown (timeout, no response, or a stream cut with no final line): fail CLOSED, charge the full reservation. Under-charging is the leak.
     else if (o.timeout || !o.status || b.truncated) { outcome = 'failed'; actual = maxCents; output = { error: 'downstream_failed', status: o.status || 0 }; } // spend unknown: fail closed at the full reservation
     else if (o.status >= 200 && o.status < 300 && b.ok) { outcome = 'done'; actual = reported == null ? maxCents : reported; output = b.output == null ? '' : String(b.output).slice(0, 2000); }
     else if (b.refused === 'scope_max') { outcome = 'failed'; actual = reported == null ? cum : reported; output = { error: 'aborted_at_ceiling', status: o.status }; }

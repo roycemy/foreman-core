@@ -49,6 +49,7 @@ function startStubDownstream({secret,now=Date.now}={}){
     if(cum+st.costCents>cap){res.end(JSON.stringify({done:true,ok:false,refused:'scope_max',costCents:cum})+'\n');return;}
     cum+=st.costCents;charge(jobId,st.costCents);res.write(JSON.stringify({chunk:i,cents:st.costCents,cumulative:cum})+'\n');
    }
+   if(st.cut){res.destroy();return;} // cut: the stream dies after its chunks with no final line, so the true spend is unknown
    if(!closed)res.end(JSON.stringify({done:true,ok:true,output:out,costCents:cum})+'\n');return;
   }
   const c=Math.min(st.costCents,cap);charge(jobId,c);return json(res,200,{ok:true,output:out,costCents:c},c);
