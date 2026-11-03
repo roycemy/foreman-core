@@ -1386,7 +1386,16 @@ const blStore={get:k=>r(['GET',k]),cas:(k,expected,next)=>r(['EVAL',BOTLINK_CAS,
  incr:k=>r(['INCRBY',k,1]),sadd:(k,v)=>r(['SADD',k,v]),smembers:k=>r(['SMEMBERS',k])};
 async function rejectPendingBrokerFor(agentId){const ids=await r(['SMEMBERS','fm:broker:requests']);let n=0;for(const id of ids){const k='fm:broker:q:'+id;for(let i=0;i<8;i++){const raw=await r(['GET',k]),q=raw&&JSON.parse(raw);if(!q||q.agentId!==agentId||q.status!=='pending')break;if(await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify({...q,status:'blocked',reason:'bot_revoked',decidedAt:now()})])===1){n++;break;}}}if(n)bust();return n;}
 const linkedAgent=b=>als.run({ws:b.ws},()=>getJ('fm:agent:'+b.agentId));
-const botLink=new BL.BotLink({store:blStore,
+// job-002 run op. Budget state lives in fm:jobrun:<jobId> (sandboxGrant is read, never written); receipts go through receipt()
+// and fm:jobreceipt:<jobId>. NO runTarget is wired here, so {op:'run'} answers 501 no_run_target in production until a target is.
+const JOBRUN=(()=>{try{return require('./budget.js')}catch{return require('./api/budget.js')}})();
+const JOBRECEIPT=(()=>{try{return require('./receipt.js')}catch{return require('./api/receipt.js')}})();
+const jobKv=ws=>({get:k=>als.run({ws},()=>r(['GET',k])),add:(k,v,ms)=>als.run({ws},async()=>!!(await r(['SET',k,v,'NX','PX',String(ms)]))),
+ cas:(k,e,n,ms)=>als.run({ws},async()=>{const x=await r(['EVAL',BOTLINK_CAS,1,k,e,n]);if(x===1&&ms)await r(['EXPIRE',k,Math.ceil(ms/1000)]);return x;})}); // BOTLINK_CAS keeps the TTL; EXPIRE refreshes it
+const jobBudget=JOBRUN.makeBudget({task:(ws,id)=>als.run({ws},()=>getJ('fm:task:'+id)),kv:jobKv});
+const jobReceipts=JOBRECEIPT.makeReceipts({kv:jobKv,record:(ws,rec,mapped,ctx)=>als.run({ws},async()=>{const a=(ctx&&ctx.agentId&&await getJ('fm:agent:'+ctx.agentId))||{id:(ctx&&ctx.agentId)||rec.botId,name:'Linked bot'};
+ return receipt(a,'job.run',{jobId:rec.jobId},mapped,rec.costCents,'Run '+rec.outcome+' on job '+rec.jobId,null,{taskId:rec.jobId,run:rec});})});
+const botLink=new BL.BotLink({store:blStore,runTarget:null,scopeSecret:process.env.ALTER_RUN_SCOPE_SECRET||null,budget:jobBudget,receipt:(ws,rec,ctx)=>jobReceipts.write(ws,rec,ctx),
  onBotCreated:b=>als.run({ws:b.ws},async()=>(await createAgent(b.name,'Linked bot',b.type,false,{preset:'balanced',noGatewayKey:true})).agent.id),
  authorize:async b=>{const a=await linkedAgent(b);return !!(a&&a.status==='active');},
  actions:()=>Object.keys(ACTIONS),
@@ -1404,7 +1413,7 @@ async function botLinkBotRoutes(req,res,path,body){res.setHeader('Cache-Control'
  const pm=path.match(/^\/pair\/(pr_[A-Za-z0-9_-]{20,40})$/);
  if(pm&&req.method==='POST')return send(await botLink.hello(pm[1],{nonce:body.nonce,callerSecret:body.callerSecret,fingerprint:blCaller(req),oldKey:body.oldKey||null}));
  if(pm&&req.method==='GET'){const h=String(req.headers.authorization||'');if(!/^Pairing\s+/i.test(h))return send(await botLink.steps(pm[1],PUBLIC_ORIGIN));return send(await botLink.pickup(pm[1],{callerSecret:h.replace(/^Pairing\s+/i,'')}));}
- if(path==='/link/call'&&req.method==='POST'){const key=String(req.headers.authorization||'').replace(/^Bearer\s+/i,'').trim();return send(await botLink.call(key,{op:body.op,text:body.text,action:body.action,params:body.params,requestId:body.requestId}));}
+ if(path==='/link/call'&&req.method==='POST'){const key=String(req.headers.authorization||'').replace(/^Bearer\s+/i,'').trim();return send(await botLink.call(key,{op:body.op,text:body.text,action:body.action,params:body.params,requestId:body.requestId,jobId:body.jobId,maxCents:body.maxCents,input:body.input}));}
  return res.status(404).json({error:'not found'});}
 async function linkableAgents(ws){return als.run({ws},async()=>{const out=[];for(const a of await listAgents()){if(a.status!=='active'||a.harness||a.hosted)continue;if(await r(['GET','bl:agentBot:'+ws+':'+a.id]))continue;out.push({id:a.id,name:a.name,provider:a.provider});}return out;});}
 // Owner side: session cookie (HttpOnly) + per-session CSRF token + exact Origin on every write.
@@ -1526,6 +1535,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/public-receipts/review'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptReview(body.taskId,body));}
     if(path==='/public-receipts/publish'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptPublish(body));}
     {const rv=path.match(/^\/public-receipts\/([a-f0-9]{48})\/revoke$/);if(rv&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptRevoke(rv[1]));}}
+    {const km=path.match(/^\/jobs\/(\w+)\/kill-run$/);if(km&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});const t=await getJ('fm:task:'+km[1]);if(!t)return res.status(404).json({error:'not found'});return res.json(await jobBudget.kill(wsId(),km[1]));}}
     {const jm=path.match(/^\/jobs\/(\w+)$/);if(jm&&req.method==='GET'){const j=await jobDetail(jm[1]);return j?res.json(j):res.status(404).json({error:'not found'});}}
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}

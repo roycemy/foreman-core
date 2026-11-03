@@ -23,9 +23,11 @@ const DEFAULTS = {
   connectedWindowMs: 6 * HOUR,    // Connected = real call within 6h; after that Quiet
   capWarnMs: 7 * DAY,
   retryGraceMs: 2 * MIN,          // a lost response may be retried with the previous key + same requestId
+  runTimeoutMs: 30e3,             // run op: the downstream call is aborted after this
+  runMarginMs: 10e3,              // run op: reservation lease = start + runTimeoutMs + runMarginMs
 };
 const LINK_ENDPOINT = '/api/link/call';
-const OPS = ['echo', 'act'];      // anything else is rejected before the key is touched
+const OPS = ['echo', 'act', 'run']; // anything else is rejected before the key is touched
 
 // Native transports. acceptsLinkKey says which of them really accept a link key today.
 const TRANSPORTS = {
@@ -48,8 +50,14 @@ const err = (status, error, extra) => ({ status, body: { error, ...extra } });
 
 class BotLink {
   constructor({ store, now = Date.now, opts = {}, onRevoke = async () => {}, onAlert = async () => {}, onBotCreated = async () => null,
-    authorize = async () => true, executeAct = null, actions = () => [], onRealCall = async () => {} }) {
+    authorize = async () => true, executeAct = null, actions = () => [], onRealCall = async () => {},
+    runTarget = null, scopeSecret = null, budget = null, receipt = async () => {} }) {
     this.s = store; this.now = now; this.o = { ...DEFAULTS, ...opts };
+    // run op. runTarget(req, {onChunk, signal}) -> {status, body}; null = no target, and run answers 501 no_run_target
+    // before the key or any budget is touched, so the op is inert until a deployment wires a target.
+    this.runTarget = runTarget; this.scopeSecret = scopeSecret;
+    this.budget = budget;   // api/budget.js makeBudget(): reserve/settle/isKilled over fm:jobrun:<jobId>
+    this.receipt = receipt; // (ws, {jobId,botId,costCents,outcome,ts,overrun,output}, {agentId}) -> api/receipt.js
     this.onRevoke = onRevoke; this.onAlert = onAlert; this.onBotCreated = onBotCreated; this.onRealCall = onRealCall;
     this.authorize = authorize;   // (bot) -> false if the linked Alter agent is no longer active
     this.executeAct = executeAct; // (bot, {action, params}) -> {status, body, governed}; null = no policy transport
@@ -214,6 +222,11 @@ class BotLink {
       if (!this.executeAct) return err(501, 'no_policy_transport', { note: 'This deployment cannot route actions through policy for link keys.' });
       if (typeof req.action !== 'string' || !this.actions().includes(req.action)) return err(400, 'unsupported_action', { supported: this.actions() });
     }
+    if (op === 'run') {
+      if (!this.runTarget || !this.scopeSecret || !this.budget) return err(501, 'no_run_target', { note: 'No run target is wired in this deployment. The run op is inert until one is.' });
+      if (typeof req.jobId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(req.jobId)) return err(400, 'bad_job_id');
+      if (!Number.isSafeInteger(req.maxCents) || req.maxCents < 1) return err(400, 'estimate_required', { note: 'maxCents (a positive integer) is required. There is no default.' });
+    }
     const kh = sha(key || ''), idx = await this.getJ('bl:key:' + kh);
     if (!idx) return err(401, 'needs_repaste');
     const b0 = await this.getJ('bl:bot:' + idx.botId);
@@ -254,6 +267,7 @@ class BotLink {
     const live = await this.getJ('bl:bot:' + idx.botId);
     if (!live || live.revoked || live.keyHash !== nh) return err(401, 'revoked');
     if (op === 'echo') result = { echo: String(req.text || 'ok').slice(0, 200) };
+    else if (op === 'run') result = await this.runJob(live, req);
     else { const o = await this.executeAct(live, { action: req.action, params: req.params && typeof req.params === 'object' ? req.params : {} }); result = { httpStatus: o.status, ...o.body }; governed = !!o.governed; }
     const t = this.now();
     await this.mutate('bl:bot:' + idx.botId, b => {
@@ -263,6 +277,50 @@ class BotLink {
     this.emit('real_call', idx.botId, { op, governed });
     await this.onRealCall(live, { op, governed }); // the echo/act IS real accepted activity: HQ presence may use it
     return this.reply(idx.botId, next, result, false);
+  }
+  // Scope: short-lived HMAC bound to job, bot and maxCents. Sent only to the run target, never returned to the bot.
+  mintScope({ jobId, botId, maxCents, exp }) {
+    const payload = Buffer.from(JSON.stringify({ jobId, botId, maxCents, exp })).toString('base64url');
+    return payload + '.' + crypto.createHmac('sha256', this.scopeSecret).update(payload).digest('base64url');
+  }
+  // run op. Order is the contract: reserve -> mint scope -> call -> meter (abort past maxCents; kill re-checked
+  // between chunks) -> settle once -> one receipt. Nothing reaches the target unless the reservation committed.
+  // The pre-flight MUST follow key rotation (call() rotated the key before dispatching here): the bot already holds
+  // nextKey, so a refusal travels inside the normal 200 reply as result.httpStatus 409/403. A bare 409 here would
+  // strand the bot on a dead key and trip key-reuse on its next call; reserving before rotation could orphan a
+  // reservation if the rotation then failed.
+  async runJob(bot, req) {
+    const ws = bot.ws, jobId = req.jobId, maxCents = req.maxCents, leaseMs = this.o.runTimeoutMs + this.o.runMarginMs;
+    const res = await this.budget.reserve(ws, jobId, { agentId: bot.agentId, maxCents, leaseMs });
+    if (!res.ok) return this.rejectRun(bot, jobId, res.code, res.remainingCents, leaseMs);
+    const scope = this.mintScope({ jobId, botId: bot.id, maxCents, exp: res.expiresAt });
+    let cum = 0, chunks = 0, stop = null;
+    const onChunk = async m => {
+      if (Number.isSafeInteger(m.cumulative)) cum = m.cumulative; chunks = Number.isSafeInteger(m.chunk) ? m.chunk + 1 : chunks + 1;
+      if (cum > maxCents) { stop = 'ceiling'; return false; }                     // past the reservation: stop now
+      if (await this.budget.isKilled(ws, jobId)) { stop = 'killed'; return false; } // job-level kill, between chunks
+      return true;
+    };
+    const o = await this.runTarget({ jobId, input: String(req.input == null ? '' : req.input).slice(0, 2000), scope }, { onChunk, timeoutMs: this.o.runTimeoutMs });
+    const b = o.body || {}, reported = Number.isSafeInteger(b.costCents) && b.costCents >= 0 ? b.costCents : null;
+    let outcome, actual, output;
+    if (stop === 'killed') { outcome = 'killed'; actual = cum; output = { error: 'killed', chunksCompleted: chunks }; }
+    else if (stop === 'ceiling') { outcome = 'failed'; actual = cum; output = { error: 'aborted_at_ceiling', status: o.status || 0 }; }
+    else if (o.timeout || !o.status || b.truncated) { outcome = 'failed'; actual = maxCents; output = { error: 'downstream_failed', status: o.status || 0 }; } // spend unknown: fail closed at the full reservation
+    else if (o.status >= 200 && o.status < 300 && b.ok) { outcome = 'done'; actual = reported == null ? maxCents : reported; output = b.output == null ? '' : String(b.output).slice(0, 2000); }
+    else if (b.refused === 'scope_max') { outcome = 'failed'; actual = reported == null ? cum : reported; output = { error: 'aborted_at_ceiling', status: o.status }; }
+    else { outcome = 'failed'; actual = reported == null ? maxCents : reported; output = { error: 'downstream_failed', status: o.status }; }
+    const st = await this.budget.settle(ws, jobId, res.resId, { actualCents: actual, overrun: actual > maxCents });
+    const costCents = st.ok ? st.chargedCents : actual, overrun = !!(st.overrun || actual > maxCents);
+    await this.receipt(ws, { jobId, botId: bot.id, costCents, outcome, ts: this.now(), overrun, output }, { agentId: bot.agentId });
+    return { httpStatus: outcome === 'done' ? 200 : outcome === 'killed' ? 409 : 502, jobId, outcome, ok: outcome === 'done', costCents, overrun, output, settle: st.code };
+  }
+  // Refused before any spend: one receipt per (job, code) per lease window, so a retry loop cannot flood fm:receipts.
+  async rejectRun(bot, jobId, code, remainingCents, leaseMs) {
+    const httpStatus = ['not_assigned', 'no_job_budget'].includes(code) ? 403 : 409;
+    if (await this.s.add('bl:runrej:' + bot.ws + ':' + jobId + ':' + code, '1', leaseMs))
+      await this.receipt(bot.ws, { jobId, botId: bot.id, costCents: 0, outcome: 'rejected', ts: this.now(), overrun: false, output: { error: code } }, { agentId: bot.agentId });
+    return { httpStatus, jobId, outcome: 'rejected', ok: false, error: code, costCents: 0, ...(Number.isSafeInteger(remainingCents) ? { remainingCents } : {}) };
   }
   async reply(botId, nextKey, result, retried) {
     const b = await this.getJ('bl:bot:' + botId);
@@ -321,6 +379,48 @@ class BotLink {
 function ago(ms) { const m = Math.floor(ms / 60e3); if (m < 1) return 'just now'; if (m < 60) return m + 'm ago'; const h = Math.floor(m / 60); if (h < 48) return h + 'h ago'; return Math.floor(h / 24) + 'd ago'; }
 // Test store with the same contract as the Redis adapter in api/index.js: cas() mirrors BOTLINK_CAS
 // (-1 missing, 0 changed, 1 written; keeps the key's TTL), add() is SET NX PX, put() is SET PX. TTLs expire on the given clock.
+// Verify a scope minted by BotLink.mintScope. Returns the payload, or {error} with no detail about why a MAC failed.
+function verifyScope(token, secret, now = Date.now) {
+  const [payload, mac] = String(token || '').split('.');
+  if (!payload || !mac || !secret) return { error: 'scope_missing' };
+  const want = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  if (mac.length !== want.length || !crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return { error: 'scope_invalid' };
+  let p; try { p = JSON.parse(Buffer.from(payload, 'base64url').toString()); } catch { return { error: 'scope_invalid' }; }
+  if (!Number.isSafeInteger(p.exp) || now() >= p.exp) return { error: 'scope_expired' };
+  return { scope: p };
+}
+// HTTP run target: POST {jobId,input} to <base>/v1/run with X-Alter-Scope. A JSON reply is one result; an
+// application/x-ndjson reply is a metered stream. onChunk may be async; it runs between chunks with the socket
+// paused, and returning false aborts the run (the socket is destroyed, so the downstream sees the close).
+function httpRunTarget(base) {
+  const http = require('http'), u = new URL('/v1/run', base);
+  return (req, { onChunk = () => true, timeoutMs = DEFAULTS.runTimeoutMs } = {}) => new Promise(resolve => {
+    let done = false; const finish = v => { if (!done) { done = true; clearTimeout(timer); resolve(v); } };
+    const body = JSON.stringify({ jobId: req.jobId, input: req.input });
+    const r = http.request(u, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'X-Alter-Scope': req.scope } }, res => {
+      const ndjson = /ndjson/.test(res.headers['content-type'] || ''), lines = [];
+      let buf = '', last = null, ended = false, pumping = false;
+      const settleStream = () => finish({ status: res.statusCode, body: last && last.done ? last : { ok: false, costCents: last ? last.cumulative || 0 : 0, truncated: true } });
+      const pump = async () => {
+        if (pumping || done) return; pumping = true;
+        while (lines.length && !done) {
+          let m; try { m = JSON.parse(lines.shift()); } catch { continue; }
+          last = m; if (m.done) continue;
+          res.pause(); const go = await onChunk(m); res.resume();
+          if (go === false) { r.destroy(); pumping = false; return finish({ status: res.statusCode, aborted: true, body: { ok: false, costCents: m.cumulative || 0, chunks: (m.chunk || 0) + 1 } }); }
+        }
+        pumping = false; if (ended && !lines.length) settleStream();
+      };
+      res.setEncoding('utf8');
+      res.on('data', d => { buf += d; if (!ndjson) return; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (line.trim()) lines.push(line); } pump(); });
+      res.on('end', () => { ended = true; if (!ndjson) { let j = {}; try { j = JSON.parse(buf); } catch {} return finish({ status: res.statusCode, body: j }); } pump(); });
+      res.on('error', () => finish({ status: 0, error: 'stream_error', body: { ok: false, costCents: last ? last.cumulative || 0 : 0, truncated: true } }));
+    });
+    const timer = setTimeout(() => { r.destroy(); finish({ status: 0, timeout: true, body: { ok: false } }); }, timeoutMs);
+    r.on('error', () => finish({ status: 0, error: 'request_error', body: { ok: false } }));
+    r.end(body);
+  });
+}
 function memoryStore(now = Date.now) {
   const kv = new Map(), ttl = new Map();
   const alive = k => { if (ttl.has(k) && now() >= ttl.get(k)) { kv.delete(k); ttl.delete(k); } return kv.has(k); };
@@ -334,4 +434,4 @@ function memoryStore(now = Date.now) {
     sadd: async (k, v) => { const s = new Set(kv.get(k) || []); s.add(v); kv.set(k, [...s]); },
     smembers: async k => kv.get(k) || [] };
 }
-module.exports = { BotLink, BOT_TYPES, TRANSPORTS, REVOKE_COPY, DEFAULTS, LINK_ENDPOINT, OPS, memoryStore, sha };
+module.exports = { BotLink, BOT_TYPES, TRANSPORTS, REVOKE_COPY, DEFAULTS, LINK_ENDPOINT, OPS, memoryStore, sha, verifyScope, httpRunTarget };
