@@ -196,8 +196,12 @@ class BotLink {
       const n = await this.s.incr('bl:count:' + p0.ws + ':' + p0.type);
       bot = { id: p0.botId, ws: p0.ws, type: p0.type, account: p0.account, name: BOT_TYPES[p0.type].name + (n > 1 ? ' #' + n : ''), createdAt: t, epoch: 0, revoked: false, ...fresh };
       bot.agentId = p0.agentId || await this.onBotCreated(bot);
-      if (bot.agentId && !await this.s.add('bl:agentBot:' + p0.ws + ':' + bot.agentId, bot.id)) return err(409, 'agent_already_linked');
-      if (!await this.s.add('bl:bot:' + bot.id, JSON.stringify(bot))) return err(409, 'bot_exists');
+      if (bot.agentId && !await this.s.add('bl:agentBot:' + p0.ws + ':' + bot.agentId, bot.id)) {
+        await this.putPair({ ...p0, status: 'invalidated' }); return err(409, 'agent_already_linked');
+      }
+      if (!await this.s.add('bl:bot:' + bot.id, JSON.stringify(bot))) {
+        await this.putPair({ ...p0, status: 'invalidated' }); return err(409, 'bot_exists');
+      }
       await this.s.sadd('bl:bots:' + p0.ws, bot.id);
     }
     await this.s.put('bl:key:' + kh, JSON.stringify({ botId: bot.id, series }), this.keyTtl());
