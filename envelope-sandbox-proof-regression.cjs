@@ -71,7 +71,7 @@ function fakeStripe({h,secret,accountOnEvents=true,order='normal',cardId='ic_pro
    }
    if(method==='POST'&&(m=p.match(/^\/v1\/test_helpers\/issuing\/transactions\/(ipi_\w+)\/refund$/))){
     const orig=txs.find(t=>t.id===m[1]);if(!orig)return resp(404,{error:{message:'no such transaction'}});
-    const tx={id:'ipi_p'+(++n),object:'issuing.transaction',type:'refund',amount:Number(q.refund_amount),currency:'usd',authorization:orig.authorization,card:cardId};txs.push(tx);bg(()=>deliver('issuing_transaction.created',tx));return resp(200,tx);}
+    const tx={id:'ipi_p'+(++n),object:'issuing.transaction',type:'refund',amount:Number(q.refund_amount),currency:'usd',authorization:orig.authorization,card:cardId};txs.push(tx);const owner=auths.get(orig.authorization);if(owner)owner.transactions.data.push(tx);bg(()=>deliver('issuing_transaction.created',tx));return resp(200,tx);}
   }catch(e){return resp(e.s||500,{error:{message:e.message}});}
   return resp(404,{error:{message:'unhandled '+method+' '+p}});
  };
@@ -89,7 +89,7 @@ const by=(rep,id)=>rep.steps.find(s=>s.id===id);
  // 1. Faithful fake: every automated step passes; R1 and O1 are observations, not assertions.
  {const {rep}=await proof();
   assert.equal(rep.ok,true,JSON.stringify(rep.steps.filter(s=>s.status==='fail'),null,1));
-  for(const id of ['P0','E1','A1','A2','A3','C1','V1','X1','P1','K1','L1'])assert.equal(by(rep,id).status,'pass',id+': '+JSON.stringify(by(rep,id)));
+  for(const id of ['P0','E1','A1','A2','A3','C1','V1','X1','P1','T1','K1','L1'])assert.equal(by(rep,id).status,'pass',id+': '+JSON.stringify(by(rep,id)));
   assert.equal(by(rep,'O1').status,'observed');assert.equal(by(rep,'R1').status,'observed');
   assert.deepEqual(by(rep,'A1').actual.tuple,[0,1000,0,3000]);assert.equal(by(rep,'A1').actual.requestHistory,'webhook_approved');
   assert.equal(by(rep,'A2').actual.alterReason,'insufficient_available');assert.equal(by(rep,'A3').actual.alterReason,'envelope_mismatch');assert.equal(by(rep,'K1').actual.alterReason,'envelope_revoked');
@@ -105,9 +105,13 @@ const by=(rep,id)=>rep.steps.find(s=>s.id===id);
   assert.equal(rep.ok,false);assert.equal(by(rep,'A1').status,'fail');assert.equal(by(rep,'A1').actual.stripeApproved,false);
   assert.equal(by(rep,'O1').status,'fail');assert(/event\.account is ABSENT/.test(by(rep,'O1').note),by(rep,'O1').note);
   for(const id of ['A2','A3','C1','V1','X1'])assert.equal(by(rep,id).status,'skipped',id);}
- // 3. Stripe delivers "closed" before the capture transaction: totals still come out right, but the proof says so.
+ // 3. Stripe delivers "closed" before the capture transaction: totals are right, the reorder is recorded as expected (no discrepancy, no notice),
+ // and the proof says so. The normal order reports no ordering at all.
  {const {rep}=await proof({stripe:{order:'closed_first'}});
-  const c1=by(rep,'C1');assert.equal(c1.status,'pass',JSON.stringify(c1));assert(/ORDERING/.test(c1.note),c1.note);assert(c1.actual.historyKinds.some(k=>/^discrepancy:capture_after_closed$/.test(k)),JSON.stringify(c1.actual));}
+  const c1=by(rep,'C1');assert.equal(c1.status,'pass',JSON.stringify(c1));assert(/ORDERING \(handled\)/.test(c1.note),c1.note);
+  assert(c1.actual.historyKinds.includes('capture_after_close_reordered'),JSON.stringify(c1.actual));assert(!c1.actual.historyKinds.some(k=>/^discrepancy:/.test(k)),JSON.stringify(c1.actual));
+  assert.deepEqual(c1.actual.tuple,[0,0,400,3600]);assert.equal(rep.ok,true);}
+ {const {rep}=await proof();assert.equal(by(rep,'C1').note,'events arrived in the expected order');}
  // 4. Safety rails on the script itself.
  assert.throws(()=>P.stripeClient({fetch:()=>{},key:'sk_live_abc123'}),/TEST-mode/);
  assert.throws(()=>P.stripeClient({fetch:()=>{},key:'pk_test_abc'}),/TEST-mode/);

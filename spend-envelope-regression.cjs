@@ -333,6 +333,45 @@ const audited=async h=>{const a=await E.audit(call,h);assert(a.ok,a.errors.join(
  const finals=new Set();
  for(const order of perms(evs)){const hS=await approved(terms());await E.reserve(call,hS,auth('sh',1000),NOW);for(const e of [...order,order[0],order[2]])await E.provider(call,hS,e,NOW);finals.add(JSON.stringify(await tot(hS)));await audited(hS);}
  assert.deepEqual([...finals],[JSON.stringify([0,0,500,3500,0])]);
+ // ---- Closed-before-capture. Stripe's capture sets the authorization to closed and creates a transaction, and its webhook docs say events are
+ // not delivered in generation order. So issuing_authorization.updated(closed) can land before issuing_transaction.created(capture). The totals
+ // always come out the same (the shuffle above); the question here is the audit trail. An approved authorization that closes with nothing
+ // captured yet and then receives a capture within the retry horizon, no larger than the cents the close released, is an expected reordering
+ // (history kind capture_after_close_reordered, no discrepancy, no owner notice). Everything else after a close stays a discrepancy.
+ {const openAuth=async n=>{const h=await approved(terms());assert.equal((await E.reserve(call,h,auth('oc'+n,1000),NOW)).code,'reserved');assert.equal((await E.provider(call,h,pe(200+n*10,'auth','oc'+n,1000,{approved:true,status:'pending'}),NOW)).code,'confirmed');return h};
+  const closeA=(h,n,extra={},at=NOW,k=1)=>E.provider(call,h,pe(200+n*10+k,'auth','oc'+n,0,{approved:true,status:'closed',...extra}),at);
+  const capA=(h,n,k,amt,at=NOW)=>E.provider(call,h,pe(202+n*10+k,'capture','oc'+n,amt,{transactionId:'ipi_oc'+n+'_'+k}),at);
+  const ndisc=async h=>(await E.read(call,h,NOW)).discrepancies.length,nnote=async h=>(await E.read(call,h,NOW)).notices.length;
+  // OC1: the expected order (capture, then close) is unchanged: no discrepancy.
+  const h1=await openAuth(1);assert.equal((await capA(h1,1,0,400)).code,'capture');assert.equal((await closeA(h1,1)).code,'closed');
+  assert.deepEqual(await tot(h1),[0,0,400,3600,0]);assert.deepEqual([await ndisc(h1),await nnote(h1)],[0,0]);await audited(h1);
+  // OC2: close first, then the capture. Same totals, and NO discrepancy and NO owner notice (this is the false notice).
+  const h2=await openAuth(2);assert.equal((await closeA(h2,2)).code,'closed');assert.deepEqual(await tot(h2),[0,0,0,4000,0]);
+  assert.equal((await capA(h2,2,0,400)).code,'capture_after_close_reordered');
+  assert.deepEqual(await tot(h2),[0,0,400,3600,0]);assert.deepEqual([await ndisc(h2),await nnote(h2)],[0,0],'a reordered capture is not a discrepancy and raises no notice');await audited(h2);
+  assert.equal(JSON.stringify((await E.read(call,h1,NOW)).buckets),JSON.stringify((await E.read(call,h2,NOW)).buckets),'both orders end in identical buckets');
+  assert((await E.read(call,h2,NOW)).history.some(x=>x.kind==='capture_after_close_reordered'),'the reorder is still audited in history');
+  // OC3: a duplicate delivery of the reordered capture changes nothing; a repeated close does not reset or grow what a capture may still use.
+  assert.equal((await capA(h2,2,0,400)).code,'duplicate');assert.deepEqual(await tot(h2),[0,0,400,3600,0]);
+  const h3=await openAuth(3);await closeA(h3,3);assert.equal((await closeA(h3,3,{},NOW,9)).code,'noop_already_released');
+  assert.equal((await capA(h3,3,0,600)).code,'capture_after_close_reordered');assert.equal((await capA(h3,3,1,401)).code,'discrepancy:capture_after_closed','only the 1000 the close released can arrive late: 600 used, 401 > 400 left');
+  // OC4: larger than the released cents is a genuine discrepancy and is recorded as one (the cents still settle; nothing is hidden).
+  const h4=await openAuth(4);await closeA(h4,4);assert.equal((await capA(h4,4,0,1500)).code,'discrepancy:capture_after_closed');
+  assert.deepEqual(await tot(h4),[0,0,1500,2500,0]);assert.deepEqual([await ndisc(h4),await nnote(h4)],[1,1]);
+  // OC5: several late captures are fine until their sum passes what the close released.
+  const h5=await openAuth(5);await closeA(h5,5);assert.equal((await capA(h5,5,0,400)).code,'capture_after_close_reordered');assert.equal((await capA(h5,5,1,600)).code,'capture_after_close_reordered');
+  assert.equal((await capA(h5,5,2,1)).code,'discrepancy:capture_after_closed');assert.deepEqual(await tot(h5),[0,0,1001,2999,0]);
+  // OC6: a reversal or an expiry is not a close that a capture may follow: both stay discrepancies.
+  const h6=await openAuth(6);await closeA(h6,6,{status:'reversed'});assert.equal((await capA(h6,6,0,400)).code,'discrepancy:capture_after_closed');
+  const h7=await openAuth(7);await closeA(h7,7,{status:'closed',rawStatus:'expired'});assert.equal((await capA(h7,7,0,400)).code,'discrepancy:capture_after_closed');
+  // OC7: once a capture has been seen, a later close does not open a window for more captures.
+  const h8=await openAuth(8);assert.equal((await capA(h8,8,0,400)).code,'capture');await closeA(h8,8);assert.equal((await capA(h8,8,1,100)).code,'discrepancy:capture_after_closed');
+  // OC8: the window is the retry horizon (3 days live): inside it is a reorder, one millisecond after it is a discrepancy.
+  const h9=await openAuth(9);await closeA(h9,9);assert.equal((await capA(h9,9,0,100,NOW+E.LATE_CAPTURE_MS)).code,'capture_after_close_reordered');assert.equal((await capA(h9,9,1,100,NOW+E.LATE_CAPTURE_MS+1)).code,'discrepancy:capture_after_closed');
+  // OC9: a decline is not a close either (the existing released-state discrepancy is unchanged).
+  const h10=await approved(terms());await E.reserve(call,h10,auth('oc10',1000),NOW);await E.provider(call,h10,pe(2000,'auth','oc10',1000,{approved:false,status:'closed'}),NOW);
+  assert.equal((await capA(h10,10,0,100)).code,'discrepancy:capture_after_released');
+  for(const hh of [h3,h4,h5,h6,h7,h8,h9,h10])await audited(hh);}
  // Multi-currency: buckets are per currency; max applies only to the envelope currency.
  const M=await approved(terms());await E.reserve(call,M,auth('mc',1000),NOW);await E.provider(call,M,pe(50,'auth','mc',1000,{approved:true,status:'pending'}),NOW);
  await E.provider(call,M,{...pe(51,'capture','mc',900,{transactionId:'ipi_mc1'}),currency:'eur'},NOW);

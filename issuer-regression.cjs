@@ -116,6 +116,27 @@ async function call(e,{signature=true,body}={}){const raw=body||Buffer.from(JSON
   const nv=await sdView();assert.deepEqual(nv.notices.map(n=>n.kind),['discrepancy:capture_differs_from_held']);
   const ak=await route('/money/envelopes/'+sd.hash+'/notices/ack',{seq:nv.notices[0].seq});assert.deepEqual([ak.code,ak.j.code,ak.j.envelope.notices.length],[200,'acknowledged',0]);
   assert.equal(ak.j.envelope.history.slice(-1)[0].actor,'owner:user_fixture');}
+ // ---- Closed-before-capture through the signed webhook. Stripe does not order issuing_authorization.updated(closed) against
+ // issuing_transaction.created(capture). Either order must end at the same totals; only a genuinely unexpected capture raises an owner notice.
+ {const mk=async cardId=>{const e=(await route('/money/envelopes',{...base,cardId})).j.envelope;assert.equal((await route('/money/envelopes/'+e.hash+'/approve',{})).j.code,'approved');return e};
+  const feedFor=async hash=>(await owner(()=>f.r(['LRANGE','fm:events',0,50]))).map(x=>JSON.parse(x)).filter(x=>x.envelopeHash===hash);
+  const co=await mk('ic_envord1'),cr=await mk('ic_envord2'),cg=await mk('ic_envord3');
+  // normal order: capture, then close
+  assert.equal(await reason(ev('evt_ord1a',1000,'ic_envord1')),'APPROVED');assert.equal(await evidence(authEv('evt_ord1b','iauth_evtord1a',1000,true,'pending','ic_envord1')),'confirmed');
+  {const c=await call(txEv('evt_ord1c','ipi_ord1','iauth_evtord1a',400,'capture','ic_envord1'));assert.deepEqual([c.body.envelope,c.body.ownerNotified],['capture',undefined]);}
+  assert.equal(await evidence(authEv('evt_ord1d','iauth_evtord1a',0,true,'closed','ic_envord1')),'closed');
+  // reversed order: close, then capture. Same totals, no discrepancy, no owner notice, no feed event.
+  assert.equal(await reason(ev('evt_ord2a',1000,'ic_envord2')),'APPROVED');assert.equal(await evidence(authEv('evt_ord2b','iauth_evtord2a',1000,true,'pending','ic_envord2')),'confirmed');
+  assert.equal(await evidence(authEv('evt_ord2c','iauth_evtord2a',0,true,'closed','ic_envord2')),'closed');
+  {const c=await call(txEv('evt_ord2d','ipi_ord2','iauth_evtord2a',400,'capture','ic_envord2'));assert.deepEqual([c.status,c.body.envelope,c.body.ownerNotified],[200,'capture_after_close_reordered',undefined],'reordered capture: no discrepancy, no notice');}
+  assert.deepEqual(await tot(co.hash),[0,0,400,3600]);assert.deepEqual(await tot(cr.hash),[0,0,400,3600],'both orders: settled 400, available 3600');
+  {const v=await owner(async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===cr.hash));assert.deepEqual([v.discrepancies.length,v.notices.length],[0,0]);assert.equal((await feedFor(cr.hash)).length,0,'no owner feed event for a reorder');}
+  // a genuine problem after a close still notifies: a capture bigger than the cents the close released
+  assert.equal(await reason(ev('evt_ord3a',1000,'ic_envord3')),'APPROVED');assert.equal(await evidence(authEv('evt_ord3b','iauth_evtord3a',1000,true,'pending','ic_envord3')),'confirmed');
+  assert.equal(await evidence(authEv('evt_ord3c','iauth_evtord3a',0,true,'closed','ic_envord3')),'closed');
+  {const c=await call(txEv('evt_ord3d','ipi_ord3','iauth_evtord3a',1500,'capture','ic_envord3'));assert.deepEqual([c.body.envelope,c.body.ownerNotified],['discrepancy:capture_after_closed',true]);}
+  assert.equal((await feedFor(cg.hash)).length,1,'the genuine discrepancy reaches the owner');assert.deepEqual(await tot(cg.hash),[0,0,1500,2500]);
+  for(const hh of [co.hash,cr.hash,cg.hash]){const au=await SE.audit(f.r,hh);assert(au.ok,au.errors.join('; '));}}
  for(const hh of [env.hash,rev2.hash,late.hash,sd.hash]){const au=await SE.audit(f.r,hh);assert(au.ok,au.errors.join('; '));}
  // ---- Defect A through the owner routes: the provider read is a GET with a test-mode key; nothing is released without it.
  const summaryOf=hash=>owner(async()=>(await f.spendSummary()).envelopes.find(x=>x.hash===hash));

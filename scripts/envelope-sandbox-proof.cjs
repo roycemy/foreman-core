@@ -198,8 +198,10 @@ async function run(opts) {
     await stripe.capture(ids.a1, { capture_amount: 400, close_authorization: true });
     const s = await settle(e => same(tuple(e), [0, 0, 400, MAX - 400]));
     const kinds = newHistory(s.env);
-    const orderingHazard = kinds.find(k => /^discrepancy:capture_after_/.test(k));
-    return { pass: s.ok, expected: { tuple: [0, 0, 400, MAX - 400] }, actual: { tuple: tuple(s.env), historyKinds: kinds }, settledAfterMs: s.ms, note: orderingHazard ? 'ORDERING: Stripe delivered "closed" before the capture transaction (' + orderingHazard + '). Totals are right but the owner gets a spurious discrepancy notice.' : 'no ordering discrepancy observed' };
+    // Stripe does not order the closed update against the capture transaction (https://docs.stripe.com/webhooks). A reordered capture is expected and
+    // handled (capture_after_close_reordered: no discrepancy, no notice). Any discrepancy on an ordinary partial capture is a real finding.
+    const bad = kinds.find(k => /^discrepancy:/.test(k)), reordered = kinds.includes('capture_after_close_reordered');
+    return { pass: s.ok && !bad, expected: { tuple: [0, 0, 400, MAX - 400], discrepancies: 0 }, actual: { tuple: tuple(s.env), historyKinds: kinds }, settledAfterMs: s.ms, note: bad ? 'DISCREPANCY ' + bad + ' on an ordinary partial capture: the owner would be shown a notice.' : reordered ? 'ORDERING (handled): Stripe delivered "closed" before the capture; recorded as capture_after_close_reordered, no owner notice, totals correct.' : 'events arrived in the expected order' };
   }, { needs: ['A1'] });
 
   await step('V1', 'Reversal of a $5 authorization releases it', async () => {
@@ -237,6 +239,17 @@ async function run(opts) {
     const capOk = got.closed.capturedCents === 400 || got.closed.capturedCents === 300; // 300 only if the refund above was linked
     return { pass: bad.length === 0 && capOk, expected: { states: want, closedCapturedCents: '400 (300 if the refund linked to the authorization)' }, actual: got, note: bad.length ? 'mismatched: ' + bad.join(',') : 'reader agrees with Stripe on all four states' };
   }, { needs: ['V1', 'X1'] });
+
+  // The ledger-vs-provider check. There is no job receipt carrying envelope cost yet, so this compares the envelope's own settled cents (the
+  // authoritative card record Alter keeps) with what Stripe says was captured, net of refunds, across every authorization this run created.
+  await step('T1', 'Reconciliation: envelope settled cents equal the provider\'s net captured cents across every proof authorization', async () => {
+    const env = await view(), settled = usd(env).settledCents, rows = []; let net = 0;
+    for (const id of [ids.a1, ids.v1, ids.x1, ids.open].filter(Boolean)) {
+      const a = await stripe.getAuth(id), tx = (a.transactions && a.transactions.data) || [];
+      const n = tx.reduce((s, t) => s - Number(t.amount || 0), 0); net += n; rows.push({ authorization: id, status: a.status, transactions: tx.length, netCapturedCents: n });
+    }
+    return { pass: settled === net, expected: { envelopeSettledCents: net }, actual: { envelopeSettledCents: settled, providerNetCapturedCents: net, authorizations: rows }, note: settled === net ? 'envelope and provider agree to the cent' : 'MISMATCH: the envelope and Stripe disagree on what was captured' };
+  }, { needs: ['C1'] });
 
   await step('K1', 'Revoked envelope declines at card use', async () => {
     const d = await alter.decide(hash, 'revoke');

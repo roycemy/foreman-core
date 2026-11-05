@@ -50,22 +50,49 @@ If a capture fails with a balance error, add test funds to the sandbox Issuing b
 | O1 | Real event shapes | observation only, but **fails** if `event.account` is absent (see below) |
 | A2 | $35 with $30 available is declined | `webhook_declined`, reason `insufficient_available`, nothing moves |
 | A3 | Different merchant is declined | `webhook_declined`, reason `envelope_mismatch`, nothing moves |
-| C1 | $4 partial capture that closes the authorization | settled 400, the other 600 released |
+| C1 | $4 partial capture that closes the authorization, in either event order | settled 400, the other 600 released, no discrepancy (a reordered capture is noted as ORDERING (handled)) |
 | V1 | Reversal | held cents return to available |
 | X1 | Expiry | held cents return to available |
 | R1 | Refund | observation only; how Stripe links a refund to an authorization is unverified |
+| T1 | Envelope vs provider | envelope settled cents equal Stripe net captured cents (captures minus refunds) across every authorization the run created |
 | P1 | `stripeReader` against real objects | open, voided, expired and closed map correctly; captured cents match |
 | K1 | Revoked envelope | next authorization declined at card use |
 | L1 | Webhook round trip under 2s | max over every call; includes test-helper overhead, so it is an upper bound |
 
 The tuple is `[unresolved, reserved, settled, available]` in cents, the same one `issuer-regression.cjs` asserts.
 
-## Things the offline self-test already says to look for
+## The two findings from the first offline pass
 
-`envelope-sandbox-proof-regression.cjs` drives this same script against the real `issuer-webhook.cjs` and `api/index.js` with a fake Stripe. Two findings come from the code itself, independent of Stripe:
+### 1. `event.account` (open: needs a sandbox run; no code changed)
 
-1. **Direct account vs Connect.** `issuerEnvelopeTarget()` and `issuerEnvelopeForEvent()` require `event.account` to match `/^acct_/`. Stripe puts `account` on events for connected accounts; as far as I understand Stripe's event model (not yet verified against your sandbox), events for your own platform account do not carry it. If so, every authorization on a direct-account card is declined with no envelope found, and the envelope can never be used. The fake with `account` removed fails exactly this way: A1 fails, O1 names the cause, later steps skip. O1 reads the real events and tells you which case you are in. If it fails, the fix is a design decision (use a Connect connected account for the card, or fall back to the account id configured at propose time when `event.account` is absent), not something to patch blind.
-2. **Event ordering.** Stripe does not promise `issuing_authorization.updated` (closed) arrives after `issuing_transaction.created` (capture). If "closed" lands first, the remaining reserved cents are released, then the capture arrives at a closed authorization and is recorded as `discrepancy:capture_after_closed`. Totals come out right, but the owner is shown a spurious discrepancy notice. C1 reports `ORDERING` in its note if this happens against the real Stripe.
+What the code does: `issuerEnvelopeTarget()` and `issuerEnvelopeForEvent()` return nothing unless `event.account` matches `/^acct_/`, and the mapping key is `<account>:<card>`. An event with no `account` never finds an envelope, so the authorization is declined.
+
+Documented by Stripe (read 2026-11-05):
+- The Event object's `account` is "the connected account that originates the event". https://docs.stripe.com/api/events/object
+- "Each event for a connected account contains a top-level `account` property." https://docs.stripe.com/connect/webhooks
+- Endpoints have a scope: "Your account" (own resources) or "Connected accounts" (resources in connected accounts). https://docs.stripe.com/connect/webhooks
+- Issuing on Connect: cards and cardholders belong to connected accounts, and the platform acts on their behalf. https://docs.stripe.com/issuing/connect
+- Sandboxes need their own webhook endpoints. https://docs.stripe.com/connect/webhooks
+
+Not stated anywhere I could read, so it still needs a sandbox run:
+- That events for your **own** (direct) account omit `account`. The Event page marks the field nullable but does not say when it is null, and its example has no `account` key. The inference is reasonable, not documented.
+- Whether `issuing_authorization.*` and `issuing_transaction.created` carry `account` for a direct account, and which endpoint scope receives them for a connected account's card. None of the Issuing pages says. https://docs.stripe.com/issuing/controls/real-time-authorizations, https://docs.stripe.com/issuing/connect
+- Whether the `card` field in event payloads is an expanded object or a string. The code accepts either.
+
+How to settle it: step O1 lists the latest real events and records `accountFieldPresent`. If it is false, A1 fails with a named cause and the rest skip.
+
+Proposed fix, NOT applied (decide after O1 shows which case you are in):
+- If `account` is present (connected-account card, "Connected accounts" endpoint): no code change. Set up Connect as described in the setup section.
+- If `account` is absent (direct account): when `event.account` is missing, use one configured account id (a new server-side setting such as `STRIPE_ISSUING_TEST_ACCOUNT_ID`, never read from the payload) in `issuerEnvelopeTarget`, `issuerEnvelopeForEvent` and the webhook's `decide`. The account stays part of the binding hash, the mapping key and the owner registry; the signed endpoint secret and the unique `ic_` card id are what tie the event to its owner. About 10 lines plus a regression for "absent account uses the configured account, and an unconfigured server still declines".
+
+### 2. Closed-before-capture ordering (fixed)
+
+Stripe says events are not delivered in the order they are generated (https://docs.stripe.com/webhooks), and a capture closes the authorization and creates a transaction (https://docs.stripe.com/issuing/purchases/authorizations), so `issuing_authorization.updated` (closed) can arrive before `issuing_transaction.created` (capture). Before the fix the capture was recorded as `discrepancy:capture_after_closed` and the owner was notified. Totals were always correct.
+
+Now, and only now, a capture after a close is an expected reordering (history kind `capture_after_close_reordered`, no discrepancy, no notice) when all of these hold: the authorization was **approved** and its own status is **closed** (not reversed, not expired, not declined); nothing had been captured before the close; the capture arrives within three days of the close (the live-mode retry horizon, https://docs.stripe.com/webhooks); and the captured cents, summed over late captures, do not exceed the cents the close released. Anything else after a close is still a discrepancy with an owner notice. Regressions: `spend-envelope-regression.cjs` (OC1-OC9) and `issuer-regression.cjs` (signed webhook, both orders, owner feed).
+
+Still unknown until a sandbox run: whether real Stripe emits the closed update with an approved status in the shapes the code expects, and whether Stripe ever lets a capture follow an expiry (its docs say an expired authorization keeps "any remaining amount authorized for possible late captures"). That case is deliberately left as a discrepancy.
+
 
 ## What this does not prove
 

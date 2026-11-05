@@ -12,6 +12,9 @@
 //   max applies only to the envelope's own currency; any other currency has max 0.
 const crypto=require('crypto');
 const TERMS=['botId','accountId','cardId','merchantNetworkId','currency','maxTotalCents','expiresAtMs'];
+// LATE_CAPTURE_MS: how long after an approved close a first capture may still be treated as a reordered delivery. Stripe retries live-mode
+// webhooks for up to three days (https://docs.stripe.com/webhooks), so that is the longest a delayed delivery can legitimately take.
+const LATE_CAPTURE_MS=3*86400000;
 const STUCK_MS=120000,HELD_WINDOW_MS=7*86400000; // authorization expiry default: 7 days from the stored held_since
 // No upstream file covers it: canonical sha256 over exactly the seven approved envelope terms (bot, issuer account, card, merchant, currency, max, expiry), in fixed order.
 // hash_version 2 hashes the merchant canonicalized (trim, whitespace runs -> one space, case kept). hash_version 1 (envelopes written before
@@ -127,6 +130,10 @@ const PROVIDER=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_enve
  "  if st=='open' and r>amt then move(a,c,0,amt-r,0) hist(now,actor,'partial_reversal',a,c,0,amt-r,0,ref,'') return {'reduced'} end\n"+
  "  hist(now,actor,'ignored_snapshot',a,c,0,0,0,ref,st) return {'ignored'}\n"+
  " end\n"+
+ // Closed-before-capture: Stripe does not order the closed update against the capture transaction. An APPROVED authorization whose own status is
+ // 'closed' (not reversed, not expired) with nothing settled yet records, in one write with the release, how many cents this close released and when.
+ // A capture within that many cents and the retry horizon is then a reordering, not a discrepancy (capture branch below).
+ " if approved and ARGV[15]=='closed' and s==0 and u+r+d>0 then redis.call('HSET',K,'a:'..a..':late:'..c,tostring(u+r+d),'a:'..a..':lateAt',now) end\n"+
  " move(a,c,-u,-r,0,-d) if u+r+d>0 then redis.call('HSET',K,'a:'..a..':releasedBy','webhook:'..ref,'a:'..a..':releasedAt',now) end redis.call('HSET',K,'a:'..a,'closed') hist(now,actor,'provider_'..status,a,c,-u,-r,0,ref,'',0,-d) return {'closed'}\n"+
  "end\n"+
  "if not amt or amt<1 or amt%1~=0 then hist(now,actor,'discrepancy:invalid_amount',a,c,0,0,0,ref,ARGV[6]) return {'invalid_amount'} end\n"+
@@ -147,7 +154,9 @@ const PROVIDER=PRELUDE+"if not redis.call('HGET',K,'hash') then return {'no_enve
  " end\n"+
  " local fr=math.min(amt,r) local rest=amt-fr local fu=math.min(rest,u) rest=rest-fu\n"+
  " move(a,c,-fu,-fr,amt-cc) add(p..'c',-cc)\n"+
- " local kind='capture' if st~='open' then kind='discrepancy:capture_after_'..st elseif rest>0 then kind='discrepancy:capture_beyond_reserved' end\n"+
+ " local late=num('a:'..a..':late:'..c) local lateAt=tonumber(redis.call('HGET',K,'a:'..a..':lateAt') or '0') or 0\n"+
+ " local reord=st=='closed' and late>=amt and tonumber(now)-lateAt<=tonumber(ARGV[16]) if reord then add('a:'..a..':late:'..c,-amt) end\n"+
+ " local kind='capture' if reord then kind='capture_after_close_reordered' elseif st~='open' then kind='discrepancy:capture_after_'..st elseif rest>0 then kind='discrepancy:capture_beyond_reserved' end\n"+
  " hist(now,actor,kind,a,c,-fu,-fr,amt-cc,ref,tostring(amt),-cc)\n"+
  " return {kind}\n"+
  "end\n"+
@@ -234,7 +243,7 @@ async function fence(call,hash,authorizationId,nowMs=Date.now(),actor='reconcile
 // e: {kind:'auth'|'capture'|'refund', eventId, authorizationId, currency, amountCents, approved, status, transactionId}
 async function provider(call,hash,e,nowMs=Date.now(),actor='provider'){
  if(!okHash(hash)||!/^evt_[A-Za-z0-9]+$/.test(e.eventId||'')||!okAuth(e.authorizationId)||!/^[a-z]{3}$/.test(e.currency||'')||!['auth','capture','refund'].includes(e.kind))return {code:'invalid_or_unsupported_event'};
- const out=await call(['EVAL',PROVIDER,'1',envelopeKey(hash),hash,e.kind,e.eventId,e.authorizationId,e.currency,String(Number.isSafeInteger(e.amountCents)?e.amountCents:0),e.approved?'1':'0',clean(e.status||''),clean(e.transactionId||''),String(nowMs),clean(actor),clean(e.cardId||''),clean(e.how||'card'),String(e.authExpiryMs||HELD_WINDOW_MS)]);
+ const out=await call(['EVAL',PROVIDER,'1',envelopeKey(hash),hash,e.kind,e.eventId,e.authorizationId,e.currency,String(Number.isSafeInteger(e.amountCents)?e.amountCents:0),e.approved?'1':'0',clean(e.status||''),clean(e.transactionId||''),String(nowMs),clean(actor),clean(e.cardId||''),clean(e.how||'card'),String(e.authExpiryMs||HELD_WINDOW_MS),clean(e.rawStatus||e.status||''),String(LATE_CAPTURE_MS)]);
  return {code:out[0]};
 }
 // ---- A3/A5/A6: reconciliation. reader(authorizationId) -> {state:'open'|'closed'|'voided'|'expired', capturedCents, currency}; it must be a READ.
@@ -367,4 +376,4 @@ function localEval(store,cmd){
  if(lauxlib.luaL_loadstring(L,to_luastring(cmd[1]))!==lua.LUA_OK||lua.lua_pcall(L,0,1,0)!==lua.LUA_OK)throw Error('lua: '+lua.lua_tojsstring(L,-1));
  return reply(L,lua.lua_gettop(L));
 }
-module.exports={STUCK_MS,HELD_WINDOW_MS,reconcile,reconcileDue,releaseStranded,stripeReader,unassignedHash,ensureUnassigned,RECONCILE,UNASSIGNED,HASH_VERSION,canon,bindingHash,bindingHashV1,verify,envelopeKey,propose,decide,reserve,fence,provider,adjudicate,ack,read,audit,localEval,SCRIPTS,PROPOSE,DECIDE,RESERVE,FENCE,PROVIDER,ADJUDICATE,ACK};
+module.exports={STUCK_MS,HELD_WINDOW_MS,LATE_CAPTURE_MS,reconcile,reconcileDue,releaseStranded,stripeReader,unassignedHash,ensureUnassigned,RECONCILE,UNASSIGNED,HASH_VERSION,canon,bindingHash,bindingHashV1,verify,envelopeKey,propose,decide,reserve,fence,provider,adjudicate,ack,read,audit,localEval,SCRIPTS,PROPOSE,DECIDE,RESERVE,FENCE,PROVIDER,ADJUDICATE,ACK};
