@@ -115,8 +115,40 @@ const ACTIONS = {
   'work.assign':{label:'Assign a job to another bot',costCents:0,risk:'write'},
   'work.enqueue':{ label: 'Queue an unassigned task', costCents: 0, risk: 'write' },
   'work.handoff':{ label: 'Hand a task to another agent', costCents: 0, risk: 'write' },
+  'email.send':{ label: 'Send an email from Alter', costCents: 0, risk: 'external' },
 };
-const DEFAULT_PERMS = { 'web.fetch': 'AUTO', 'notes.write': 'ASK', 'notes.delete': 'NEVER', 'work.handoff': 'AUTO', 'work.enqueue': 'ASK', 'work.assign':'ASK' };
+const DEFAULT_PERMS = { 'web.fetch': 'AUTO', 'notes.write': 'ASK', 'notes.delete': 'NEVER', 'work.handoff': 'AUTO', 'work.enqueue': 'ASK', 'work.assign':'ASK', 'email.send':'ASK' };
+
+// ---------- email.send: Alter sends the email itself through its own server-side Resend credential ----------
+// The bot proposes to, subject and text. Alter sets the sender (WAKE_EMAIL_FROM), allows only owner-listed recipients
+// (ALTER_EMAIL_ALLOWED_TO), always asks the owner, and sends with Idempotency-Key = request id. Resend keeps an idempotency key
+// for 24 hours: a repeat with the same key and body returns the same response without sending again
+// (https://resend.com/docs/dashboard/emails/idempotency-keys). A successful POST means accepted, not delivered
+// (https://resend.com/docs/dashboard/webhooks/event-types); delivery is read later with GET /emails/{id} (last_event).
+const EMAIL_TTL_MS = 15 * 60000, REQ_TTL_MS = 24 * 3600000, EMAIL_RECONCILE_MS = 23 * 3600000;
+const emailAllowed = () => String(process.env.ALTER_EMAIL_ALLOWED_TO || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+// The exact message Alter would send now: sender from configuration, never from the bot.
+const emailMessage = p => ({ from: String(process.env.WAKE_EMAIL_FROM || ''), to: String((p && p.to) || '').trim().toLowerCase(), subject: String((p && p.subject) || ''), text: String((p && p.text) || '') });
+function emailInvalid(p) {
+  if (!process.env.RESEND_API_KEY || !process.env.WAKE_EMAIL_FROM) return { code: 'email_not_configured', reason: 'No sender is configured for this workspace' };
+  if (p && p.from != null && String(p.from).trim() !== process.env.WAKE_EMAIL_FROM) return { code: 'sender_not_allowed', reason: 'Alter sets the sender; a bot cannot choose it' };
+  const m = emailMessage(p);
+  if (!emailAllowed().includes(m.to)) return { code: 'recipient_not_allowed', reason: 'The recipient is not on the owner\'s allowed list' };
+  if (!m.subject.trim() || m.subject.length > 200 || /[\x00-\x1F\x7F]/.test(m.subject)) return { code: 'email_invalid', reason: 'Subject must be 1-200 characters on one line' };
+  if (!m.text.trim() || m.text.length > 20000 || /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(m.text)) return { code: 'email_invalid', reason: 'Body must be 1-20000 characters of plain text' };
+  return null;
+}
+// One POST. No automatic retry. No response, a 5xx or a 409 means the outcome is unknown (thrown with unknown:true); any other
+// non-2xx is a definite rejection: nothing was sent.
+async function resendSend(m, key) {
+  let resp;
+  try { resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json', 'idempotency-key': key }, body: JSON.stringify({ from: m.from, to: [m.to], subject: m.subject, text: m.text }), signal: AbortSignal.timeout(10000) }); }
+  catch (e) { throw Object.assign(Error('no response from Resend (' + ((e && e.name) || 'error') + ')'), { unknown: true }); }
+  let j = {}; try { j = await resp.json(); } catch {}
+  if (resp.ok && j && typeof j.id === 'string') return { id: j.id };
+  if (resp.ok || resp.status >= 500 || resp.status === 409) throw Object.assign(Error('Resend answered HTTP ' + resp.status + (j && j.name ? ' ' + j.name : '') + ' without a confirmed email id'), { unknown: true });
+  throw Error('Resend rejected it (HTTP ' + resp.status + (j && j.message ? ': ' + String(j.message).slice(0, 120) : '') + '): not sent');
+}
 
 function blockedHost(u) {
   try {
@@ -129,9 +161,15 @@ function blockedHost(u) {
 // is denied outright (clean 4xx + Denied receipt + request ID), never a 502 after execution has started.
 function invalidParams(action, params) {
   if (action === 'web.fetch' && blockedHost(params && params.url)) return { code: 'url_not_allowed', reason: 'url must be a public https address' };
+  if (action === 'email.send') return emailInvalid(params);
   return null;
 }
-async function execute(agent, action, params) {
+async function execute(agent, action, params, reqId) {
+  if (action === 'email.send') {
+    if (!reqId) throw new Error('email.send runs only from an owner-approved request');
+    const sent = await resendSend(params, reqId);
+    return { summary: `Accepted by Resend (email id ${sent.id}) for ${params.to}. Delivery is not confirmed yet.`, data: { id: sent.id, to: params.to }, receipt: { providerMessageId: sent.id } };
+  }
   if (action === 'web.fetch') {
     if (blockedHost(params.url)) throw new Error('url not allowed');
     const res = await fetch(params.url, { headers: { 'User-Agent': 'foreman-gateway/8', Accept: 'application/json,text/*' }, signal: AbortSignal.timeout(7000) });
@@ -913,17 +951,23 @@ async function policy(agent, action, mode) {
   return null;
 }
 
-async function runAndReceipt(agent, action, params, reqId, approvedBy, taskId) {
+async function runAndReceipt(agent, action, params, reqId, approvedBy, taskId, extra) {
   const a = ACTIONS[action];
   try {
-    const out = await execute(agent, action, params);
+    const out = await execute(agent, action, params, reqId);
     await r(['INCRBY', `fm:spend:${agent.id}:${now().slice(0, 10)}`, a.costCents]);
     if(agent.permissionScope==='job'&&taskId){const t=await getJ('fm:task:'+taskId);t.jobGrant.spentCents=Number(t.jobGrant.spentCents||0)+a.costCents;await setJ('fm:task:'+taskId,t);}
-    const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null });
+    const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null, ...(extra||{}), ...(out.receipt||{}) });
     await event(agent.id, 'completed', out.summary, { receiptId: rec.id });
     return { rec, out };
   } catch (e) {
-    const rec = await receipt(agent, action, params, 'failed', 0, 'Execution failed: ' + e.message, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null });
+    // Unknown outcome (no response, 5xx): never recorded as sent or failed, never retried here. The owner reconciles it.
+    if (e && e.unknown) {
+      const rec = await receipt(agent, action, params, 'unknown', 0, 'Outcome unknown: ' + e.message + '. Not retried; reconcile from the request.', reqId, { approvedBy: approvedBy || 'policy:AUTO', taskId: taskId || null, ...(extra||{}) });
+      await event(agent.id, 'blocked', 'Outcome unknown for ' + action + ': ' + e.message, { receiptId: rec.id, requestId: reqId || null });
+      return { rec, out: null, error: e.message, unknown: true };
+    }
+    const rec = await receipt(agent, action, params, 'failed', 0, 'Execution failed: ' + e.message, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null, ...(extra||{}) });
     await event(agent.id, 'failed', 'Execution failed: ' + e.message, { receiptId: rec.id });
     return { rec, out: null, error: e.message };
   }
@@ -948,7 +992,8 @@ async function gatewayActUnlocked(agent, body) {
   const action = body.action, params = body.params || {}, taskId=body.task_id||params.task_id;
   await touchAgent(agent);
   const task=taskId?await getJ('fm:task:'+taskId):null;
-  const mode = (agent.permissions||{})[action]==='NEVER'?'NEVER':agent.permissionScope==='job'?(task?.jobGrant?.actions?.[action]||'NEVER'):((agent.permissions||{})[action]||DEFAULT_PERMS[action]||'NEVER');
+  let mode = (agent.permissions||{})[action]==='NEVER'?'NEVER':agent.permissionScope==='job'?(task?.jobGrant?.actions?.[action]||'NEVER'):((agent.permissions||{})[action]||DEFAULT_PERMS[action]||'NEVER');
+  if (action === 'email.send' && mode === 'AUTO') mode = 'ASK'; // an email always waits for the owner; no standing grant sends one
   await event(agent.id, 'attempt', `Attempted ${action} (${mode})`, { action });
   const blocked = await jobPolicy(agent,action,taskId) || await policy(agent, action, mode);
   if (blocked) {
@@ -965,7 +1010,10 @@ async function gatewayActUnlocked(agent, body) {
     return { status: 400, body: { status: 'denied', code: invalid.code, reason: invalid.reason, request_id: q.id, receipt_id: rec.id } };
   }
   if (mode === 'ASK') {
-    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: redact(params), rawParams: params, label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: now(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
+    // The owner reviews exactly what will run. An email is stored and shown in full (sender set by Alter); detailsHash binds the
+    // approval to it, and expiresAt bounds how long a yes can wait.
+    const isEmail = action === 'email.send', exact = isEmail ? emailMessage(params) : params, created = Date.now();
+    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: isEmail ? { ...exact } : redact(params), rawParams: exact, detailsHash: reqHash(action, exact), label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: new Date(created).toISOString(), expiresAt: new Date(created + (isEmail ? EMAIL_TTL_MS : REQ_TTL_MS)).toISOString(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
     bust(); await setJ('fm:req:' + q.id, q); await r(['SADD', 'fm:reqs', q.id]); if (q.taskId) await r(['SADD', 'fm:taskreqs:' + q.taskId, q.id]);
     await event(agent.id, 'pending', `Waiting for owner approval: ${action}`, { requestId: q.id,taskId:q.taskId||null });
     return { status: 202, body: { status: 'pending', request_id: q.id, message: 'Action is paused until the owner approves or denies it.' } };
@@ -975,29 +1023,87 @@ async function gatewayActUnlocked(agent, body) {
   return { status: 200, body: { status: 'completed', result: out.data, receipt_id: rec.id } };
 }
 
-async function decide(reqId,decision){const q=await getJ('fm:req:'+reqId);return q?.taskId?withJobLock(q.taskId,()=>decideUnlocked(reqId,decision)):decideUnlocked(reqId,decision);}
-async function decideUnlocked(reqId, decision) {
-  const q = await getJ('fm:req:' + reqId); if (!q) return { status: 404, body: { error: 'not found' } };
+const reqHash = (action, params) => sha(JSON.stringify([action, params || {}]));
+// Move a request out of 'pending' exactly once: a compare-and-set on the stored record, so concurrent approvals (two taps, two
+// tabs, approve racing deny) cannot both proceed. Returns the claimed record or null if someone else got there first.
+async function claimReq(raw, patch) { const next = { ...JSON.parse(raw), ...patch }; return (await r(['EVAL', AGENT_CAS, 1, 'fm:req:' + next.id, raw, JSON.stringify(next)])) === 1 ? next : null; }
+async function decide(reqId,decision,body){const q=await getJ('fm:req:'+reqId);return q?.taskId?withJobLock(q.taskId,()=>decideUnlocked(reqId,decision,body)):decideUnlocked(reqId,decision,body);}
+async function decideUnlocked(reqId, decision, body) {
+  const raw = await r(['GET', 'fm:req:' + reqId]); if (!raw) return { status: 404, body: { error: 'not found' } };
+  let q = JSON.parse(raw);
   if (q.status !== 'pending') return { status: 409, body: { error: 'already ' + q.status, request: pub(q) } };
   const agent = await getJ('fm:agent:' + q.agentId);
+  const taken = { status: 409, body: { error: 'already decided', request: pub(q) } };
   if (decision === 'deny') {
-    q.status = 'denied'; q.decidedAt = now(); await finishReq(q);
+    q = await claimReq(raw, { status: 'denied', decidedAt: now() }); if (!q) return taken; await finishReq(q);
     const rec = await receipt(agent, q.action, q.params, 'denied', 0, `Owner denied ${q.action}`, q.id, { approvedBy: 'owner:deny' });
     await event(agent.id, 'denied', `Owner denied ${q.action}`, { requestId: q.id, receiptId: rec.id });
     return { status: 200, body: { request: pub(q) } };
   }
+  // The approval binds to what the owner saw. A missing fingerprint (required for email) or a stale one is refused and the
+  // request stays pending, so the owner can look again; nothing is consumed.
+  const given = body && body.detailsHash;
+  if (q.action === 'email.send' && !given) return { status: 409, body: { error: 'details_required', request: pub(q) } };
+  if (given != null && q.detailsHash && given !== q.detailsHash) return { status: 409, body: { error: 'details_changed', request: pub(q) } };
+  if (q.expiresAt && Date.parse(q.expiresAt) <= Date.now()) {
+    q = await claimReq(raw, { status: 'expired', decidedAt: now(), reason: 'The approval window closed before it was approved' }); if (!q) return taken; await finishReq(q);
+    const rec = await receipt(agent, q.action, q.params, 'expired', 0, 'Expired before approval: nothing ran', q.id, { detailsHash: q.detailsHash || null });
+    await event(agent.id, 'blocked', `Request expired: ${q.action}`, { requestId: q.id, receiptId: rec.id });
+    return { status: 200, body: { request: pub(q) } };
+  }
   // approval: re-check policy NOW (agent may have been revoked / budget changed while paused). Mode treated as AUTO for this one action.
-  const blocked = await jobPolicy(agent,q.action,q.taskId,q.grantId) || await policy(agent, q.action, (agent.permissions||{})[q.action]==='NEVER'?'NEVER':'AUTO');
+  let blocked = await jobPolicy(agent,q.action,q.taskId,q.grantId) || await policy(agent, q.action, (agent.permissions||{})[q.action]==='NEVER'?'NEVER':'AUTO');
+  // An email must still be exactly what the owner reviewed: same sender configuration and a recipient that is still allowed.
+  if (!blocked && q.action === 'email.send') { const inv = emailInvalid(q.rawParams); if (inv || reqHash(q.action, emailMessage(q.rawParams)) !== q.detailsHash) blocked = { code: 'details_changed', reason: 'What Alter would send changed after you reviewed it (' + (inv ? inv.reason : 'the sender changed') + '). Ask the bot again.' }; }
   if (blocked) {
-    q.status = 'blocked'; q.decidedAt = now(); q.reason = blocked.reason; await finishReq(q);
+    q = await claimReq(raw, { status: 'blocked', decidedAt: now(), reason: blocked.reason }); if (!q) return taken; await finishReq(q);
     const rec = await receipt(agent, q.action, q.params, 'blocked', 0, `BLOCKED at approval: ${blocked.reason}`, q.id, { code: blocked.code });
     await event(agent.id, 'blocked', `Blocked at approval: ${blocked.reason}`, { requestId: q.id, receiptId: rec.id });
     return { status: 200, body: { request: pub(q) } };
   }
-  q.status = 'approved'; q.decidedAt = now(); bust(); await setJ('fm:req:' + q.id, q);
-  const { rec, out, error } = await runAndReceipt(agent, q.action, q.rawParams, q.id, 'owner:approve',q.taskId);
-  q.status = error ? 'failed' : 'executed'; q.receiptId = rec.id; q.result = out ? out.data : { error }; await finishReq(q);
+  q = await claimReq(raw, { status: 'approved', decidedAt: now() }); if (!q) return taken; bust();
+  const { rec, out, error, unknown } = await runAndReceipt(agent, q.action, q.rawParams, q.id, 'owner:approve', q.taskId, { detailsHash: q.detailsHash || null });
+  q.status = unknown ? 'outcome_unknown' : error ? 'failed' : 'executed'; q.executedAt = now(); q.receiptId = rec.id; q.result = out ? out.data : { error };
+  if (q.action === 'email.send') q.delivery = out ? { state: 'accepted', providerMessageId: out.data.id, acceptedAt: now() } : { state: unknown ? 'unknown' : 'not_sent' };
+  await finishReq(q);
   return { status: 200, body: { request: pub(q), receipt: rec } };
+}
+// Owner action for an email whose outcome is unknown. It repeats the same request with the same Idempotency-Key and body, which
+// Resend answers with the original response if the first call landed, and otherwise sends it once now. Past 23 hours the
+// provider's 24-hour key window could lapse, so it refuses rather than risk a second email.
+async function reconcileReq(id) {
+  const raw = await r(['GET', 'fm:req:' + id]); if (!raw) return { status: 404, body: { error: 'not found' } };
+  let q = JSON.parse(raw);
+  if (q.action !== 'email.send' || q.status !== 'outcome_unknown') return { status: 409, body: { error: 'only an email with an unknown outcome can be reconciled', request: pub(q) } };
+  if (Date.now() - Date.parse(q.executedAt || q.decidedAt) > EMAIL_RECONCILE_MS) return { status: 409, body: { error: 'reconcile_window_passed', note: 'A retry now could send a second email. Check the Resend dashboard for this recipient and time.', request: pub(q) } };
+  q = await claimReq(raw, { status: 'reconciling' }); if (!q) return { status: 409, body: { error: 'already reconciling' } };
+  const agent = await getJ('fm:agent:' + q.agentId) || { id: q.agentId, name: q.agentName };
+  let rec;
+  try {
+    const sent = await resendSend(q.rawParams, q.id);
+    q.status = 'executed'; q.delivery = { state: 'accepted', providerMessageId: sent.id, acceptedAt: now() }; q.result = { id: sent.id, to: q.rawParams.to };
+    rec = await receipt(agent, q.action, q.rawParams, 'completed', 0, `Reconciled: Resend returned email id ${sent.id} for this request (same idempotency key, so at most one email). Delivery is not confirmed yet.`, q.id, { approvedBy: 'owner:approve', detailsHash: q.detailsHash, providerMessageId: sent.id, reconciled: true });
+  } catch (e) {
+    q.status = e && e.unknown ? 'outcome_unknown' : 'failed'; if (!(e && e.unknown)) q.delivery = { state: 'not_sent' };
+    rec = await receipt(agent, q.action, q.rawParams, e && e.unknown ? 'unknown' : 'failed', 0, (e && e.unknown ? 'Reconcile attempt: outcome still unknown: ' : 'Reconciled: ') + e.message, q.id, { approvedBy: 'owner:approve', detailsHash: q.detailsHash, reconciled: true });
+  }
+  q.receiptId = rec.id; bust(); await setJ('fm:req:' + q.id, q);
+  await event(q.agentId, q.status === 'executed' ? 'completed' : 'blocked', rec.summary, { requestId: q.id, receiptId: rec.id });
+  return { status: 200, body: { request: pub(q), receipt: rec } };
+}
+// Owner action: read the provider's own status for a sent email. A GET only; never sends.
+const DELIVERY_STATES = { sent: 'accepted', delivered: 'delivered', delivery_delayed: 'delayed', bounced: 'bounced', complained: 'complained', failed: 'failed', suppressed: 'suppressed' };
+async function deliveryReq(id) {
+  const q = await getJ('fm:req:' + id); if (!q) return { status: 404, body: { error: 'not found' } };
+  const mid = q.delivery && q.delivery.providerMessageId;
+  if (q.action !== 'email.send' || !/^[A-Za-z0-9_-]{1,100}$/.test(mid || '')) return { status: 409, body: { error: 'no provider email id to check', request: pub(q) } };
+  let j;
+  try { const resp = await fetch('https://api.resend.com/emails/' + encodeURIComponent(mid), { headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY }, signal: AbortSignal.timeout(7000) }); if (!resp.ok) throw Error('HTTP ' + resp.status); j = await resp.json(); }
+  catch (e) { return { status: 502, body: { error: 'provider_unreadable', note: 'Status unchanged: ' + String(e && e.message || e).slice(0, 80), request: pub(q) } }; }
+  const last = String((j && j.last_event) || '');
+  q.delivery = { ...q.delivery, state: DELIVERY_STATES[last] || 'accepted', lastEvent: last || null, checkedAt: now() };
+  bust(); await setJ('fm:req:' + q.id, q);
+  return { status: 200, body: { request: pub(q) } };
 }
 const pub = q => { const { rawParams, ...rest } = q; return rest; };
 
@@ -1012,7 +1118,11 @@ async function fullState() {
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
   const pend = ids.length ? parse(await r(['MGET', ...ids.map(i => 'fm:req:' + i)])).map(pub) : [];
-  const hist = parse(await r(['LRANGE', 'fm:reqhist', 0, 14]));
+  // History holds one snapshot per decision; show each request once, and read an email's live record so a reconcile or a
+  // delivery check (which update the record, not the history) is what the owner sees.
+  const hist = []; { const seenReq = new Set(pend.map(x => x.id)); for (const x of parse(await r(['LRANGE', 'fm:reqhist', 0, 14]))) if (!seenReq.has(x.id)) { seenReq.add(x.id); hist.push(x); } }
+  { const em = hist.filter(x => x.action === 'email.send'); if (em.length) { const cur = await r(['MGET', ...em.map(x => 'fm:req:' + x.id)]); em.forEach((x, i) => { if (cur[i]) Object.assign(x, pub(JSON.parse(cur[i]))); }); } }
+  for (const x of pend) if (x.status === 'pending' && x.expiresAt && Date.parse(x.expiresAt) <= Date.now()) x.expired = true;
   const day = now().slice(0, 10);
   const sp = agents.length ? await r(['MGET', ...agents.map(a => `fm:spend:${a.id}:${day}`)]) : [];
   const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
@@ -1068,6 +1178,7 @@ async function seed() {
 const MCP_TOOLS = [
   { name: 'foreman_web_fetch', description: 'Fetch a live https web page through Foreman (policy-gated).', inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] }, action: 'web.fetch' },
   { name: 'foreman_notes_write', description: 'Write a note to the shared workspace through Foreman (policy-gated; may pause for owner approval).', inputSchema: { type: 'object', properties: { title: { type: 'string' }, text: { type: 'string' } }, required: ['title', 'text'] }, action: 'notes.write' },
+  { name: 'foreman_email_send', description: 'Propose one plain-text email for Alter to send. The owner reviews the exact sender, recipient, subject and body; nothing is sent unless they approve, and Alter (not you) sends it. Returns a request_id: poll it for the outcome. Recipients are limited to addresses the owner allowed.', inputSchema: { type: 'object', properties: { to: { type: 'string' }, subject: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'subject', 'text'] }, action: 'email.send' },
   { name: 'foreman_notes_delete', description: 'Delete workspace notes through Foreman (policy-gated).', inputSchema: { type: 'object', properties: {} }, action: 'notes.delete' },
   { name: 'foreman_enqueue', description: 'Queue an unassigned task in your own workspace. This does not start a hosted worker. Policy-gated, zero cost, maximum 10 per minute.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, brief: { type: 'string' } }, required: ['title'] }, action: 'work.enqueue' },
   { name: 'foreman_handoff', description: 'Hand a task to another Foreman agent.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, to: { type: 'string' }, brief: { type: 'string' } }, required: ['task_id', 'to'] }, action: 'work.handoff' },
@@ -1611,7 +1722,8 @@ async function routes(req, res, path, body, agentPre) {
     { const bm = path.match(/^\/business\/proposals\/(prop_\w+)\/(edit|reject|activate)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProposalAct(bm[1], bm[2], body)); } }
     { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
-    if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2]); if (d.status === 200) await track('approval_completed'); return send(d); }
+    if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2], body); if (d.status === 200) await track('approval_completed'); return send(d); }
+    if ((m = path.match(/^\/requests\/(\w+)\/(reconcile|delivery)$/)) && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(m[2] === 'reconcile' ? await reconcileReq(m[1]) : await deliveryReq(m[1])); }
     {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
       if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});
       const a=await getJ('fm:agent:'+km[1]);if(!a||a.status!=='active'||a.hosted)return res.status(409).json({error:'bot_not_available'});

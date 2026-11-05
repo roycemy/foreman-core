@@ -63,6 +63,22 @@
   BB.tasks = () => (BB.S && BB.S.tasks) || [];
   BB.task = id => BB.tasks().find(t => t.id === id) || null;
   BB.pendingReqs = () => ((BB.S && BB.S.requests) || []).filter(q => q.status === 'pending');
+  /* email.send after approval. Words follow evidence: Resend accepting it is not delivery; unknown stays unknown. */
+  BB.EMAIL_STATE = { accepted: 'Accepted by Resend. Delivery not confirmed yet.', delivered: 'Delivered to the recipient’s mail server (Resend).', delayed: 'Delivery delayed (Resend).', bounced: 'Bounced: the recipient’s server rejected it.', complained: 'Delivered, then marked as spam.', failed: 'Resend could not send it.', suppressed: 'Not sent: the address is on Resend’s suppression list.', unknown: 'Outcome unknown. Nothing was retried.', not_sent: 'Not sent.' };
+  BB.emailOutcome = q => q.status === 'outcome_unknown' ? 'Approved, but the result is unknown. Nothing was retried. Reconcile to find out.' : q.status === 'expired' ? 'Expired. Nothing was sent.' : q.status === 'blocked' ? 'Blocked: ' + (q.reason || 'something changed') + ' Nothing was sent.' : q.status === 'denied' ? 'Denied. Nothing was sent.' : q.status === 'failed' ? 'Not sent: ' + ((q.result && q.result.error) || 'Resend rejected it') : q.delivery ? BB.EMAIL_STATE[q.delivery.state] || 'Sent.' : 'Decision saved.';
+  /* the exact email under review: every field in full, escaped, plus the fingerprint and expiry ---------- */
+  BB.emailReview = q => {
+    const p = q.params || {}, left = q.expiresAt ? Math.max(0, Math.round((Date.parse(q.expiresAt) - Date.now()) / 60000)) : null;
+    return '<span class="email-review"><b>From</b> ' + esc(p.from) + '<br><b>To</b> ' + esc(p.to) + '<br><b>Subject</b> ' + esc(p.subject) + '</span><span class="email-body" style="display:block;white-space:pre-wrap;max-height:40vh;overflow:auto;margin:.5em 0;padding:.5em;border:1px solid currentColor;border-radius:6px">' + esc(p.text) + '</span><small>Fingerprint ' + esc(String(q.detailsHash || '').slice(0, 12)) + (q.expired ? ' · expired: approving now sends nothing' : left != null ? ' · expires in ' + left + ' min' : '') + ' · Alter sends it, not the bot</small>';
+  };
+  BB.reviewEmail = function (item) {
+    if (!BB.modal) return null;
+    const box = BB.modal('<h3>Review this email</h3><p>' + BB.emailReview(item.q) + '</p><div class="btns"><button class="b pri grow" type="button" data-ok>Approve and send</button><button class="b out grow" type="button" data-no>Deny</button></div>', { label: 'Review email', wide: true });
+    box.querySelector('[data-ok]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'approve', { reviewed: true }); };
+    box.querySelector('[data-no]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'deny'); };
+    return null;
+  };
+  BB.emailFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'email.send' && (q.status === 'outcome_unknown' || (q.status === 'executed' && q.delivery && ['accepted', 'delayed'].includes(q.delivery.state) && Date.now() - Date.parse(q.executedAt || q.decidedAt) < 86400000)));
 
   /* ---------- presence: derived from the server's grant state, never from a stale heartbeat ---------- */
   BB.linkWaiting = null;
@@ -138,7 +154,8 @@
     'notes.delete': { verb: 'Delete notes', what: 'Removes notes from your workspace', ask: 'Delete workspace notes', doing: 'tidying notes' },
     'work.handoff': { verb: 'Hand off work', what: 'Passes a job to another bot', ask: 'Hand off a job', doing: 'handing off work' },
     'work.assign': { verb: 'Assign jobs', what: 'Gives a job to another bot', ask: 'Assign a job', doing: 'assigning a job' },
-    'work.enqueue': { verb: 'Queue new jobs', what: 'Adds unassigned jobs to your inbox', ask: 'Queue a job', doing: 'queueing a job' }
+    'work.enqueue': { verb: 'Queue new jobs', what: 'Adds unassigned jobs to your inbox', ask: 'Queue a job', doing: 'queueing a job' },
+    'email.send': { verb: 'Send email', what: 'Alter sends each email only after you approve it', ask: 'Send an email', doing: 'drafting an email' }
   };
   BB.MODE_COPY = { AUTO: 'Allowed', ASK: 'Ask first', NEVER: 'Never' };
   BB.reqTitle = q => {
@@ -307,6 +324,7 @@
   BB.onYou = function () {
     const items = [];
     BB.pendingReqs().forEach(q => { const a = BB.agent(q.agentId); items.push({ type: 'approval', id: 'req:' + q.id, at: q.createdAt, a, q }); });
+    BB.emailFollowups().forEach(q => items.push({ type: 'email', id: 'email:' + q.id, at: q.executedAt || q.decidedAt, a: BB.agent(q.agentId), q }));
     ((BB.money && BB.money.requests) || []).filter(q => q.status === 'pending_review' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'spend', id: 'spend:' + q.id, at: q.createdAt, a: BB.agent(q.agentId), q }));
     ((BB.cards && BB.cards.proposals) || []).filter(q => q.status === 'pending' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'card', id: 'card:' + q.id, at: q.createdAt, a: BB.agent(q.botId), q }));
     BB.agents().filter(a => BB.presence(a) === 'reconnect').forEach(a => items.push({ type: 'reconnect', id: 'rec:' + a.id, at: (a.connection && a.connection.failedAt) || a.lastSeen, a }));
@@ -319,7 +337,7 @@
     });
     BB.tasks().forEach(t => { const b = BB.budgetBlock(t); if (b) items.push({ type: 'budget', id: 'budget:' + t.id + ':' + b.id, at: b.at, a: BB.agent(t.assignee), t, r: b }); });
     BB.tasks().filter(t => t.status === 'queued' && !t.assignee).forEach(t => items.push({ type: 'unassigned', id: 'task:' + t.id, at: t.createdAt, t }));
-    const rank = { approval: 0, spend: 0, card: 0, budget: 0, reconnect: 1, dark: 1, asleep: 1, unassigned: 2 };
+    const rank = { approval: 0, spend: 0, card: 0, budget: 0, email: 1, reconnect: 1, dark: 1, asleep: 1, unassigned: 2 };
     return items.sort((x, y) => rank[x.type] - rank[y.type] || String(y.at || '').localeCompare(String(x.at || '')));
   };
   /* One summary for the crew pill, the pop-down, the rail and the phone Inbox, all on the 60-second activity rule.
@@ -339,17 +357,21 @@
   };
 
   /* ---------- decisions ---------- */
-  BB.decide = async function (item, d) {
+  BB.decide = async function (item, d, opts) {
     let j;
-    if (item.type === 'approval') j = await BB.api('/api/requests/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST');
+    /* An email is approved only from a view that shows all of it. Compact cards (floor tray, lists, pop-down) open the full review instead. */
+    if (item.type === 'approval' && item.q.action === 'email.send' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewEmail(item);
+    if (item.type === 'approval') j = await BB.api('/api/requests/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
+    else if (item.type === 'email') j = await BB.api('/api/requests/' + item.q.id + '/' + (item.q.status === 'outcome_unknown' ? 'reconcile' : 'delivery'), 'POST');
     else if (item.type === 'spend') j = await BB.api('/api/money/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     else if (item.type === 'card') j = await BB.api('/api/cards/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     BB.toast(BB.outcome(item, j, d)); await BB.sync(true); return j;
   };
   BB.outcome = function (item, j, d) {
     if (!j || j.error) return 'Not confirmed: ' + ((j && j.error) || 'try again');
-    if (item.type === 'approval') {
+    if (item.type === 'approval' || item.type === 'email') {
       const q = j.request, st = q && q.status;
+      if (q && q.action === 'email.send') return BB.emailOutcome(q);
       if (st === 'executed' && j.receipt && j.receipt.outcome === 'completed') return 'Approved. It ran and left a receipt.';
       if (st === 'denied') return 'Denied. Nothing ran.';
       if (st === 'blocked') return 'Blocked: ' + (q.reason || 'a permission or limit changed');
