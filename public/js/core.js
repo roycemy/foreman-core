@@ -84,7 +84,7 @@
   BB.linkWaiting = null;
   BB.presence = function (d) {
     if (!d) return 'prepared'; if (d.status === 'revoked') return 'revoked';
-    const c = d.connection, seen = !!(d.lastSeen || d.state);
+    const c = d.connection, seen = !!(d.lastSeen || d.state || (c && c.lastCallAt));
     if (c && c.status) {
       if (c.status === 'needs_reauth') return 'reconnect'; if (c.status === 'revoked') return 'revoked'; if (c.status === 'not_applicable') return 'connected';
       if (c.status === 'active') return seen ? 'connected' : 'waiting'; if (c.status === 'verification_pending') return 'waiting';
@@ -225,8 +225,11 @@
   BB.DARK_MS = 150000;
   BB.wentDark = (a, at) => {
     if (!a || a.status !== 'active' || !a.connection || a.connection.status !== 'active' || a.connection.transport === 'botlink' || !a.lastSeen) return false;
+    /* a gateway-key bot only goes dark if it was checking in and stopped. polledAt null = the server knows it never checked in: idle, not dark.
+       polledAt absent = an older server sent no evidence either way, so the last-seen rule stays. */
+    const pa = a.connection.polledAt, last = a.connection.transport === 'gateway' && pa !== undefined ? pa : a.lastSeen; if (!last) return false;
     const ps = BB.pollSec(a);
-    return ((at || BB.now()) - Date.parse(a.lastSeen)) >= (ps ? 2 * ps * 1000 : BB.DARK_MS);
+    return ((at || BB.now()) - Date.parse(last)) >= (ps ? 2 * ps * 1000 : BB.DARK_MS);
   };
   /* the owner alarm only covers live channels: pollers show Late in their own status and Muse is Dark by default */
   BB.goneDark = (a, at) => BB.wentDark(a, at) && !BB.pollSec(a) && a.providerId !== 'muse';
@@ -346,7 +349,7 @@
     at = at || BB.now();
     const as = BB.agents().filter(a => a.status !== 'revoked'), dark = as.filter(a => BB.goneDark(a, at));
     const active = as.filter(a => BB.signal(a, at) !== 'inactive'), working = as.filter(a => BB.signal(a, at) === 'working');
-    const needs = BB.onYou().filter(i => i.type !== 'dark').length;
+    const needs = BB.onYou().filter(i => i.type !== 'dark' && !(i.type === 'email' && i.q.status === 'executed')).length;
     const running = BB.tasks().filter(t => t.status === 'running' && t.assignee && BB.agent(t.assignee) && BB.signal(BB.agent(t.assignee), at) === 'working').length;
     const parts = [];
     if (needs) parts.push(needs + (needs === 1 ? ' needs' : ' need') + ' you');

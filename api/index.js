@@ -238,7 +238,7 @@ async function redeemPairing(body,ip) {
  if(!await r(['SET','gl:pairUsed:'+hash,'1','NX','PX',300000])){const rp=await getJ('gl:pairReplay:'+hash);if(rp&&rp.ip===(ip||'unknown')&&rp.until>Date.now())return {status:200,body:rp.body};return {status:409,body:{error:'Pairing code already used'}};}
  const old=await r(['GET','fm:gatewayKeyHash:'+a.id]),key='fmk_'+crypto.randomBytes(20).toString('hex'),kh=sha(key);
  const updated=await updateAgent(a.id,x=>{if(x.status!=='active'||(x.oauthEpoch||0)!==q.epoch)throw Error('Bot authorization changed');x.connectionMode='gateway';x.keyHint=key.slice(0,8)+'...'+key.slice(-4)});
- if(old)await r(['DEL','fm:key:'+old,'gl:key:'+old]);await r(['SET','fm:gatewayKeyHash:'+a.id,kh]);await r(['SET','fm:key:'+kh,a.id]);await r(['SET','gl:key:'+kh,q.ws]);await r(['DEL','gl:pair:'+hash,'fm:gatewaySeen:'+a.id,'fm:seen:'+a.id]);bust();
+ if(old)await r(['DEL','fm:key:'+old,'gl:key:'+old]);await r(['SET','fm:gatewayKeyHash:'+a.id,kh]);await r(['SET','fm:key:'+kh,a.id]);await r(['SET','gl:key:'+kh,q.ws]);await r(['DEL','gl:pair:'+hash,'fm:gatewaySeen:'+a.id,'fm:seen:'+a.id,'fm:gatewayCall:'+a.id,'fm:gatewayPoll:'+a.id]);bust();
  await setJ('gl:pairReplay:'+hash,{ip:ip||'unknown',until:Math.min(q.expires,Date.now()+300000),agentId:q.agentId,keyHash:kh,body:{key,agent:{id:updated.id,name:updated.name}}});
  await r(['SET','gl:pairReplayKey:'+kh,hash,'PX',300000]);await r(['SET','gl:pairReplayAgent:'+a.id,hash,'PX',300000]);
  return {status:200,body:{key,agent:{id:updated.id,name:updated.name}}};
@@ -1343,6 +1343,7 @@ async function connectionState(a){
  const grants=(await Promise.all(ids.map(id=>getJ('gl:oauth:grant:'+id)))).filter(g=>g&&g.ws===wsId()&&g.agentId===a.id&&g.epoch===(a.oauthEpoch||0));
  const live=grants.filter(g=>!g.revoked).sort((a,b)=>String(b.renewedAt||b.createdAt).localeCompare(String(a.renewedAt||a.createdAt)));
  if(live.length)return {status:'active',persistent:true,authorizedAt:live[0].createdAt,lastRenewedAt:live[0].renewedAt||null};
+ if(a.connectionMode==='gateway'&&gateway&&gateway.epoch===(a.oauthEpoch||0)){const [_call,_poll]=await r(['MGET','fm:gatewayCall:'+a.id,'fm:gatewayPoll:'+a.id]);return {status:'active',transport:'gateway',persistent:false,authorizedAt:gateway.seenAt,lastCallAt:_call||gateway.seenAt,polledAt:_poll||null};}
  if(a.connectionMode==='gateway')return gateway&&gateway.epoch===(a.oauthEpoch||0)?{status:'active',transport:'gateway',persistent:false,authorizedAt:gateway.seenAt}:{status:'awaiting_bot',transport:'gateway',persistent:false,reason:'gateway_call_pending'};
  const failed=grants.filter(g=>g.failureReason).sort((a,b)=>String(b.failedAt).localeCompare(String(a.failedAt)))[0];
  const seen=a.lastSeen||await r(['GET','fm:seen:'+a.id]),legacy=await getJ('fm:oauth:legacy:'+a.id),knownLegacy=legacy&&legacy.epoch===(a.oauthEpoch||0);
@@ -1593,6 +1594,9 @@ async function routes(req, res, path, body, agentPre) {
       if(path==='/gateway/teammates'&&req.method==='GET')return res.json({bots:await teammates()});
       if(path==='/gateway/notifications'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return send(await notifications(agent,new URL(req.url,'https://local.invalid').searchParams.get('after')));}
       if(path==='/gateway/me'&&req.method==='GET'){if(agent.status!=='active'||await r(['GET','fm:kill']))return res.status(403).json({status:'blocked',reason:'Worker revoked or workspace paused'});res.setHeader('Cache-Control','no-store');return res.json({agent:{id:agent.id,name:agent.name,status:agent.status}});}
+      // Evidence, kept apart: any authenticated gateway call proves the key works right now (fm:gatewayCall). Only a poll (presence or
+      // tasks/next) is evidence that a worker is checking in (fm:gatewayPoll). Neither proves an always-on worker.
+      if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])){await r(['SET','fm:gatewayCall:'+agent.id,now()]);const _pollPath=(path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET');if(_pollPath)await r(['SET','fm:gatewayPoll:'+agent.id,now()]);else{const _gs=await getJ('fm:gatewaySeen:'+agent.id);if(!_gs||_gs.epoch!==(agent.oauthEpoch||0)){await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});bust();}}}
       if(req.gatewayKeyAuth&&agent.status==='active'&&!await r(['GET','fm:kill'])&&((path==='/gateway/presence'&&req.method==='POST')||(path==='/gateway/tasks/next'&&req.method==='GET'))){const prior=await getJ('fm:gatewaySeen:'+agent.id);if(!prior||prior.epoch!==(agent.oauthEpoch||0))await setJ('fm:gatewaySeen:'+agent.id,{seenAt:now(),epoch:agent.oauthEpoch||0});if(path!=='/gateway/presence')await touchAgent(agent);const _ah=(req.headers['authorization']||'').replace(/^Bearer\s+/i,'').trim(),_rh=_ah?await r(['GET','gl:pairReplayKey:'+sha(_ah)]):await r(['GET','gl:pairReplayAgent:'+agent.id]);if(_rh){const _rp=await getJ('gl:pairReplay:'+_rh);await r(['DEL','gl:pairReplayKey:'+((_rp&&_rp.keyHash)||'')]);await r(['DEL','gl:pairReplayAgent:'+agent.id]);await r(['DEL','gl:pairReplay:'+_rh]);}if(!prior||prior.epoch!==(agent.oauthEpoch||0))await event(agent.id,'interaction','HTTP gateway connected',{kind:'INTERACTION',source:'gateway',presenceOnly:true});}const _ps=pollSecFrom(req,body);if(_ps)await notePollCadence(agent,_ps);const _wt=wakeTargetFrom(body);if(_wt)await noteWakeTarget(agent,_wt);await noteWakeNonce(agent,body);
       if(path==='/gateway/card-proposals'&&req.method==='POST')return send(await cardPropose(await getJ('fm:agent:'+agent.id),body));
       if(path==='/gateway/broker/requests'&&req.method==='POST')return send(await brokerRequest(agent,body));
@@ -1733,7 +1737,7 @@ async function routes(req, res, path, body, agentPre) {
       const key='fmk_'+crypto.randomBytes(20).toString('hex'),hash=sha(key);
       const updated=await updateAgent(a.id,x=>{if(x.status!=='active')throw new Error('Bot revoked during setup');x.connectionMode='gateway';x.keyHint=key.slice(0,8)+'...'+key.slice(-4);});
       if(oldHash)await r(['DEL','fm:key:'+oldHash,'gl:key:'+oldHash]);await r(['SET','fm:gatewayKeyHash:'+a.id,hash]);
-      await r(['SET','fm:key:'+hash,a.id]);await r(['SET','gl:key:'+hash,wsId()]);await r(['DEL','fm:gatewaySeen:'+a.id,'fm:seen:'+a.id]);bust();
+      await r(['SET','fm:key:'+hash,a.id]);await r(['SET','gl:key:'+hash,wsId()]);await r(['DEL','fm:gatewaySeen:'+a.id,'fm:seen:'+a.id,'fm:gatewayCall:'+a.id,'fm:gatewayPoll:'+a.id]);bust();
       res.setHeader('Cache-Control','no-store');return res.json({agent:updated,key,connectionStatus:'awaiting_bot'});
       }finally{if(await r(['GET',lockKey])===lock)await r(['DEL',lockKey]);}
     }}
