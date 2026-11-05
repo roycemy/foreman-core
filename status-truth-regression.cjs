@@ -92,5 +92,17 @@ const ago=ms=>new Date(Date.now()-ms).toISOString();
   assert(compact.indexOf("i.type === 'email'")<compact.indexOf("' lost access'"),'before the reconnect fallthrough');
   assert(/providerMessageId/.test(compact),'with the provider id');
   const fl=fs.readFileSync(path.join(__dirname,'public/js/floor.js'),'utf8');assert(/i\.type === 'email'/.test(fl.slice(fl.indexOf('BB.itemTitle ='))),'titled as an email, not blank');}
+ // ---- older records: a bot whose key was used before this change has gatewaySeen but no lastCall/poll keys. The server still sends
+ // polledAt explicitly (null), so the client never falls back to the old offline/re-paste rule for it. Only a reconnect item says "lost access".
+ await f.als.run({ws:'statustest'},async()=>{
+  const old=(await f.createAgent('Old Bot','Ops','custom',false,{preset:'balanced'})).agent;await call('POST','/agents/'+old.id+'/gateway-key',{});
+  const seenAt=ago(5*3600e3);await f.setJ('fm:gatewaySeen:'+old.id,{seenAt,epoch:0});
+  const c=await f.connectionState(await f.getJ('fm:agent:'+old.id));
+  assert.equal(c.status,'active');assert(Object.prototype.hasOwnProperty.call(c,'polledAt')&&c.polledAt===null,'polledAt is always sent for an active gateway key');assert.equal(c.lastCallAt,seenAt,'lastCallAt falls back to first use');
+  const a={...(await f.getJ('fm:agent:'+old.id)),lastSeen:ago(5*3600e3),connection:c};set([a]);
+  assert.match(BB.honestStatus(a).line,/^Idle · last call/);assert.deepEqual([BB.isOffline(a),BB.wentDark(a,Date.now()),BB.reconnectFlag.needs(a)],[false,false,false]);assert.deepEqual(BB.onYou().map(i=>i.type),[]);});
+ {const ib=fs.readFileSync(path.join(__dirname,'public/js/inbox.js'),'utf8'),compact=ib.slice(ib.indexOf('const card = i =>'),ib.indexOf('const jrow ='));
+  assert(compact.indexOf("if (i.type !== 'reconnect' || !i.a) return")>0&&compact.indexOf("if (i.type !== 'reconnect' || !i.a) return")<compact.indexOf("' lost access'"),'only a reconnect item can render "lost access" (a budget block on a valid bot cannot)');}
+ console.log('PASS older records: a key used before this change reads Idle with polledAt null (never offline, dark or re-paste); only reconnect items can say "lost access"');
  console.log('PASS the sent email stays visible as an executed request with its provider id; it is not a reconnect card and does not count as needing the owner');
 })().catch(e=>{console.error(e);process.exit(1)});
