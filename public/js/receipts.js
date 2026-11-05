@@ -24,7 +24,11 @@
     };
   };
   function list() {
-    const fs = finished(), phone = BB.phone();
+    const feed = BB.receiptFeed(), fs = feed.filter(x => x.kind === 'job').map(x => x.t), phone = BB.phone();
+    /* a standalone action receipt: no job, so no link; the line says what happened and, for an email, the provider id */
+    const act = x => { const a = BB.agent(x.r.agentId), meta = BB.receiptLine(x) + ' · ' + BB.when(x.r.at), title = (BB.ACTION_COPY[x.r.action] || {}).ask || x.r.action;
+      return phone ? `<div class="kr">${a ? `<span class="kav" style="--av:${BB.avColor(a)}">${esc(BB.initials(a.name))}</span>` : '<span class="kav merch">?</span>'}<div class="t"><b>${esc(title)}</b><small>${esc(meta)}</small></div></div>` : `<div class="row"><span class="t"><b>${esc(title)}</b><small>${esc((a ? a.name + ' · ' : '') + meta)}</small></span></div>`; };
+    const rows = () => feed.map(x => x.kind === 'job' ? row(x.t) : act(x)).join('');
     const row = t => {
       const who = BB.jobWho(t), a = who[0], cost = t.status === 'failed' ? 'Didn\'t finish' : t.modelCostUsd != null ? BB.modelCost(t.modelCostUsd) : '–';
       const meta = (who.length ? (t.runByAlter ? 'by Alter for ' : 'by ') + who.map(x => x.name).join(' + ') : 'Unassigned') + ' · ' + BB.when(t.finishedAt);
@@ -32,9 +36,9 @@
       return `<a class="row" href="#receipts/${t.id}" style="text-decoration:none">${BB.jobAv(t)}<span class="t"><b>${esc(t.title)}</b><small>${esc(meta)}</small></span><span class="r" title="${t.modelCostUsd != null ? 'Model costs' : ''}">${esc(cost)}</span><span class="chev">${BB.ICON.chev}</span></a>`;
     };
     const foot = fs.some(t => t.modelCostUsd != null) ? '<p class="meta" style="margin-top:14px;padding:0 4px">Amounts are model costs each bot reported. They exclude subscriptions and any tools you pay for. – means not reported.</p>' : '';
-    if (phone) V.innerHTML = `<div class="kh"><h1>Receipts</h1><div class="end">${BB.acctAv ? BB.acctAv() : ''}</div></div><div class="ks">What your team finished.</div>${fs.length ? fs.map(row).join('') : '<div class="ks">Nothing finished yet. Finished jobs show up here with proof of how they got done.</div>'}${foot ? `<div style="padding:8px 20px">${foot}</div>` : ''}`;
+    if (phone) V.innerHTML = `<div class="kh"><h1>Receipts</h1><div class="end">${BB.acctAv ? BB.acctAv() : ''}</div></div><div class="ks">What your team finished.</div>${feed.length ? rows() : '<div class="ks">Nothing finished yet. Finished jobs show up here with proof of how they got done.</div>'}${foot ? `<div style="padding:8px 20px">${foot}</div>` : ''}`;
     else V.innerHTML = `<div class="page-in narrow"><div class="page-h"><div><h1>Receipts</h1><p class="sub">What your team finished.</p></div></div>
-      ${fs.length ? `<div class="list">${fs.map(row).join('')}</div>${foot}` : `<div class="list"><div class="list-empty"><b>Nothing finished yet</b>Finished jobs show up here with how they got done and what they cost.</div></div>`}</div>`;
+      ${feed.length ? `<div class="list">${rows()}</div>${foot}` : `<div class="list"><div class="list-empty"><b>Nothing finished yet</b>Finished jobs show up here with how they got done and what they cost.</div></div>`}</div>`;
     BB.markNewRows && BB.markNewRows(V);
   }
   async function detail(id) {

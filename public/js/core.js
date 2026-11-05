@@ -78,7 +78,26 @@
     box.querySelector('[data-no]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'deny'); };
     return null;
   };
-  BB.emailFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'email.send' && (q.status === 'outcome_unknown' || (q.status === 'executed' && q.delivery && ['accepted', 'delayed'].includes(q.delivery.state) && Date.now() - Date.parse(q.executedAt || q.decidedAt) < 86400000)));
+  /* Needs you: only an email whose outcome is unknown (the owner must reconcile). A sent email is a receipt, not unresolved work: it
+     lives in Receipts with its provider id and delivery state. */
+  BB.emailFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'email.send' && q.status === 'outcome_unknown');
+  /* Receipts: finished jobs plus standalone action receipts (no taskId), newest first. A job-linked receipt stays inside its job, each
+     receipt id appears once, and a standalone receipt is linked to its request when that request is still in the retained history. */
+  BB.receiptFeed = function () {
+    const S = BB.S || {}, reqs = new Map((S.requests || []).map(q => [q.id, q])), seen = new Set();
+    const jobs = BB.tasks().filter(t => ['done', 'failed'].includes(t.status) && t.finishedAt).map(t => ({ kind: 'job', at: t.finishedAt, t }));
+    const acts = (S.receipts || []).filter(r => r && r.id && !r.taskId && !seen.has(r.id) && seen.add(r.id)).map(r => ({ kind: 'action', at: r.at, r, q: (r.requestId && reqs.get(r.requestId)) || null }));
+    return jobs.concat(acts).sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+  };
+  const OUTCOME_WORD = { completed: 'Done', denied: 'Denied', blocked: 'Blocked', expired: 'Expired', failed: 'Failed', unknown: 'Outcome unknown' };
+  BB.receiptLine = function (x) {
+    const r = x.r, q = x.q, c = BB.ACTION_COPY[r.action] || {};
+    if (r.action === 'email.send' && r.outcome === 'completed') {
+      const to = (q && q.params && q.params.to) || (r.params && r.params.to) || '', id = (q && q.delivery && q.delivery.providerMessageId) || r.providerMessageId;
+      return 'Sent an email to ' + to + ' · ' + (q ? BB.emailOutcome(q) : 'Accepted by Resend. Delivery not confirmed yet.') + (id ? ' · Resend id ' + id : '');
+    }
+    return (c.ask || r.action) + ' · ' + (OUTCOME_WORD[r.outcome] || r.outcome) + (r.summary ? ' · ' + String(r.summary).slice(0, 140) : '');
+  };
 
   /* ---------- presence: derived from the server's grant state, never from a stale heartbeat ---------- */
   BB.linkWaiting = null;

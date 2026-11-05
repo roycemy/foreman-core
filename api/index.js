@@ -590,8 +590,8 @@ async function jobDetail(id){
  const receipts=parse(await r(['LRANGE','fm:receipts',0,299])).filter(x=>x.taskId===id).reverse();
  const agents=await listAgents(),name=x=>(agents.find(a=>a.id===x)||{}).name||'A bot';
  return {task:t,children:kids,events,requests,receipts,timeline:timelineOf(t,events,requests,receipts,kids,name)};}
-const ACTION_WORDS={'web.fetch':['Read','web page','web pages','web fetch'],'notes.write':['Saved','note','notes','note'],'notes.delete':['Deleted','note set','note sets','delete'],'work.handoff':['Handed off','part','parts','handoff'],'work.assign':['Assigned','job','jobs','assign'],'work.enqueue':['Queued','job','jobs','queue']};
-const REQ_WORDS={'web.fetch':'read a web page','notes.write':'save a note','notes.delete':'delete notes','work.handoff':'hand off a part','work.assign':'assign a job','work.enqueue':'queue a job'};
+const ACTION_WORDS={'email.send':['Sent','email','emails','email'],'web.fetch':['Read','web page','web pages','web fetch'],'notes.write':['Saved','note','notes','note'],'notes.delete':['Deleted','note set','note sets','delete'],'work.handoff':['Handed off','part','parts','handoff'],'work.assign':['Assigned','job','jobs','assign'],'work.enqueue':['Queued','job','jobs','queue']};
+const REQ_WORDS={'email.send':'send an email','web.fetch':'read a web page','notes.write':'save a note','notes.delete':'delete notes','work.handoff':'hand off a part','work.assign':'assign a job','work.enqueue':'queue a job'};
 // Steps in plain language. `detail` is owner-only (urls, note titles, tool output); public receipts drop it.
 function timelineOf(t,events,requests,receipts,kids,name){
  const out=[],bot=t.assignee?name(t.assignee):'A bot';
@@ -610,7 +610,11 @@ function timelineOf(t,events,requests,receipts,kids,name){
  for(const x of out.filter(x=>x.action)){x.text=x.w[0]+' '+x.n+' '+(x.n===1?x.w[1]:x.w[2]);x.kind='step';x.meta=x.w[3]+(x.cents?' · '+x.cents+'¢':'');x.detail=x.details.slice(0,3).join(' · ');delete x.w;delete x.details;delete x.n;delete x.cents;delete x.action;}
  for(const q of requests){
   const w=REQ_WORDS[q.action]||q.action,what=q.params&&(q.params.title||q.params.url)?'“'+String(q.params.title||q.params.url).slice(0,60)+'”':null;
-  if(['approved','executed','failed'].includes(q.status))out.push({at:q.decidedAt||q.createdAt,text:'Owner approved: '+w,kind:'approval',detail:what});
+  if(['approved','executed','failed','outcome_unknown','reconciling'].includes(q.status))out.push({at:q.decidedAt||q.createdAt,text:'Owner approved: '+w,kind:'approval',detail:what});
+  if(q.status==='executed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:q.action==='email.send'?'Alter sent it: Resend accepted it'+(q.delivery&&q.delivery.providerMessageId?' ('+q.delivery.providerMessageId+')':'')+'. Delivery not confirmed here.':'Alter ran it',kind:'step'});
+  if(q.status==='failed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:(q.action==='email.send'?'Not sent: ':'It did not run: ')+String((q.result&&q.result.error)||'it failed'),kind:'denied'});
+  if(q.status==='outcome_unknown'||q.status==='reconciling')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:'Outcome unknown: Alter did not retry. Reconcile to find out.',kind:'denied'});
+  if(q.status==='expired')out.push({at:q.decidedAt||q.createdAt,text:'Expired before approval: '+w,kind:'denied'});
   else if(q.status==='denied')out.push({at:q.decidedAt||q.createdAt,text:'Owner denied: '+w,kind:'denied',detail:what});
   else if(q.status==='pending')out.push({at:q.createdAt,text:'Waiting for the owner: '+w,kind:'approval',detail:what});
   else if(q.status==='blocked')out.push({at:q.decidedAt||q.createdAt,text:'Blocked: '+w,kind:'denied',detail:q.reason||null});}
@@ -724,7 +728,10 @@ async function completeTask(agent,id,body){return withJobLock(id,()=>completeTas
 async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.orchestration || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
   if(t.status==='queued'&&(t.reassignedAt||(t.origin==='chat'&&t.createdBy!==agent.id)))return {status:409,body:{error:'Claim the assigned job before completing it'}};
   if (!['running','queued'].includes(t.status)) return {status:409,body:{error:'Task is already terminal',task:t}};
-  const failed = body.status === 'failed'; t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(body&&body.runByAlter===true)t.runByAlter=true; /* hosted worker self-labels: rendered as Run by Alter on <bot>'s account */
+  if (agent.status !== 'active') return { status: 403, body: { error: 'bot_not_active', reason: 'A revoked or inactive bot cannot complete a job' } };
+  const failed = body.status === 'failed';
+  // Waiting for the owner, or an outcome Alter has not confirmed, is not done. The bot may still report failed (which voids pending requests).
+  if (!failed) { const ids = await r(['SMEMBERS', 'fm:taskreqs:' + id]); const open = ids.length ? (await r(['MGET', ...ids.map(x => 'fm:req:' + x)])).filter(Boolean).map(x => JSON.parse(x)).filter(x => ['pending', 'approved', 'reconciling', 'outcome_unknown'].includes(x.status)) : []; if (open.length) return { status: 409, body: { error: 'proposal_unresolved', reason: 'A proposal on this job has no final outcome yet', requests: open.map(x => ({ id: x.id, status: x.status })) } }; } t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(body&&body.runByAlter===true)t.runByAlter=true; /* hosted worker self-labels: rendered as Run by Alter on <bot>'s account */
   {const c=reportedCost(body);if(c!=null){t.modelCostUsd=Math.round((Number(t.modelCostUsd||0)+c)*1e6)/1e6;t.modelCostSource=t.modelCostSource==='provider'?'provider+bot':'bot';}} await closeJobGrant(t,'Job finished; action grant expired'); if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+id,raw,JSON.stringify(t)])!==1)return {status:409,body:{error:'Task changed. Read it again'}};
   await touchAgent(agent);
   await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id });
@@ -995,9 +1002,11 @@ async function gatewayActUnlocked(agent, body) {
   let mode = (agent.permissions||{})[action]==='NEVER'?'NEVER':agent.permissionScope==='job'?(task?.jobGrant?.actions?.[action]||'NEVER'):((agent.permissions||{})[action]||DEFAULT_PERMS[action]||'NEVER');
   if (action === 'email.send' && mode === 'AUTO') mode = 'ASK'; // an email always waits for the owner; no standing grant sends one
   await event(agent.id, 'attempt', `Attempted ${action} (${mode})`, { action });
-  const blocked = await jobPolicy(agent,action,taskId) || await policy(agent, action, mode);
+  // A task_id must name a job this bot is running now (claimed, not finished). Otherwise it could attach work to someone else's job.
+  const notYours = taskId && (!task || task.assignee !== agent.id || task.status !== 'running') ? { code: 'job_not_yours', reason: 'That job is not running under this bot. Claim it first with GET /gateway/tasks/next.' } : null;
+  const blocked = notYours || await jobPolicy(agent,action,taskId) || await policy(agent, action, mode);
   if (blocked) {
-    const rec = await receipt(agent, action, params, 'blocked', 0, `BLOCKED: ${blocked.reason}`, null, { code: blocked.code, taskId: taskId || null });
+    const rec = await receipt(agent, action, params, 'blocked', 0, `BLOCKED: ${blocked.reason}`, null, { code: blocked.code, taskId: notYours ? null : (taskId || null) });
     await event(agent.id, 'blocked', `Blocked ${action}: ${blocked.reason}`, { receiptId: rec.id, code: blocked.code });
     return { status: 403, body: { status: 'blocked', code: blocked.code, reason: blocked.reason, receipt_id: rec.id } };
   }
@@ -1014,7 +1023,11 @@ async function gatewayActUnlocked(agent, body) {
     // approval to it, and expiresAt bounds how long a yes can wait.
     const isEmail = action === 'email.send', exact = isEmail ? emailMessage(params) : params, created = Date.now();
     const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: isEmail ? { ...exact } : redact(params), rawParams: exact, detailsHash: reqHash(action, exact), label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: new Date(created).toISOString(), expiresAt: new Date(created + (isEmail ? EMAIL_TTL_MS : REQ_TTL_MS)).toISOString(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
-    bust(); await setJ('fm:req:' + q.id, q); await r(['SADD', 'fm:reqs', q.id]); if (q.taskId) await r(['SADD', 'fm:taskreqs:' + q.taskId, q.id]);
+    // Same bot, job (or source_id), action and exact content = the same request. Created with SET NX, so a retry or a concurrent
+    // duplicate gets the existing request and its current outcome back instead of a second approval card.
+    if (taskId || body.source_id) q.id = 'req_' + sha([agent.id, taskId || '', String(body.source_id || '').slice(0, 200), action, q.detailsHash].join('|')).slice(0, 20);
+    if (!await r(['SET', 'fm:req:' + q.id, JSON.stringify(q), 'NX'])) { const old = await getJ('fm:req:' + q.id); return { status: old.status === 'pending' ? 202 : 200, body: { status: old.status, request_id: old.id, duplicate: true, ...(old.delivery ? { delivery: old.delivery } : {}) } }; }
+    bust(); await r(['SADD', 'fm:reqs', q.id]); if (q.taskId) await r(['SADD', 'fm:taskreqs:' + q.taskId, q.id]);
     await event(agent.id, 'pending', `Waiting for owner approval: ${action}`, { requestId: q.id,taskId:q.taskId||null });
     return { status: 202, body: { status: 'pending', request_id: q.id, message: 'Action is paused until the owner approves or denies it.' } };
   }

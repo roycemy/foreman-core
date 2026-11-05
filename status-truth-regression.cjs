@@ -83,7 +83,8 @@ const ago=ms=>new Date(Date.now()-ms).toISOString();
  // ---- a sent email stays visible as an executed request with its provider id
  {const a=gw({lastSeen:ago(60e3),lastCallAt:ago(60e3)});
   const sent={id:'req_14db6561e9',action:'email.send',status:'executed',agentId:a.id,executedAt:ago(120e3),params:{to:'owner@example.com',subject:'Alter email test (owner-approved)'},delivery:{state:'accepted',providerMessageId:'01a1adf4-efd3-74c2-ab94-f8c24f809956'}};
-  set([a],[sent]);const items=BB.onYou();const e=items.find(i=>i.type==='email');assert(e,'the executed email is listed');assert(!items.some(i=>i.type==='reconnect'),'not a reconnect');
+  set([a],[sent]);BB.S.receipts=[{id:'rcpt_b622a71233',at:sent.executedAt,agentId:a.id,action:'email.send',outcome:'completed',taskId:null,requestId:sent.id}];const items=BB.onYou();assert(!items.some(i=>i.type==='email'||i.type==='reconnect'),'a sent email is a receipt, not unresolved work, and never a reconnect');
+  const e={q:BB.receiptFeed().find(x=>x.kind==='action').q};assert.equal(e.q.id,sent.id,'it is in the Receipts feed, linked to its request');
   assert.equal(BB.teamSummary().needs,0,'an accepted email is information, not something that needs the owner');
   assert.equal(BB.emailOutcome(e.q),'Accepted by Resend. Delivery not confirmed yet.');
   const ib=fs.readFileSync(path.join(__dirname,'public/js/inbox.js'),'utf8');
