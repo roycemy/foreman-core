@@ -3,7 +3,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require(
 let src=fs.readFileSync(require('path').join(__dirname,'api/index.js'),'utf8');
 src+='\nmodule.exports.t={maybeWakeBot,newTask,getJ,setJ,als,wakeTargetFrom,noteWakeTarget,noteWakeNonce,wakeChannelFor};';
 const sends=[];
-const ctx={require,module:{exports:{}},process:{env:{RESEND_API_KEY:'k',WAKE_EMAIL_FROM:'Alter <w@alter.test>'}},global:{},console,
+const ctx={require,module:{exports:{}},process:{env:{RESEND_API_KEY:'k',WAKE_EMAIL_FROM:'Alter <w@alter.test>',ALTER_EMAIL_ALLOWED_TO:'grokbot+alter@x.ai'}},global:{},console,
  fetch:(u,o)=>{if(String(u).includes('resend.com')){sends.push(JSON.parse(o.body));return Promise.resolve({ok:true,status:200});}throw Error('NETWORK '+u);},setTimeout,clearTimeout,URL,AbortSignal,Buffer};
 vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
 (async()=>{await f.als.run({ws:'t'},async()=>{

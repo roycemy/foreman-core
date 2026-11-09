@@ -19,4 +19,4 @@ The approval card shows the full sender, recipient, subject and body, plus the f
 
 ## Known behavior to account for
 
-Assigning a job to a bot whose provider is Instinct triggers Alter's existing wake ping: a content-free email sent through the same Resend key. It goes to `WAKE_INSTINCT_EMAIL`, or, when that is unset, a hardcoded default Instinct inbox. It does not go through the approval gate or the recipient allowlist. See `job-loop-regression.cjs`.
+Assigning a job to a bot whose provider is Instinct triggers Alter's existing wake ping: a content-free email sent through the same Resend key. It goes only to the owner-configured `WAKE_INSTINCT_EMAIL`; when that is unset there is no ping (no hardcoded fallback). A bot-declared email wake target is mailed only if it is on `ALTER_EMAIL_ALLOWED_TO`; otherwise it is stored as pending and nothing is sent, including no fallback to the env inbox. The ping itself is content-free system mail and does not go through the approval gate. See `wake-trigger-regression.cjs` (cases 19-23) and `job-loop-regression.cjs`.
