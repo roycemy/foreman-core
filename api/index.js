@@ -1751,7 +1751,7 @@ async function routes(req, res, path, body, agentPre) {
     { const bm = path.match(/^\/business\/proposals\/(prop_\w+)\/(edit|reject|activate)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProposalAct(bm[1], bm[2], body)); } }
     { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
-    if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2], body); if (d.status === 200) await track('approval_completed'); return send(d); }
+    if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); const d = await decide(m[1], m[2], body); if (d.status === 200) await track('approval_completed'); return send(d); }
     if ((m = path.match(/^\/requests\/(\w+)\/(reconcile|delivery)$/)) && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(m[2] === 'reconcile' ? await reconcileReq(m[1]) : await deliveryReq(m[1])); }
     {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
       if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});

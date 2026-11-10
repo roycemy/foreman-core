@@ -11,7 +11,7 @@ async function fakeFetch(url,o={}){const u=new URL(url);if(u.hostname!=='api.res
 const env={RESEND_API_KEY:'re_test_fixture',WAKE_EMAIL_FROM:'Alter <alerts@alter.example>',ALTER_EMAIL_ALLOWED_TO:'owner@example.com'};
 const ctx={require,module:{exports:{}},process:{env},global:{},console,fetch:fakeFetch,setTimeout,clearTimeout,URL,AbortSignal,Buffer};vm.runInNewContext(src,ctx);
 const handler=ctx.module.exports,f=handler.t;
-async function http(method,url,{key,cookie,body}={}){let out;const headers={host:'localhost',origin:'http://localhost'};if(key!=null)headers.authorization='Bearer '+key;if(cookie)headers.cookie='fm_sess='+cookie;
+async function http(method,url,{key,cookie,body,origin}={}){let out;const headers={host:'localhost',origin:origin||'http://localhost'};if(key!=null)headers.authorization='Bearer '+key;if(cookie)headers.cookie='fm_sess='+cookie;
  const res={setHeader(){},status(c){this.code=c;return this},json(j){out={code:this.code||200,j};return out},send(b){out={code:this.code||200,b};return out},end(){out={code:this.code||204};return out}};
  await handler({method,url,headers,body:body||{}},res);return out;}
 async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'user_'+tag,email,ws};await f.setJ('gl:user:'+f.sha(email),u);await f.setJ('gl:sess:'+f.sha('cookie_'+tag),{uid:u.id,email,ws});return {ws,cookie:'cookie_'+tag};}
@@ -38,6 +38,9 @@ const mail={to:'owner@example.com',subject:'Weekly summary',text:'Here is the su
  assert.equal((await f.als.run({ws:A.ws},()=>f.getJ('fm:req:'+rid))).status,'pending','A\'s request is untouched');assert.equal(R.sends,0,'nothing sent');
  // ---- no session: no decision
  assert.equal((await http('POST','/api/requests/'+rid+'/approve',{body:{detailsHash:q.detailsHash}})).code,401,'no session: 401');
+ // ---- a cross-site page riding owner A's session cannot decide (origin check, in addition to the SameSite=Lax cookie)
+ for(const act of ['approve','deny']){const x=await http('POST','/api/requests/'+rid+'/'+act,{cookie:A.cookie,origin:'https://evil.example',body:{detailsHash:q.detailsHash}});assert.deepEqual([x.code,x.j.error],[403,'origin'],'cross-origin '+act+' refused');}
+ assert.equal((await f.als.run({ws:A.ws},()=>f.getJ('fm:req:'+rid))).status,'pending');assert.equal(R.sends,0);
  // ---- the owning owner approves: one send
  const ap=await http('POST','/api/requests/'+rid+'/approve',{cookie:A.cookie,body:{detailsHash:q.detailsHash}});assert.equal(ap.code,200);assert.equal(ap.j.request.status,'executed');assert.equal(R.sends,1);
  // ---- a revoked bot's key cannot propose again
