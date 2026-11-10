@@ -19,4 +19,17 @@ vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
  assert.ok(live.wake.verified&&!live.wake.nonce);assert.equal(f.wakeChannelFor(live),'email','instant after verification');
  const t=await f.newTask({title:'Secret Q4',assignee:'g1'});
  const m=sends[sends.length-1];assert.deepEqual(m.to,['grokbot+alter@x.ai']);assert.ok(m.text.includes('Job: '),'job id in the wake mail');assert.ok(!JSON.stringify(m).includes('Secret Q4'),'no details');
+ // pending then allowlisted: a declared target that was not on the allowlist gets no test email; once the owner allowlists it, the bot's next declaration sends the code and the flow completes
+ {const before=sends.length,g2={id:'g2',name:'Grok Two',providerId:'grok',status:'active',paused:false,createdAt:'2026-10-20',limits:{perActionCents:10,dailyCents:50}};
+  await f.setJ('fm:agent:g2',g2);const w2=f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'grok2+alter@x.ai'});
+  await f.noteWakeTarget(g2,w2);let l2=await f.getJ('fm:agent:g2');
+  assert.equal(sends.length,before,'not allowlisted: no test email');assert.equal(l2.wake.pending,true);assert.equal(f.wakeChannelFor(l2),null,'pending target is not instant');
+  await f.newTask({title:'While pending',assignee:'g2'});assert.equal(sends.length,before,'a pending target is never mailed');
+  ctx.process.env.ALTER_EMAIL_ALLOWED_TO='grokbot+alter@x.ai,Grok2+Alter@X.ai';
+  await f.noteWakeTarget(g2,w2);l2=await f.getJ('fm:agent:g2');
+  assert.equal(sends.length,before+1,'allowlisted + re-declared: exactly one test email');assert.ok(sends[before].subject.startsWith('Alter: wake test'));
+  assert.equal(l2.wake.pending,false);assert.ok(l2.wake.nonce&&sends[before].text.includes(l2.wake.nonce));
+  await f.noteWakeTarget(g2,w2);assert.equal(sends.length,before+1,'a further identical declaration is idempotent');
+  await f.noteWakeNonce(l2,{wakeNonce:l2.wake.nonce});l2=await f.getJ('fm:agent:g2');
+  assert.ok(l2.wake.verified);assert.equal(f.wakeChannelFor(l2),'email','instant after verification');}
 });console.log('PASS email wake verify: test code, echo, job id, no details');})().catch(e=>{console.error(e);process.exit(1)});
