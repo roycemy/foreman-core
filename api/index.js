@@ -629,8 +629,10 @@ function timelineOf(t,events,requests,receipts,kids,name){
  for(const k of kids)if(['done','failed'].includes(k.status))out.push({at:k.finishedAt,text:name(k.assignee)+(k.status==='done'?' finished “'+k.title+'”':' could not finish “'+k.title+'”'),kind:'step'});
  for(const k of kids)if(k.status==='running')out.push({at:k.startedAt||k.createdAt,text:name(k.assignee)+' is working on its part',kind:'step'});else if(k.status==='queued')out.push({at:k.createdAt,text:'A part waits for '+name(k.assignee),kind:'step'});
  const openKids=kids.filter(k=>['queued','running'].includes(k.status));
- /* a handed-off part that is not done yet means the job is NOT delivered: say who it waits on */
- if(t.status==='done')out.push({at:t.finishedAt,text:openKids.length?'Waiting on '+[...new Set(openKids.map(k=>name(k.assignee)))].join(' and '):'Delivered',kind:'step',end:true});
+ /* a handed-off part that is not done yet means the job is NOT delivered: say who it waits on. An email the provider only accepted
+    (or that failed) is not delivered either: the job is Finished, and Delivered waits for the provider's own delivered status. */
+ const mailUnconfirmed=requests.some(q=>q.action==='email.send'&&['executed','failed'].includes(q.status)&&!(q.delivery&&q.delivery.state==='delivered'));
+ if(t.status==='done')out.push({at:t.finishedAt,text:openKids.length?'Waiting on '+[...new Set(openKids.map(k=>name(k.assignee)))].join(' and '):mailUnconfirmed?'Finished':'Delivered',kind:'step',end:true});
  if(t.status==='failed')out.push({at:t.finishedAt,text:'Stopped without a result',kind:'denied',end:true,detail:t.result?String(t.result).slice(0,160):null});
  return out.filter(x=>x.at).sort((a,b)=>String(a.at).localeCompare(String(b.at))||(a.end?1:0)-(b.end?1:0));}
 

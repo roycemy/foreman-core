@@ -58,7 +58,14 @@ const mail={to:'owner@example.com',subject:'Weekly summary',text:'Here is the su
  const done=await call('POST','/gateway/tasks/'+job.id+'/complete',{result:'Proposed the weekly summary; owner approved; Resend accepted it (em_1).'},await live(A.id));assert.equal(done.code,200);
  {const j=await f.jobDetail(job.id);assert.equal(j.task.status,'done');assert.deepEqual(j.requests.map(x=>[x.id,x.status,x.delivery&&x.delivery.providerMessageId]),[[rid,'executed','em_1']]);
   const rc=j.receipts.find(x=>x.requestId===rid&&x.outcome==='completed');assert(rc&&rc.providerMessageId==='em_1'&&rc.taskId===job.id,'the job carries the send receipt');
-  const words=j.timeline.map(s=>s.text).join(' | ');assert.match(words,/Owner approved: send an email/);assert.match(words,/Resend accepted it/);}
+  const words=j.timeline.map(s=>s.text).join(' | ');assert.match(words,/Owner approved: send an email/);assert.match(words,/Resend accepted it/);
+ // the closing step must not claim delivery the provider has not confirmed: accepted-only reads "Finished"; "Delivered" only once Resend reports delivered
+  {const last=()=>j.timeline[j.timeline.length-1].text;
+   assert.equal(last(),'Finished','accepted but not confirmed: the job ends as Finished, not Delivered');assert.doesNotMatch(j.timeline.map(s=>s.text).join(' | '),/Delivered/,'no step says Delivered while delivery is unconfirmed');
+   const q0=await f.getJ('fm:req:'+rid);await f.setJ('fm:req:'+rid,{...q0,delivery:{...q0.delivery,state:'delivered'}});const j2=await f.jobDetail(job.id);
+   assert.equal(j2.timeline[j2.timeline.length-1].text,'Delivered','confirmed delivered: the job ends as Delivered');
+   await f.setJ('fm:req:'+rid,q0);}
+  }
  console.log('PASS waiting is not completion; bot keys have no decide route; owner approval executes once; a retry reports the outcome; the job shows the request, its provider id and the receipt');
  // ---- every other outcome stays distinct on the job, and none of them is "sent"
  async function round(label,setup,decide){const t=await f.newTask({title:label,assignee:A.id});await call('GET','/gateway/tasks/next',{},await live(A.id));
