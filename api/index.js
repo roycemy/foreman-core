@@ -1092,12 +1092,16 @@ async function decideUnlocked(reqId, decision, body) {
 // Owner action for an email whose outcome is unknown. It repeats the same request with the same Idempotency-Key and body, which
 // Resend answers with the original response if the first call landed, and otherwise sends it once now. Past 23 hours the
 // provider's 24-hour key window could lapse, so it refuses rather than risk a second email.
+// A request claimed 'approved' (or 'reconciling') whose function died before recording the outcome. Functions are sized under 30s,
+// so past INFLIGHT_STALE_MS nothing can still be executing it: the owner sees an unknown outcome and may reconcile (same Idempotency-Key).
+const INFLIGHT_STALE_MS = 120000;
+function staleInflight(q) { if (!q || q.action !== 'email.send') return false; const t = q.status === 'approved' ? q.decidedAt : q.status === 'reconciling' ? (q.reconcileStartedAt || q.executedAt || q.decidedAt) : null; return !!t && Date.now() - Date.parse(t) > INFLIGHT_STALE_MS; }
 async function reconcileReq(id) {
   const raw = await r(['GET', 'fm:req:' + id]); if (!raw) return { status: 404, body: { error: 'not found' } };
   let q = JSON.parse(raw);
-  if (q.action !== 'email.send' || q.status !== 'outcome_unknown') return { status: 409, body: { error: 'only an email with an unknown outcome can be reconciled', request: pub(q) } };
+  if (q.action !== 'email.send' || (q.status !== 'outcome_unknown' && !staleInflight(q))) return { status: 409, body: { error: 'only an email with an unknown outcome can be reconciled', request: pub(q) } };
   if (Date.now() - Date.parse(q.executedAt || q.decidedAt) > EMAIL_RECONCILE_MS) return { status: 409, body: { error: 'reconcile_window_passed', note: 'A retry now could send a second email. Check the Resend dashboard for this recipient and time.', request: pub(q) } };
-  q = await claimReq(raw, { status: 'reconciling' }); if (!q) return { status: 409, body: { error: 'already reconciling' } };
+  q = await claimReq(raw, { status: 'reconciling', reconcileStartedAt: now() }); if (!q) return { status: 409, body: { error: 'already reconciling' } };
   const agent = await getJ('fm:agent:' + q.agentId) || { id: q.agentId, name: q.agentName };
   let rec;
   try {
@@ -1138,7 +1142,7 @@ async function fullState() {
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
-  const pend = ids.length ? parse(await r(['MGET', ...ids.map(i => 'fm:req:' + i)])).map(pub) : [];
+  const pend = ids.length ? parse(await r(['MGET', ...ids.map(i => 'fm:req:' + i)])).map(q => staleInflight(q) ? { ...q, status: 'outcome_unknown', delivery: { state: 'unknown' }, staleInflight: true } : q).map(pub) : [];
   // History holds one snapshot per decision; show each request once, and read an email's live record so a reconcile or a
   // delivery check (which update the record, not the history) is what the owner sees.
   const hist = []; { const seenReq = new Set(pend.map(x => x.id)); for (const x of parse(await r(['LRANGE', 'fm:reqhist', 0, 14]))) if (!seenReq.has(x.id)) { seenReq.add(x.id); hist.push(x); } }
