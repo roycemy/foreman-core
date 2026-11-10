@@ -71,6 +71,18 @@
     const p = q.params || {}, left = q.expiresAt ? Math.max(0, Math.round((Date.parse(q.expiresAt) - Date.now()) / 60000)) : null;
     return '<span class="email-review"><b>From</b> ' + esc(p.from) + '<br><b>To</b> ' + esc(p.to) + '<br><b>Subject</b> ' + esc(p.subject) + '</span><span class="email-body" style="display:block;white-space:pre-wrap;max-height:40vh;overflow:auto;margin:.5em 0;padding:.5em;border:1px solid currentColor;border-radius:6px">' + esc(p.text) + '</span><small>Fingerprint ' + esc(String(q.detailsHash || '').slice(0, 12)) + (q.expired ? ' · expired: approving now sends nothing' : left != null ? ' · expires in ' + left + ' min' : '') + ' · Alter sends it, not the bot</small>';
   };
+  /* A note is approved only from a view that shows all of it: the title and full text Alter will write, escaped, with the fingerprint. */
+  BB.noteReview = q => {
+    const p = q.params || {}, left = q.expiresAt ? Math.max(0, Math.round((Date.parse(q.expiresAt) - Date.now()) / 60000)) : null;
+    return '<span class="note-review"><b>Note</b> ' + esc(p.title) + '</span><span class="note-body" style="display:block;white-space:pre-wrap;max-height:40vh;overflow:auto;margin:.5em 0;padding:.5em;border:1px solid currentColor;border-radius:6px">' + esc(p.text) + '</span><small>Fingerprint ' + esc(String(q.detailsHash || '').slice(0, 12)) + (q.expired ? ' · expired: approving now saves nothing' : left != null ? ' · expires in ' + left + ' min' : '') + ' · Alter saves it to your workspace, not the bot</small>';
+  };
+  BB.reviewNote = function (item) {
+    if (!BB.modal) return null;
+    const box = BB.modal('<h3>Review this note</h3><p>' + BB.noteReview(item.q) + '</p><div class="btns"><button class="b pri grow" type="button" data-ok>Approve and save</button><button class="b out grow" type="button" data-no>Deny</button></div>', { label: 'Review note', wide: true });
+    box.querySelector('[data-ok]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'approve', { reviewed: true }); };
+    box.querySelector('[data-no]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'deny'); };
+    return null;
+  };
   BB.reviewEmail = function (item) {
     if (!BB.modal) return null;
     const box = BB.modal('<h3>Review this email</h3><p>' + BB.emailReview(item.q) + '</p><div class="btns"><button class="b pri grow" type="button" data-ok>Approve and send</button><button class="b out grow" type="button" data-no>Deny</button></div>', { label: 'Review email', wide: true });
@@ -383,6 +395,7 @@
     let j;
     /* An email is approved only from a view that shows all of it. Compact cards (floor tray, lists, pop-down) open the full review instead. */
     if (item.type === 'approval' && item.q.action === 'email.send' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewEmail(item);
+    if (item.type === 'approval' && item.q.action === 'notes.write' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewNote(item);
     if (item.type === 'approval') j = await BB.api('/api/requests/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     else if (item.type === 'email') j = await BB.api('/api/requests/' + item.q.id + '/' + (item.q.status === 'outcome_unknown' ? 'reconcile' : 'delivery'), 'POST');
     else if (item.type === 'spend') j = await BB.api('/api/money/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });

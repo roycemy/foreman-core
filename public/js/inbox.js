@@ -47,7 +47,7 @@
     const when = i.at ? ' · ' + esc(BB.ago(i.at)) : '', who = i.a ? `${BB.av(i.a, 's22')}${esc(i.a.name)}${when}` : `<span class="av ghost s22">?</span>${when.slice(3)}`;
     let title = esc(BB.itemTitle(i)), line = '', acts = '';
     if (i.type === 'email') { title = esc(i.q.status === 'outcome_unknown' ? 'Email outcome unknown' : 'Email sent'); line = esc((i.q.params && i.q.params.to) + ' · “' + ((i.q.params && i.q.params.subject) || '') + '”') + '<br>' + esc(BB.emailOutcome(i.q)) + (i.q.delivery && i.q.delivery.providerMessageId ? '<br><small>Resend id ' + esc(i.q.delivery.providerMessageId) + '</small>' : ''); acts = i.q.status === 'outcome_unknown' ? `<button class="b pri grow" type="button" data-d="reconcile">Reconcile</button>` : `<button class="b out grow" type="button" data-d="delivery">Check delivery</button>`; }
-    if (i.type === 'approval') { line = i.q.action === 'email.send' ? BB.emailReview(i.q) : esc(BB.reqLine(i.q)); acts = `<button class="b pri grow" type="button" data-d="approve">Approve</button><button class="b out grow" type="button" data-d="deny">Deny</button>`; }
+    if (i.type === 'approval') { line = i.q.action === 'email.send' ? BB.emailReview(i.q) : i.q.action === 'notes.write' ? BB.noteReview(i.q) : esc(BB.reqLine(i.q)); acts = `<button class="b pri grow" type="button" data-d="approve">Approve</button><button class="b out grow" type="button" data-d="deny">Deny</button>`; }
     if (i.type === 'spend') { line = esc(i.q.purpose) + ' · no payment rail is connected'; acts = `<button class="b pri grow" type="button" data-d="approve">Approve</button><button class="b out grow" type="button" data-d="deny">Deny</button>`; }
     if (i.type === 'card') { line = esc(i.q.purpose) + ' · example card'; acts = `<button class="b pri grow" type="button" data-d="approve">Approve</button><button class="b out grow" type="button" data-d="deny">Deny</button>`; }
     if (i.type === 'reconnect') { if (!i.a) { title = 'Reconnect unavailable'; line = 'This bot was removed. Its jobs stay paused.'; acts = `<button class="b ghost" type="button" data-later="${esc(i.id)}">Later</button>`; } else { title = 'Reconnect needed'; line = esc(i.a.name) + ' lost access. Reconnect to resume its jobs.'; acts = `<button class="b ink" type="button" data-rec="${i.a.id}">Reconnect</button><button class="b ghost" type="button" data-later="${esc(i.id)}">Later</button>`; } }
@@ -63,7 +63,7 @@
       const i = items.find(x => x.id === card.dataset.item); if (!i) return;
       card.querySelectorAll('[data-d]').forEach(b => b.onclick = async e => {
         e.stopPropagation(); card.querySelectorAll('button').forEach(x => x.disabled = true);
-        const j = await BB.decide(i, b.dataset.d, { reviewed: !!card.querySelector('.email-review') }); if (j && !j.error) BB.collapse(card); else card.querySelectorAll('button').forEach(x => x.disabled = false);
+        const j = await BB.decide(i, b.dataset.d, { reviewed: !!card.querySelector('.email-review') || !!card.querySelector('.note-review') }); if (j && !j.error) BB.collapse(card); else card.querySelectorAll('button').forEach(x => x.disabled = false);
       });
     });
     root.querySelectorAll('[data-rec]').forEach(b => b.onclick = e => { e.stopPropagation(); BB.closeTop && BB.closeTop(); BB.reconnect && BB.reconnect(b.dataset.rec); });

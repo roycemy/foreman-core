@@ -129,6 +129,8 @@ const EMAIL_TTL_MS = 15 * 60000, REQ_TTL_MS = 24 * 3600000, EMAIL_RECONCILE_MS =
 const emailAllowed = () => String(process.env.ALTER_EMAIL_ALLOWED_TO || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 // A bot-declared email wake target is mailed only if the owner listed it in ALTER_EMAIL_ALLOWED_TO; otherwise it stays pending and nothing is sent.
 const wakeEmailAllowed = t => emailAllowed().includes(String(t || '').trim().toLowerCase());
+// The exact note Alter would write: the owner reviews this, the fingerprint binds it, and execute writes it unchanged.
+const noteMessage = p => ({ title: String((p && p.title) || 'untitled').slice(0, 120), text: String((p && p.text) || '').slice(0, 2000) });
 // The exact message Alter would send now: sender from configuration, never from the bot.
 const emailMessage = p => ({ from: String(process.env.WAKE_EMAIL_FROM || ''), to: String((p && p.to) || '').trim().toLowerCase(), subject: String((p && p.subject) || ''), text: String((p && p.text) || '') });
 function emailInvalid(p) {
@@ -179,7 +181,7 @@ async function execute(agent, action, params, reqId) {
     return { summary: `GET ${params.url} -> HTTP ${res.status}, ${body.length} bytes`, data: { status: res.status, body: body.slice(0, 1200) } };
   }
   if (action === 'notes.write') {
-    const note = { id: rid('note'), by: agent.id, title: String(params.title || 'untitled').slice(0, 120), text: String(params.text || '').slice(0, 2000), at: now() };
+    const note = { id: rid('note'), by: agent.id, ...noteMessage(params), at: now() };
     await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]);
     return { summary: `Wrote note "${note.title}" (${note.id}) to the shared workspace`, data: { note_id: note.id } };
   }
@@ -1033,10 +1035,10 @@ async function gatewayActUnlocked(agent, body) {
     return { status: 400, body: { status: 'denied', code: invalid.code, reason: invalid.reason, request_id: q.id, receipt_id: rec.id } };
   }
   if (mode === 'ASK') {
-    // The owner reviews exactly what will run. An email is stored and shown in full (sender set by Alter); detailsHash binds the
+    // The owner reviews exactly what will run. An email or a note is stored and shown in full (an email's sender set by Alter); detailsHash binds the
     // approval to it, and expiresAt bounds how long a yes can wait.
-    const isEmail = action === 'email.send', exact = isEmail ? emailMessage(params) : params, created = Date.now();
-    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: isEmail ? { ...exact } : redact(params), rawParams: exact, detailsHash: reqHash(action, exact), label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: new Date(created).toISOString(), expiresAt: new Date(created + (isEmail ? EMAIL_TTL_MS : REQ_TTL_MS)).toISOString(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
+    const isEmail = action === 'email.send', isNote = action === 'notes.write', exact = isEmail ? emailMessage(params) : isNote ? noteMessage(params) : params, created = Date.now();
+    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: isEmail || isNote ? { ...exact } : redact(params), rawParams: exact, detailsHash: reqHash(action, exact), label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: new Date(created).toISOString(), expiresAt: new Date(created + (isEmail ? EMAIL_TTL_MS : REQ_TTL_MS)).toISOString(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
     // Same bot, job (or source_id), action and exact content = the same request. Created with SET NX, so a retry or a concurrent
     // duplicate gets the existing request and its current outcome back instead of a second approval card.
     if (taskId || body.source_id) q.id = 'req_' + sha([agent.id, taskId || '', String(body.source_id || '').slice(0, 200), action, q.detailsHash].join('|')).slice(0, 20);
