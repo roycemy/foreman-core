@@ -44,5 +44,14 @@ const iso=ms=>new Date(ms).toISOString();
  }
  assert.ok(allowed>0&&refused>0,'the sweep exercised both sides of the boundary ('+allowed+' allowed, '+refused+' refused)');
  // every reconcile past 23h of the recorded outcome is refused, whatever the state
+ // The sweep's lags (0-30s) are the whole range only while two invariants hold; pin them so an edit that breaks them fails here.
+ {const api=fs.readFileSync(path.join(__dirname,'api/index.js'),'utf8'),vj=JSON.parse(fs.readFileSync(path.join(__dirname,'vercel.json'),'utf8'));
+  const md=vj.functions&&vj.functions['api/index.js']&&vj.functions['api/index.js'].maxDuration;
+  assert.ok(Number.isFinite(md)&&md<=300,'api/index.js maxDuration is set and small (got '+md+'): first send to executedAt stays far under the 1h margin');
+  const writes=api.match(/executedAt\s*=\s*now\(\)/g)||[];assert.equal(writes.length,1,'executedAt is assigned in exactly one place');
+  const i=api.indexOf('executedAt = now()'),before=api.slice(api.lastIndexOf('\n',api.lastIndexOf('\n',i)-1),i);
+  assert.ok(/await runAndReceipt\(/.test(before),'executedAt is stamped right after the send returns, in the same invocation');
+  assert.ok(/claimReq\(raw, \{ status: 'approved', decidedAt: now\(\) \}\)/.test(api),'decidedAt is persisted before the first provider call');
+  assert.ok(/Date\.parse\(q\.executedAt \|\| q\.decidedAt\) > EMAIL_RECONCILE_MS/.test(api)&&/EMAIL_RECONCILE_MS = 23 \* 3600000/.test(api),'the cutoff is 23h from executedAt, else decidedAt');}
  console.log(`PASS idempotency window: ${allowed} reconciles inside the window recovered the original email, ${refused} past it were refused with zero provider calls; no recipient ever got a second email even with a fake that re-sends on expired keys`);
 });})().catch(e=>{console.error(e);process.exit(1)});
