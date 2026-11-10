@@ -79,10 +79,10 @@
     const why = W.reason === 'refresh_replay' ? ' (its renewal token was reused)' : W.reason === 'persistent_grant_missing' ? ' (its saved grant is missing)' : '';
     const box = shell(`<h3>${W.reconnect ? 'Reconnect ' + esc(W.agent.name) : 'Authorize ' + esc(W.agent.name)}</h3>
       ${W.reconnect ? `<div class="box2"><b>${esc(W.agent.name)} lost access${esc(why)}.</b><p>Run the same connection again in this bot and authorize it. This reconnects the existing bot; nothing new is created.</p></div>` : ''}
-      <p>${esc(guidance)}</p>
+      ${onProd() ? `<p>${esc(guidance)}</p>` : ''}
       ${onProd() ? `<label>${esc(BRAND.name)} connector address<input class="in" readonly value="${esc(PRODUCTION_ORIGIN)}/api/mcp"></label>
       <div class="acts" style="justify-content:flex-start"><button class="b ink" type="button" id="copysetup">Copy setup message</button><button class="b ghost" type="button" id="copylink">Copy connector address</button></div>` : `<div class="box2 mcp-preview"><b>Remote MCP sign-in is not available on this Preview.</b><p>Its sign-in issuer is the live ${esc(BRAND.name)} site, so a bot authorized here would connect to production, not to this Preview. Use the HTTP gateway key below; it points the bot at this Preview.</p></div>`}
-      <p>Paste the setup message into your existing bot. If it can install connectors, it can guide setup from there. You still review and authorize in ${esc(BRAND.name)}. At the sign-in screen, select <b>${esc(W.agent.name)}</b> and authorize. No provider password or API key is needed.</p>
+      ${onProd() ? `<p>Paste the setup message into your existing bot. If it can install connectors, it can guide setup from there. You still review and authorize in ${esc(BRAND.name)}. At the sign-in screen, select <b>${esc(W.agent.name)}</b> and authorize. No provider password or API key is needed.</p>` : ''}
       <textarea id="setupfallback" class="in" readonly hidden aria-label="Setup message to copy" style="min-height:200px;margin-top:12px"></textarea>
       <div class="box2"><b>No custom MCP support?</b><p>The HTTP gateway works only if your bot can make authenticated HTTPS calls and securely store a credential. A chat message alone cannot add those capabilities.</p><button class="b out sm" type="button" id="gatewayroute" style="margin-top:10px">Set up HTTP gateway</button></div>
       <div class="status" id="linkstatus" role="status" aria-live="polite"></div>
