@@ -64,6 +64,12 @@ const mail={to:'owner@example.com',subject:'Weekly summary',text:'Here is the su
    assert.equal(last(),'Finished','accepted but not confirmed: the job ends as Finished, not Delivered');assert.doesNotMatch(j.timeline.map(s=>s.text).join(' | '),/Delivered/,'no step says Delivered while delivery is unconfirmed');
    const q0=await f.getJ('fm:req:'+rid);await f.setJ('fm:req:'+rid,{...q0,delivery:{...q0.delivery,state:'delivered'}});const j2=await f.jobDetail(job.id);
    assert.equal(j2.timeline[j2.timeline.length-1].text,'Delivered','confirmed delivered: the job ends as Delivered');
+   // the sent step follows the provider's stored state: accepted is not delivery, and confirmed delivery no longer says "not confirmed"
+   {const sent=j=>j.timeline.find(x=>/^Alter sent it/.test(x.text)).text;
+    assert.match(sent(j),/Resend accepted it \(em_1\)\. Delivery not confirmed here\./,'accepted: says accepted, not confirmed');assert.doesNotMatch(sent(j),/delivered/i,'accepted is not called delivered');
+    assert.doesNotMatch(sent(j2),/not confirmed/,'delivered: no longer says Delivery not confirmed here');assert.match(sent(j2),/Resend accepted it \(em_1\)\. Resend reports it delivered to the recipient’s mail server\./,'delivered: says the provider reports delivery');
+    for(const [state,re] of [['bounced',/Resend reports it bounced/],['delayed',/Resend reports delivery delayed/]]){await f.setJ('fm:req:'+rid,{...q0,delivery:{...q0.delivery,state}});const jx=await f.jobDetail(job.id);
+     assert.match(sent(jx),re,state+' is named');assert.doesNotMatch(sent(jx),/not confirmed|delivered to/,state+' is neither unconfirmed nor delivered');assert.equal(jx.timeline[jx.timeline.length-1].text,'Finished',state+': the job is not Delivered');}}
    await f.setJ('fm:req:'+rid,q0);}
   }
  console.log('PASS waiting is not completion; bot keys have no decide route; owner approval executes once; a retry reports the outcome; the job shows the request, its provider id and the receipt');
@@ -77,7 +83,7 @@ const mail={to:'owner@example.com',subject:'Weekly summary',text:'Here is the su
   assert.equal((await call('POST','/gateway/tasks/'+denied.t.id+'/complete',{status:'failed',result:'Owner denied the email'},await live(A.id))).code,200);}
  {const ex=await round('Expired one',async qq=>f.setJ('fm:req:'+qq.id,{...qq,expiresAt:new Date(Date.now()-1).toISOString()}));assert.equal(ex.q.status,'expired');assert.match(ex.words,/Expired before approval/);
   await call('POST','/gateway/tasks/'+ex.t.id+'/complete',{status:'failed',result:'Expired'},await live(A.id));}
- {R.mode='422';const fl=await round('Failed one');R.mode='ok';assert.equal(fl.q.status,'failed');assert.match(fl.words,/Not sent/);await call('POST','/gateway/tasks/'+fl.t.id+'/complete',{status:'failed',result:'Rejected'},await live(A.id));}
+ {R.mode='422';const fl=await round('Failed one');R.mode='ok';assert.equal(fl.q.status,'failed');assert.match(fl.words,/Not sent/);assert.doesNotMatch(fl.words,/Resend accepted it|Delivery not confirmed|delivered to/,'a failed send is neither accepted nor delivered');await call('POST','/gateway/tasks/'+fl.t.id+'/complete',{status:'failed',result:'Rejected'},await live(A.id));}
  {R.mode='timeout';const un=await round('Unknown one');R.mode='ok';assert.equal(un.q.status,'outcome_unknown');assert.match(un.words,/Outcome unknown/);
   const c=await call('POST','/gateway/tasks/'+un.t.id+'/complete',{result:'done'},await live(A.id));assert.deepEqual([c.code,c.j.error],[409,'proposal_unresolved'],'an unknown outcome is not success');
   await call('POST','/requests/'+un.q.id+'/reconcile');assert.equal((await f.getJ('fm:req:'+un.q.id)).status,'executed');assert.equal((await call('POST','/gateway/tasks/'+un.t.id+'/complete',{result:'done after reconcile'},await live(A.id))).code,200);}

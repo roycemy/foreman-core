@@ -603,6 +603,8 @@ const REQ_WORDS={'email.send':'send an email','web.fetch':'read a web page','not
 // Steps in plain language. `detail` is owner-only (urls, note titles, tool output); public receipts drop it.
 // An email the provider only accepted (or that failed) is not delivered: a finished job with one reads Finished, not Delivered,
 // on the private timeline and the shared receipt alike. Delivered waits for the provider's own delivered status on the request.
+// What the private timeline says after "Resend accepted it", from the provider state the delivery check stored. Acceptance is not delivery.
+const SENT_STATE_WORDS={accepted:'Delivery not confirmed here.',delivered:'Resend reports it delivered to the recipient’s mail server.',delayed:'Resend reports delivery delayed.',bounced:'Resend reports it bounced.',complained:'Resend reports it delivered, then marked as spam.',failed:'Resend reports it could not send it.',suppressed:'Resend reports the address is suppressed; it was not sent.'};
 const emailUnconfirmed=requests=>(requests||[]).some(q=>q.action==='email.send'&&['executed','failed'].includes(q.status)&&!(q.delivery&&q.delivery.state==='delivered'));
 function timelineOf(t,events,requests,receipts,kids,name){
  const out=[],bot=t.assignee?name(t.assignee):'A bot';
@@ -622,7 +624,7 @@ function timelineOf(t,events,requests,receipts,kids,name){
  for(const q of requests){
   const w=REQ_WORDS[q.action]||q.action,what=q.params&&(q.params.title||q.params.url)?'“'+String(q.params.title||q.params.url).slice(0,60)+'”':null;
   if(['approved','executed','failed','outcome_unknown','reconciling'].includes(q.status))out.push({at:q.decidedAt||q.createdAt,text:'Owner approved: '+w,kind:'approval',detail:what});
-  if(q.status==='executed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:q.action==='email.send'?'Alter sent it: Resend accepted it'+(q.delivery&&q.delivery.providerMessageId?' ('+q.delivery.providerMessageId+')':'')+'. Delivery not confirmed here.':'Alter ran it',kind:'step'});
+  if(q.status==='executed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:q.action==='email.send'?'Alter sent it: Resend accepted it'+(q.delivery&&q.delivery.providerMessageId?' ('+q.delivery.providerMessageId+')':'')+'. '+(SENT_STATE_WORDS[q.delivery&&q.delivery.state]||SENT_STATE_WORDS.accepted):'Alter ran it',kind:'step'});
   if(q.status==='failed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:(q.action==='email.send'?'Not sent: ':'It did not run: ')+String((q.result&&q.result.error)||'it failed'),kind:'denied'});
   if(q.status==='outcome_unknown'||q.status==='reconciling')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:'Outcome unknown: Alter did not retry. Reconcile to find out.',kind:'denied'});
   if(q.status==='expired')out.push({at:q.decidedAt||q.createdAt,text:'Expired before approval: '+w,kind:'denied'});
