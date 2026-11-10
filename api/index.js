@@ -181,12 +181,17 @@ async function execute(agent, action, params, reqId) {
     return { summary: `GET ${params.url} -> HTTP ${res.status}, ${body.length} bytes`, data: { status: res.status, body: body.slice(0, 1200) } };
   }
   if (action === 'notes.write') {
-    const note = { id: rid('note'), by: agent.id, ...noteMessage(params), at: now() };
+    // Each note is also kept as its own record, linked to the request (and its job) that wrote it, so it can be opened later; the
+    // recent-notes list stays for compatibility and is still capped at 100.
+    const rq = reqId ? await getJ('fm:req:' + reqId) : null;
+    const note = { id: rid('note'), by: agent.id, ...noteMessage(params), at: now(), requestId: rq ? rq.id : null, taskId: rq && rq.taskId ? rq.taskId : null };
+    await setJ('fm:note:' + note.id, note); await r(['SADD', 'fm:noteids', note.id]);
     await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]);
     return { summary: `Wrote note "${note.title}" (${note.id}) to the shared workspace`, data: { note_id: note.id } };
   }
   if (action === 'notes.delete') {
-    await r(['DEL', 'fm:notes']);
+    for (const id of await r(['SMEMBERS', 'fm:noteids'])) await r(['DEL', 'fm:note:' + id]);
+    await r(['DEL', 'fm:noteids']); await r(['DEL', 'fm:notes']);
     return { summary: 'Deleted all notes', data: {} };
   }
   if(action==='work.assign'){
@@ -1607,6 +1612,27 @@ module.exports = async (req, res) => {
     return await als.run({ ws: sess.ws }, () => routes(req, res, path, body, null));
   } catch (e) { return sendStoreError(res,e); }
 };
+// Owner read of one saved note: the stored record (or, for a note written before durable records, the recent-notes list). The job and
+// request link is returned only when the server can validate it: the request is the executed notes.write that wrote this note id, by
+// this bot, and its approval fingerprint matches the stored note. A stored link wins over the hint a client passes for older notes.
+async function noteRead(id, reqHint) {
+  if (!/^note_[A-Za-z0-9]{4,40}$/.test(String(id || ''))) return null;
+  let note = await getJ('fm:note:' + id), legacy = false;
+  if (!note) { for (const x of await r(['LRANGE', 'fm:notes', 0, 99])) { try { const n = JSON.parse(x); if (n && n.id === id) { note = n; legacy = true; break; } } catch {} } }
+  if (!note) return null;
+  const rid = note.requestId || (/^req_[A-Za-z0-9]{4,40}$/.test(String(reqHint || '')) ? String(reqHint) : null);
+  let link = null;
+  if (rid) {
+    const q = await getJ('fm:req:' + rid);
+    if (q && q.action === 'notes.write' && q.status === 'executed' && q.result && q.result.note_id === id && q.agentId === note.by) {
+      const job = q.taskId ? await getJ('fm:task:' + q.taskId) : null;
+      const matchesApproval = !!q.detailsHash && q.detailsHash === reqHash('notes.write', { title: note.title, text: note.text });
+      link = { requestId: q.id, approvedAt: q.decidedAt || null, matchesApproval, taskId: job ? job.id : null, taskTitle: job ? job.title : null };
+    }
+  }
+  const bot = note.by ? await getJ('fm:agent:' + note.by) : null;
+  return { note: { id: note.id, title: note.title, text: note.text, at: note.at, by: note.by || null, botName: bot ? bot.name : null }, link, legacy };
+}
 async function routes(req, res, path, body, agentPre) {
   const send = (o) => res.status(o.status).json(o.body);
   const origin = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host;
@@ -1675,6 +1701,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/public-receipts/publish'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptPublish(body));}
     {const rv=path.match(/^\/public-receipts\/([a-f0-9]{48})\/revoke$/);if(rv&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptRevoke(rv[1]));}}
     {const jm=path.match(/^\/jobs\/(\w+)$/);if(jm&&req.method==='GET'){const j=await jobDetail(jm[1]);return j?res.json(j):res.status(404).json({error:'not found'});}}
+    {const nm=path.match(/^\/notes\/([A-Za-z0-9_]{1,60})$/);if(nm&&req.method==='GET'){res.setHeader('Cache-Control','no-store');const x=await noteRead(nm[1],new URL(req.url||'/','https://local.invalid').searchParams.get('request'));return x?res.json(x):res.status(404).json({error:'not found'});}}
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
