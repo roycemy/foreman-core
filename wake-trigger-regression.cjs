@@ -6,7 +6,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require(
 let src=fs.readFileSync(require('path').join(__dirname,'api/index.js'),'utf8');
 src+='\nmodule.exports.t={maybeWakeBot,newTask,assignTask,reassignTaskUnlocked,getJ,setJ,r,als,mem,wakeTargetFrom,noteWakeTarget};';
 const sends=[],slacks=[],slackUrls=[],whooks=[],ghPosts=[],ghPatches=[];let fetchFail=false;
-const ctx={require,module:{exports:{}},process:{env:{RESEND_API_KEY:'test-key',WAKE_EMAIL_FROM:'Alter <wake@alter.test>',WAKE_INSTINCT_EMAIL:'inbox@owner.test',ALTER_EMAIL_ALLOWED_TO:'crew99@mail.instinct.com,crew88@mail.instinct.com'}},global:{},console,
+const ctx={require,module:{exports:{}},process:{env:{RESEND_API_KEY:'test-key',WAKE_EMAIL_FROM:'Alter <wake@alter.test>',WAKE_INSTINCT_EMAIL:'inbox@owner.test',ALTER_EMAIL_ALLOWED_TO:'crew99@mail.instinct.com,crew88@mail.instinct.com,crew-a@wake.example'}},global:{},console,
  fetch:(u,o)=>{u=String(u);
   if(fetchFail)return Promise.reject(new Error('network down'));
   if(u.includes('resend.com')){sends.push(JSON.parse(o.body));return Promise.resolve({ok:true,status:200});}
@@ -173,7 +173,7 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
   assert.ok(!sends.slice(before).some(m=>m.to.includes('inbox@owner.test')),'a pending declaration does not silently fall back to the env inbox either');}
  // 21. an allowlisted declaration is mailed (test email + wake), matched case-insensitively and trimmed
  {const before=sends.length,p2=inst('p2');await f.setJ('fm:agent:p2',p2);
-  await f.noteWakeTarget(p2,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'Crew99@Mail.Instinct.com'}));
+  await f.noteWakeTarget(p2,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'Crew-A@Wake.Example'}));
   const live=await f.getJ('fm:agent:p2');assert.equal(live.wake.pending,false,'allowlisted target is not pending');
   assert.equal(sends.length,before+1,'allowlisted declaration sends exactly the wake test email');
   assert.ok(sends[before].subject.startsWith('Alter: wake test'));
@@ -184,7 +184,7 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
   const p3={...inst('p3'),wake:{channel:'email',target:'crew99@mail.instinct.com',declaredAt:'2026-10-19',verified:false}};await f.setJ('fm:agent:p3',p3);
   await f.newTask({title:'Allowlist shrank',assignee:'p3'});
   assert.equal(sends.length,before,'allowlist is checked at send time');
-  ctx.process.env.ALTER_EMAIL_ALLOWED_TO='crew99@mail.instinct.com,crew88@mail.instinct.com';}
+  ctx.process.env.ALTER_EMAIL_ALLOWED_TO='crew99@mail.instinct.com,crew88@mail.instinct.com,crew-a@wake.example';}
  // 23. Grok without WAKE_GROK_EMAIL also sends nothing by email (no fallback address of any kind)
  {const before=sends.length;delete ctx.process.env.WAKE_GROK_EMAIL;await f.setJ('fm:agent:g23',grok('g23'));await f.newTask({title:'Grok no inbox',assignee:'g23'});assert.equal(sends.length,before);}
  console.log('PASS wake triggers: queue/assign/reassign wake Instinct by email and Grok by slack/github, content-free, 30s dedupe, provider+pause+revoke guards, silent without a channel, failures recorded not thrown.');
