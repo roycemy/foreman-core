@@ -6,7 +6,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require(
 let src=fs.readFileSync(require('path').join(__dirname,'api/index.js'),'utf8');
 src+='\nmodule.exports.t={maybeWakeBot,newTask,assignTask,reassignTaskUnlocked,getJ,setJ,r,als,mem,wakeTargetFrom,noteWakeTarget};';
 const sends=[],slacks=[],slackUrls=[],whooks=[],ghPosts=[],ghPatches=[];let fetchFail=false;
-const ctx={require,module:{exports:{}},process:{env:{RESEND_API_KEY:'test-key',WAKE_EMAIL_FROM:'Alter <wake@alter.test>'}},global:{},console,
+const ctx={require,module:{exports:{}},process:{env:{RESEND_API_KEY:'test-key',WAKE_EMAIL_FROM:'Alter <wake@alter.test>',WAKE_INSTINCT_EMAIL:'inbox@owner.test',ALTER_EMAIL_ALLOWED_TO:'crew99@mail.instinct.com,crew88@mail.instinct.com,crew-a@wake.example'}},global:{},console,
  fetch:(u,o)=>{u=String(u);
   if(fetchFail)return Promise.reject(new Error('network down'));
   if(u.includes('resend.com')){sends.push(JSON.parse(o.body));return Promise.resolve({ok:true,status:200});}
@@ -24,7 +24,7 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
  await f.newTask({title:'Secret memo about Q4',assignee:'i1'});
  assert.equal(sends.length,1);const m=sends[0];
  assert.equal(m.subject,'Alter: job waiting for Instinct');
- assert.deepEqual(m.to,['xt1udv@mail.instinct.com']);
+ assert.deepEqual(m.to,['inbox@owner.test'],'owner-configured inbox');
  assert.equal(m.from,'Alter <wake@alter.test>');
  assert.equal(m.text,'A job is waiting for Instinct in Alter.');
  assert.ok(!JSON.stringify(m).includes('Secret memo'),'no task details in the trigger');
@@ -95,13 +95,13 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
  assert.ok(events.filter(e=>String(e).includes('wake_failed')).length>=2,'grok failure also lands in the event feed');
  // 12. declared email target wins over the deployment default inbox
  fetchFail=false;
- ctx.process.env.WAKE_INSTINCT_EMAIL='zzz-default@mail.instinct.com';
+ ctx.process.env.WAKE_INSTINCT_EMAIL='zzz-default@mail.instinct.com';/* allowlisted declared target */
  await f.setJ('fm:agent:i8',{...inst('i8'),wake:{channel:'email',target:'crew99@mail.instinct.com',declaredAt:'2026-10-19'}});
  await f.newTask({title:'Declared inbox',assignee:'i8'});
  assert.equal(sends.length,4,'declared email target fires');
  assert.deepEqual(sends[3].to,['crew99@mail.instinct.com'],'declared inbox wins over env default');
  assert.equal(sends[3].subject,'Alter: job waiting for Instinct i8','declared-target email names the bot');
- delete ctx.process.env.WAKE_INSTINCT_EMAIL;
+ ctx.process.env.WAKE_INSTINCT_EMAIL='inbox@owner.test';
  // 13. declared slack target wins over the env webhook
  ctx.process.env.WAKE_GROK_SLACK_WEBHOOK='https://hooks.slack.com/services/T00/B00/secret';
  await f.setJ('fm:agent:g12',{...grok('g12'),wake:{channel:'slack',target:'https://hooks.slack.com/services/T11/B11/ownhook',declaredAt:'2026-10-19'}});
@@ -154,6 +154,39 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
  assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com/api/automations/wh_9/deliveries'}),null,'missing secret rejected');
  assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com/api/automations/wh_9/deliveries',wakeSecret:'not-a-secret'}),null,'non-whsec secret rejected');
  assert.equal(f.wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://grok.com.evil.com/x',wakeSecret:'whsec_dGVzdHNlY3JldA=='}),null,'lookalike host rejected');
+ // 19. no hardcoded Instinct inbox: without WAKE_INSTINCT_EMAIL an Instinct bot gets no ping at all
+ {const before=sends.length;delete ctx.process.env.WAKE_INSTINCT_EMAIL;
+  await f.setJ('fm:agent:n1',inst('n1'));await f.newTask({title:'No inbox configured',assignee:'n1'});
+  assert.equal(sends.length,before,'no WAKE_INSTINCT_EMAIL means no ping (no hardcoded fallback address)');
+  assert.ok(!sends.some(m=>JSON.stringify(m).includes('xt1udv')),'the old hardcoded address is never mailed');
+  ctx.process.env.WAKE_INSTINCT_EMAIL='inbox@owner.test';}
+ // 20. a bot-declared email that is NOT on ALTER_EMAIL_ALLOWED_TO is stored pending: no test mail, no wake, no env fallback
+ {const before=sends.length,p1=inst('p1');await f.setJ('fm:agent:p1',p1);
+  await f.noteWakeTarget(p1,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'attacker@evil.example'}));
+  const live=await f.getJ('fm:agent:p1');
+  assert.equal(live.wake.target,'attacker@evil.example');assert.equal(live.wake.pending,true,'stored as pending');
+  assert.equal(sends.length,before,'declaring a non-allowlisted address sends no wake test email');
+  assert.ok((await f.r(['LRANGE','fm:events',0,100])).some(e=>String(e).includes('wake_pending')),'the pending state is recorded');
+  await f.newTask({title:'Job for pending bot',assignee:'p1'});
+  assert.equal(sends.length,before,'a pending declared target is never mailed');
+  assert.ok(!sends.slice(before).some(m=>m.to.includes('attacker@evil.example')),'attacker address never receives mail');
+  assert.ok(!sends.slice(before).some(m=>m.to.includes('inbox@owner.test')),'a pending declaration does not silently fall back to the env inbox either');}
+ // 21. an allowlisted declaration is mailed (test email + wake), matched case-insensitively and trimmed
+ {const before=sends.length,p2=inst('p2');await f.setJ('fm:agent:p2',p2);
+  await f.noteWakeTarget(p2,f.wakeTargetFrom({wakeChannel:'email',wakeTarget:'Crew-A@Wake.Example'}));
+  const live=await f.getJ('fm:agent:p2');assert.equal(live.wake.pending,false,'allowlisted target is not pending');
+  assert.equal(sends.length,before+1,'allowlisted declaration sends exactly the wake test email');
+  assert.ok(sends[before].subject.startsWith('Alter: wake test'));
+  await f.newTask({title:'Job for allowlisted bot',assignee:'p2'});
+  assert.equal(sends.length,before+2,'and a job wakes it');}
+ // 22. removing the address from the allowlist later stops sends at send time, even for a stored target
+ {const before=sends.length;ctx.process.env.ALTER_EMAIL_ALLOWED_TO='crew88@mail.instinct.com';
+  const p3={...inst('p3'),wake:{channel:'email',target:'crew99@mail.instinct.com',declaredAt:'2026-10-19',verified:false}};await f.setJ('fm:agent:p3',p3);
+  await f.newTask({title:'Allowlist shrank',assignee:'p3'});
+  assert.equal(sends.length,before,'allowlist is checked at send time');
+  ctx.process.env.ALTER_EMAIL_ALLOWED_TO='crew99@mail.instinct.com,crew88@mail.instinct.com,crew-a@wake.example';}
+ // 23. Grok without WAKE_GROK_EMAIL also sends nothing by email (no fallback address of any kind)
+ {const before=sends.length;delete ctx.process.env.WAKE_GROK_EMAIL;await f.setJ('fm:agent:g23',grok('g23'));await f.newTask({title:'Grok no inbox',assignee:'g23'});assert.equal(sends.length,before);}
  console.log('PASS wake triggers: queue/assign/reassign wake Instinct by email and Grok by slack/github, content-free, 30s dedupe, provider+pause+revoke guards, silent without a channel, failures recorded not thrown.');
 });})().catch(e=>{console.error(e);process.exit(1)});
 // source contract
@@ -173,3 +206,5 @@ assert.ok(api.includes('wakeTargetFrom(args||{})'),'MCP foreman_presence records
 assert.ok(api.includes('webhook-signature'),'webhook sender signs deliveries');
 assert.ok(api.includes('alter.job.waiting'),'webhook ping body is the fixed content-free event');
 assert.ok(api.includes('whsec_'),'webhook secrets are validated in the whsec_ format');
+assert.ok(!api.includes('xt1udv'),'no hardcoded Instinct inbox in the server');
+assert.ok(api.includes('wakeEmailAllowed(w.target)'),'declared email wake targets are gated by ALTER_EMAIL_ALLOWED_TO');

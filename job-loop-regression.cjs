@@ -13,7 +13,7 @@ async function fakeFetch(url,o={}){const u=new URL(url);if(u.hostname!=='api.res
  if(R.mode==='timeout')throw Object.assign(Error('timeout'),{name:'TimeoutError'});if(R.mode==='422')return res(422,{message:'Invalid'});
  const k=o.headers['idempotency-key'];if(R.keys.has(k))return res(200,R.keys.get(k));R.sends++;const out={id:'em_'+R.sends};R.keys.set(k,out);return res(200,out);}
 const res=(s,j)=>({ok:s>=200&&s<300,status:s,json:async()=>j,text:async()=>JSON.stringify(j)});
-const env={RESEND_API_KEY:'re_test_fixture',WAKE_EMAIL_FROM:'Alter <alerts@alter.example>',ALTER_EMAIL_ALLOWED_TO:'owner@example.com'};
+const env={RESEND_API_KEY:'re_test_fixture',WAKE_EMAIL_FROM:'Alter <alerts@alter.example>',ALTER_EMAIL_ALLOWED_TO:'owner@example.com',WAKE_INSTINCT_EMAIL:'instinct-inbox@owner.example'};
 const ctx={require,module:{exports:{}},process:{env},global:{},console,fetch:fakeFetch,setTimeout,clearTimeout,URL,AbortSignal};vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
 const H={host:'localhost',origin:'http://localhost'};
 async function call(method,p,body,agent){let out;const r={status(n){this.code=n;return this},json(j){out={code:this.code||200,j};return out},setHeader(){},end(){out={code:this.code||204};return out}};await f.routes({method,headers:H,url:'/api'+p,gatewayKeyAuth:!!agent},r,p.split('?')[0],body||{},agent||null);return out;}
@@ -32,7 +32,7 @@ const mail={to:'owner@example.com',subject:'Weekly summary',text:'Here is the su
  {const open=await f.newTask({title:'Anyone can take this'});const both=await Promise.all([call('GET','/gateway/tasks/next',{},await live(B.id)),call('GET','/gateway/tasks/next',{},await live(B.id)),(async()=>{const C=(await f.createAgent('Third','Ops','custom',false,{preset:'balanced'})).agent;return call('GET','/gateway/tasks/next',{},await live(C.id));})()]);
   const winners=new Set(both.filter(x=>x.j.task&&x.j.task.id===open.id).map(x=>x.j.task.assignee));assert.equal(winners.size,1,'one worker holds the job');
   assert.equal(JSON.parse(await f.r(['GET','fm:task:'+open.id])).assignee,[...winners][0]);}
- assert.equal(R.wakes.length,1,'assigning to an Instinct bot sends one wake ping (existing wake ladder)');assert.deepEqual(R.wakes[0].to,['xt1udv@mail.instinct.com'],'to the hardcoded default when WAKE_INSTINCT_EMAIL is unset');assert.doesNotMatch(R.wakes[0].text+R.wakes[0].subject,/weekly summary/i,'content-free');
+ assert.equal(R.wakes.length,1,'assigning to an Instinct bot sends one wake ping (existing wake ladder)');assert.deepEqual(R.wakes[0].to,['instinct-inbox@owner.example'],'to the owner-configured WAKE_INSTINCT_EMAIL inbox (no hardcoded fallback)');assert.doesNotMatch(R.wakes[0].text+R.wakes[0].subject,/weekly summary/i,'content-free');
  console.log('PASS assignment and claims persist; only the assignee claims an assigned job; a retried claim returns it; concurrent claims on an open job give it to one worker');
  // ---- a proposal must come from the bot running that job
  {const n=(await f.r(['SMEMBERS','fm:reqs'])).length;const x=await call('POST','/gateway/act',{action:'email.send',params:mail,task_id:job.id},await live(B.id));
