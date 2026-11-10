@@ -601,6 +601,9 @@ async function jobDetail(id){
 const ACTION_WORDS={'email.send':['Sent','email','emails','email'],'web.fetch':['Read','web page','web pages','web fetch'],'notes.write':['Saved','note','notes','note'],'notes.delete':['Deleted','note set','note sets','delete'],'work.handoff':['Handed off','part','parts','handoff'],'work.assign':['Assigned','job','jobs','assign'],'work.enqueue':['Queued','job','jobs','queue']};
 const REQ_WORDS={'email.send':'send an email','web.fetch':'read a web page','notes.write':'save a note','notes.delete':'delete notes','work.handoff':'hand off a part','work.assign':'assign a job','work.enqueue':'queue a job'};
 // Steps in plain language. `detail` is owner-only (urls, note titles, tool output); public receipts drop it.
+// An email the provider only accepted (or that failed) is not delivered: a finished job with one reads Finished, not Delivered,
+// on the private timeline and the shared receipt alike. Delivered waits for the provider's own delivered status on the request.
+const emailUnconfirmed=requests=>(requests||[]).some(q=>q.action==='email.send'&&['executed','failed'].includes(q.status)&&!(q.delivery&&q.delivery.state==='delivered'));
 function timelineOf(t,events,requests,receipts,kids,name){
  const out=[],bot=t.assignee?name(t.assignee):'A bot';
  out.push({at:t.createdAt,text:t.createdBy==='owner'?'Owner assigned the job':t.origin==='chat'?bot+' started it from a chat with the owner':name(t.createdBy)+' handed over the job',kind:'step',detail:t.brief?'“'+t.brief.slice(0,120)+'”':null});
@@ -631,8 +634,7 @@ function timelineOf(t,events,requests,receipts,kids,name){
  const openKids=kids.filter(k=>['queued','running'].includes(k.status));
  /* a handed-off part that is not done yet means the job is NOT delivered: say who it waits on. An email the provider only accepted
     (or that failed) is not delivered either: the job is Finished, and Delivered waits for the provider's own delivered status. */
- const mailUnconfirmed=requests.some(q=>q.action==='email.send'&&['executed','failed'].includes(q.status)&&!(q.delivery&&q.delivery.state==='delivered'));
- if(t.status==='done')out.push({at:t.finishedAt,text:openKids.length?'Waiting on '+[...new Set(openKids.map(k=>name(k.assignee)))].join(' and '):mailUnconfirmed?'Finished':'Delivered',kind:'step',end:true});
+ if(t.status==='done')out.push({at:t.finishedAt,text:openKids.length?'Waiting on '+[...new Set(openKids.map(k=>name(k.assignee)))].join(' and '):emailUnconfirmed(requests)?'Finished':'Delivered',kind:'step',end:true});
  if(t.status==='failed')out.push({at:t.finishedAt,text:'Stopped without a result',kind:'denied',end:true,detail:t.result?String(t.result).slice(0,160):null});
  return out.filter(x=>x.at).sort((a,b)=>String(a.at).localeCompare(String(b.at))||(a.end?1:0)-(b.end?1:0));}
 
@@ -658,14 +660,14 @@ function publicProblems(fields,names){const out=[];
   for(const n of names){const s=String(n||'').trim();if(s.length>=3&&!GENERIC_NAMES.includes(s.toLowerCase())&&new RegExp('(^|[^\\w])'+s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'($|[^\\w])','i').test(v))out.push({field,kind:'private name'});}}
  return out.filter((x,i,a)=>a.findIndex(y=>y.field===x.field&&y.kind===x.kind)===i);}
 // Steps are fixed-vocabulary codes only; the public page renders them from its own word list.
-const PUBLIC_STEPS=['assigned','claimed','actions','approved','denied','blocked','handoff','part_done','delivered','stopped'];
+const PUBLIC_STEPS=['assigned','claimed','actions','approved','denied','blocked','handoff','part_done','delivered','finished','stopped'];
 function publicSteps(t,requests,receipts,kids){const s=[],at=x=>x&&Number.isFinite(Date.parse(x))?new Date(x).toISOString():null;
  s.push({at:at(t.createdAt),code:'assigned'});if(t.startedAt)s.push({at:at(t.startedAt),code:'claimed'});
  const acts=receipts.filter(x=>x.outcome==='completed'&&!x.requestId);if(acts.length)s.push({at:at(acts[0].at),code:'actions',n:acts.length});
  for(const q of requests){if(['approved','executed','failed'].includes(q.status))s.push({at:at(q.decidedAt||q.createdAt),code:'approved'});else if(q.status==='denied')s.push({at:at(q.decidedAt||q.createdAt),code:'denied'});else if(q.status==='blocked')s.push({at:at(q.decidedAt||q.createdAt),code:'blocked'});}
  for(const k of kids){s.push({at:at(k.createdAt),code:'handoff'});if(['done','failed'].includes(k.status))s.push({at:at(k.finishedAt),code:'part_done'});}
- if(t.finishedAt)s.push({at:at(t.finishedAt),code:t.status==='done'?'delivered':'stopped'});
- return s.filter(x=>x.at&&PUBLIC_STEPS.includes(x.code)).sort((a,b)=>a.at.localeCompare(b.at)||(['delivered','stopped'].includes(a.code)?1:0)-(['delivered','stopped'].includes(b.code)?1:0));}
+ if(t.finishedAt)s.push({at:at(t.finishedAt),code:t.status==='done'?(emailUnconfirmed(requests)?'finished':'delivered'):'stopped'});
+ return s.filter(x=>x.at&&PUBLIC_STEPS.includes(x.code)).sort((a,b)=>a.at.localeCompare(b.at)||(['delivered','finished','stopped'].includes(a.code)?1:0)-(['delivered','finished','stopped'].includes(b.code)?1:0));}
 async function publicSource(taskId){const j=await jobDetail(taskId);if(!j)return null;const t=j.task;
  return {j,hash:sha(JSON.stringify({id:t.id,status:t.status,result:t.result,title:t.title,startedAt:t.startedAt,finishedAt:t.finishedAt,cost:t.modelCostUsd??null,receipts:j.receipts.map(x=>({id:x.id,hash:x.hash,costCents:x.costCents})),requests:j.requests.map(q=>({id:q.id,status:q.status})),kids:j.children.map(k=>({id:k.id,status:k.status}))}))};}
 // Pre-filled budget for the reusable template: what this job recorded (bot-reported model costs + gateway ledger), rounded up to cents.
