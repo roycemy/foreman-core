@@ -48,5 +48,18 @@ async function http(method,url,{key,cookie,body}={}){let out;const headers={host
   await inA(async()=>{await f.r(['LPUSH','fm:notes',JSON.stringify({id:'note_before001',by:bot.agent.id,...params,at:iso(20*60000)})]);await f.setJ('fm:req:'+rid,{id:rid,agentId:bot.agent.id,agentName:'Old bot',action:'notes.write',status:'approved',params,rawParams:params,detailsHash:hash,decidedAt:decided,createdAt:decided,taskId:t3.id});await f.r(['SADD','fm:reqs',rid]);f.bust();});
   assert.equal((await http('POST','/api/requests/'+rid+'/recover',{cookie:'cookie_a'})).code,200);const q3=await inA(()=>f.getJ('fm:req:'+rid));
   assert.equal(q3.result.note_id,f.noteIdFor(rid),'a same-text note written BEFORE the approval is not this request\'s: a new note is written');}
+ // ---- two separate requests with identical text must not both adopt the same older note: one adopts it, the other writes its own, and
+ //      deleting the adopted note touches only the request that adopted it
+ {const params={title:'Daily digest',text:'Same words twice'},decided=iso(10*60000),hash=f.sha(JSON.stringify(['notes.write',params]));
+  const t4=await inA(()=>f.newTask({title:'Twins',assignee:bot.agent.id}));const only={id:'note_twin000001',by:bot.agent.id,...params,at:iso(9*60000)};
+  await inA(async()=>{await f.r(['LPUSH','fm:notes',JSON.stringify(only)]);
+   for(const rid of ['req_twin_a','req_twin_b']){await f.setJ('fm:req:'+rid,{id:rid,agentId:bot.agent.id,agentName:'Old bot',action:'notes.write',status:'approved',params,rawParams:params,detailsHash:hash,decidedAt:decided,createdAt:decided,taskId:t4.id});await f.r(['SADD','fm:reqs',rid]);await f.r(['SADD','fm:taskreqs:'+t4.id,rid]);}f.bust();});
+  const ra=await http('POST','/api/requests/req_twin_a/recover',{cookie:'cookie_a'}),rb=await http('POST','/api/requests/req_twin_b/recover',{cookie:'cookie_a'});assert.equal(ra.code,200,JSON.stringify(ra.j));assert.equal(rb.code,200,JSON.stringify(rb.j));
+  const qa=await inA(()=>f.getJ('fm:req:req_twin_a')),qb=await inA(()=>f.getJ('fm:req:req_twin_b'));
+  assert.notEqual(qa.result.note_id,qb.result.note_id,'two requests never share one note');assert.equal(qa.result.note_id,only.id,'the first adopts the older note');assert.equal(qb.result.note_id,f.noteIdFor('req_twin_b'),'the second writes its own');
+  assert.equal((await http('POST','/api/requests/req_twin_a/recover',{cookie:'cookie_a'})).code,409,'a repeat of the first is refused, not re-linked');
+  const del=await http('POST','/api/notes/'+only.id+'/delete',{cookie:'cookie_a',body:{confirmed:true}});assert.equal(del.code,200);
+  assert.equal((await http('GET','/api/notes/'+qb.result.note_id,{cookie:'cookie_a'})).code,200,'deleting the first request\'s note leaves the second request\'s note readable');
+  const jd=await http('GET','/api/jobs/'+t4.id,{cookie:'cookie_a'});const ja=jd.j.requests.find(x=>x.id==='req_twin_a'),jb=jd.j.requests.find(x=>x.id==='req_twin_b');assert.deepEqual([ja.noteDeleted===true,jb.noteDeleted===true],[true,false],'only the adopting request shows "Note deleted"');}
  console.log('PASS older notes: list-only and pre-flag records stay byte-identical, listed once, open and render; a request stranded by an older build reuses the note it already wrote instead of writing a second one, and an unrelated earlier note is never adopted');
 })().catch(e=>{console.error(e);process.exit(1)});

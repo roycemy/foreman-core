@@ -1226,7 +1226,7 @@ async function olderNoteFor(q, approved) {
   for (const x of await r(['LRANGE', 'fm:notes', 0, 99])) {
     let n; try { n = JSON.parse(x); } catch { continue; }
     if (!(n && !n.requestId && n.by === q.agentId && n.title === approved.title && n.text === approved.text && Date.parse(n.at) >= since)) continue;
-    return n;
+    if (await r(['SET', 'fm:adopted:' + n.id, q.id, 'NX']) || await r(['GET', 'fm:adopted:' + n.id]) === q.id) return n;
   }
   return null;
 }
