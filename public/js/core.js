@@ -92,6 +92,8 @@
   };
   /* Needs you: only an email whose outcome is unknown (the owner must reconcile). A sent email is a receipt, not unresolved work: it
      lives in Receipts with its provider id and delivery state. */
+  /* A note the owner approved whose save never finished (the server flags it once it is stale): offered as Finish saving. */
+  BB.noteFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'notes.write' && q.stalled);
   BB.emailFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'email.send' && q.status === 'outcome_unknown');
   /* Receipts: finished jobs plus standalone action receipts (no taskId), newest first. A job-linked receipt stays inside its job, each
      receipt id appears once, and a standalone receipt is linked to its request when that request is still in the retained history. */
@@ -359,6 +361,7 @@
     const items = [];
     BB.pendingReqs().forEach(q => { const a = BB.agent(q.agentId); items.push({ type: 'approval', id: 'req:' + q.id, at: q.createdAt, a, q }); });
     BB.emailFollowups().forEach(q => items.push({ type: 'email', id: 'email:' + q.id, at: q.executedAt || q.decidedAt, a: BB.agent(q.agentId), q }));
+    BB.noteFollowups().forEach(q => items.push({ type: 'notesave', id: 'notesave:' + q.id, at: q.decidedAt, a: BB.agent(q.agentId), q }));
     ((BB.money && BB.money.requests) || []).filter(q => q.status === 'pending_review' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'spend', id: 'spend:' + q.id, at: q.createdAt, a: BB.agent(q.agentId), q }));
     ((BB.cards && BB.cards.proposals) || []).filter(q => q.status === 'pending' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'card', id: 'card:' + q.id, at: q.createdAt, a: BB.agent(q.botId), q }));
     BB.agents().filter(a => BB.presence(a) === 'reconnect').forEach(a => items.push({ type: 'reconnect', id: 'rec:' + a.id, at: (a.connection && a.connection.failedAt) || a.lastSeen, a }));
@@ -398,12 +401,14 @@
     if (item.type === 'approval' && item.q.action === 'notes.write' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewNote(item);
     if (item.type === 'approval') j = await BB.api('/api/requests/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     else if (item.type === 'email') j = await BB.api('/api/requests/' + item.q.id + '/' + (item.q.status === 'outcome_unknown' ? 'reconcile' : 'delivery'), 'POST');
+    else if (item.type === 'notesave') j = await BB.api('/api/requests/' + item.q.id + '/recover', 'POST', {});
     else if (item.type === 'spend') j = await BB.api('/api/money/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     else if (item.type === 'card') j = await BB.api('/api/cards/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     BB.toast(BB.outcome(item, j, d)); await BB.sync(true); return j;
   };
   BB.outcome = function (item, j, d) {
     if (!j || j.error) return 'Not confirmed: ' + ((j && j.error) || 'try again');
+    if (item.type === 'notesave') { const st = j.request && j.request.status; return st === 'executed' ? 'Saved. The note you approved is in your workspace.' : st === 'blocked' ? 'Not saved: ' + (j.request.reason || 'a permission or limit changed') : st === 'failed' ? 'Not saved: ' + ((j.request.result && j.request.result.error) || 'see the job log') : 'Decision saved.'; }
     if (item.type === 'approval' || item.type === 'email') {
       const q = j.request, st = q && q.status;
       if (q && q.action === 'email.send') return BB.emailOutcome(q);

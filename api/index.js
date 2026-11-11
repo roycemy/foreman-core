@@ -131,6 +131,37 @@ const emailAllowed = () => String(process.env.ALTER_EMAIL_ALLOWED_TO || '').spli
 const wakeEmailAllowed = t => emailAllowed().includes(String(t || '').trim().toLowerCase());
 // The exact note Alter would write: the owner reviews this, the fingerprint binds it, and execute writes it unchanged.
 const noteMessage = p => ({ title: String((p && p.title) || 'untitled').slice(0, 120), text: String((p && p.text) || '').slice(0, 2000) });
+// A note written for an approved request has a stable id derived from that request, so a repeated or recovered write is the same note.
+const noteIdFor = reqId => 'note_' + sha('note|' + reqId).slice(0, 20);
+// Writes of one note run one at a time. The lock expires on its own (15 s), so a dead writer never blocks recovery for long; a caller that
+// cannot get it within ~2 s gets note_busy and changes nothing.
+async function withNoteLock(id, fn) {
+  const k = 'fm:notelock:' + id, v = rid('lock');
+  for (let i = 0; i < 20; i++) {
+    if (await r(['SET', k, v, 'NX', 'PX', 15000])) { try { return await fn(); } finally { if (await r(['GET', k]) === v) await r(['DEL', k]); } }
+    await new Promise(x => setTimeout(x, 100));
+  }
+  throw Object.assign(new Error('note write busy'), { code: 'note_busy' });
+}
+// Idempotent write of the note for one approved request: the record is created once (SET NX), and it reaches the recent list exactly
+// once (a listed flag, set after the push, repaired by looking for the id if a crash fell between the two). Any step may be repeated.
+async function writeNoteOnce(agent, params, rq) {
+  const id = noteIdFor(rq.id);
+  return withNoteLock(id, async () => {
+    let note = await getJ('fm:note:' + id);
+    if (!note) {
+      const fresh = { id, by: agent.id, ...noteMessage(params), at: now(), requestId: rq.id, taskId: rq.taskId || null };
+      if (await r(['SET', 'fm:note:' + id, JSON.stringify(fresh), 'NX'])) note = fresh; else note = await getJ('fm:note:' + id);
+    }
+    await r(['SADD', 'fm:noteids', id]);
+    if (!note.listed) {
+      const have = (await r(['LRANGE', 'fm:notes', 0, 99])).some(x => { try { return JSON.parse(x).id === id; } catch { return false; } });
+      if (!have) { await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]); }
+      note = { ...note, listed: true }; await setJ('fm:note:' + id, note);
+    }
+    return note;
+  });
+}
 // The exact message Alter would send now: sender from configuration, never from the bot.
 const emailMessage = p => ({ from: String(process.env.WAKE_EMAIL_FROM || ''), to: String((p && p.to) || '').trim().toLowerCase(), subject: String((p && p.subject) || ''), text: String((p && p.text) || '') });
 function emailInvalid(p) {
@@ -184,6 +215,7 @@ async function execute(agent, action, params, reqId) {
     // Each note is also kept as its own record, linked to the request (and its job) that wrote it, so it can be opened later; the
     // recent-notes list stays for compatibility and is still capped at 100.
     const rq = reqId ? await getJ('fm:req:' + reqId) : null;
+    if (rq && rq.action === 'notes.write') { const n = await writeNoteOnce(agent, params, rq); return { summary: `Wrote note "${n.title}" (${n.id}) to the shared workspace`, data: { note_id: n.id } }; }
     const note = { id: rid('note'), by: agent.id, ...noteMessage(params), at: now(), requestId: rq ? rq.id : null, taskId: rq && rq.taskId ? rq.taskId : null };
     await setJ('fm:note:' + note.id, note); await r(['SADD', 'fm:noteids', note.id]);
     await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]);
@@ -630,7 +662,7 @@ function timelineOf(t,events,requests,receipts,kids,name){
  for(const x of out.filter(x=>x.action)){x.text=x.w[0]+' '+x.n+' '+(x.n===1?x.w[1]:x.w[2]);x.kind='step';x.meta=x.w[3]+(x.cents?' · '+x.cents+'¢':'');x.detail=x.details.slice(0,3).join(' · ');delete x.w;delete x.details;delete x.n;delete x.cents;delete x.action;}
  for(const q of requests){
   const w=REQ_WORDS[q.action]||q.action,what=q.params&&(q.params.title||q.params.url)?'“'+String(q.params.title||q.params.url).slice(0,60)+'”':null;
-  if(['approved','executed','failed','outcome_unknown','reconciling'].includes(q.status))out.push({at:q.decidedAt||q.createdAt,text:'Owner approved: '+w,kind:'approval',detail:what});
+  if(['approved','executed','failed','outcome_unknown','reconciling','recovering'].includes(q.status))out.push({at:q.decidedAt||q.createdAt,text:'Owner approved: '+w,kind:'approval',detail:what});
   if(q.status==='executed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:q.action==='email.send'?'Alter sent it: Resend accepted it'+(q.delivery&&q.delivery.providerMessageId?' ('+q.delivery.providerMessageId+')':'')+'. '+(SENT_STATE_WORDS[q.delivery&&q.delivery.state]||SENT_STATE_WORDS.accepted):'Alter ran it',kind:'step'});
   if(q.status==='failed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:(q.action==='email.send'?'Not sent: ':'It did not run: ')+String((q.result&&q.result.error)||'it failed'),kind:'denied'});
   if(q.status==='outcome_unknown'||q.status==='reconciling')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:'Outcome unknown: Alter did not retry. Reconcile to find out.',kind:'denied'});
@@ -752,7 +784,7 @@ async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET',
   if (agent.status !== 'active') return { status: 403, body: { error: 'bot_not_active', reason: 'A revoked or inactive bot cannot complete a job' } };
   const failed = body.status === 'failed';
   // Waiting for the owner, or an outcome Alter has not confirmed, is not done. The bot may still report failed (which voids pending requests).
-  if (!failed) { const ids = await r(['SMEMBERS', 'fm:taskreqs:' + id]); const open = ids.length ? (await r(['MGET', ...ids.map(x => 'fm:req:' + x)])).filter(Boolean).map(x => JSON.parse(x)).filter(x => ['pending', 'approved', 'reconciling', 'outcome_unknown'].includes(x.status)) : []; if (open.length) return { status: 409, body: { error: 'proposal_unresolved', reason: 'A proposal on this job has no final outcome yet', requests: open.map(x => ({ id: x.id, status: x.status })) } }; } t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(body&&body.runByAlter===true)t.runByAlter=true; /* hosted worker self-labels: rendered as Run by Alter on <bot>'s account */
+  if (!failed) { const ids = await r(['SMEMBERS', 'fm:taskreqs:' + id]); const open = ids.length ? (await r(['MGET', ...ids.map(x => 'fm:req:' + x)])).filter(Boolean).map(x => JSON.parse(x)).filter(x => ['pending', 'approved', 'reconciling', 'recovering', 'outcome_unknown'].includes(x.status)) : []; if (open.length) return { status: 409, body: { error: 'proposal_unresolved', reason: 'A proposal on this job has no final outcome yet', requests: open.map(x => ({ id: x.id, status: x.status })) } }; } t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(body&&body.runByAlter===true)t.runByAlter=true; /* hosted worker self-labels: rendered as Run by Alter on <bot>'s account */
   {const c=reportedCost(body);if(c!=null){t.modelCostUsd=Math.round((Number(t.modelCostUsd||0)+c)*1e6)/1e6;t.modelCostSource=t.modelCostSource==='provider'?'provider+bot':'bot';}} await closeJobGrant(t,'Job finished; action grant expired'); if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+id,raw,JSON.stringify(t)])!==1)return {status:409,body:{error:'Task changed. Read it again'}};
   await touchAgent(agent);
   await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id });
@@ -1109,6 +1141,62 @@ async function decideUnlocked(reqId, decision, body) {
 // so past INFLIGHT_STALE_MS nothing can still be executing it: the owner sees an unknown outcome and may reconcile (same Idempotency-Key).
 const INFLIGHT_STALE_MS = 120000;
 function staleInflight(q) { if (!q || q.action !== 'email.send') return false; const t = q.status === 'approved' ? q.decidedAt : q.status === 'reconciling' ? (q.reconcileStartedAt || q.executedAt || q.decidedAt) : null; return !!t && Date.now() - Date.parse(t) > INFLIGHT_STALE_MS; }
+// A note save the owner approved but that never finished (the function died after claiming it, before the outcome was recorded). Past the
+// same window as email, nothing can still be running it (the job lock is 120 s), so the owner is offered "Finish saving".
+function noteStalled(q) {
+  if (!q || q.action !== 'notes.write') return false;
+  const t = q.status === 'approved' ? q.decidedAt : q.status === 'recovering' ? (q.recoverStartedAt || q.decidedAt) : null;
+  return !!t && Date.now() - Date.parse(t) > INFLIGHT_STALE_MS;
+}
+async function completedReceiptFor(reqId) {
+  for (const x of await r(['LRANGE', 'fm:receipts', 0, 299])) { try { const c = JSON.parse(x); if (c.requestId === reqId && c.outcome === 'completed') return c; } catch {} }
+  return null;
+}
+async function recoverNoteReq(id) {
+  const raw = await r(['GET', 'fm:req:' + id]); if (!raw) return { status: 404, body: { error: 'not found' } };
+  const q = JSON.parse(raw);
+  if (!noteStalled(q)) return { status: 409, body: { error: 'not_interrupted', note: 'Only a note save that was interrupted can be finished.', request: pub(q) } };
+  return q.taskId ? withJobLock(q.taskId, () => recoverNoteReqUnlocked(id)) : recoverNoteReqUnlocked(id);
+}
+async function recoverNoteReqUnlocked(id) {
+  const raw = await r(['GET', 'fm:req:' + id]); if (!raw) return { status: 404, body: { error: 'not found' } };
+  let q = JSON.parse(raw);
+  if (!noteStalled(q)) return { status: 409, body: { error: 'not_interrupted', note: 'Only a note save that was interrupted can be finished.', request: pub(q) } };
+  const agent = await getJ('fm:agent:' + q.agentId);
+  const taken = { status: 409, body: { error: 'already recovering', request: pub(q) } };
+  const before = q;
+  q = await claimReq(raw, { status: 'recovering', recoverStartedAt: now() }); if (!q) return taken;
+  const block = async (code, reason) => {
+    q = await claimReq(JSON.stringify(q), { status: 'blocked', reason }); if (!q) return taken; await finishReq(q);
+    const rec = await receipt(agent || { id: q.agentId, name: q.agentName }, q.action, q.params, 'blocked', 0, `BLOCKED at recovery: ${reason}`, q.id, { code });
+    await event(q.agentId, 'blocked', `Blocked at recovery: ${reason}`, { requestId: q.id, receiptId: rec.id });
+    return { status: 200, body: { request: pub(q) } };
+  };
+  // What is written is what the owner approved: the stored request must still match its approval fingerprint.
+  const approved = noteMessage(q.rawParams);
+  if (!q.detailsHash || reqHash('notes.write', approved) !== q.detailsHash) return block('details_changed', 'What would be saved no longer matches what you approved');
+  const nid = noteIdFor(q.id), written = await getJ('fm:note:' + nid);
+  if (written && (written.title !== approved.title || written.text !== approved.text)) return block('details_changed', 'The stored note does not match what you approved');
+  // Not written yet: policy is checked now, as at approval. Already written under the owner's approval: finish the record, write nothing new.
+  if (!written) {
+    if (!agent) return block('revoked', 'The bot no longer exists');
+    const blocked = await jobPolicy(agent, q.action, q.taskId, q.grantId) || await policy(agent, q.action, (agent.permissions || {})[q.action] === 'NEVER' ? 'NEVER' : 'AUTO');
+    if (blocked) return block(blocked.code, blocked.reason);
+  }
+  // Write (or repair) the note first, outside runAndReceipt: it swallows errors into a failed request, and a note still being written by
+  // another writer is not a failure. If it is busy, the claim is undone and nothing is recorded; the owner can try again.
+  const actor = agent || { id: q.agentId, name: q.agentName }; // a removed bot can still have a save to finish: the note exists under the owner's approval
+  try { await writeNoteOnce(actor, q.rawParams, q); }
+  catch (e) {
+    if (e && e.code === 'note_busy') { const back = await claimReq(JSON.stringify(q), { status: before.status, recoverStartedAt: before.recoverStartedAt }); return { status: 409, body: { error: 'note_busy', note: 'The note is still being written. Try again in a moment.', request: pub(back || before) } }; }
+    throw e;
+  }
+  let rec = written ? await completedReceiptFor(q.id) : null, out = rec ? { data: { note_id: nid } } : null, error = null;
+  if (!rec) ({ rec, out, error } = await runAndReceipt(actor, q.action, q.rawParams, q.id, 'owner:approve', q.taskId, { detailsHash: q.detailsHash || null, recovered: true }));
+  q.status = error ? 'failed' : 'executed'; q.executedAt = now(); q.recoveredAt = now(); q.receiptId = rec.id; q.result = out ? out.data : { error };
+  await finishReq(q);
+  return { status: 200, body: { request: pub(q), receipt: rec } };
+}
 async function reconcileReq(id) {
   const raw = await r(['GET', 'fm:req:' + id]); if (!raw) return { status: 404, body: { error: 'not found' } };
   let q = JSON.parse(raw);
@@ -1155,7 +1243,7 @@ async function fullState() {
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
-  const pend = ids.length ? parse(await r(['MGET', ...ids.map(i => 'fm:req:' + i)])).map(q => staleInflight(q) ? { ...q, status: 'outcome_unknown', delivery: { state: 'unknown' }, staleInflight: true } : q).map(pub) : [];
+  const pend = ids.length ? parse(await r(['MGET', ...ids.map(i => 'fm:req:' + i)])).map(q => staleInflight(q) ? { ...q, status: 'outcome_unknown', delivery: { state: 'unknown' }, staleInflight: true } : noteStalled(q) ? { ...q, stalled: true } : q).map(pub) : [];
   // History holds one snapshot per decision; show each request once, and read an email's live record so a reconcile or a
   // delivery check (which update the record, not the history) is what the owner sees.
   const hist = []; { const seenReq = new Set(pend.map(x => x.id)); for (const x of parse(await r(['LRANGE', 'fm:reqhist', 0, 14]))) if (!seenReq.has(x.id)) { seenReq.add(x.id); hist.push(x); } }
@@ -1787,6 +1875,7 @@ async function routes(req, res, path, body, agentPre) {
     { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
     if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); const d = await decide(m[1], m[2], body); if (d.status === 200) await track('approval_completed'); return send(d); }
+    if ((m = path.match(/^\/requests\/(\w+)\/recover$/)) && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await recoverNoteReq(m[1])); }
     if ((m = path.match(/^\/requests\/(\w+)\/(reconcile|delivery)$/)) && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(m[2] === 'reconcile' ? await reconcileReq(m[1]) : await deliveryReq(m[1])); }
     {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
       if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});

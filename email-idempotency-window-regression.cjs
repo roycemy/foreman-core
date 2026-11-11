@@ -48,7 +48,12 @@ const iso=ms=>new Date(ms).toISOString();
  {const api=fs.readFileSync(path.join(__dirname,'api/index.js'),'utf8'),vj=JSON.parse(fs.readFileSync(path.join(__dirname,'vercel.json'),'utf8'));
   const md=vj.functions&&vj.functions['api/index.js']&&vj.functions['api/index.js'].maxDuration;
   assert.ok(Number.isFinite(md)&&md<=300,'api/index.js maxDuration is set and small (got '+md+'): first send to executedAt stays far under the 1h margin');
-  const writes=api.match(/executedAt\s*=\s*now\(\)/g)||[];assert.equal(writes.length,1,'executedAt is assigned in exactly one place');
+  // Note-save recovery (notes.write only) stamps executedAt when it finishes an interrupted save. It is a separate function that refuses any
+  // other action, so the EMAIL anchor below must still have exactly one writer once that function is set aside.
+  const noteRecovery=(api.match(/async function recoverNoteReqUnlocked[\s\S]*?\nasync function reconcileReq/)||[''])[0];
+  assert.ok(noteRecovery&&/if \(!noteStalled\(q\)\) return/.test(noteRecovery)&&/function noteStalled\(q\) \{\s*if \(!q \|\| q\.action !== 'notes\.write'\) return false;/.test(api),'the other writer of executedAt only ever acts on notes.write requests');
+  const emailApi=api.replace(noteRecovery,'async function reconcileReq');
+  const writes=emailApi.match(/executedAt\s*=\s*now\(\)/g)||[];assert.equal(writes.length,1,'executedAt is assigned in exactly one place for email');
   const i=api.indexOf('executedAt = now()'),before=api.slice(api.lastIndexOf('\n',api.lastIndexOf('\n',i)-1),i);
   assert.ok(/await runAndReceipt\(/.test(before),'executedAt is stamped right after the send returns, in the same invocation');
   assert.ok(/claimReq\(raw, \{ status: 'approved', decidedAt: now\(\) \}\)/.test(api),'decidedAt is persisted before the first provider call');
