@@ -52,6 +52,16 @@ async function http(method,url,{key,cookie,body}={}){let out;const headers={host
   assert.equal(Number(await inA(()=>f.r(['GET','fm:spend:'+a.id+':'+day]))),2,'ten concurrent and one repeat with the same key: charged once');
   await inA(()=>f.recordCost(a,'notes.write',null,'req_other'));await inA(()=>f.recordCost(a,'notes.write',null,null));await inA(()=>f.recordCost(a,'notes.write',null,null));
   assert.equal(Number(await inA(()=>f.r(['GET','fm:spend:'+a.id+':'+day]))),8,'a different key charges; no key charges every time');}
+ // ---- an old retry must not count against the job budget again, however many charges came after it (the ledger once kept only the last 500)
+ {const s=await scenario({job:true});const a=await inA(()=>f.getJ('fm:agent:'+s.bot.agent.id));
+  await inA(async()=>{const tk=await f.getJ('fm:task:'+s.t.id);tk.jobGrant.budgetCents=100000;await f.setJ('fm:task:'+s.t.id,tk);});
+  const keys=Array.from({length:620},(_,i)=>'req_many_'+i);for(const k of keys)await inA(()=>f.recordCost(a,'notes.write',s.t.id,k));
+  const before=await ledger(s);assert.equal(before,620*2,'620 distinct charges, 2c each');
+  for(const k of [keys[0],keys[1],keys[100],keys[119],keys[500]])await inA(()=>f.recordCost(a,'notes.write',s.t.id,k));
+  assert.equal(await ledger(s),before,'retrying old keys (including ones past the last 500) does not charge the job again');
+  assert.equal(Number(await inA(()=>f.r(['GET','fm:spend:'+a.id+':'+day]))),620*2,'nor the daily counter');
+  // a crash between the ledger write and its marker is still safe while the key is recent
+  await inA(()=>f.recordCost(a,'notes.write',s.t.id,'req_recent'));await inA(()=>f.recordCost(a,'notes.write',s.t.id,'req_recent'));assert.equal(await ledger(s),before+2,'a recent key charges once');}
  // ---- the gate still reads the counter: a 3c daily limit allows one 2c note and blocks the second
  {const s1=await scenario();await inA(async()=>{const a=await f.getJ('fm:agent:'+s1.bot.agent.id);a.limits={...(a.limits||{}),dailyCents:3};await f.setJ('fm:agent:'+a.id,a);});
   assert.equal((await approve(s1)).j.request.status,'executed');

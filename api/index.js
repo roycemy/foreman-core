@@ -1052,11 +1052,15 @@ async function recordCost(agent, action, taskId, key) {
   }
   await r(['EVAL', CHARGE_ONCE, 2, 'fm:charged:' + key, spendKey, cost, now()]);
   if (agent.permissionScope === 'job' && taskId) {
+    // The job ledger is a compare-and-set update that records the key in a short list (the bridge for a crash between the ledger write and
+    // its marker). Once the ledger is written a permanent marker is set, so a retry of any age, however many charges came after it, is a no-op.
+    const marker = 'fm:jcharged:' + taskId + ':' + key; if (await r(['GET', marker])) return;
     for (let i = 0; i < 8; i++) {
       const raw = await r(['GET', 'fm:task:' + taskId]), t = raw && JSON.parse(raw); if (!t || !t.jobGrant) return;
-      const charged = Array.isArray(t.jobGrant.charged) ? t.jobGrant.charged : []; if (charged.includes(key)) return;
+      const charged = Array.isArray(t.jobGrant.charged) ? t.jobGrant.charged : [];
+      if (charged.includes(key)) { await r(['SET', marker, '1']); return; }
       t.jobGrant = { ...t.jobGrant, spentCents: Number(t.jobGrant.spentCents || 0) + cost, charged: [...charged, key].slice(-500) };
-      if (await r(['EVAL', AGENT_CAS, 1, 'fm:task:' + taskId, raw, JSON.stringify(t)]) === 1) return;
+      if (await r(['EVAL', AGENT_CAS, 1, 'fm:task:' + taskId, raw, JSON.stringify(t)]) === 1) { await r(['SET', marker, '1']); return; }
     }
     throw new Error('job ledger busy');
   }
@@ -1217,8 +1221,12 @@ async function olderNoteFor(q, approved) {
     for (const v of vals) { try { const n = v && JSON.parse(v); if (n && n.requestId === q.id && !n.deleted) return n; } catch {} }
   }
   const since = Date.parse(q.decidedAt || q.createdAt || 0);
+  // A list-only note is adopted by at most one request: the first to claim it (SET NX) keeps it, a repeat by the same request finds its
+  // own claim, and a second request with identical text moves on and writes its own note.
   for (const x of await r(['LRANGE', 'fm:notes', 0, 99])) {
-    try { const n = JSON.parse(x); if (n && !n.requestId && n.by === q.agentId && n.title === approved.title && n.text === approved.text && Date.parse(n.at) >= since) return n; } catch {}
+    let n; try { n = JSON.parse(x); } catch { continue; }
+    if (!(n && !n.requestId && n.by === q.agentId && n.title === approved.title && n.text === approved.text && Date.parse(n.at) >= since)) continue;
+    return n;
   }
   return null;
 }
