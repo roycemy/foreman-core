@@ -1180,6 +1180,21 @@ async function completedReceiptFor(reqId) {
   for (const x of await r(['LRANGE', 'fm:receipts', 0, 299])) { try { const c = JSON.parse(x); if (c.requestId === reqId && c.outcome === 'completed') return c; } catch {} }
   return null;
 }
+// The note an older build already wrote for this request, under a random id: a record that names the request (831b3fe..f8ea5e8), or a
+// list-only note (production main) by the same bot with exactly the approved title and text, written at or after the approval. Recovery
+// adopts it instead of writing a second note. Reads are batched; this runs only when recovering.
+async function olderNoteFor(q, approved) {
+  const ids = await r(['SMEMBERS', 'fm:noteids']);
+  for (let i = 0; i < ids.length; i += 100) {
+    const vals = await r(['MGET', ...ids.slice(i, i + 100).map(x => 'fm:note:' + x)]);
+    for (const v of vals) { try { const n = v && JSON.parse(v); if (n && n.requestId === q.id && !n.deleted) return n; } catch {} }
+  }
+  const since = Date.parse(q.decidedAt || q.createdAt || 0);
+  for (const x of await r(['LRANGE', 'fm:notes', 0, 99])) {
+    try { const n = JSON.parse(x); if (n && !n.requestId && n.by === q.agentId && n.title === approved.title && n.text === approved.text && Date.parse(n.at) >= since) return n; } catch {}
+  }
+  return null;
+}
 async function recoverNoteReq(id) {
   const raw = await r(['GET', 'fm:req:' + id]); if (!raw) return { status: 404, body: { error: 'not found' } };
   const q = JSON.parse(raw);
@@ -1203,7 +1218,8 @@ async function recoverNoteReqUnlocked(id) {
   // What is written is what the owner approved: the stored request must still match its approval fingerprint.
   const approved = noteMessage(q.rawParams);
   if (!q.detailsHash || reqHash('notes.write', approved) !== q.detailsHash) return block('details_changed', 'What would be saved no longer matches what you approved');
-  const nid = noteIdFor(q.id), written = await getJ('fm:note:' + nid);
+  let nid = noteIdFor(q.id), written = await getJ('fm:note:' + nid), adopted = false;
+  if (!written) { const older = await olderNoteFor(q, approved); if (older) { nid = older.id; written = older; adopted = true; } }
   if (written && (written.title !== approved.title || written.text !== approved.text)) return block('details_changed', 'The stored note does not match what you approved');
   // Not written yet: policy is checked now, as at approval. Already written under the owner's approval: finish the record, write nothing new.
   if (!written) {
@@ -1214,12 +1230,19 @@ async function recoverNoteReqUnlocked(id) {
   // Write (or repair) the note first, outside runAndReceipt: it swallows errors into a failed request, and a note still being written by
   // another writer is not a failure. If it is busy, the claim is undone and nothing is recorded; the owner can try again.
   const actor = agent || { id: q.agentId, name: q.agentName }; // a removed bot can still have a save to finish: the note exists under the owner's approval
-  try { await writeNoteOnce(actor, q.rawParams, q); }
+  try { if (!adopted) await writeNoteOnce(actor, q.rawParams, q); }
   catch (e) {
     if (e && e.code === 'note_busy') { const back = await claimReq(JSON.stringify(q), { status: before.status, recoverStartedAt: before.recoverStartedAt }); return { status: 409, body: { error: 'note_busy', note: 'The note is still being written. Try again in a moment.', request: pub(back || before) } }; }
     throw e;
   }
   let rec = written ? await completedReceiptFor(q.id) : null, out = rec ? { data: { note_id: nid } } : null, error = null;
+  if (!rec && adopted) {
+    // The older build wrote the note but left no receipt: record it once, and charge once (keyed; the older build may already have
+    // counted it, so at most 2c is counted twice for a request stranded across the upgrade).
+    await recordCost(actor, q.action, q.taskId, q.id);
+    rec = await receipt(actor, q.action, q.params, 'completed', ACTIONS[q.action].costCents, `Wrote note "${written.title}" (${written.id}) to the shared workspace (recovered)`, q.id, { approvedBy: 'owner:approve', taskId: q.taskId || null, detailsHash: q.detailsHash || null, recovered: true });
+    await r(['SET', 'fm:done:' + q.id, rec.id]); out = { data: { note_id: nid } };
+  }
   if (!rec) ({ rec, out, error } = await runAndReceipt(actor, q.action, q.rawParams, q.id, 'owner:approve', q.taskId, { detailsHash: q.detailsHash || null, recovered: true }));
   q.status = error ? 'failed' : 'executed'; q.executedAt = now(); q.recoveredAt = now(); q.receiptId = rec.id; q.result = out ? out.data : { error };
   await finishReq(q);
