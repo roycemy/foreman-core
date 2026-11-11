@@ -67,7 +67,7 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'EVAL': { if(k===CHARGE_ONCE){const n=Number(a[0]);if(n!==2&&n!==3)throw Error('unsupported local EVAL');const keys=a.slice(1,1+n),[amount,val]=a.slice(1+n);if(mem.kv.has(keys[0]))return 0;mem.kv.set(keys[0],val);for(const c of keys.slice(1))mem.kv.set(c,String(parseInt(mem.kv.get(c)||'0',10)+parseInt(amount,10)));return 1;} const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
+    case 'EVAL': { if(k===RECEIPT_ONCE){const [n,marker,head,list,json,hash,val]=a;if(Number(n)!==3)throw Error('unsupported local EVAL');if(mem.kv.has(marker))return 0;mem.kv.set(marker,val);mem.kv.set(head,hash);const l=mem.lists.get(list)||[];l.unshift(json);mem.lists.set(list,l.slice(0,300));return 1;} if(k===CHARGE_ONCE){const n=Number(a[0]);if(n!==2&&n!==3)throw Error('unsupported local EVAL');const keys=a.slice(1,1+n),[amount,val]=a.slice(1+n);if(mem.kv.has(keys[0]))return 0;mem.kv.set(keys[0],val);for(const c of keys.slice(1))mem.kv.set(c,String(parseInt(mem.kv.get(c)||'0',10)+parseInt(amount,10)));return 1;} const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'LREM': { const l = L(), out = l.filter(x => x !== a[1]); mem.lists.set(k, out); return l.length - out.length; }
@@ -94,6 +94,8 @@ const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
 // One atomic operation: claim the charge marker (KEYS[1]), then add the amount to the daily counter (KEYS[2]) and, for a job-scoped bot, to
 // the job's ledger counter (KEYS[3]). All of it happens or none of it does, so a crash at any point can never leave the two ledgers
 // apart, and a retry of any age finds the permanent marker and does nothing.
+// A receipt keyed by onceKey is written at most once: marker, chain head and list entry in one operation, under an id derived from the key.
+const RECEIPT_ONCE = "if redis.call('SET',KEYS[1],ARGV[3],'NX') then redis.call('SET',KEYS[2],ARGV[2]); redis.call('LPUSH',KEYS[3],ARGV[1]); redis.call('LTRIM',KEYS[3],0,299); return 1 end; return 0";
 const CHARGE_ONCE = "if redis.call('SET',KEYS[1],ARGV[2],'NX') then redis.call('INCRBY',KEYS[2],ARGV[1]); if KEYS[3] then redis.call('INCRBY',KEYS[3],ARGV[1]) end; return 1 end; return 0";
 const AGENT_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2]); return 1";
 // Same compare-and-set, but keeps the key's TTL so expiring bot-link pairing records stay expiring.
@@ -186,7 +188,7 @@ async function autoNoteOnce(agent, params, taskId, sourceId) {
     let receiptId = await r(['GET', 'fm:done:' + key]);
     if (!receiptId) {
       await recordCost(agent, 'notes.write', taskId, key);
-      const rec = await receipt(agent, 'notes.write', msg, 'completed', ACTIONS['notes.write'].costCents, `Wrote note "${note.title}" (${note.id}) to the shared workspace`, null, { approvedBy: 'policy:AUTO', taskId: taskId || null });
+      const rec = await receipt(agent, 'notes.write', msg, 'completed', ACTIONS['notes.write'].costCents, `Wrote note "${note.title}" (${note.id}) to the shared workspace`, null, { approvedBy: 'policy:AUTO', taskId: taskId || null, onceKey: key });
       await r(['SET', 'fm:done:' + key, rec.id]); await event(agent.id, 'completed', rec.summary, { receiptId: rec.id }); receiptId = rec.id;
     }
     return { status: 200, body: { status: 'completed', result: { note_id: id }, receipt_id: receiptId, ...(prior ? { duplicate: true } : {}) } };
@@ -1029,9 +1031,11 @@ async function event(agentId, type, text, extra) { bust(); const e = { id: rid('
   if (agentId && e.kind && !(extra && extra.presenceOnly)) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
 async function spentToday(agentId) { return parseInt((await r(['GET', `fm:spend:${agentId}:${now().slice(0, 10)}`])) || '0', 10); }
 async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust(); await track('first_receipt');
+  const { onceKey, ...ex } = extra || {};
   const prev = (await r(['GET', 'fm:lasthash'])) || 'genesis';
-  const rec = { id: rid('rcpt'), at: now(), agentId: agent.id, agentName: agent.name, action, params: redact(params), outcome, costCents: cost, summary, requestId: reqId || null, ...extra, prevHash: prev };
+  const rec = { id: onceKey ? 'rcpt_' + sha('once|' + onceKey).slice(0, 10) : rid('rcpt'), at: now(), agentId: agent.id, agentName: agent.name, action, params: redact(params), outcome, costCents: cost, summary, requestId: reqId || null, ...ex, prevHash: prev };
   rec.hash = sha(prev + JSON.stringify(rec));
+  if (onceKey) { await r(['EVAL', RECEIPT_ONCE, 3, 'fm:rcptonce:' + onceKey, 'fm:lasthash', 'fm:receipts', JSON.stringify(rec), rec.hash, now()]); return rec; }
   await r(['SET', 'fm:lasthash', rec.hash]); await r(['LPUSH', 'fm:receipts', JSON.stringify(rec)]); await r(['LTRIM', 'fm:receipts', 0, 299]);
   return rec;
 }

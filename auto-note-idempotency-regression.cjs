@@ -7,7 +7,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),path=require('p
 const src=fs.readFileSync(path.join(__dirname,'api/index.js'),'utf8')+'\nmodule.exports.t={r,setJ,getJ,als,createAgent,newTask,sha,bust};';
 const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:async u=>{throw Error('NO NETWORK '+u)},setTimeout,clearTimeout,URL,AbortSignal,Buffer};
 vm.runInNewContext(src,ctx);const handler=ctx.module.exports,f=handler.t;const sleep=ms=>new Promise(x=>setTimeout(x,ms));
-const origR=ctx.r;let hook=null;ctx.r=function(cmd){if(hook&&hook.match(cmd)){const h=hook;hook=null;h.hit=true;return new Promise(()=>{});}return origR(cmd);};
+const origR=ctx.r;let hook=null;ctx.r=function(cmd){if(hook&&hook.match(cmd)){const h=hook;hook=null;h.hit=true;return h.after?origR(cmd).then(()=>new Promise(()=>{})):new Promise(()=>{});}return origR(cmd);}; // after: the command executes, its reply never arrives
 async function crashDuring(match,fn){const h={match,hit:false};hook=h;fn().catch(()=>{});for(let i=0;i<600&&!h.hit;i++)await sleep(5);hook=null;assert.ok(h.hit,'the fault was injected');}
 async function http(method,url,{key,cookie,body}={}){let out;const headers={host:'localhost',origin:'http://localhost'};if(key)headers.authorization='Bearer '+key;if(cookie)headers.cookie='fm_sess='+cookie;
  const res={setHeader(){},status(c){this.code=c;return this},json(j){out={code:this.code||200,j};return out},send(b){out={code:this.code||200,j:b};return out},end(){out={code:this.code||204};return out}};await handler({method,url,headers,body:body||{}},res);return out||{code:0};}
@@ -56,6 +56,16 @@ async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'u
   assert.equal((await notesOf(A,b.agent.id)).length,1,'the note was written');assert.equal(await receiptsOf(A,b.agent.id),0,'no receipt yet');
   await inO(A,async()=>{await f.r(['DEL','fm:joblock:'+b.t.id]);for(const id of await f.r(['SMEMBERS','fm:noteids']))await f.r(['DEL','fm:notelock:'+id]);}); // the killed call's locks expire
   const r=await write(b,{params:P,source_id:'crashy'});assert.equal(r.code,200,JSON.stringify(r.j));assert.deepEqual([(await notesOf(A,b.agent.id)).length,await receiptsOf(A,b.agent.id),await spend(b)],[1,1,2],'the retry completes it: one note, one receipt, one charge');}
+ // ===== 6b. a crash at ANY store command after the charge, before or after it executes, then a retry: one receipt (never a second row), one note, one charge,
+ //         and the retry answers with the receipt that exists
+ for(const when of ['before','after'])for(let k=0;k<14;k++){const b=await autoBot(A,'Rcpt '+when+k);let armed=false,seen=0;
+  const h={match:c=>{if(!armed){if(c[0]==='EVAL'&&/^fm:charged:/.test(String(c[3])))armed=true;else return false;}return seen++===k;},hit:false,after:when==='after'};
+  hook=h;write(b,{params:P,source_id:'rx'}).catch(()=>{});for(let i=0;i<300&&!h.hit;i++)await sleep(5);hook=null;if(!h.hit){await sleep(30);continue;} // fewer commands than k
+  await inO(A,async()=>{await f.r(['DEL','fm:joblock:'+b.t.id]);for(const id of await f.r(['SMEMBERS','fm:noteids']))await f.r(['DEL','fm:notelock:'+id]);}); // the killed call's locks expire
+  const r1=await write(b,{params:P,source_id:'rx'});assert.equal(r1.code,200,when+' #'+k+': '+JSON.stringify(r1.j));
+  const rows=(await inO(A,()=>f.r(['LRANGE','fm:receipts',0,299]))).map(x=>JSON.parse(x)).filter(x=>x.agentId===b.agent.id&&x.action==='notes.write'&&x.outcome==='completed');
+  assert.deepEqual([(await notesOf(A,b.agent.id)).length,rows.length,await spend(b)],[1,1,2],'crash '+when+' command #'+k+' after the charge, then a retry: one note, one receipt row, 2c once');
+  assert.equal(r1.j.receipt_id,rows[0].id,'crash '+when+' #'+k+': the retry answers with the receipt that exists');const r2=await write(b,{params:P,source_id:'rx'});assert.equal(r2.j.receipt_id,rows[0].id);assert.equal(await receiptsOf(A,b.agent.id),1);}
  // ===== 7. a note the owner deleted is not recreated by a retry
  {const b=await autoBot(A,'Deleted bot');const r1=await write(b,{params:P,source_id:'gone'});await http('POST','/api/notes/'+r1.j.result.note_id+'/delete',{cookie:A.cookie,body:{confirmed:true}});
   const r2=await write(b,{params:P,source_id:'gone'});assert.equal(r2.j.result.deleted,true,'the retry reports the note as deleted');assert.equal((await notesOf(A,b.agent.id)).length,0,'not recreated');}
