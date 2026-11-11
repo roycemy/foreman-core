@@ -146,24 +146,47 @@ async function withNoteLock(id, fn) {
   }
   throw Object.assign(new Error('note write busy'), { code: 'note_busy' });
 }
-// Idempotent write of the note for one approved request: the record is created once (SET NX), and it reaches the recent list exactly
-// once (a listed flag, set after the push, repaired by looking for the id if a crash fell between the two). Any step may be repeated.
-async function writeNoteOnce(agent, params, rq) {
-  const id = noteIdFor(rq.id);
+// Idempotent write of one note under a stable id (the caller holds that note's lock): the record is created once (SET NX) and reaches the
+// recent list exactly once (a listed flag, set after the push, repaired by looking for the id if a crash fell between the two). Any step
+// may be repeated. A tombstone (deleted by the owner) is final: never recreated or relisted.
+async function writeNoteLocked(agent, params, link) {
+  const id = link.id;
+  let note = await getJ('fm:note:' + id);
+  if (note && note.deleted) return note;
+  if (!note) {
+    const fresh = { id, by: agent.id, ...noteMessage(params), at: now(), requestId: link.requestId || null, taskId: link.taskId || null, ...(link.invocation ? { invocation: link.invocation, payloadHash: link.payloadHash } : {}) };
+    if (await r(['SET', 'fm:note:' + id, JSON.stringify(fresh), 'NX'])) note = fresh; else note = await getJ('fm:note:' + id);
+    if (note.deleted) return note;
+  }
+  await r(['SADD', 'fm:noteids', id]);
+  if (!note.listed) {
+    const have = (await r(['LRANGE', 'fm:notes', 0, 99])).some(x => { try { return JSON.parse(x).id === id; } catch { return false; } });
+    if (!have) { await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]); }
+    note = { ...note, listed: true }; await setJ('fm:note:' + id, note);
+  }
+  return note;
+}
+// The note for one approved request (its id derived from the request).
+async function writeNoteOnce(agent, params, rq) { const id = noteIdFor(rq.id); return withNoteLock(id, () => writeNoteLocked(agent, params, { id, requestId: rq.id, taskId: rq.taskId })); }
+// An AUTO notes.write the caller made retry-safe with a source_id. Its identity is bot + job + source_id: the same identity and the same
+// note return the original note and receipt; the same identity with a different note is refused; a deleted note is not recreated.
+// Content alone never dedupes. The cost and receipt are recorded once per identity (keyed charge and a completion marker), also when a
+// retry finishes a call that died after writing the note. Calls without a source_id keep the existing path.
+const noteIdForInvocation = (agentId, taskId, sourceId) => 'note_' + sha('note|inv|' + agentId + '|' + (taskId || '') + '|' + sourceId).slice(0, 20);
+async function autoNoteOnce(agent, params, taskId, sourceId) {
+  const id = noteIdForInvocation(agent.id, taskId, sourceId), msg = noteMessage(params), hash = reqHash('notes.write', msg), key = 'inv:' + id;
   return withNoteLock(id, async () => {
-    let note = await getJ('fm:note:' + id);
-    if (note && note.deleted) return note; // deleted by the owner: never recreated or relisted
-    if (!note) {
-      const fresh = { id, by: agent.id, ...noteMessage(params), at: now(), requestId: rq.id, taskId: rq.taskId || null };
-      if (await r(['SET', 'fm:note:' + id, JSON.stringify(fresh), 'NX'])) note = fresh; else note = await getJ('fm:note:' + id);
+    const prior = await getJ('fm:note:' + id);
+    if (prior && prior.deleted) return { status: 200, body: { status: 'completed', duplicate: true, result: { note_id: id, deleted: true } } };
+    if (prior && prior.payloadHash !== hash) return { status: 409, body: { status: 'rejected', code: 'idempotency_conflict', reason: 'This source_id was already used for a different note. Use a new source_id for a new note.' } };
+    const note = await writeNoteLocked(agent, msg, { id, requestId: null, taskId, invocation: sourceId, payloadHash: hash });
+    let receiptId = await r(['GET', 'fm:done:' + key]);
+    if (!receiptId) {
+      await recordCost(agent, 'notes.write', taskId, key);
+      const rec = await receipt(agent, 'notes.write', msg, 'completed', ACTIONS['notes.write'].costCents, `Wrote note "${note.title}" (${note.id}) to the shared workspace`, null, { approvedBy: 'policy:AUTO', taskId: taskId || null });
+      await r(['SET', 'fm:done:' + key, rec.id]); await event(agent.id, 'completed', rec.summary, { receiptId: rec.id }); receiptId = rec.id;
     }
-    await r(['SADD', 'fm:noteids', id]);
-    if (!note.listed) {
-      const have = (await r(['LRANGE', 'fm:notes', 0, 99])).some(x => { try { return JSON.parse(x).id === id; } catch { return false; } });
-      if (!have) { await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]); }
-      note = { ...note, listed: true }; await setJ('fm:note:' + id, note);
-    }
-    return note;
+    return { status: 200, body: { status: 'completed', result: { note_id: id }, receipt_id: receiptId, ...(prior ? { duplicate: true } : {}) } };
   });
 }
 // The exact message Alter would send now: sender from configuration, never from the bot.
@@ -1113,6 +1136,7 @@ async function gatewayActUnlocked(agent, body) {
     await event(agent.id, 'pending', `Waiting for owner approval: ${action}`, { requestId: q.id,taskId:q.taskId||null });
     return { status: 202, body: { status: 'pending', request_id: q.id, message: 'Action is paused until the owner approves or denies it.' } };
   }
+  if (action === 'notes.write' && String(body.source_id || '').trim()) return autoNoteOnce(agent, params, taskId, String(body.source_id).trim().slice(0, 200));
   const { rec, out, error } = await runAndReceipt(agent, action, params, null, null, taskId);
   if (error) return { status: 502, body: { status: 'failed', error, receipt_id: rec.id } };
   return { status: 200, body: { status: 'completed', result: out.data, receipt_id: rec.id } };
@@ -1357,7 +1381,7 @@ async function seed() {
 // ---------- MCP adapter (JSON-RPC 2.0 over HTTPS) ----------
 const MCP_TOOLS = [
   { name: 'foreman_web_fetch', description: 'Fetch a live https web page through Foreman (policy-gated).', inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] }, action: 'web.fetch' },
-  { name: 'foreman_notes_write', description: 'Write a note to the shared workspace through Foreman (policy-gated; may pause for owner approval).', inputSchema: { type: 'object', properties: { title: { type: 'string' }, text: { type: 'string' } }, required: ['title', 'text'] }, action: 'notes.write' },
+  { name: 'foreman_notes_write', description: 'Write a note to the shared workspace through Foreman (policy-gated; may pause for owner approval). Pass a stable source_id to make retries safe: the same source_id and note return the first note instead of writing another.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, text: { type: 'string' }, task_id: { type: 'string' }, source_id: { type: 'string', description: 'Optional retry key. Same source_id and same note: the original note is returned. Same source_id with a different note: refused.' } }, required: ['title', 'text'] }, action: 'notes.write' },
   { name: 'foreman_email_send', description: 'Propose one plain-text email for Alter to send. The owner reviews the exact sender, recipient, subject and body; nothing is sent unless they approve, and Alter (not you) sends it. Returns a request_id: poll it for the outcome. Recipients are limited to addresses the owner allowed.', inputSchema: { type: 'object', properties: { to: { type: 'string' }, subject: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'subject', 'text'] }, action: 'email.send' },
   { name: 'foreman_notes_delete', description: 'Delete workspace notes through Foreman (policy-gated).', inputSchema: { type: 'object', properties: {} }, action: 'notes.delete' },
   { name: 'foreman_enqueue', description: 'Queue an unassigned task in your own workspace. This does not start a hosted worker. Policy-gated, zero cost, maximum 10 per minute.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, brief: { type: 'string' } }, required: ['title'] }, action: 'work.enqueue' },
@@ -1382,7 +1406,7 @@ for(const t of MCP_TOOLS.filter(t=>t.action)){t.inputSchema.properties.task_id={
 async function mcpCall(agent, name, args) {
   const t = MCP_TOOLS.find(x => x.name === name); if (!t) return { isError: true, content: [{ type: 'text', text: 'unknown tool' }] };
   let out;
-  if (t.action) { const g = await gatewayAct(agent, { action: t.action, params: args || {},task_id:args?.task_id }); out = g.body; }
+  if (t.action) { const g = await gatewayAct(agent, { action: t.action, params: args || {},task_id:args?.task_id,source_id:args?.source_id }); out = g.body; }
   else if (name === 'foreman_report') out = (await reportEvent(agent, args || {}, 'mcp')).body;
   else if(name==='foreman_chat_task')out=(await chatTask(agent,args||{})).body;
   else if(name==='foreman_route_suggestion')out=await routing((args||{}).category||'');
