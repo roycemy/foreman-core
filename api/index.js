@@ -154,6 +154,9 @@ async function withNoteLock(id, fn) {
 // Idempotent write of one note under a stable id (the caller holds that note's lock): the record is created once (SET NX) and reaches the
 // recent list exactly once (a listed flag, set after the push, repaired by looking for the id if a crash fell between the two). Any step
 // may be repeated. A tombstone (deleted by the owner) is final: never recreated or relisted.
+// What a deleted note leaves: no content, only the request that wrote or adopted it, so recovering that request knows its note was deleted
+// and never writes the approved text again.
+async function tombstoneOf(id, rec, at) { const rq = (rec && rec.requestId) || await r(['GET', 'fm:adopted:' + id]); return { id, deleted: true, deletedAt: at, ...(rq ? { requestId: rq } : {}) }; }
 async function writeNoteLocked(agent, params, link) {
   const id = link.id;
   let note = await getJ('fm:note:' + id);
@@ -254,16 +257,32 @@ async function execute(agent, action, params, reqId) {
     return { summary: `Wrote note "${note.title}" (${note.id}) to the shared workspace`, data: { note_id: note.id } };
   }
   if (action === 'notes.delete') {
-    // Each note is tombstoned and unlisted under its own lock, like the owner's delete: a write or recovery of the same note either
-    // finishes first (and is then deleted) or runs after and finds the tombstone. Notes from older builds that have no record are
-    // only in the recent list; those are removed by a sweep. A note created after the id list was read is a new note, not a survivor.
-    const at = now(); const entries = async () => await r(['LRANGE', 'fm:notes', 0, 99]);
-    for (const id of await r(['SMEMBERS', 'fm:noteids'])) await withNoteLock(id, async () => {
-      await setJ('fm:note:' + id, { id, deleted: true, deletedAt: at });
-      for (const x of (await entries()).filter(x => { try { return JSON.parse(x).id === id; } catch { return false; } })) await r(['LREM', 'fm:notes', 0, x]);
+    // Each live note is tombstoned and unlisted under its own lock, like the owner's delete: a write or recovery of the same note either
+    // finishes first (and is then deleted) or runs after and finds the tombstone. Notes that are already deleted are skipped (one MGET per
+    // 100 ids), so the cost follows the live notes, and their deletedAt is kept. A note that is busy does not stop the others; the call
+    // then reports how many were not deleted and can simply be repeated. Notes from older builds have no record and are only in the
+    // recent list; a sweep removes those (leaving a tombstone for one a recovery already adopted). A note created after the id list was
+    // read is a new note, not a survivor.
+    const at = now(), busy = [], entries = async () => await r(['LRANGE', 'fm:notes', 0, 99]), ofId = id => x => { try { return JSON.parse(x).id === id; } catch { return false; } };
+    const ids = await r(['SMEMBERS', 'fm:noteids']), live = [];
+    for (let i = 0; i < ids.length; i += 100) { const part = ids.slice(i, i + 100), vals = await r(['MGET', ...part.map(x => 'fm:note:' + x)]); part.forEach((id, k) => { let n = null; try { n = vals[k] && JSON.parse(vals[k]); } catch {} if (!(n && n.deleted)) live.push(id); }); }
+    const guarded = async (id, fn) => { try { await withNoteLock(id, fn); } catch (e) { if (e && e.code === 'note_busy') { busy.push(id); return false; } throw e; } return true; };
+    for (const id of live) await guarded(id, async () => {
+      const cur = await getJ('fm:note:' + id); if (cur && cur.deleted) return;
+      await setJ('fm:note:' + id, await tombstoneOf(id, cur, at));
+      for (const x of (await entries()).filter(ofId(id))) await r(['LREM', 'fm:notes', 0, x]);
     });
-    for (const x of await entries()) { let n = null; try { n = JSON.parse(x); } catch {} if (!n || !n.id || !(await r(['GET', 'fm:note:' + n.id]))) await r(['LREM', 'fm:notes', 0, x]); }
-    bust(); return { summary: 'Deleted all notes', data: {} };
+    for (const x of await entries()) {
+      let n = null; try { n = JSON.parse(x); } catch {}
+      if (!n || !n.id) { await r(['LREM', 'fm:notes', 0, x]); continue; }
+      if (await r(['GET', 'fm:note:' + n.id])) continue; // has a record: handled above, or written since
+      const adopted = await r(['GET', 'fm:adopted:' + n.id]);
+      if (adopted && !(await guarded(n.id, async () => { await setJ('fm:note:' + n.id, await tombstoneOf(n.id, null, at)); await r(['SADD', 'fm:noteids', n.id]); }))) continue;
+      await r(['LREM', 'fm:notes', 0, x]);
+    }
+    bust();
+    if (busy.length) throw Object.assign(new Error(`${busy.length} note${busy.length === 1 ? ' was' : 's were'} busy and not deleted. Repeat the delete to finish`), { code: 'note_busy' });
+    return { summary: 'Deleted all notes', data: {} };
   }
   if(action==='work.assign'){
    const to=await getJ('fm:agent:'+params.assignee);if(!to||to.status!=='active'||to.harness||to.hosted||to.id===agent.id)throw Error('Choose an active external bot in this workspace');
@@ -1224,7 +1243,7 @@ async function olderNoteFor(q, approved) {
   const ids = await r(['SMEMBERS', 'fm:noteids']);
   for (let i = 0; i < ids.length; i += 100) {
     const vals = await r(['MGET', ...ids.slice(i, i + 100).map(x => 'fm:note:' + x)]);
-    for (const v of vals) { try { const n = v && JSON.parse(v); if (n && n.requestId === q.id && !n.deleted) return n; } catch {} }
+    for (const v of vals) { try { const n = v && JSON.parse(v); if (n && n.requestId === q.id) return n; /* a tombstone that names this request counts: its note was deleted */ } catch {} }
   }
   const since = Date.parse(q.decidedAt || q.createdAt || 0);
   // A list-only note is adopted by at most one request: the first to claim it (SET NX) keeps it, a repeat by the same request finds its
@@ -1281,8 +1300,8 @@ async function recoverNoteReqUnlocked(id) {
     // The older build wrote the note but left no receipt: record it once, and charge once (keyed; the older build may already have
     // counted it, so at most 2c is counted twice for a request stranded across the upgrade).
     await recordCost(actor, q.action, q.taskId, q.id);
-    rec = await receipt(actor, q.action, q.params, 'completed', ACTIONS[q.action].costCents, `Wrote note "${written.title}" (${written.id}) to the shared workspace (recovered)`, q.id, { approvedBy: 'owner:approve', taskId: q.taskId || null, detailsHash: q.detailsHash || null, recovered: true });
-    await r(['SET', 'fm:done:' + q.id, rec.id]); out = { data: { note_id: nid } };
+    rec = await receipt(actor, q.action, q.params, 'completed', ACTIONS[q.action].costCents, written.deleted ? `Note ${written.id} was deleted by the owner; not written again (recovered)` : `Wrote note "${written.title}" (${written.id}) to the shared workspace (recovered)`, q.id, { approvedBy: 'owner:approve', taskId: q.taskId || null, detailsHash: q.detailsHash || null, recovered: true });
+    await r(['SET', 'fm:done:' + q.id, rec.id]); out = { data: { note_id: nid, ...(written.deleted ? { deleted: true } : {}) } };
   }
   if (!rec) ({ rec, out, error } = await runAndReceipt(actor, q.action, q.rawParams, q.id, 'owner:approve', q.taskId, { detailsHash: q.detailsHash || null, recovered: true }));
   q.status = error ? 'failed' : 'executed'; q.executedAt = now(); q.recoveredAt = now(); q.receiptId = rec.id; q.result = out ? out.data : { error };
@@ -1828,7 +1847,7 @@ async function noteDelete(id) {
     const copies = (await r(['LRANGE', 'fm:notes', 0, 99])).filter(x => { try { return JSON.parse(x).id === id; } catch { return false; } });
     if (!rec && !copies.length) return { status: 404, body: { error: 'not found' } };
     const already = !!(rec && rec.deleted), deletedAt = already ? rec.deletedAt : now();
-    if (!already) { await setJ('fm:note:' + id, { id, deleted: true, deletedAt }); await r(['SADD', 'fm:noteids', id]); }
+    if (!already) { await setJ('fm:note:' + id, await tombstoneOf(id, rec, deletedAt)); await r(['SADD', 'fm:noteids', id]); }
     for (const x of copies) await r(['LREM', 'fm:notes', 0, x]);
     bust(); return { status: 200, body: { deleted: true, id, deletedAt, ...(already ? { alreadyDeleted: true } : {}) } };
   });

@@ -6,7 +6,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),path=require('p
 const src=fs.readFileSync(path.join(__dirname,'api/index.js'),'utf8')+'\nmodule.exports.t={r,setJ,getJ,als,createAgent,newTask,sha,bust,noteIdFor,jobDetail};';
 const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:async u=>{throw Error('NO NETWORK '+u)},setTimeout,clearTimeout,URL,AbortSignal,Buffer};
 vm.runInNewContext(src,ctx);const handler=ctx.module.exports,f=handler.t;const sleep=ms=>new Promise(x=>setTimeout(x,ms));
-const origR=ctx.r;let hook=null,gate=null;ctx.r=function(cmd){if(gate&&!gate.reached&&gate.match(cmd)){gate.reached=true;return new Promise(res=>{gate.release=()=>res(origR(cmd));});} /* a gate holds one command until released */ if(hook&&hook.match(cmd)){const h=hook;hook=null;h.hit=true;return new Promise(()=>{});}return origR(cmd);};
+const origR=ctx.r;let hook=null,gate=null,spy=null;ctx.r=function(cmd){if(spy)spy.push(cmd.slice(0,3).map(String)); if(gate&&!gate.reached&&gate.match(cmd)){gate.reached=true;return new Promise(res=>{gate.release=()=>res(origR(cmd));});} /* a gate holds one command until released */ if(hook&&hook.match(cmd)){const h=hook;hook=null;h.hit=true;return new Promise(()=>{});}return origR(cmd);};
 async function crashDuring(match,fn){const h={match,hit:false};hook=h;fn().catch(()=>{});for(let i=0;i<600&&!h.hit;i++)await sleep(5);hook=null;assert.ok(h.hit,'the fault was injected');}
 async function http(method,url,{key,cookie,body,origin}={}){let out;const headers={host:'localhost',origin:origin||'http://localhost'};if(key)headers.authorization='Bearer '+key;if(cookie)headers.cookie='fm_sess='+cookie;
  const res={setHeader(){},status(c){this.code=c;return this},json(j){out={code:this.code||200,j};return out},send(b){out={code:this.code||200,j:b};return out},end(){out={code:this.code||204};return out}};await handler({method,url,headers,body:body||{}},res);return out||{code:0};}
@@ -61,6 +61,18 @@ async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'u
   assert.equal(rr.code,200,JSON.stringify(rr.j));assert.equal(dd.code,200,JSON.stringify(dd.j));
   assert.ok((await rec(id8)).deleted&&!(await rec(id8)).text,'delete-all won: the note stays deleted, not rewritten by the overlapping recovery');assert.ok(!(await list()).includes(id8),'and is not back in the recent list');
   assert.equal((await http('GET','/api/notes/'+id8,{cookie:A.cookie})).code,410,'it reads as deleted');}
+ // ===== 5c. delete-all skips notes that are already deleted (its cost must not grow with every note ever written, and deletedAt must
+ //        not be rewritten), and when one note is busy it still deletes the others, then reports the rest as not deleted
+ {const old='2026-01-01T00:00:00.000Z';await inA(async()=>{for(let i=0;i<40;i++){const id='note_tomb'+String(i).padStart(4,'0');await f.setJ('fm:note:'+id,{id,deleted:true,deletedAt:old});await f.r(['SADD','fm:noteids',id]);}});
+  const sa=await scenario(),sb=await scenario(),sc=await scenario();const [na,nb,nc]=[(await approve(sa)).j.request.result.note_id,(await approve(sb)).j.request.result.note_id,(await approve(sc)).j.request.result.note_id];
+  await inA(async()=>{const a=await f.getJ('fm:agent:'+sa.bot.agent.id);a.permissions={'notes.delete':'AUTO'};await f.setJ('fm:agent:'+a.id,a);await f.r(['SET','fm:notelock:'+nb,'held-by-a-live-writer','NX','PX',600000]);});
+  spy=[];const d1=await http('POST','/api/gateway/act',{key:sa.bot.key,body:{action:'notes.delete',params:{}}});const cmds=spy;spy=null;
+  assert.notEqual(d1.j.status,'completed','a busy note means the delete-all is not reported as complete ('+JSON.stringify(d1.j).slice(0,160)+')');
+  assert.ok((await rec(na)).deleted&&(await rec(nc)).deleted,'the notes that were free are deleted');assert.ok((await rec(nb)).text,'the busy note is untouched');
+  assert.equal((await rec('note_tomb0000')).deletedAt,old,'an already-deleted note keeps its original deletedAt');
+  assert.equal(cmds.filter(c=>c[0]==='SET'&&/^fm:note:note_tomb/.test(c[1])).length,0,'already-deleted notes are not written again');
+  const reads=cmds.filter(c=>c[0]==='LRANGE'&&c[1]==='fm:notes').length;assert.ok(reads<=10,'the recent list is read a handful of times, not once per note ever written ('+reads+')');
+  await inA(()=>f.r(['DEL','fm:notelock:'+nb]));const d2=await http('POST','/api/gateway/act',{key:sa.bot.key,body:{action:'notes.delete',params:{}}});assert.equal(d2.code,200,JSON.stringify(d2.j));assert.ok((await rec(nb)).deleted,'a second delete-all finishes the rest');}
  // ===== 6. an older list-only note can be deleted too
  {const legacy={id:'note_oldlist01',by:'agent_x',title:'Old',text:'Old body',at:new Date().toISOString()};await inA(()=>f.r(['LPUSH','fm:notes',JSON.stringify(legacy)]));
   assert.equal((await del(legacy.id)).code,200);assert.ok(!(await list()).includes(legacy.id));assert.equal((await http('GET','/api/notes/'+legacy.id,{cookie:A.cookie})).code,410);}

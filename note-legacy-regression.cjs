@@ -5,7 +5,9 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),path=require('path');
 const src=fs.readFileSync(path.join(__dirname,'api/index.js'),'utf8')+'\nmodule.exports.t={r,setJ,getJ,als,createAgent,newTask,sha,bust,noteIdFor,jobDetail};';
 const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:async u=>{throw Error('NO NETWORK '+u)},setTimeout,clearTimeout,URL,AbortSignal,Buffer};
-vm.runInNewContext(src,ctx);const handler=ctx.module.exports,f=handler.t;
+vm.runInNewContext(src,ctx);const handler=ctx.module.exports,f=handler.t;const sleep=ms=>new Promise(x=>setTimeout(x,ms));
+const origR=ctx.r;let hook=null;ctx.r=function(cmd){if(hook&&hook.match(cmd)){const h=hook;hook=null;h.hit=true;return new Promise(()=>{});}return origR(cmd);};
+async function crashDuring(match,fn){const h={match,hit:false};hook=h;fn().catch(()=>{});for(let i=0;i<600&&!h.hit;i++)await sleep(5);hook=null;assert.ok(h.hit,'the fault was injected');}
 async function http(method,url,{key,cookie,body}={}){let out;const headers={host:'localhost',origin:'http://localhost'};if(key)headers.authorization='Bearer '+key;if(cookie)headers.cookie='fm_sess='+cookie;
  const res={setHeader(){},status(c){this.code=c;return this},json(j){out={code:this.code||200,j};return out},send(b){out={code:this.code||200,j:b};return out},end(){out={code:this.code||204};return out}};await handler({method,url,headers,body:body||{}},res);return out||{code:0};}
 (async()=>{
@@ -61,5 +63,25 @@ async function http(method,url,{key,cookie,body}={}){let out;const headers={host
   const del=await http('POST','/api/notes/'+only.id+'/delete',{cookie:'cookie_a',body:{confirmed:true}});assert.equal(del.code,200);
   assert.equal((await http('GET','/api/notes/'+qb.result.note_id,{cookie:'cookie_a'})).code,200,'deleting the first request\'s note leaves the second request\'s note readable');
   const jd=await http('GET','/api/jobs/'+t4.id,{cookie:'cookie_a'});const ja=jd.j.requests.find(x=>x.id==='req_twin_a'),jb=jd.j.requests.find(x=>x.id==='req_twin_b');assert.deepEqual([ja.noteDeleted===true,jb.noteDeleted===true],[true,false],'only the adopting request shows "Note deleted"');}
+ // ---- an older note the owner (or the bot's delete-all) deletes BEFORE recovery must stay deleted: recovery must not write the approved text again
+ async function deletedBeforeRecovery(tag,shape,deleter){const rid='req_gone_'+tag,params={title:'Gone '+tag,text:'Text that must not come back '+tag},decided=iso(10*60000),hash=f.sha(JSON.stringify(['notes.write',params]));
+  const tk=await inA(()=>f.newTask({title:'Gone '+tag,assignee:bot.agent.id}));const old={id:'note_gone'+tag+'01',by:bot.agent.id,...params,at:iso(9*60000),...(shape==='record'?{requestId:rid,taskId:tk.id}:{})};
+  await inA(async()=>{await f.setJ('fm:req:'+rid,{id:rid,agentId:bot.agent.id,agentName:'Old bot',action:'notes.write',status:'approved',params,rawParams:params,detailsHash:hash,decidedAt:decided,createdAt:decided,taskId:tk.id});await f.r(['SADD','fm:reqs',rid]);await f.r(['SADD','fm:taskreqs:'+tk.id,rid]);
+   if(shape==='record'){await f.setJ('fm:note:'+old.id,old);await f.r(['SADD','fm:noteids',old.id]);}await f.r(['LPUSH','fm:notes',JSON.stringify(old)]);f.bust();});
+  if(shape==='list'){ // recovery adopts the list-only note, then the function dies before finishing the request
+   await crashDuring(c=>c[0]==='EVAL'&&/^fm:charged:/.test(String(c[3])),()=>http('POST','/api/requests/'+rid+'/recover',{cookie:'cookie_a'}));
+   assert.equal(await inA(()=>f.r(['GET','fm:adopted:'+old.id])),rid,'the older note was claimed by this request');
+   await inA(async()=>{await f.r(['DEL','fm:joblock:'+tk.id]);const x=await f.getJ('fm:req:'+rid);x.recoverStartedAt=iso(5*60000);await f.setJ('fm:req:'+rid,x);f.bust();});}
+  await deleter(old);
+  const ids0=(await inA(()=>f.r(['SMEMBERS','fm:noteids']))).length,list0=(await listIds()).length;
+  const rc=await http('POST','/api/requests/'+rid+'/recover',{cookie:'cookie_a'});assert.equal(rc.code,200,tag+': '+JSON.stringify(rc.j));
+  const after=await inA(()=>f.getJ('fm:req:'+rid));assert.equal(after.status,'executed',tag);assert.equal(after.result.note_id,old.id,tag+': the request points at the note that was deleted');assert.equal(after.result.deleted,true,tag+': and says it was deleted');
+  assert.equal(await inA(()=>f.getJ('fm:note:'+f.noteIdFor(rid))),null,tag+': the deleted text was NOT written again under a new id');assert.equal((await listIds()).length,list0,tag+': nothing relisted');assert.equal((await inA(()=>f.r(['SMEMBERS','fm:noteids']))).length,ids0,tag+': no new note record');
+  assert.ok(/deleted/.test(rc.j.receipt.summary),tag+': the receipt says the note was deleted');
+  const g=await http('GET','/api/notes/'+old.id,{cookie:'cookie_a'});assert.equal(g.code,410,tag+': it still reads as deleted');}
+ await deletedBeforeRecovery('rec','record',old=>http('POST','/api/notes/'+old.id+'/delete',{cookie:'cookie_a',body:{confirmed:true}}));
+ await deletedBeforeRecovery('own','list',old=>http('POST','/api/notes/'+old.id+'/delete',{cookie:'cookie_a',body:{confirmed:true}}));
+ await inA(async()=>{const a=await f.getJ('fm:agent:'+bot.agent.id);a.permissions={'notes.delete':'AUTO'};await f.setJ('fm:agent:'+a.id,a);});
+ await deletedBeforeRecovery('bot','list',async()=>{const d=await http('POST','/api/gateway/act',{key:bot.key,body:{action:'notes.delete',params:{}}});assert.equal(d.code,200,JSON.stringify(d.j));});
  console.log('PASS older notes: list-only and pre-flag records stay byte-identical, listed once, open and render; a request stranded by an older build reuses the note it already wrote instead of writing a second one, and an unrelated earlier note is never adopted');
 })().catch(e=>{console.error(e);process.exit(1)});
