@@ -1030,10 +1030,11 @@ async function event(agentId, type, text, extra) { bust(); const e = { id: rid('
   if (e.taskId && !(extra && extra.presenceOnly)) { const tk = 'fm:task:' + e.taskId, traw = await r(['GET', tk]), tt = traw && JSON.parse(traw); if (tt && tt.status === 'running') { tt.progressAt = e.at; await r(['SET', tk, JSON.stringify(tt)]); } }
   if (agentId && e.kind && !(extra && extra.presenceOnly)) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
 async function spentToday(agentId) { return parseInt((await r(['GET', `fm:spend:${agentId}:${now().slice(0, 10)}`])) || '0', 10); }
+const onceReceiptId = key => 'rcpt_' + sha('once|' + key).slice(0, 10);
 async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust(); await track('first_receipt');
   const { onceKey, ...ex } = extra || {};
   const prev = (await r(['GET', 'fm:lasthash'])) || 'genesis';
-  const rec = { id: onceKey ? 'rcpt_' + sha('once|' + onceKey).slice(0, 10) : rid('rcpt'), at: now(), agentId: agent.id, agentName: agent.name, action, params: redact(params), outcome, costCents: cost, summary, requestId: reqId || null, ...ex, prevHash: prev };
+  const rec = { id: onceKey ? onceReceiptId(onceKey) : rid('rcpt'), at: now(), agentId: agent.id, agentName: agent.name, action, params: redact(params), outcome, costCents: cost, summary, requestId: reqId || null, ...ex, prevHash: prev };
   rec.hash = sha(prev + JSON.stringify(rec));
   if (onceKey) { await r(['EVAL', RECEIPT_ONCE, 3, 'fm:rcptonce:' + onceKey, 'fm:lasthash', 'fm:receipts', JSON.stringify(rec), rec.hash, now()]); return rec; }
   await r(['SET', 'fm:lasthash', rec.hash]); await r(['LPUSH', 'fm:receipts', JSON.stringify(rec)]); await r(['LTRIM', 'fm:receipts', 0, 299]);
@@ -1074,7 +1075,7 @@ async function runAndReceipt(agent, action, params, reqId, approvedBy, taskId, e
   try {
     const out = await execute(agent, action, params, reqId);
     await recordCost(agent, action, taskId, reqId || null);
-    const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null, ...(extra||{}), ...(out.receipt||{}) });
+    const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null, ...(extra||{}), ...(out.receipt||{}), ...(reqId ? { onceKey: 'req:' + reqId } : {}) });
     // A per-request completion marker (just the receipt id): "already completed" must not depend on the receipt still being among the
     // last 300 kept in fm:receipts.
     if (reqId) await r(['SET', 'fm:done:' + reqId, rec.id]);
@@ -1212,6 +1213,7 @@ function noteStalled(q) {
 // The completed receipt of a request: its completion marker first; requests completed before the marker existed fall back to the last 300.
 async function completedReceiptFor(reqId) {
   const id = await r(['GET', 'fm:done:' + reqId]); if (id) return { id, requestId: reqId, outcome: 'completed' };
+  if (await r(['GET', 'fm:rcptonce:req:' + reqId])) return { id: onceReceiptId('req:' + reqId), requestId: reqId, outcome: 'completed' }; // written atomically with its marker
   for (const x of await r(['LRANGE', 'fm:receipts', 0, 299])) { try { const c = JSON.parse(x); if (c.requestId === reqId && c.outcome === 'completed') return c; } catch {} }
   return null;
 }
