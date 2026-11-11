@@ -6,7 +6,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),path=require('p
 const src=fs.readFileSync(path.join(__dirname,'api/index.js'),'utf8')+'\nmodule.exports.t={r,setJ,getJ,als,createAgent,newTask,sha,bust,noteIdFor,jobDetail};';
 const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:async u=>{throw Error('NO NETWORK '+u)},setTimeout,clearTimeout,URL,AbortSignal,Buffer};
 vm.runInNewContext(src,ctx);const handler=ctx.module.exports,f=handler.t;const sleep=ms=>new Promise(x=>setTimeout(x,ms));
-const origR=ctx.r;let hook=null;ctx.r=function(cmd){if(hook&&hook.match(cmd)){const h=hook;hook=null;h.hit=true;return new Promise(()=>{});}return origR(cmd);};
+const origR=ctx.r;let hook=null,gate=null;ctx.r=function(cmd){if(gate&&!gate.reached&&gate.match(cmd)){gate.reached=true;return new Promise(res=>{gate.release=()=>res(origR(cmd));});} /* a gate holds one command until released */ if(hook&&hook.match(cmd)){const h=hook;hook=null;h.hit=true;return new Promise(()=>{});}return origR(cmd);};
 async function crashDuring(match,fn){const h={match,hit:false};hook=h;fn().catch(()=>{});for(let i=0;i<600&&!h.hit;i++)await sleep(5);hook=null;assert.ok(h.hit,'the fault was injected');}
 async function http(method,url,{key,cookie,body,origin}={}){let out;const headers={host:'localhost',origin:origin||'http://localhost'};if(key)headers.authorization='Bearer '+key;if(cookie)headers.cookie='fm_sess='+cookie;
  const res={setHeader(){},status(c){this.code=c;return this},json(j){out={code:this.code||200,j};return out},send(b){out={code:this.code||200,j:b};return out},end(){out={code:this.code||204};return out}};await handler({method,url,headers,body:body||{}},res);return out||{code:0};}
@@ -53,6 +53,14 @@ async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'u
   await inA(async()=>{const a=await f.getJ('fm:agent:'+s5.bot.agent.id);a.permissions={'notes.delete':'AUTO'};await f.setJ('fm:agent:'+a.id,a);});
   assert.equal((await http('POST','/api/gateway/act',{key:s5.bot.key,body:{action:'notes.delete',params:{}}})).code,200);assert.ok((await rec(id5)).deleted&&!(await rec(id5)).text,'delete-all leaves a content-free tombstone');
   await age(s5);assert.equal((await http('POST','/api/requests/'+s5.rid+'/recover',{cookie:A.cookie})).code,200);assert.ok(!(await rec(id5)).text,'not recreated');}
+ // ===== 5b. the bot's delete-all takes the note lock: a recovery caught mid-write cannot bring the note back afterwards
+ {const s8=await scenario();await crashDuring(c=>c[0]==='SET'&&/^fm:note:/.test(String(c[1])),()=>approve(s8));const id8=f.noteIdFor(s8.rid);await age(s8);
+  await inA(async()=>{const a=await f.getJ('fm:agent:'+s8.bot.agent.id);a.permissions={'notes.delete':'AUTO'};await f.setJ('fm:agent:'+a.id,a);});
+  gate={match:c=>c[0]==='LPUSH'&&c[1]==='fm:notes'};const rc=http('POST','/api/requests/'+s8.rid+'/recover',{cookie:A.cookie});for(let i=0;i<400&&!gate.reached;i++)await sleep(5);assert.ok(gate.reached,'recovery is held at the moment it lists the note');
+  const dl=http('POST','/api/gateway/act',{key:s8.bot.key,body:{action:'notes.delete',params:{}}});await sleep(300);gate.release();gate=null;const [rr,dd]=await Promise.all([rc,dl]);
+  assert.equal(rr.code,200,JSON.stringify(rr.j));assert.equal(dd.code,200,JSON.stringify(dd.j));
+  assert.ok((await rec(id8)).deleted&&!(await rec(id8)).text,'delete-all won: the note stays deleted, not rewritten by the overlapping recovery');assert.ok(!(await list()).includes(id8),'and is not back in the recent list');
+  assert.equal((await http('GET','/api/notes/'+id8,{cookie:A.cookie})).code,410,'it reads as deleted');}
  // ===== 6. an older list-only note can be deleted too
  {const legacy={id:'note_oldlist01',by:'agent_x',title:'Old',text:'Old body',at:new Date().toISOString()};await inA(()=>f.r(['LPUSH','fm:notes',JSON.stringify(legacy)]));
   assert.equal((await del(legacy.id)).code,200);assert.ok(!(await list()).includes(legacy.id));assert.equal((await http('GET','/api/notes/'+legacy.id,{cookie:A.cookie})).code,410);}

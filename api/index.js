@@ -156,12 +156,12 @@ async function writeNoteLocked(agent, params, link) {
   const id = link.id;
   let note = await getJ('fm:note:' + id);
   if (note && note.deleted) return note;
+  await r(['SADD', 'fm:noteids', id]); // listed in the id set before the record exists, so a delete-all always sees (and waits for) this note
   if (!note) {
     const fresh = { id, by: agent.id, ...noteMessage(params), at: now(), requestId: link.requestId || null, taskId: link.taskId || null, ...(link.invocation ? { invocation: link.invocation, payloadHash: link.payloadHash } : {}) };
     if (await r(['SET', 'fm:note:' + id, JSON.stringify(fresh), 'NX'])) note = fresh; else note = await getJ('fm:note:' + id);
     if (note.deleted) return note;
   }
-  await r(['SADD', 'fm:noteids', id]);
   if (!note.listed) {
     const have = (await r(['LRANGE', 'fm:notes', 0, 99])).some(x => { try { return JSON.parse(x).id === id; } catch { return false; } });
     if (!have) { await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]); }
@@ -252,9 +252,16 @@ async function execute(agent, action, params, reqId) {
     return { summary: `Wrote note "${note.title}" (${note.id}) to the shared workspace`, data: { note_id: note.id } };
   }
   if (action === 'notes.delete') {
-    const at = now(); for (const id of await r(['SMEMBERS', 'fm:noteids'])) await setJ('fm:note:' + id, { id, deleted: true, deletedAt: at });
-    await r(['DEL', 'fm:notes']);
-    return { summary: 'Deleted all notes', data: {} };
+    // Each note is tombstoned and unlisted under its own lock, like the owner's delete: a write or recovery of the same note either
+    // finishes first (and is then deleted) or runs after and finds the tombstone. Notes from older builds that have no record are
+    // only in the recent list; those are removed by a sweep. A note created after the id list was read is a new note, not a survivor.
+    const at = now(); const entries = async () => await r(['LRANGE', 'fm:notes', 0, 99]);
+    for (const id of await r(['SMEMBERS', 'fm:noteids'])) await withNoteLock(id, async () => {
+      await setJ('fm:note:' + id, { id, deleted: true, deletedAt: at });
+      for (const x of (await entries()).filter(x => { try { return JSON.parse(x).id === id; } catch { return false; } })) await r(['LREM', 'fm:notes', 0, x]);
+    });
+    for (const x of await entries()) { let n = null; try { n = JSON.parse(x); } catch {} if (!n || !n.id || !(await r(['GET', 'fm:note:' + n.id]))) await r(['LREM', 'fm:notes', 0, x]); }
+    bust(); return { summary: 'Deleted all notes', data: {} };
   }
   if(action==='work.assign'){
    const to=await getJ('fm:agent:'+params.assignee);if(!to||to.status!=='active'||to.harness||to.hosted||to.id===agent.id)throw Error('Choose an active external bot in this workspace');

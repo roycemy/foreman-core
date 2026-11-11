@@ -38,7 +38,8 @@ async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'u
  async function age(s,{noteLock=true}={}){await inA(async()=>{await f.r(['DEL','fm:joblock:'+s.job.id]);const q=await f.getJ('fm:req:'+s.rid);if(q.status==='approved')q.decidedAt=new Date(Date.now()-5*60000).toISOString();if(q.status==='recovering')q.recoverStartedAt=new Date(Date.now()-5*60000).toISOString();await f.setJ('fm:req:'+s.rid,q);
    if(noteLock)if(f.noteIdFor)await f.r(['DEL','fm:notelock:'+f.noteIdFor(s.rid)]);f.bust();});} // the state view is cached 30 s; the test ages the store behind it
  const recover=(s,o)=>http('POST','/api/requests/'+s.rid+'/recover',{cookie:A.cookie,...(o||{})});
- const noteIds=()=>inA(()=>f.r(['SMEMBERS','fm:noteids']));
+ // note ids WITH a record. A note is put in the id set just before its record is created (so a delete-all always sees it), so an id alone does not mean a note was written.
+ const noteIds=()=>inA(async()=>{const out=[];for(const id of await f.r(['SMEMBERS','fm:noteids']))if(await f.getJ('fm:note:'+id))out.push(id);return out;});
  const listEntries=async id=>(await inA(()=>f.r(['LRANGE','fm:notes',0,999]))).map(x=>JSON.parse(x)).filter(x=>x.id===id);
  const receiptsFor=async rid=>(await inA(()=>f.r(['LRANGE','fm:receipts',0,299]))).map(x=>JSON.parse(x)).filter(x=>x.requestId===rid&&x.outcome==='completed');
  const spent=async s=>Number(await inA(()=>f.r(['GET','fm:spend:'+s.bot.agent.id+':'+new Date().toISOString().slice(0,10)]))||0);
