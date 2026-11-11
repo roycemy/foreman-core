@@ -67,9 +67,10 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'EVAL': { const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
+    case 'EVAL': { if(k===RECEIPT_ONCE){const [n,marker,head,list,json,hash,val]=a;if(Number(n)!==3)throw Error('unsupported local EVAL');if(mem.kv.has(marker))return 0;mem.kv.set(marker,val);mem.kv.set(head,hash);const l=mem.lists.get(list)||[];l.unshift(json);mem.lists.set(list,l.slice(0,300));return 1;} if(k===CHARGE_ONCE){const n=Number(a[0]);if(n!==2&&n!==3)throw Error('unsupported local EVAL');const keys=a.slice(1,1+n),[amount,val]=a.slice(1+n);if(mem.kv.has(keys[0]))return 0;mem.kv.set(keys[0],val);for(const c of keys.slice(1))mem.kv.set(c,String(parseInt(mem.kv.get(c)||'0',10)+parseInt(amount,10)));return 1;} const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
+    case 'LREM': { const l = L(), out = l.filter(x => x !== a[1]); mem.lists.set(k, out); return l.length - out.length; }
     case 'SET': if(a.includes('NX')&&mem.kv.has(k))return null;mem.kv.set(k, a[0]); return 'OK';
     case 'INCRBY': { const v = (parseInt(mem.kv.get(k) || '0', 10)) + parseInt(a[0], 10); mem.kv.set(k, String(v)); return v; }
     case 'LPUSH': { const l = L(); l.unshift(a[0]); mem.lists.set(k, l); return l.length; }
@@ -80,7 +81,7 @@ function memCmd(c) {
     case 'SREM': { const x=(mem.kv.get(k)||[]).filter(v=>v!==a[0]); mem.kv.set(k,x); return 1; }
     case 'SMEMBERS': return mem.kv.get(k) || [];
     case 'EXPIRE': return 1;
-    case 'DEL': mem.kv.delete(k); mem.lists.delete(k); return 1;
+    case 'DEL': for (const x of c.slice(1)) { mem.kv.delete(x); mem.lists.delete(x); } return 1; // like Redis, every key given is deleted
   }
   throw new Error('memcmd ' + op);
 }
@@ -89,6 +90,13 @@ const bust = () => { CACHES.delete(wsId()); };
 const getJ = async k => { const v = await r(['GET', k]); return v ? JSON.parse(v) : null; };
 const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
 // Policy JSON is authoritative; heartbeats never rewrite it.
+// Record a cost once per key, atomically: set the per-key marker only if absent, and only then add to the counter.
+// One atomic operation: claim the charge marker (KEYS[1]), then add the amount to the daily counter (KEYS[2]) and, for a job-scoped bot, to
+// the job's ledger counter (KEYS[3]). All of it happens or none of it does, so a crash at any point can never leave the two ledgers
+// apart, and a retry of any age finds the permanent marker and does nothing.
+// A receipt keyed by onceKey is written at most once: marker, chain head and list entry in one operation, under an id derived from the key.
+const RECEIPT_ONCE = "if redis.call('SET',KEYS[1],ARGV[3],'NX') then redis.call('SET',KEYS[2],ARGV[2]); redis.call('LPUSH',KEYS[3],ARGV[1]); redis.call('LTRIM',KEYS[3],0,299); return 1 end; return 0";
+const CHARGE_ONCE = "if redis.call('SET',KEYS[1],ARGV[2],'NX') then redis.call('INCRBY',KEYS[2],ARGV[1]); if KEYS[3] then redis.call('INCRBY',KEYS[3],ARGV[1]) end; return 1 end; return 0";
 const AGENT_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2]); return 1";
 // Same compare-and-set, but keeps the key's TTL so expiring bot-link pairing records stay expiring.
 const BOTLINK_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2],'KEEPTTL'); return 1";
@@ -129,6 +137,66 @@ const EMAIL_TTL_MS = 15 * 60000, REQ_TTL_MS = 24 * 3600000, EMAIL_RECONCILE_MS =
 const emailAllowed = () => String(process.env.ALTER_EMAIL_ALLOWED_TO || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 // A bot-declared email wake target is mailed only if the owner listed it in ALTER_EMAIL_ALLOWED_TO; otherwise it stays pending and nothing is sent.
 const wakeEmailAllowed = t => emailAllowed().includes(String(t || '').trim().toLowerCase());
+// The exact note Alter would write: the owner reviews this, the fingerprint binds it, and execute writes it unchanged.
+const noteMessage = p => ({ title: String((p && p.title) || 'untitled').slice(0, 120), text: String((p && p.text) || '').slice(0, 2000) });
+// A note written for an approved request has a stable id derived from that request, so a repeated or recovered write is the same note.
+const noteIdFor = reqId => 'note_' + sha('note|' + reqId).slice(0, 20);
+// Writes of one note run one at a time. The lock expires on its own (15 s), so a dead writer never blocks recovery for long; a caller that
+// cannot get it within ~2 s gets note_busy and changes nothing.
+async function withNoteLock(id, fn) {
+  const k = 'fm:notelock:' + id, v = rid('lock');
+  for (let i = 0; i < 20; i++) {
+    if (await r(['SET', k, v, 'NX', 'PX', 15000])) { try { return await fn(); } finally { if (await r(['GET', k]) === v) await r(['DEL', k]); } }
+    await new Promise(x => setTimeout(x, 100));
+  }
+  throw Object.assign(new Error('note write busy'), { code: 'note_busy' });
+}
+// Idempotent write of one note under a stable id (the caller holds that note's lock): the record is created once (SET NX) and reaches the
+// recent list exactly once (a listed flag, set after the push, repaired by looking for the id if a crash fell between the two). Any step
+// may be repeated. A tombstone (deleted by the owner) is final: never recreated or relisted.
+// What a deleted note leaves: no content, only the request that wrote or adopted it, so recovering that request knows its note was deleted
+// and never writes the approved text again.
+async function tombstoneOf(id, rec, at) { const rq = (rec && rec.requestId) || await r(['GET', 'fm:adopted:' + id]); return { id, deleted: true, deletedAt: at, ...(rq ? { requestId: rq } : {}) }; }
+async function writeNoteLocked(agent, params, link) {
+  const id = link.id;
+  let note = await getJ('fm:note:' + id);
+  if (note && note.deleted) return note;
+  await r(['SADD', 'fm:noteids', id]); // listed in the id set before the record exists, so a delete-all always sees (and waits for) this note
+  if (!note) {
+    const fresh = { id, by: agent.id, ...noteMessage(params), at: now(), requestId: link.requestId || null, taskId: link.taskId || null, ...(link.invocation ? { invocation: link.invocation, payloadHash: link.payloadHash } : {}) };
+    if (await r(['SET', 'fm:note:' + id, JSON.stringify(fresh), 'NX'])) note = fresh; else note = await getJ('fm:note:' + id);
+    if (note.deleted) return note;
+  }
+  if (!note.listed) {
+    const have = (await r(['LRANGE', 'fm:notes', 0, 99])).some(x => { try { return JSON.parse(x).id === id; } catch { return false; } });
+    if (!have) { await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]); }
+    note = { ...note, listed: true }; await setJ('fm:note:' + id, note);
+  }
+  return note;
+}
+// The note for one approved request (its id derived from the request).
+async function writeNoteOnce(agent, params, rq) { const id = noteIdFor(rq.id); return withNoteLock(id, () => writeNoteLocked(agent, params, { id, requestId: rq.id, taskId: rq.taskId })); }
+// An AUTO notes.write the caller made retry-safe with a source_id. Its identity is bot + job + source_id: the same identity and the same
+// note return the original note and receipt; the same identity with a different note is refused; a deleted note is not recreated.
+// Content alone never dedupes. The cost and receipt are recorded once per identity (keyed charge and a completion marker), also when a
+// retry finishes a call that died after writing the note. Calls without a source_id keep the existing path.
+const noteIdForInvocation = (agentId, taskId, sourceId) => 'note_' + sha('note|inv|' + agentId + '|' + (taskId || '') + '|' + sourceId).slice(0, 20);
+async function autoNoteOnce(agent, params, taskId, sourceId) {
+  const id = noteIdForInvocation(agent.id, taskId, sourceId), msg = noteMessage(params), hash = reqHash('notes.write', msg), key = 'inv:' + id;
+  return withNoteLock(id, async () => {
+    const prior = await getJ('fm:note:' + id);
+    if (prior && prior.deleted) return { status: 200, body: { status: 'completed', duplicate: true, result: { note_id: id, deleted: true } } };
+    if (prior && prior.payloadHash !== hash) return { status: 409, body: { status: 'rejected', code: 'idempotency_conflict', reason: 'This source_id was already used for a different note. Use a new source_id for a new note.' } };
+    const note = await writeNoteLocked(agent, msg, { id, requestId: null, taskId, invocation: sourceId, payloadHash: hash });
+    let receiptId = await r(['GET', 'fm:done:' + key]);
+    if (!receiptId) {
+      await recordCost(agent, 'notes.write', taskId, key);
+      const rec = await receipt(agent, 'notes.write', msg, 'completed', ACTIONS['notes.write'].costCents, `Wrote note "${note.title}" (${note.id}) to the shared workspace`, null, { approvedBy: 'policy:AUTO', taskId: taskId || null, onceKey: key });
+      await r(['SET', 'fm:done:' + key, rec.id]); await event(agent.id, 'completed', rec.summary, { receiptId: rec.id }); receiptId = rec.id;
+    }
+    return { status: 200, body: { status: 'completed', result: { note_id: id }, receipt_id: receiptId, ...(prior ? { duplicate: true } : {}) } };
+  });
+}
 // The exact message Alter would send now: sender from configuration, never from the bot.
 const emailMessage = p => ({ from: String(process.env.WAKE_EMAIL_FROM || ''), to: String((p && p.to) || '').trim().toLowerCase(), subject: String((p && p.subject) || ''), text: String((p && p.text) || '') });
 function emailInvalid(p) {
@@ -179,12 +247,45 @@ async function execute(agent, action, params, reqId) {
     return { summary: `GET ${params.url} -> HTTP ${res.status}, ${body.length} bytes`, data: { status: res.status, body: body.slice(0, 1200) } };
   }
   if (action === 'notes.write') {
-    const note = { id: rid('note'), by: agent.id, title: String(params.title || 'untitled').slice(0, 120), text: String(params.text || '').slice(0, 2000), at: now() };
-    await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]);
+    // Each note is also kept as its own record, linked to the request (and its job) that wrote it, so it can be opened later; the
+    // recent-notes list stays for compatibility and is still capped at 100.
+    const rq = reqId ? await getJ('fm:req:' + reqId) : null;
+    if (rq && rq.action === 'notes.write') { const n = await writeNoteOnce(agent, params, rq); return n.deleted ? { summary: `Note ${n.id} was deleted by the owner; not written again`, data: { note_id: n.id, deleted: true } } : { summary: `Wrote note "${n.title}" (${n.id}) to the shared workspace`, data: { note_id: n.id } }; }
+    // A plain write (no request, no source_id) uses the same locked writer as every other note write: the id joins fm:noteids before the
+    // record exists and the list entry is written under the note lock, so a delete-all running meanwhile waits for it instead of deleting
+    // the record and then having the text pushed back into the recent list.
+    const id = rid('note');
+    const note = await withNoteLock(id, () => writeNoteLocked(agent, params, { id, requestId: rq ? rq.id : null, taskId: rq && rq.taskId ? rq.taskId : null }));
+    if (note.deleted) return { summary: `Note ${note.id} was deleted by the owner; not written again`, data: { note_id: note.id, deleted: true } };
     return { summary: `Wrote note "${note.title}" (${note.id}) to the shared workspace`, data: { note_id: note.id } };
   }
   if (action === 'notes.delete') {
-    await r(['DEL', 'fm:notes']);
+    // Each live note is tombstoned and unlisted under its own lock, like the owner's delete: a write or recovery of the same note either
+    // finishes first (and is then deleted) or runs after and finds the tombstone. Notes that are already deleted are skipped (one MGET per
+    // 100 ids), so the cost follows the live notes, and their deletedAt is kept. A note that is busy does not stop the others; the call
+    // then reports how many were not deleted and can simply be repeated. Notes from older builds have no record and are only in the
+    // recent list; a sweep removes those (leaving a tombstone for one a recovery already adopted). A note created after the id list was
+    // read is a new note, not a survivor.
+    const at = now(), busy = [], entries = async () => await r(['LRANGE', 'fm:notes', 0, 99]), ofId = id => x => { try { return JSON.parse(x).id === id; } catch { return false; } };
+    const ids = await r(['SMEMBERS', 'fm:noteids']), live = [];
+    for (let i = 0; i < ids.length; i += 100) { const part = ids.slice(i, i + 100), vals = await r(['MGET', ...part.map(x => 'fm:note:' + x)]); part.forEach((id, k) => { let n = null; try { n = vals[k] && JSON.parse(vals[k]); } catch {} if (!(n && n.deleted)) live.push(id); }); }
+    const guarded = async (id, fn) => { try { await withNoteLock(id, fn); } catch (e) { if (e && e.code === 'note_busy') { busy.push(id); return false; } throw e; } return true; };
+    for (const id of live) await guarded(id, async () => {
+      const cur = await getJ('fm:note:' + id); if (cur && cur.deleted) return;
+      await setJ('fm:note:' + id, await tombstoneOf(id, cur, at));
+      for (const x of (await entries()).filter(ofId(id))) await r(['LREM', 'fm:notes', 0, x]);
+    });
+    for (const x of await entries()) {
+      let n = null; try { n = JSON.parse(x); } catch {}
+      if (!n || !n.id) { await r(['LREM', 'fm:notes', 0, x]); continue; }
+      const raw = await r(['GET', 'fm:note:' + n.id]); let rec = null; try { rec = raw && JSON.parse(raw); } catch {}
+      if (rec && !rec.deleted) continue; // a live record: handled above, or written since. A tombstone is not live: its list copy goes.
+      if (!rec) { const adopted = await r(['GET', 'fm:adopted:' + n.id]);
+        if (adopted && !(await guarded(n.id, async () => { await setJ('fm:note:' + n.id, await tombstoneOf(n.id, null, at)); await r(['SADD', 'fm:noteids', n.id]); }))) continue; }
+      await r(['LREM', 'fm:notes', 0, x]);
+    }
+    bust();
+    if (busy.length) throw Object.assign(new Error(`${busy.length} note${busy.length === 1 ? ' was' : 's were'} busy and not deleted. Repeat the delete to finish`), { code: 'note_busy' });
     return { summary: 'Deleted all notes', data: {} };
   }
   if(action==='work.assign'){
@@ -291,6 +392,7 @@ async function noteWakeTarget(agent,w){const live=await getJ('fm:agent:'+agent.i
 /* wake ladder, rung 1 (free, trigger-only): when a job is queued to a bot, ping it on the free push channel wired at setup so it wakes now instead of at the next poll or routine tick. Instinct: a content-free email to its inbox (RESEND_API_KEY + WAKE_EMAIL_FROM). Grok: a content-free email to the owner's Gmail, where the bot's own email-trigger automation fires the check (RESEND_API_KEY + WAKE_EMAIL_FROM; needs the owner's Gmail connected to the bot); alternatives: a signed, content-free POST to the bot's declared Webhook Trigger automation, a content-free Slack message (declared or WAKE_GROK_SLACK_WEBHOOK incoming webhook) or, as a developer extra, a content-free trigger issue Alter closes right after creation - the creation notification is the wake signal (WAKE_GITHUB_TOKEN + WAKE_GITHUB_REPO as owner/repo). Rung 2 is the bot's own scheduled poll or routine; rung 3 is "acts when messaged" + the Copy nudge. Every trigger carries no task details and no instructions - the bot authenticates itself. Deduped to one ping per 30s per bot; silent no-op when no channel is wired, and the bot's own schedule still covers it. */
 async function maybeWakeBot(a, jobId) {
   if (!a || a.status !== 'active' || a.paused || a.hosted) return;
+  if (await r(['GET', 'fm:kill'])) return; // the kill switch is on: no new work is announced to any bot
   const w = a.wake && a.wake.channel ? a.wake : null; // a bot's own declared target wins; deployment env is the fallback
   const channel = wakeChannelFor(a);
   if (!channel) return; // no free push channel wired for this bot: silent no-op; its own schedule still covers it
@@ -353,7 +455,7 @@ async function setOwnerWake(agentId, body) {
 async function taskForAgent(agent,id) {
   const t=await getJ('fm:task:' + id);if(!t)return null;
   // Original worker can read its delegated child result; recipient can read its own assignment.
-  if(t.assignee===agent.id || t.createdBy===agent.id)return t;
+  if(t.assignee===agent.id || t.createdBy===agent.id)return (await withJobSpend([t]))[0];
   return null;
 }
 
@@ -443,7 +545,7 @@ async function createTaskParts(body){const parts=body.parts;if(!Array.isArray(pa
  const parent=await newTask({title:body.title,brief:body.brief,hold:true});parent.orchestration=true;parent.status='waiting';parent.startedAt=now();parent.partIds=[];await setJ('fm:task:'+parent.id,parent);
  for(let i=0;i<parts.length;i++){const p=parts[i],t=await newTask({title:p.title,brief:'Part '+(i+1)+' of '+parts.length+'. Only do this part. Original request: '+String(body.title||'')+'\n'+String(body.brief||''),parentId:parent.id,assignee:p.assignee||null,category:p.category,context:'Part of: '+body.title,hold:true});t.partIndex=i;t.dependsOn=i?parent.partIds[i-1]:null;t.status='waiting';t.assignedBy='owner';await setJ('fm:task:'+t.id,t);parent.partIds.push(t.id);}
  parent.status='running';await setJ('fm:task:'+parent.id,parent);await r(['SADD','fm:activePlans',parent.id]);bust();const first=await getJ('fm:task:'+parent.partIds[0]);first.status='queued';await setJ('fm:task:'+first.id,first);if(first.assignee){const a=await getJ('fm:agent:'+first.assignee);if(a)await maybeWakeBot(a,first.id);}return {status:200,body:{task:parent,parts:await Promise.all(parent.partIds.map(id=>getJ('fm:task:'+id)))}};}
-async function refreshTaskParent(id){return withJobLock(id,async()=>{const p=await getJ('fm:task:'+id);if(!p?.orchestration||p.status!=='running')return;const parts=await Promise.all(p.partIds.map(id=>getJ('fm:task:'+id)));if(parts.some(t=>!t))return;for(let i=1;i<parts.length;i++)if(!parts.some(x=>['failed','dismissed'].includes(x.status))&&parts[i].status==='waiting'&&parts[i-1].status==='done'){const t=parts[i],raw=JSON.stringify(t);t.status='queued';t.context=('Previous completed part: '+parts[i-1].title+'\n'+parts[i-1].result).slice(0,4000);if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+t.id,raw,JSON.stringify(t)])!==1)return;if(t.assignee){const a=await getJ('fm:agent:'+t.assignee);if(a)await maybeWakeBot(a,t.id);}}
+async function refreshTaskParent(id){return withJobLock(id,async()=>{const p=await getJ('fm:task:'+id);if(!p?.orchestration||p.status!=='running')return;const parts=await Promise.all(p.partIds.map(id=>getJ('fm:task:'+id)));if(parts.some(t=>!t))return;const killed=!!await r(['GET','fm:kill']);for(let i=1;i<parts.length;i++)if(!killed&&!parts.some(x=>['failed','dismissed'].includes(x.status))&&parts[i].status==='waiting'&&parts[i-1].status==='done'){const t=parts[i],raw=JSON.stringify(t);t.status='queued';t.context=('Previous completed part: '+parts[i-1].title+'\n'+parts[i-1].result).slice(0,4000);if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+t.id,raw,JSON.stringify(t)])!==1)return;if(t.assignee){const a=await getJ('fm:agent:'+t.assignee);if(a)await maybeWakeBot(a,t.id);}}
  const failed=parts.some(t=>['failed','dismissed'].includes(t.status));if(failed){for(const t of parts)if(t.status==='waiting'){t.status='failed';t.result='Not run: an earlier part stopped.';t.finishedAt=now();await setJ('fm:task:'+t.id,t);}}
  const terminal=parts.every(t=>['done','failed','dismissed'].includes(t.status));const stateKey=parts.map(t=>t.id+':'+t.status+':'+(t.finishedAt||'')).join('|');if(p.partsState===stateKey)return;p.partsState=stateKey;p.status=terminal?(failed?'failed':'done'):'running';p.progressAt=now();p.result=parts.filter(t=>t.result).map(t=>'Part '+(t.partIndex+1)+': '+t.title+' ['+t.status+']\n'+t.result).join('\n\n').slice(0,4000);if(terminal){p.finishedAt=now();await r(['SREM','fm:activePlans',id]);}await setJ('fm:task:'+id,p);bust();});}
 const ASLEEP_FALLBACK_MAX = 3;
@@ -595,12 +697,19 @@ async function jobDetail(id){
  const ids=new Set([id,...kids.map(k=>k.id)]);
  const events=parse(await r(['LRANGE','fm:events',0,299])).filter(e=>ids.has(e.taskId)||ids.has(e.childTaskId)).reverse();
  const reqIds=await r(['SMEMBERS','fm:taskreqs:'+id]);const requests=reqIds.length?parse(await r(['MGET',...reqIds.map(x=>'fm:req:'+x)])).map(pub):[];
+ for(const q of requests)if(q.action==='notes.write'&&q.result&&q.result.note_id){const n=await getJ('fm:note:'+q.result.note_id);if(n&&n.deleted)q.noteDeleted=true;}
  const receipts=parse(await r(['LRANGE','fm:receipts',0,299])).filter(x=>x.taskId===id).reverse();
  const agents=await listAgents(),name=x=>(agents.find(a=>a.id===x)||{}).name||'A bot';
- return {task:t,children:kids,events,requests,receipts,timeline:timelineOf(t,events,requests,receipts,kids,name)};}
+ const [taskOut, ...kidsOut] = await withJobSpend([t, ...kids]);
+ return {task:taskOut,children:kidsOut,events,requests,receipts,timeline:timelineOf(t,events,requests,receipts,kids,name)};}
 const ACTION_WORDS={'email.send':['Sent','email','emails','email'],'web.fetch':['Read','web page','web pages','web fetch'],'notes.write':['Saved','note','notes','note'],'notes.delete':['Deleted','note set','note sets','delete'],'work.handoff':['Handed off','part','parts','handoff'],'work.assign':['Assigned','job','jobs','assign'],'work.enqueue':['Queued','job','jobs','queue']};
 const REQ_WORDS={'email.send':'send an email','web.fetch':'read a web page','notes.write':'save a note','notes.delete':'delete notes','work.handoff':'hand off a part','work.assign':'assign a job','work.enqueue':'queue a job'};
 // Steps in plain language. `detail` is owner-only (urls, note titles, tool output); public receipts drop it.
+// An email the provider only accepted (or that failed) is not delivered: a finished job with one reads Finished, not Delivered,
+// on the private timeline and the shared receipt alike. Delivered waits for the provider's own delivered status on the request.
+// What the private timeline says after "Resend accepted it", from the provider state the delivery check stored. Acceptance is not delivery.
+const SENT_STATE_WORDS={accepted:'Delivery not confirmed here.',delivered:'Resend reports it delivered to the recipient’s mail server.',delayed:'Resend reports delivery delayed.',bounced:'Resend reports it bounced.',complained:'Resend reports it delivered, then marked as spam.',failed:'Resend reports it could not send it.',suppressed:'Resend reports the address is suppressed; it was not sent.'};
+const emailUnconfirmed=requests=>(requests||[]).some(q=>q.action==='email.send'&&['executed','failed'].includes(q.status)&&!(q.delivery&&q.delivery.state==='delivered'));
 function timelineOf(t,events,requests,receipts,kids,name){
  const out=[],bot=t.assignee?name(t.assignee):'A bot';
  out.push({at:t.createdAt,text:t.createdBy==='owner'?'Owner assigned the job':t.origin==='chat'?bot+' started it from a chat with the owner':name(t.createdBy)+' handed over the job',kind:'step',detail:t.brief?'“'+t.brief.slice(0,120)+'”':null});
@@ -618,8 +727,8 @@ function timelineOf(t,events,requests,receipts,kids,name){
  for(const x of out.filter(x=>x.action)){x.text=x.w[0]+' '+x.n+' '+(x.n===1?x.w[1]:x.w[2]);x.kind='step';x.meta=x.w[3]+(x.cents?' · '+x.cents+'¢':'');x.detail=x.details.slice(0,3).join(' · ');delete x.w;delete x.details;delete x.n;delete x.cents;delete x.action;}
  for(const q of requests){
   const w=REQ_WORDS[q.action]||q.action,what=q.params&&(q.params.title||q.params.url)?'“'+String(q.params.title||q.params.url).slice(0,60)+'”':null;
-  if(['approved','executed','failed','outcome_unknown','reconciling'].includes(q.status))out.push({at:q.decidedAt||q.createdAt,text:'Owner approved: '+w,kind:'approval',detail:what});
-  if(q.status==='executed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:q.action==='email.send'?'Alter sent it: Resend accepted it'+(q.delivery&&q.delivery.providerMessageId?' ('+q.delivery.providerMessageId+')':'')+'. Delivery not confirmed here.':'Alter ran it',kind:'step'});
+  if(['approved','executed','failed','outcome_unknown','reconciling','recovering'].includes(q.status))out.push({at:q.decidedAt||q.createdAt,text:'Owner approved: '+w,kind:'approval',detail:what});
+  if(q.status==='executed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:q.action==='email.send'?'Alter sent it: Resend accepted it'+(q.delivery&&q.delivery.providerMessageId?' ('+q.delivery.providerMessageId+')':'')+'. '+(SENT_STATE_WORDS[q.delivery&&q.delivery.state]||SENT_STATE_WORDS.accepted):'Alter ran it',kind:'step'});
   if(q.status==='failed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:(q.action==='email.send'?'Not sent: ':'It did not run: ')+String((q.result&&q.result.error)||'it failed'),kind:'denied'});
   if(q.status==='outcome_unknown'||q.status==='reconciling')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:'Outcome unknown: Alter did not retry. Reconcile to find out.',kind:'denied'});
   if(q.status==='expired')out.push({at:q.decidedAt||q.createdAt,text:'Expired before approval: '+w,kind:'denied'});
@@ -629,8 +738,9 @@ function timelineOf(t,events,requests,receipts,kids,name){
  for(const k of kids)if(['done','failed'].includes(k.status))out.push({at:k.finishedAt,text:name(k.assignee)+(k.status==='done'?' finished “'+k.title+'”':' could not finish “'+k.title+'”'),kind:'step'});
  for(const k of kids)if(k.status==='running')out.push({at:k.startedAt||k.createdAt,text:name(k.assignee)+' is working on its part',kind:'step'});else if(k.status==='queued')out.push({at:k.createdAt,text:'A part waits for '+name(k.assignee),kind:'step'});
  const openKids=kids.filter(k=>['queued','running'].includes(k.status));
- /* a handed-off part that is not done yet means the job is NOT delivered: say who it waits on */
- if(t.status==='done')out.push({at:t.finishedAt,text:openKids.length?'Waiting on '+[...new Set(openKids.map(k=>name(k.assignee)))].join(' and '):'Delivered',kind:'step',end:true});
+ /* a handed-off part that is not done yet means the job is NOT delivered: say who it waits on. An email the provider only accepted
+    (or that failed) is not delivered either: the job is Finished, and Delivered waits for the provider's own delivered status. */
+ if(t.status==='done')out.push({at:t.finishedAt,text:openKids.length?'Waiting on '+[...new Set(openKids.map(k=>name(k.assignee)))].join(' and '):emailUnconfirmed(requests)?'Finished':'Delivered',kind:'step',end:true});
  if(t.status==='failed')out.push({at:t.finishedAt,text:'Stopped without a result',kind:'denied',end:true,detail:t.result?String(t.result).slice(0,160):null});
  return out.filter(x=>x.at).sort((a,b)=>String(a.at).localeCompare(String(b.at))||(a.end?1:0)-(b.end?1:0));}
 
@@ -656,14 +766,14 @@ function publicProblems(fields,names){const out=[];
   for(const n of names){const s=String(n||'').trim();if(s.length>=3&&!GENERIC_NAMES.includes(s.toLowerCase())&&new RegExp('(^|[^\\w])'+s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'($|[^\\w])','i').test(v))out.push({field,kind:'private name'});}}
  return out.filter((x,i,a)=>a.findIndex(y=>y.field===x.field&&y.kind===x.kind)===i);}
 // Steps are fixed-vocabulary codes only; the public page renders them from its own word list.
-const PUBLIC_STEPS=['assigned','claimed','actions','approved','denied','blocked','handoff','part_done','delivered','stopped'];
+const PUBLIC_STEPS=['assigned','claimed','actions','approved','denied','blocked','handoff','part_done','delivered','finished','stopped'];
 function publicSteps(t,requests,receipts,kids){const s=[],at=x=>x&&Number.isFinite(Date.parse(x))?new Date(x).toISOString():null;
  s.push({at:at(t.createdAt),code:'assigned'});if(t.startedAt)s.push({at:at(t.startedAt),code:'claimed'});
  const acts=receipts.filter(x=>x.outcome==='completed'&&!x.requestId);if(acts.length)s.push({at:at(acts[0].at),code:'actions',n:acts.length});
  for(const q of requests){if(['approved','executed','failed'].includes(q.status))s.push({at:at(q.decidedAt||q.createdAt),code:'approved'});else if(q.status==='denied')s.push({at:at(q.decidedAt||q.createdAt),code:'denied'});else if(q.status==='blocked')s.push({at:at(q.decidedAt||q.createdAt),code:'blocked'});}
  for(const k of kids){s.push({at:at(k.createdAt),code:'handoff'});if(['done','failed'].includes(k.status))s.push({at:at(k.finishedAt),code:'part_done'});}
- if(t.finishedAt)s.push({at:at(t.finishedAt),code:t.status==='done'?'delivered':'stopped'});
- return s.filter(x=>x.at&&PUBLIC_STEPS.includes(x.code)).sort((a,b)=>a.at.localeCompare(b.at)||(['delivered','stopped'].includes(a.code)?1:0)-(['delivered','stopped'].includes(b.code)?1:0));}
+ if(t.finishedAt)s.push({at:at(t.finishedAt),code:t.status==='done'?(emailUnconfirmed(requests)?'finished':'delivered'):'stopped'});
+ return s.filter(x=>x.at&&PUBLIC_STEPS.includes(x.code)).sort((a,b)=>a.at.localeCompare(b.at)||(['delivered','finished','stopped'].includes(a.code)?1:0)-(['delivered','finished','stopped'].includes(b.code)?1:0));}
 async function publicSource(taskId){const j=await jobDetail(taskId);if(!j)return null;const t=j.task;
  return {j,hash:sha(JSON.stringify({id:t.id,status:t.status,result:t.result,title:t.title,startedAt:t.startedAt,finishedAt:t.finishedAt,cost:t.modelCostUsd??null,receipts:j.receipts.map(x=>({id:x.id,hash:x.hash,costCents:x.costCents})),requests:j.requests.map(q=>({id:q.id,status:q.status})),kids:j.children.map(k=>({id:k.id,status:k.status}))}))};}
 // Pre-filled budget for the reusable template: what this job recorded (bot-reported model costs + gateway ledger), rounded up to cents.
@@ -725,8 +835,8 @@ function receiptPage(x,origin,brand){
 async function withJobLock(id,fn){const k='fm:joblock:'+id,v=rid('lock');if(!await r(['SET',k,v,'NX','PX',120000]))return {status:409,body:{error:'Job is busy. Retry after the current action finishes'}};try{return await fn()}finally{if(await r(['GET',k])===v)await r(['DEL',k]);}}
 async function cancelJobRequests(id,reason){for(const qid of await r(['SMEMBERS','fm:reqs'])){const q=await getJ('fm:req:'+qid);if(q&&q.taskId===id&&q.status==='pending'){q.status='blocked';q.reason=reason;q.decidedAt=now();await finishReq(q);await event(q.agentId,'blocked',reason,{kind:'BLOCKED',taskId:id,requestId:qid});}}}
 async function setJobScope(id,body){if(body.confirmed!==true||!['job','standing'].includes(body.scope))return {status:400,body:{error:'Review and confirm the permission scope'}};const a=await getJ('fm:agent:'+id);if(!a||a.status!=='active'||a.harness||a.hosted)return {status:404,body:{error:'Active external worker required'}};await updateAgent(id,x=>{x.permissionScope=body.scope});if(body.scope==='job'){for(const qid of await r(['SMEMBERS','fm:reqs'])){const q=await getJ('fm:req:'+qid);if(q&&q.agentId===id&&q.status==='pending'&&!q.taskId){q.status='blocked';q.reason='Standing action permission closed by owner';q.decidedAt=now();await finishReq(q);await event(id,'blocked',q.reason,{requestId:qid});}}}await event(id,'permission','Owner set gated actions to '+body.scope+' scope',{kind:'INTERACTION'});return {status:200,body:{agentId:id,permissionScope:body.scope}};}
-async function grantJob(id,body){return withJobLock(id,async()=>{const t=await getJ('fm:task:'+id),a=t&&await getJ('fm:agent:'+t.assignee);if(!t||!a||a.status!=='active'||a.harness||a.hosted)return {status:404,body:{error:'Task and active worker required'}};if(body.confirmed!==true||body.expectedAssignee!==t.assignee||!['running','queued'].includes(t.status))return {status:409,body:{error:'Review this unfinished job and worker again'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace paused'}};const modes=body.actions;if(!modes||typeof modes!=='object'||Array.isArray(modes)||!Object.keys(modes).length||Object.entries(modes).some(([k,v])=>!ACTIONS[k]||!['AUTO','ASK'].includes(v)||((a.permissions||{})[k]||DEFAULT_PERMS[k]||'NEVER')==='NEVER'))return {status:400,body:{error:'Choose supported actions and AUTO/ASK modes; NEVER remains blocked'}};if(!Number.isSafeInteger(body.budgetCents)||body.budgetCents<0||body.budgetCents>1000000)return {status:400,body:{error:'Exact ledger budget required (0 to 1000000 cents)'}};const old=t.jobGrant,spent=Number(old?.spentCents||0);if(body.budgetCents<spent)return {status:400,body:{error:'Budget cannot be below already-used ledger cents'}};t.jobGrant={id:rid('grant'),agentId:a.id,actions:{...modes},budgetCents:body.budgetCents,spentCents:spent,status:'active',issuedAt:now(),by:'owner',note:'Gateway ledger only. Not payment authorization.'};await setJ('fm:task:'+id,t);await cancelJobRequests(id,'Job grant changed. Request again under the new grant');bust();await event(a.id,'permission','Owner granted scoped actions for '+t.title,{kind:'INTERACTION',taskId:id});return {status:200,body:{task:t}};});}
-async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return {code:'unknown_action',reason:'Action is not in the catalog'};if(agent.permissionScope!=='job')return null;if(!taskId)return {code:'job_required',reason:'Register or claim the real job first; gated actions require an owner job grant'};const t=await getJ('fm:task:'+taskId),g=t?.jobGrant;if(!t||t.assignee!==agent.id||t.status!=='running')return {code:'job_inactive',reason:'Job is not running under this worker'};if(!g||g.status!=='active'||g.agentId!==agent.id||grantId&&g.id!==grantId)return {code:'job_grant_required',reason:'Owner must grant actions and a ledger budget for this job'};if(!g.actions[action])return {code:'job_action',reason:'Action is outside the job grant'};if(Number(g.spentCents||0)+ACTIONS[action].costCents>g.budgetCents)return {code:'limit_job',reason:'Job ledger budget would be exceeded'};return null;}
+async function grantJob(id,body){return withJobLock(id,async()=>{const t=await getJ('fm:task:'+id),a=t&&await getJ('fm:agent:'+t.assignee);if(!t||!a||a.status!=='active'||a.harness||a.hosted)return {status:404,body:{error:'Task and active worker required'}};if(body.confirmed!==true||body.expectedAssignee!==t.assignee||!['running','queued'].includes(t.status))return {status:409,body:{error:'Review this unfinished job and worker again'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace paused'}};const modes=body.actions;if(!modes||typeof modes!=='object'||Array.isArray(modes)||!Object.keys(modes).length||Object.entries(modes).some(([k,v])=>!ACTIONS[k]||!['AUTO','ASK'].includes(v)||((a.permissions||{})[k]||DEFAULT_PERMS[k]||'NEVER')==='NEVER'))return {status:400,body:{error:'Choose supported actions and AUTO/ASK modes; NEVER remains blocked'}};if(!Number.isSafeInteger(body.budgetCents)||body.budgetCents<0||body.budgetCents>1000000)return {status:400,body:{error:'Exact ledger budget required (0 to 1000000 cents)'}};const old=t.jobGrant,spent=await jobSpent(id,old);if(body.budgetCents<spent)return {status:400,body:{error:'Budget cannot be below already-used ledger cents'}};t.jobGrant={id:rid('grant'),agentId:a.id,actions:{...modes},budgetCents:body.budgetCents,spentCents:spent,status:'active',issuedAt:now(),by:'owner',note:'Gateway ledger only. Not payment authorization.'};await setJ('fm:task:'+id,t);await cancelJobRequests(id,'Job grant changed. Request again under the new grant');bust();await event(a.id,'permission','Owner granted scoped actions for '+t.title,{kind:'INTERACTION',taskId:id});return {status:200,body:{task:t}};});}
+async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return {code:'unknown_action',reason:'Action is not in the catalog'};if(agent.permissionScope!=='job')return null;if(!taskId)return {code:'job_required',reason:'Register or claim the real job first; gated actions require an owner job grant'};const t=await getJ('fm:task:'+taskId),g=t?.jobGrant;if(!t||t.assignee!==agent.id||t.status!=='running')return {code:'job_inactive',reason:'Job is not running under this worker'};if(!g||g.status!=='active'||g.agentId!==agent.id||grantId&&g.id!==grantId)return {code:'job_grant_required',reason:'Owner must grant actions and a ledger budget for this job'};if(!g.actions[action])return {code:'job_action',reason:'Action is outside the job grant'};if((await jobSpent(taskId,g))+ACTIONS[action].costCents>g.budgetCents)return {code:'limit_job',reason:'Job ledger budget would be exceeded'};return null;}
 async function closeJobGrant(t,reason){if(t.jobGrant){t.jobGrant={...t.jobGrant,status:'closed',closedAt:now(),closeReason:reason};}await cancelJobRequests(t.id,reason);}
 
 async function reconcileTaskParents(){for(const p of (await listTasks()).filter(t=>t.orchestration&&t.status==='running'))await refreshTaskParent(p.id);}
@@ -739,7 +849,7 @@ async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET',
   if (agent.status !== 'active') return { status: 403, body: { error: 'bot_not_active', reason: 'A revoked or inactive bot cannot complete a job' } };
   const failed = body.status === 'failed';
   // Waiting for the owner, or an outcome Alter has not confirmed, is not done. The bot may still report failed (which voids pending requests).
-  if (!failed) { const ids = await r(['SMEMBERS', 'fm:taskreqs:' + id]); const open = ids.length ? (await r(['MGET', ...ids.map(x => 'fm:req:' + x)])).filter(Boolean).map(x => JSON.parse(x)).filter(x => ['pending', 'approved', 'reconciling', 'outcome_unknown'].includes(x.status)) : []; if (open.length) return { status: 409, body: { error: 'proposal_unresolved', reason: 'A proposal on this job has no final outcome yet', requests: open.map(x => ({ id: x.id, status: x.status })) } }; } t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(body&&body.runByAlter===true)t.runByAlter=true; /* hosted worker self-labels: rendered as Run by Alter on <bot>'s account */
+  if (!failed) { const ids = await r(['SMEMBERS', 'fm:taskreqs:' + id]); const open = ids.length ? (await r(['MGET', ...ids.map(x => 'fm:req:' + x)])).filter(Boolean).map(x => JSON.parse(x)).filter(x => ['pending', 'approved', 'reconciling', 'recovering', 'outcome_unknown'].includes(x.status)) : []; if (open.length) return { status: 409, body: { error: 'proposal_unresolved', reason: 'A proposal on this job has no final outcome yet', requests: open.map(x => ({ id: x.id, status: x.status })) } }; } t.status = failed ? 'failed' : 'done'; t.result = String(body.result || '').slice(0, 4000); t.finishedAt = now(); if(body&&body.runByAlter===true)t.runByAlter=true; /* hosted worker self-labels: rendered as Run by Alter on <bot>'s account */
   {const c=reportedCost(body);if(c!=null){t.modelCostUsd=Math.round((Number(t.modelCostUsd||0)+c)*1e6)/1e6;t.modelCostSource=t.modelCostSource==='provider'?'provider+bot':'bot';}} await closeJobGrant(t,'Job finished; action grant expired'); if(await r(['EVAL',AGENT_CAS,1,'fm:task:'+id,raw,JSON.stringify(t)])!==1)return {status:409,body:{error:'Task changed. Read it again'}};
   await touchAgent(agent);
   await event(agent.id, failed ? 'failed' : 'completed', (failed ? 'Failed: ' : 'Finished: ') + t.title, { kind: failed ? 'FAILED' : 'COMPLETED', taskId: t.id });
@@ -944,10 +1054,13 @@ async function event(agentId, type, text, extra) { bust(); const e = { id: rid('
   if (e.taskId && !(extra && extra.presenceOnly)) { const tk = 'fm:task:' + e.taskId, traw = await r(['GET', tk]), tt = traw && JSON.parse(traw); if (tt && tt.status === 'running') { tt.progressAt = e.at; await r(['SET', tk, JSON.stringify(tt)]); } }
   if (agentId && e.kind && !(extra && extra.presenceOnly)) await setJ('fm:st:' + agentId, { kind: e.kind, text, at: e.at, taskId: e.taskId || null, toAgentId: e.toAgentId || null, eventId: e.id }); await r(['LPUSH', 'fm:events', JSON.stringify(e)]); await r(['LTRIM', 'fm:events', 0, 299]); return e; }
 async function spentToday(agentId) { return parseInt((await r(['GET', `fm:spend:${agentId}:${now().slice(0, 10)}`])) || '0', 10); }
+const onceReceiptId = key => 'rcpt_' + sha('once|' + key).slice(0, 10);
 async function receipt(agent, action, params, outcome, cost, summary, reqId, extra) { bust(); await track('first_receipt');
+  const { onceKey, ...ex } = extra || {};
   const prev = (await r(['GET', 'fm:lasthash'])) || 'genesis';
-  const rec = { id: rid('rcpt'), at: now(), agentId: agent.id, agentName: agent.name, action, params: redact(params), outcome, costCents: cost, summary, requestId: reqId || null, ...extra, prevHash: prev };
+  const rec = { id: onceKey ? onceReceiptId(onceKey) : rid('rcpt'), at: now(), agentId: agent.id, agentName: agent.name, action, params: redact(params), outcome, costCents: cost, summary, requestId: reqId || null, ...ex, prevHash: prev };
   rec.hash = sha(prev + JSON.stringify(rec));
+  if (onceKey) { await r(['EVAL', RECEIPT_ONCE, 3, 'fm:rcptonce:' + onceKey, 'fm:lasthash', 'fm:receipts', JSON.stringify(rec), rec.hash, now()]); return rec; }
   await r(['SET', 'fm:lasthash', rec.hash]); await r(['LPUSH', 'fm:receipts', JSON.stringify(rec)]); await r(['LTRIM', 'fm:receipts', 0, 299]);
   return rec;
 }
@@ -966,13 +1079,30 @@ async function policy(agent, action, mode) {
   return null;
 }
 
+// Cost accounting. These counters are an internal ledger (no money moves) that gates: policy() blocks at limits.dailyCents and jobPolicy
+// at the job grant's budgetCents. The job's spend is its grant's base (spentCents, carried over when the owner re-grants) plus a per-grant
+// counter, so every charge is an atomic INCRBY. With a key (an approved request id or an invocation) the charge is CHARGE_ONCE: marker,
+// daily counter and job counter in one operation. Without a key (the AUTO path) every call charges, as before.
+const jobCounterKey = (taskId, g) => `fm:jobspent:${taskId}:${g.id}`;
+async function jobSpent(taskId, g) { return g ? Number(g.spentCents || 0) + parseInt((await r(['GET', jobCounterKey(taskId, g)])) || '0', 10) : 0; }
+// Copies of tasks for output only (never written back): a job grant's spentCents shown as its current spend, base plus counter.
+async function withJobSpend(ts) { return Promise.all(ts.map(async t => t && t.jobGrant && t.jobGrant.id ? { ...t, jobGrant: { ...t.jobGrant, spentCents: await jobSpent(t.id, t.jobGrant) } } : t)); }
+async function recordCost(agent, action, taskId, key) {
+  const cost = ACTIONS[action].costCents, spendKey = `fm:spend:${agent.id}:${now().slice(0, 10)}`;
+  let jobKey = null;
+  if (agent.permissionScope === 'job' && taskId) { const t = await getJ('fm:task:' + taskId); if (t && t.jobGrant && t.jobGrant.id) jobKey = jobCounterKey(taskId, t.jobGrant); }
+  if (!key) { await r(['INCRBY', spendKey, cost]); if (jobKey) await r(['INCRBY', jobKey, cost]); return; }
+  await r(['EVAL', CHARGE_ONCE, jobKey ? 3 : 2, 'fm:charged:' + key, spendKey, ...(jobKey ? [jobKey] : []), cost, now()]);
+}
 async function runAndReceipt(agent, action, params, reqId, approvedBy, taskId, extra) {
   const a = ACTIONS[action];
   try {
     const out = await execute(agent, action, params, reqId);
-    await r(['INCRBY', `fm:spend:${agent.id}:${now().slice(0, 10)}`, a.costCents]);
-    if(agent.permissionScope==='job'&&taskId){const t=await getJ('fm:task:'+taskId);t.jobGrant.spentCents=Number(t.jobGrant.spentCents||0)+a.costCents;await setJ('fm:task:'+taskId,t);}
-    const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null, ...(extra||{}), ...(out.receipt||{}) });
+    await recordCost(agent, action, taskId, reqId || null);
+    const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null, ...(extra||{}), ...(out.receipt||{}), ...(reqId ? { onceKey: 'req:' + reqId } : {}) });
+    // A per-request completion marker (just the receipt id): "already completed" must not depend on the receipt still being among the
+    // last 300 kept in fm:receipts.
+    if (reqId) await r(['SET', 'fm:done:' + reqId, rec.id]);
     await event(agent.id, 'completed', out.summary, { receiptId: rec.id });
     return { rec, out };
   } catch (e) {
@@ -1027,10 +1157,10 @@ async function gatewayActUnlocked(agent, body) {
     return { status: 400, body: { status: 'denied', code: invalid.code, reason: invalid.reason, request_id: q.id, receipt_id: rec.id } };
   }
   if (mode === 'ASK') {
-    // The owner reviews exactly what will run. An email is stored and shown in full (sender set by Alter); detailsHash binds the
+    // The owner reviews exactly what will run. An email or a note is stored and shown in full (an email's sender set by Alter); detailsHash binds the
     // approval to it, and expiresAt bounds how long a yes can wait.
-    const isEmail = action === 'email.send', exact = isEmail ? emailMessage(params) : params, created = Date.now();
-    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: isEmail ? { ...exact } : redact(params), rawParams: exact, detailsHash: reqHash(action, exact), label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: new Date(created).toISOString(), expiresAt: new Date(created + (isEmail ? EMAIL_TTL_MS : REQ_TTL_MS)).toISOString(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
+    const isEmail = action === 'email.send', isNote = action === 'notes.write', exact = isEmail ? emailMessage(params) : isNote ? noteMessage(params) : params, created = Date.now();
+    const q = { id: rid('req'), agentId: agent.id, agentName: agent.name, action, params: isEmail || isNote ? { ...exact } : redact(params), rawParams: exact, detailsHash: reqHash(action, exact), label: ACTIONS[action].label, costCents: ACTIONS[action].costCents, status: 'pending', createdAt: new Date(created).toISOString(), expiresAt: new Date(created + (isEmail ? EMAIL_TTL_MS : REQ_TTL_MS)).toISOString(), taskId:taskId||null,grantId:agent.permissionScope==='job'?task?.jobGrant?.id:null };
     // Same bot, job (or source_id), action and exact content = the same request. Created with SET NX, so a retry or a concurrent
     // duplicate gets the existing request and its current outcome back instead of a second approval card.
     if (taskId || body.source_id) q.id = 'req_' + sha([agent.id, taskId || '', String(body.source_id || '').slice(0, 200), action, q.detailsHash].join('|')).slice(0, 20);
@@ -1039,6 +1169,7 @@ async function gatewayActUnlocked(agent, body) {
     await event(agent.id, 'pending', `Waiting for owner approval: ${action}`, { requestId: q.id,taskId:q.taskId||null });
     return { status: 202, body: { status: 'pending', request_id: q.id, message: 'Action is paused until the owner approves or denies it.' } };
   }
+  if (action === 'notes.write' && String(body.source_id || '').trim()) return autoNoteOnce(agent, params, taskId, String(body.source_id).trim().slice(0, 200));
   const { rec, out, error } = await runAndReceipt(agent, action, params, null, null, taskId);
   if (error) return { status: 502, body: { status: 'failed', error, receipt_id: rec.id } };
   return { status: 200, body: { status: 'completed', result: out.data, receipt_id: rec.id } };
@@ -1092,12 +1223,102 @@ async function decideUnlocked(reqId, decision, body) {
 // Owner action for an email whose outcome is unknown. It repeats the same request with the same Idempotency-Key and body, which
 // Resend answers with the original response if the first call landed, and otherwise sends it once now. Past 23 hours the
 // provider's 24-hour key window could lapse, so it refuses rather than risk a second email.
+// A request claimed 'approved' (or 'reconciling') whose function died before recording the outcome. Functions are sized under 30s,
+// so past INFLIGHT_STALE_MS nothing can still be executing it: the owner sees an unknown outcome and may reconcile (same Idempotency-Key).
+const INFLIGHT_STALE_MS = 120000;
+function staleInflight(q) { if (!q || q.action !== 'email.send') return false; const t = q.status === 'approved' ? q.decidedAt : q.status === 'reconciling' ? (q.reconcileStartedAt || q.executedAt || q.decidedAt) : null; return !!t && Date.now() - Date.parse(t) > INFLIGHT_STALE_MS; }
+// A note save the owner approved but that never finished (the function died after claiming it, before the outcome was recorded). Past the
+// same window as email, nothing can still be running it (the job lock is 120 s), so the owner is offered "Finish saving".
+function noteStalled(q) {
+  if (!q || q.action !== 'notes.write') return false;
+  const t = q.status === 'approved' ? q.decidedAt : q.status === 'recovering' ? (q.recoverStartedAt || q.decidedAt) : null;
+  return !!t && Date.now() - Date.parse(t) > INFLIGHT_STALE_MS;
+}
+// The completed receipt of a request: its completion marker first; requests completed before the marker existed fall back to the last 300.
+async function completedReceiptFor(reqId) {
+  const id = await r(['GET', 'fm:done:' + reqId]); if (id) return { id, requestId: reqId, outcome: 'completed' };
+  if (await r(['GET', 'fm:rcptonce:req:' + reqId])) return { id: onceReceiptId('req:' + reqId), requestId: reqId, outcome: 'completed' }; // written atomically with its marker
+  for (const x of await r(['LRANGE', 'fm:receipts', 0, 299])) { try { const c = JSON.parse(x); if (c.requestId === reqId && c.outcome === 'completed') return c; } catch {} }
+  return null;
+}
+// The note an older build already wrote for this request, under a random id: a record that names the request (831b3fe..f8ea5e8), or a
+// list-only note (production main) by the same bot with exactly the approved title and text, written at or after the approval. Recovery
+// adopts it instead of writing a second note. Reads are batched; this runs only when recovering.
+async function olderNoteFor(q, approved) {
+  const ids = await r(['SMEMBERS', 'fm:noteids']);
+  for (let i = 0; i < ids.length; i += 100) {
+    const vals = await r(['MGET', ...ids.slice(i, i + 100).map(x => 'fm:note:' + x)]);
+    for (const v of vals) { try { const n = v && JSON.parse(v); if (n && n.requestId === q.id) return n; /* a tombstone that names this request counts: its note was deleted */ } catch {} }
+  }
+  const since = Date.parse(q.decidedAt || q.createdAt || 0);
+  // A list-only note is adopted by at most one request: the first to claim it (SET NX) keeps it, a repeat by the same request finds its
+  // own claim, and a second request with identical text moves on and writes its own note.
+  for (const x of await r(['LRANGE', 'fm:notes', 0, 99])) {
+    let n; try { n = JSON.parse(x); } catch { continue; }
+    if (!(n && !n.requestId && n.by === q.agentId && n.title === approved.title && n.text === approved.text && Date.parse(n.at) >= since)) continue;
+    if (await r(['SET', 'fm:adopted:' + n.id, q.id, 'NX']) || await r(['GET', 'fm:adopted:' + n.id]) === q.id) return n;
+  }
+  return null;
+}
+async function recoverNoteReq(id) {
+  const raw = await r(['GET', 'fm:req:' + id]); if (!raw) return { status: 404, body: { error: 'not found' } };
+  const q = JSON.parse(raw);
+  if (!noteStalled(q)) return { status: 409, body: { error: 'not_interrupted', note: 'Only a note save that was interrupted can be finished.', request: pub(q) } };
+  return q.taskId ? withJobLock(q.taskId, () => recoverNoteReqUnlocked(id)) : recoverNoteReqUnlocked(id);
+}
+async function recoverNoteReqUnlocked(id) {
+  const raw = await r(['GET', 'fm:req:' + id]); if (!raw) return { status: 404, body: { error: 'not found' } };
+  let q = JSON.parse(raw);
+  if (!noteStalled(q)) return { status: 409, body: { error: 'not_interrupted', note: 'Only a note save that was interrupted can be finished.', request: pub(q) } };
+  const agent = await getJ('fm:agent:' + q.agentId);
+  const taken = { status: 409, body: { error: 'already recovering', request: pub(q) } };
+  const before = q;
+  q = await claimReq(raw, { status: 'recovering', recoverStartedAt: now() }); if (!q) return taken;
+  const block = async (code, reason) => {
+    q = await claimReq(JSON.stringify(q), { status: 'blocked', reason }); if (!q) return taken; await finishReq(q);
+    const rec = await receipt(agent || { id: q.agentId, name: q.agentName }, q.action, q.params, 'blocked', 0, `BLOCKED at recovery: ${reason}`, q.id, { code });
+    await event(q.agentId, 'blocked', `Blocked at recovery: ${reason}`, { requestId: q.id, receiptId: rec.id });
+    return { status: 200, body: { request: pub(q) } };
+  };
+  // What is written is what the owner approved: the stored request must still match its approval fingerprint.
+  const approved = noteMessage(q.rawParams);
+  if (!q.detailsHash || reqHash('notes.write', approved) !== q.detailsHash) return block('details_changed', 'What would be saved no longer matches what you approved');
+  let nid = noteIdFor(q.id), written = await getJ('fm:note:' + nid), adopted = false;
+  if (!written) { const older = await olderNoteFor(q, approved); if (older) { nid = older.id; written = older; adopted = true; } }
+  if (written && !written.deleted && (written.title !== approved.title || written.text !== approved.text)) return block('details_changed', 'The stored note does not match what you approved');
+  // Not written yet: policy is checked now, as at approval. Already written under the owner's approval: finish the record, write nothing new.
+  if (!written) {
+    if (!agent) return block('revoked', 'The bot no longer exists');
+    const blocked = await jobPolicy(agent, q.action, q.taskId, q.grantId) || await policy(agent, q.action, (agent.permissions || {})[q.action] === 'NEVER' ? 'NEVER' : 'AUTO');
+    if (blocked) return block(blocked.code, blocked.reason);
+  }
+  // Write (or repair) the note first, outside runAndReceipt: it swallows errors into a failed request, and a note still being written by
+  // another writer is not a failure. If it is busy, the claim is undone and nothing is recorded; the owner can try again.
+  const actor = agent || { id: q.agentId, name: q.agentName }; // a removed bot can still have a save to finish: the note exists under the owner's approval
+  try { if (!adopted) await writeNoteOnce(actor, q.rawParams, q); }
+  catch (e) {
+    if (e && e.code === 'note_busy') { const back = await claimReq(JSON.stringify(q), { status: before.status, recoverStartedAt: before.recoverStartedAt }); return { status: 409, body: { error: 'note_busy', note: 'The note is still being written. Try again in a moment.', request: pub(back || before) } }; }
+    throw e;
+  }
+  let rec = written ? await completedReceiptFor(q.id) : null, out = rec ? { data: { note_id: nid } } : null, error = null;
+  if (!rec && adopted) {
+    // The older build wrote the note but left no receipt: record it once, and charge once (keyed; the older build may already have
+    // counted it, so at most 2c is counted twice for a request stranded across the upgrade).
+    await recordCost(actor, q.action, q.taskId, q.id);
+    rec = await receipt(actor, q.action, q.params, 'completed', ACTIONS[q.action].costCents, written.deleted ? `Note ${written.id} was deleted by the owner; not written again (recovered)` : `Wrote note "${written.title}" (${written.id}) to the shared workspace (recovered)`, q.id, { approvedBy: 'owner:approve', taskId: q.taskId || null, detailsHash: q.detailsHash || null, recovered: true, onceKey: 'req:' + q.id });
+    await r(['SET', 'fm:done:' + q.id, rec.id]); out = { data: { note_id: nid, ...(written.deleted ? { deleted: true } : {}) } };
+  }
+  if (!rec) ({ rec, out, error } = await runAndReceipt(actor, q.action, q.rawParams, q.id, 'owner:approve', q.taskId, { detailsHash: q.detailsHash || null, recovered: true }));
+  q.status = error ? 'failed' : 'executed'; q.executedAt = now(); q.recoveredAt = now(); q.receiptId = rec.id; q.result = out ? out.data : { error };
+  await finishReq(q);
+  return { status: 200, body: { request: pub(q), receipt: rec } };
+}
 async function reconcileReq(id) {
   const raw = await r(['GET', 'fm:req:' + id]); if (!raw) return { status: 404, body: { error: 'not found' } };
   let q = JSON.parse(raw);
-  if (q.action !== 'email.send' || q.status !== 'outcome_unknown') return { status: 409, body: { error: 'only an email with an unknown outcome can be reconciled', request: pub(q) } };
+  if (q.action !== 'email.send' || (q.status !== 'outcome_unknown' && !staleInflight(q))) return { status: 409, body: { error: 'only an email with an unknown outcome can be reconciled', request: pub(q) } };
   if (Date.now() - Date.parse(q.executedAt || q.decidedAt) > EMAIL_RECONCILE_MS) return { status: 409, body: { error: 'reconcile_window_passed', note: 'A retry now could send a second email. Check the Resend dashboard for this recipient and time.', request: pub(q) } };
-  q = await claimReq(raw, { status: 'reconciling' }); if (!q) return { status: 409, body: { error: 'already reconciling' } };
+  q = await claimReq(raw, { status: 'reconciling', reconcileStartedAt: now() }); if (!q) return { status: 409, body: { error: 'already reconciling' } };
   const agent = await getJ('fm:agent:' + q.agentId) || { id: q.agentId, name: q.agentName };
   let rec;
   try {
@@ -1138,7 +1359,7 @@ async function fullState() {
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
-  const pend = ids.length ? parse(await r(['MGET', ...ids.map(i => 'fm:req:' + i)])).map(pub) : [];
+  const pend = ids.length ? parse(await r(['MGET', ...ids.map(i => 'fm:req:' + i)])).map(q => staleInflight(q) ? { ...q, status: 'outcome_unknown', delivery: { state: 'unknown' }, staleInflight: true } : noteStalled(q) ? { ...q, stalled: true } : q).map(pub) : [];
   // History holds one snapshot per decision; show each request once, and read an email's live record so a reconcile or a
   // delivery check (which update the record, not the history) is what the owner sees.
   const hist = []; { const seenReq = new Set(pend.map(x => x.id)); for (const x of parse(await r(['LRANGE', 'fm:reqhist', 0, 14]))) if (!seenReq.has(x.id)) { seenReq.add(x.id); hist.push(x); } }
@@ -1146,7 +1367,7 @@ async function fullState() {
   for (const x of pend) if (x.status === 'pending' && x.expiresAt && Date.parse(x.expiresAt) <= Date.now()) x.expired = true;
   const day = now().slice(0, 10);
   const sp = agents.length ? await r(['MGET', ...agents.map(a => `fm:spend:${a.id}:${day}`)]) : [];
-  const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
+  const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await withJobSpend(await listTasks());
   const cls = agents.length ? await r(['MGET', ...agents.map(a => 'fm:claimSeen:' + a.id)]) : [];
   const connections=await Promise.all(agents.map(connectionState));const conversations=await Promise.all(agents.map(a=>getJ('fm:conversation:'+a.id)));
   const agentsPub = agents.map((a, i) => ({ ...a, wake: a.wake && a.wake.channel ? { channel: a.wake.channel, declaredAt: a.wake.declaredAt || null, hasSecret: !!a.wake.secret, verified: a.wake.channel === 'email' ? !!a.wake.verified : undefined, pending: a.wake.channel === 'email' ? !!a.wake.pending || !wakeEmailAllowed(a.wake.target) : undefined } : null, instantWake: !!(a.status === 'active' && !a.paused && !a.hosted && wakeChannelFor(a)), strengths:effStrengths(a), lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
@@ -1198,7 +1419,7 @@ async function seed() {
 // ---------- MCP adapter (JSON-RPC 2.0 over HTTPS) ----------
 const MCP_TOOLS = [
   { name: 'foreman_web_fetch', description: 'Fetch a live https web page through Foreman (policy-gated).', inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] }, action: 'web.fetch' },
-  { name: 'foreman_notes_write', description: 'Write a note to the shared workspace through Foreman (policy-gated; may pause for owner approval).', inputSchema: { type: 'object', properties: { title: { type: 'string' }, text: { type: 'string' } }, required: ['title', 'text'] }, action: 'notes.write' },
+  { name: 'foreman_notes_write', description: 'Write a note to the shared workspace through Foreman (policy-gated; may pause for owner approval). Pass a stable source_id to make retries safe: the same source_id and note return the first note instead of writing another.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, text: { type: 'string' }, task_id: { type: 'string' }, source_id: { type: 'string', description: 'Optional retry key. Same source_id and same note: the original note is returned. Same source_id with a different note: refused.' } }, required: ['title', 'text'] }, action: 'notes.write' },
   { name: 'foreman_email_send', description: 'Propose one plain-text email for Alter to send. The owner reviews the exact sender, recipient, subject and body; nothing is sent unless they approve, and Alter (not you) sends it. Returns a request_id: poll it for the outcome. Recipients are limited to addresses the owner allowed.', inputSchema: { type: 'object', properties: { to: { type: 'string' }, subject: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'subject', 'text'] }, action: 'email.send' },
   { name: 'foreman_notes_delete', description: 'Delete workspace notes through Foreman (policy-gated).', inputSchema: { type: 'object', properties: {} }, action: 'notes.delete' },
   { name: 'foreman_enqueue', description: 'Queue an unassigned task in your own workspace. This does not start a hosted worker. Policy-gated, zero cost, maximum 10 per minute.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, brief: { type: 'string' } }, required: ['title'] }, action: 'work.enqueue' },
@@ -1223,7 +1444,7 @@ for(const t of MCP_TOOLS.filter(t=>t.action)){t.inputSchema.properties.task_id={
 async function mcpCall(agent, name, args) {
   const t = MCP_TOOLS.find(x => x.name === name); if (!t) return { isError: true, content: [{ type: 'text', text: 'unknown tool' }] };
   let out;
-  if (t.action) { const g = await gatewayAct(agent, { action: t.action, params: args || {},task_id:args?.task_id }); out = g.body; }
+  if (t.action) { const g = await gatewayAct(agent, { action: t.action, params: args || {},task_id:args?.task_id,source_id:args?.source_id }); out = g.body; }
   else if (name === 'foreman_report') out = (await reportEvent(agent, args || {}, 'mcp')).body;
   else if(name==='foreman_chat_task')out=(await chatTask(agent,args||{})).body;
   else if(name==='foreman_route_suggestion')out=await routing((args||{}).category||'');
@@ -1341,6 +1562,14 @@ async function cardControlUnlocked(body){
 const OAUTH_ORIGIN='https://foreman-core.vercel.app';
 const PUBLIC_ORIGIN='https://www.alterhq.app';
 const originOk=o=>o===OAUTH_ORIGIN||o===PUBLIC_ORIGIN;
+// Runner console calls come from the deployment that issued the pair: the production origins, or the
+// request's own validated host elsewhere (a Preview), the same trust setup links already use. The Host
+// header is validated by setupOriginFor; cookie + CSRF token checks below are unchanged.
+const runnerOriginOk=(req,o)=>originOk(o)||o===setupOriginFor(req);
+// Gateway, runner and pairing setup links point a bot at the deployment it is being paired with: the live site on production hosts, the
+// request's own origin elsewhere (a Preview), because a key or pairing code only works against the store that issued it. A Host header
+// that is not a plain host[:port] falls back to the live site. Remote MCP and OAuth are not routed through this: their issuer is the live site.
+const setupOriginFor=req=>{const h=String(req&&req.headers&&req.headers.host||'').toLowerCase();if(!/^[a-z0-9.-]+(:\d{1,5})?$/.test(h)||/^(www\.)?alterhq\.app$/.test(h)||h===OAUTH_ORIGIN.slice(8))return PUBLIC_ORIGIN;return (/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(h)?'http://':'https://')+h;};
 const originFor=req=>/^(www\.)?alterhq\.app$/.test(String(req&&req.headers&&req.headers.host||''))?PUBLIC_ORIGIN:OAUTH_ORIGIN;
 const validRedirect=u=>{try{const x=new URL(u);return !x.username&&!x.password&&!x.hash&&(x.protocol==='https:'||x.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(x.hostname));}catch{return false;}};
 // Refresh grants have no routine expiry. Rotation is atomic; replay revokes the family.
@@ -1490,9 +1719,9 @@ async function runnerRoutes(req,res,path,body){
  res.setHeader('Cache-Control','no-store');
  const m=path.match(/^\/runner\/(agent_[a-f0-9]+)\/(.*)$/);if(!m)return res.status(404).json({error:'Runner not found'});
  const id=m[1],action=m[2],sess=await runnerSession(req,id);if(!sess)return res.status(401).json({error:'Runner session unavailable. Pair this bot again.'});
- if(req.headers.origin&&!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
+ if(req.headers.origin&&!runnerOriginOk(req,req.headers.origin))return res.status(403).json({error:'origin'});
  if(req.headers['sec-fetch-site']==='cross-site')return res.status(403).json({error:'cross-site'});
- if(req.method!=='GET'&&(!originOk(req.headers.origin)||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
+ if(req.method!=='GET'&&(!runnerOriginOk(req,req.headers.origin)||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
  if(action==='session'&&req.method==='GET'){
   // Validation above checks exact bot, epoch, gateway key, expiry and request origin.
   // Preserve the token and CSRF value so simultaneous tabs do not invalidate each other.
@@ -1536,7 +1765,7 @@ const blCaller=req=>({userAgent:String(req.headers['user-agent']||''),ipRegion:S
 async function botLinkBotRoutes(req,res,path,body){res.setHeader('Cache-Control','no-store');const send=o=>res.status(o.status).json(o.body);
  const pm=path.match(/^\/pair\/(pr_[A-Za-z0-9_-]{20,40})$/);
  if(pm&&req.method==='POST')return send(await botLink.hello(pm[1],{nonce:body.nonce,callerSecret:body.callerSecret,fingerprint:blCaller(req),oldKey:body.oldKey||null}));
- if(pm&&req.method==='GET'){const h=String(req.headers.authorization||'');if(!/^Pairing\s+/i.test(h))return send(await botLink.steps(pm[1],PUBLIC_ORIGIN));return send(await botLink.pickup(pm[1],{callerSecret:h.replace(/^Pairing\s+/i,'')}));}
+ if(pm&&req.method==='GET'){const h=String(req.headers.authorization||'');if(!/^Pairing\s+/i.test(h))return send(await botLink.steps(pm[1],setupOriginFor(req)));return send(await botLink.pickup(pm[1],{callerSecret:h.replace(/^Pairing\s+/i,'')}));}
  if(path==='/link/call'&&req.method==='POST'){const key=String(req.headers.authorization||'').replace(/^Bearer\s+/i,'').trim();return send(await botLink.call(key,{op:body.op,text:body.text,action:body.action,params:body.params,requestId:body.requestId}));}
  return res.status(404).json({error:'not found'});}
 async function linkableAgents(ws){return als.run({ws},async()=>{const out=[];for(const a of await listAgents()){if(a.status!=='active'||a.harness||a.hosted)continue;if(await r(['GET','bl:agentBot:'+ws+':'+a.id]))continue;out.push({id:a.id,name:a.name,provider:a.provider});}return out;});}
@@ -1553,9 +1782,9 @@ async function botLinkOwnerRoutes(req,res,path,body,sess){res.setHeader('Cache-C
  const ownOrigin=o==='https://'+req.headers.host; // any deployment (prod, preview) accepts its own host: same-origin is the CSRF barrier
  if(!t||typeof req.headers['x-alter-csrf']!=='string'||!crypto.timingSafeEqual(Buffer.from(sha(req.headers['x-alter-csrf'])),Buffer.from(sha(t)))||(o!==OAUTH_ORIGIN&&!ownOrigin&&!devOrigin))return res.status(403).json({error:'csrf'});
  if(path==='/botlink/pairings'){let agentId=null;if(body.agentId!=null){if(!(await linkableAgents(sess.ws)).some(a=>a.id===body.agentId))return res.status(409).json({error:'agent_not_linkable'});agentId=body.agentId;}
-  return send(await botLink.createPairing({ws:sess.ws,account:sess.email,type:body.type,agentId,origin:PUBLIC_ORIGIN}));}
+  return send(await botLink.createPairing({ws:sess.ws,account:sess.email,type:body.type,agentId,origin:setupOriginFor(req)}));}
  {const m=path.match(/^\/botlink\/pairings\/(pr_[A-Za-z0-9_-]{20,40})\/(approve|cancel)$/);if(m)return send(m[2]==='approve'?await botLink.approve(sess.ws,m[1],{confirmBotId:body.confirmBotId||null}):await botLink.cancel(sess.ws,m[1]));}
- {const m=path.match(/^\/botlink\/bots\/(bot_[A-Za-z0-9_-]+)\/(revoke|repaste)$/);if(m)return send(m[2]==='revoke'?await botLink.revoke(sess.ws,m[1]):await botLink.repasteMessage(sess.ws,m[1],PUBLIC_ORIGIN));}
+ {const m=path.match(/^\/botlink\/bots\/(bot_[A-Za-z0-9_-]+)\/(revoke|repaste)$/);if(m)return send(m[2]==='revoke'?await botLink.revoke(sess.ws,m[1]):await botLink.repasteMessage(sess.ws,m[1],setupOriginFor(req)));}
  return res.status(404).json({error:'not found'});}
 
 module.exports = async (req, res) => {
@@ -1577,7 +1806,7 @@ module.exports = async (req, res) => {
     if(path.startsWith('/pair/')||path==='/link/call')return await botLinkBotRoutes(req,res,path,body);
     if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN&&req.headers.origin!=='https://'+req.headers.host)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);if(o.status===200&&body.persistent===true){const ws=await r(['GET','gl:key:'+sha(o.body.key)]);const out=await startRunnerSession(res,ws,o.body.agent.id,o.body.key);return res.status(200).json(out);}return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
-    if (path === '/cron/business-daily' && req.method === 'GET') { if (!bizCronOk(req)) return res.status(401).json({ error: 'auth' }); return send(await bizDailyTick()); }
+    if (path === '/cron/business-daily' && req.method === 'GET') { if (!bizCronOk(req)) return res.status(401).json({ error: 'auth' }); const o = await bizDailyTick(); return res.status(o.status).json(o.body); }
     { const rm = (req.url || '').split('?')[0].match(/^\/receipt\/([^/?#]+)$/) || path.match(/^\/receipt\/([^/?#]+)$/); if (rm && req.method === 'GET') { const x = await publicReceiptRead(rm[1]); const host = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); res.setHeader('Referrer-Policy', 'no-referrer'); return res.status(x ? 200 : 404).send(receiptPage(x, host, BRAND_NAME)); } }
     { const pm = path.match(/^\/public-receipts\/([a-f0-9]{48})$/); if (pm && req.method === 'GET') { res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); const x = await publicReceiptRead(pm[1]); return x ? res.json(x) : res.status(404).json({ error: 'Receipt unavailable or expired' }); } }
     if (path === '/me' || path.startsWith('/auth/')) return await handleAuth(req, res, path, body);
@@ -1595,9 +1824,47 @@ module.exports = async (req, res) => {
     return await als.run({ ws: sess.ws }, () => routes(req, res, path, body, null));
   } catch (e) { return sendStoreError(res,e); }
 };
+// Owner read of one saved note: the stored record (or, for a note written before durable records, the recent-notes list). The job and
+// request link is returned only when the server can validate it: the request is the executed notes.write that wrote this note id, by
+// this bot, and its approval fingerprint matches the stored note. A stored link wins over the hint a client passes for older notes.
+async function noteRead(id, reqHint) {
+  if (!/^note_[A-Za-z0-9]{4,40}$/.test(String(id || ''))) return null;
+  let note = await getJ('fm:note:' + id), legacy = false;
+  if (!note) { for (const x of await r(['LRANGE', 'fm:notes', 0, 99])) { try { const n = JSON.parse(x); if (n && n.id === id) { note = n; legacy = true; break; } } catch {} } }
+  if (!note) return null;
+  if (note.deleted) return { deleted: true, note: { id: note.id, deletedAt: note.deletedAt || null } };
+  const rid = note.requestId || (/^req_[A-Za-z0-9]{4,40}$/.test(String(reqHint || '')) ? String(reqHint) : null);
+  let link = null;
+  if (rid) {
+    const q = await getJ('fm:req:' + rid);
+    if (q && q.action === 'notes.write' && q.status === 'executed' && q.result && q.result.note_id === id && q.agentId === note.by) {
+      const job = q.taskId ? await getJ('fm:task:' + q.taskId) : null;
+      const matchesApproval = !!q.detailsHash && q.detailsHash === reqHash('notes.write', { title: note.title, text: note.text });
+      link = { requestId: q.id, approvedAt: q.decidedAt || null, matchesApproval, taskId: job ? job.id : null, taskTitle: job ? job.title : null };
+    }
+  }
+  const bot = note.by ? await getJ('fm:agent:' + note.by) : null;
+  return { note: { id: note.id, title: note.title, text: note.text, at: note.at, by: note.by || null, botName: bot ? bot.name : null }, link, legacy };
+}
+// Owner delete of one note, under the same lock as writes. The record becomes a content-free tombstone (kept so recovery or a retry of the
+// same request cannot recreate it) and every recent-list copy is removed with LREM, so a concurrent write of another note is not lost.
+// A repeated delete is harmless and also clears any list copy a crash left behind.
+async function noteDelete(id) {
+  if (!/^note_[A-Za-z0-9]{4,40}$/.test(String(id || ''))) return { status: 404, body: { error: 'not found' } };
+  return withNoteLock(id, async () => {
+    const rec = await getJ('fm:note:' + id);
+    const copies = (await r(['LRANGE', 'fm:notes', 0, 99])).filter(x => { try { return JSON.parse(x).id === id; } catch { return false; } });
+    if (!rec && !copies.length) return { status: 404, body: { error: 'not found' } };
+    const already = !!(rec && rec.deleted), deletedAt = already ? rec.deletedAt : now();
+    if (!already) { await setJ('fm:note:' + id, await tombstoneOf(id, rec, deletedAt)); await r(['SADD', 'fm:noteids', id]); }
+    for (const x of copies) await r(['LREM', 'fm:notes', 0, x]);
+    bust(); return { status: 200, body: { deleted: true, id, deletedAt, ...(already ? { alreadyDeleted: true } : {}) } };
+  });
+}
 async function routes(req, res, path, body, agentPre) {
   const send = (o) => res.status(o.status).json(o.body);
   const origin = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host;
+  const foreign = () => req.headers.origin !== origin; // owner writes must come from the app's own origin
   try {
     if (wsId() === 'legacy') {await seed();
       // Owner-approved cleanup of accidental OAuth authorization on the hidden demo.
@@ -1663,11 +1930,13 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/public-receipts/publish'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptPublish(body));}
     {const rv=path.match(/^\/public-receipts\/([a-f0-9]{48})\/revoke$/);if(rv&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptRevoke(rv[1]));}}
     {const jm=path.match(/^\/jobs\/(\w+)$/);if(jm&&req.method==='GET'){const j=await jobDetail(jm[1]);return j?res.json(j):res.status(404).json({error:'not found'});}}
+    {const nm=path.match(/^\/notes\/([A-Za-z0-9_]{1,60})$/);if(nm&&req.method==='GET'){res.setHeader('Cache-Control','no-store');const x=await noteRead(nm[1],new URL(req.url||'/','https://local.invalid').searchParams.get('request'));return !x?res.status(404).json({error:'not found'}):x.deleted?res.status(410).json({error:'deleted',...x}):res.json(x);}}
+    {const dm=path.match(/^\/notes\/([A-Za-z0-9_]{1,60})\/delete$/);if(dm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});if(body.confirmed!==true)return res.status(400).json({error:'Confirm the delete'});return send(await noteDelete(dm[1]));}}
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
-    if(path==='/tasks/plan'&&req.method==='POST')return res.json(await planTaskParts(body));
-    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started');if(body.orchestrate===true){const out=await createTaskParts(body);return res.status(out.status).json(out.body);}
+    if(path==='/tasks/plan'&&req.method==='POST'){if(foreign())return res.status(403).json({error:'origin'});return res.json(await planTaskParts(body));}
+    if (path === '/tasks' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started');if(body.orchestrate===true){const out=await createTaskParts(body);return res.status(out.status).json(out.body);}
       let routed = null, category = null, routingReason = null, unrouted = false, allAsleep = false, assignee = body.assignee || null, handoffPlan = null, brief = body.brief;
       if (body.route === true && !assignee) {
         // One message can span categories: a lead bot takes the strongest one, further matched
@@ -1733,7 +2002,7 @@ async function routes(req, res, path, body, agentPre) {
       }
       return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, allAsleep, handoffPlan }), routed, unrouted, ...(allAsleep ? { allAsleep: true } : {}) }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
-    {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
+    {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST'){if(foreign())return res.status(403).json({error:'origin'});return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
     {const wm=path.match(/^\/agents\/(\w+)\/wake$/);if(wm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setOwnerWake(wm[1],body));}}
     {const pm=path.match(/^\/agents\/(\w+)\/pairing$/);if(pm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuePairing(pm[1]));}}
@@ -1747,7 +2016,8 @@ async function routes(req, res, path, body, agentPre) {
     { const bm = path.match(/^\/business\/proposals\/(prop_\w+)\/(edit|reject|activate)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizProposalAct(bm[1], bm[2], body)); } }
     { const bm = path.match(/^\/business\/responsibilities\/(resp_\w+)\/(pause|resume|retire|run)$/); if (bm && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await bizRespAct(bm[1], bm[2], body)); } }
     let m;
-    if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { const d = await decide(m[1], m[2], body); if (d.status === 200) await track('approval_completed'); return send(d); }
+    if ((m = path.match(/^\/requests\/(\w+)\/(approve|deny)$/)) && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); const d = await decide(m[1], m[2], body); if (d.status === 200) await track('approval_completed'); return send(d); }
+    if ((m = path.match(/^\/requests\/(\w+)\/recover$/)) && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(await recoverNoteReq(m[1])); }
     if ((m = path.match(/^\/requests\/(\w+)\/(reconcile|delivery)$/)) && req.method === 'POST') { if (req.headers.origin !== origin) return res.status(403).json({ error: 'origin' }); return send(m[2] === 'reconcile' ? await reconcileReq(m[1]) : await deliveryReq(m[1])); }
     {const km=path.match(/^\/agents\/(\w+)\/gateway-key$/);if(km&&req.method==='POST'){
       if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});
@@ -1762,13 +2032,17 @@ async function routes(req, res, path, body, agentPre) {
       res.setHeader('Cache-Control','no-store');return res.json({agent:updated,key,connectionStatus:'awaiting_bot'});
       }finally{if(await r(['GET',lockKey])===lock)await r(['DEL',lockKey]);}
     }}
-    if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
-    if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits|room|pause|strengths)$/)) && req.method === 'POST') {
+    if (path === '/agents' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
+    if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits|room|pause|strengths)$/)) && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'});
       const op=m[2];
       const rooms={ops:'Execution Center',sales:'Outreach Center',marketing:'Creative / Marketing',finance:'Research Center',support:'Outreach Center',lounge:'Lounge'};
       if(op==='room' && !Object.prototype.hasOwnProperty.call(rooms,body.room))return res.status(400).json({error:'Choose a valid room'});
       if(op==='strengths' && (!Array.isArray(body.strengths) || body.strengths.length>8 || body.strengths.some(k=>!Object.prototype.hasOwnProperty.call(CATEGORY_KEYWORDS,k))))return res.status(400).json({error:'Choose job types from the list'});
       if(op==='permissions' && (!ACTIONS[body.action] || !['AUTO','ASK','NEVER'].includes(body.mode)))return res.status(400).json({error:'bad input'});
+      // Restoring a REVOKED bot does not bring its old gateway key back: the key records are removed first (a crash after this leaves the bot
+      // revoked, the safe side), and the owner issues a new key. A bot that is not revoked keeps its working key.
+      let needsNewKey = false;
+      if (op === 'restore') { const cur = await getJ('fm:agent:' + m[1]); if (cur && cur.status === 'revoked') { const kh = await r(['GET', 'fm:gatewayKeyHash:' + cur.id]); if (kh) { await r(['DEL', 'fm:key:' + kh, 'gl:key:' + kh, 'fm:gatewayKeyHash:' + cur.id]); needsNewKey = true; } } }
       const a=await updateAgent(m[1],a=>{
         if(op==='room'){a.room=body.room;}
         if(op==='revoke'){a.status='revoked';a.revokedAt=now();a.oauthEpoch=(a.oauthEpoch||0)+1;}
@@ -1787,15 +2061,15 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='strengths')await event(a.id,'strengths_changed','Best at: '+(effStrengths(a).join(', ')||'nothing declared'),{strengths:effStrengths(a)});
       if(op==='room')await event(a.id,'room_changed','Moved to '+rooms[a.room],{room:a.room});
       if(op==='pause')await event(a.id,body.on?'paused':'resumed',body.on?'Owner paused '+a.name:'Owner resumed '+a.name,{source:'owner'});
-      return res.json({ agent: a });
+      return res.json(op === 'restore' ? { agent: a, needsNewKey } : { agent: a });
     }
-    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
-    if (path === '/kill' && req.method === 'POST') { bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
+    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
+    if (path === '/kill' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
     // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
-    if (path === '/connect' && req.method === 'POST') {
+    if (path === '/connect' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'});
       const _ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();if(await ipRateLimited('connect',_ip,30,3600))return res.status(429).json({error:'Too many connection attempts. Try again later.'});
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
-      const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = PUBLIC_ORIGIN;
+      const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = setupOriginFor(req);
       if (prov === 'muse' && body.connectionMode !== 'existing') {
         let k = String(body.apiKey || '').trim().replace(/^MODEL_API_KEY=/i, '').replace(/^Bearer\s+/i, '').trim(); if (k.length > 1 && ((k[0] === '"' && k.endsWith('"')) || (k[0] === "'" && k.endsWith("'")))) k = k.slice(1, -1).trim();
         if (!/^LLM(?:_[^\s_|]+_[^\s|]+|\|[^\s|]+\|[^\s|]+)$/.test(k)) return res.status(400).json({ error: 'Paste your Meta Model API key from dev.meta.ai. It starts with LLM_ (LLM_<id>_<secret>).' });
@@ -1819,8 +2093,8 @@ async function routes(req, res, path, body, agentPre) {
         await track('connected', { provider: 'grok' }); return res.json({ agent: c.agent, hosted: true });
       }
       const c = await createAgent(name, String(body.role || '').trim(), prov, false, { preset });
-      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${PUBLIC_ORIGIN}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it stops presence; reopening this exact link in the saved browser resumes the pair unless revoked, reset or expired. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
-      await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, noFirstTask: true, connectionStatus: 'awaiting_bot', instructions: msg, mcpUrl: base + '/api/mcp', runnerUrl: base + '/runner?agent=' + encodeURIComponent(c.agent.id) });
+      const msg = `Connect my existing assistant ${name} to ${BRAND_NAME}. FIRST open ${base}/runner?agent=${encodeURIComponent(c.agent.id)} in your own browser. Do not open an OAuth card or reuse a remembered connector flow for this browser-console path. A provider-side Connected label is not proof, and old grants stop working after a workspace reset. Use this exact bot ID: ${c.agent.id}. If browser control is unavailable, stop and explain; do not claim connection. I will enter a one-time pairing code securely in the browser, not in chat. Then click Pair and connect. Only accepted identity and presence confirm connection. Never request or paste a key, password or token in chat, code, logs or URLs. Keep the console open while active; closing it stops presence; reopening this exact link in the saved browser resumes the pair unless revoked, reset or expired. No new provider bot, paid API or credits. Report only real work through Alter policy and never bypass a rejection.`;
+      await track('connected', { provider: prov }); return res.json({ agent: c.agent, hosted: false, noFirstTask: true, connectionStatus: 'awaiting_bot', instructions: msg, mcpUrl: PUBLIC_ORIGIN + '/api/mcp', runnerUrl: base + '/runner?agent=' + encodeURIComponent(c.agent.id) });
     }
     if (path === '/track' && req.method === 'POST') { if (['connect_started', 'first_task_started', 'approval_shown'].includes(body.step)) await track(body.step, body.provider ? { provider: String(body.provider).slice(0, 20) } : null); return res.json({ ok: true }); }
     // --- live demo agent ---

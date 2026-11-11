@@ -71,6 +71,18 @@
     const p = q.params || {}, left = q.expiresAt ? Math.max(0, Math.round((Date.parse(q.expiresAt) - Date.now()) / 60000)) : null;
     return '<span class="email-review"><b>From</b> ' + esc(p.from) + '<br><b>To</b> ' + esc(p.to) + '<br><b>Subject</b> ' + esc(p.subject) + '</span><span class="email-body" style="display:block;white-space:pre-wrap;max-height:40vh;overflow:auto;margin:.5em 0;padding:.5em;border:1px solid currentColor;border-radius:6px">' + esc(p.text) + '</span><small>Fingerprint ' + esc(String(q.detailsHash || '').slice(0, 12)) + (q.expired ? ' · expired: approving now sends nothing' : left != null ? ' · expires in ' + left + ' min' : '') + ' · Alter sends it, not the bot</small>';
   };
+  /* A note is approved only from a view that shows all of it: the title and full text Alter will write, escaped, with the fingerprint. */
+  BB.noteReview = q => {
+    const p = q.params || {}, left = q.expiresAt ? Math.max(0, Math.round((Date.parse(q.expiresAt) - Date.now()) / 60000)) : null;
+    return '<span class="note-review"><b>Note</b> ' + esc(p.title) + '</span><span class="note-body" style="display:block;white-space:pre-wrap;max-height:40vh;overflow:auto;margin:.5em 0;padding:.5em;border:1px solid currentColor;border-radius:6px">' + esc(p.text) + '</span><small>Fingerprint ' + esc(String(q.detailsHash || '').slice(0, 12)) + (q.expired ? ' · expired: approving now saves nothing' : left != null ? ' · expires in ' + left + ' min' : '') + ' · Alter saves it to your workspace, not the bot</small>';
+  };
+  BB.reviewNote = function (item) {
+    if (!BB.modal) return null;
+    const box = BB.modal('<h3>Review this note</h3><p>' + BB.noteReview(item.q) + '</p><div class="btns"><button class="b pri grow" type="button" data-ok>Approve and save</button><button class="b out grow" type="button" data-no>Deny</button></div>', { label: 'Review note', wide: true });
+    box.querySelector('[data-ok]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'approve', { reviewed: true }); };
+    box.querySelector('[data-no]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'deny'); };
+    return null;
+  };
   BB.reviewEmail = function (item) {
     if (!BB.modal) return null;
     const box = BB.modal('<h3>Review this email</h3><p>' + BB.emailReview(item.q) + '</p><div class="btns"><button class="b pri grow" type="button" data-ok>Approve and send</button><button class="b out grow" type="button" data-no>Deny</button></div>', { label: 'Review email', wide: true });
@@ -80,6 +92,11 @@
   };
   /* Needs you: only an email whose outcome is unknown (the owner must reconcile). A sent email is a receipt, not unresolved work: it
      lives in Receipts with its provider id and delivery state. */
+  /* A note the owner approved whose save never finished: offered as Finish saving. Decided here from decidedAt (or recoverStartedAt) and the
+     server-synced clock with the server's own threshold, so it shows on the 1 s redraw rather than after the 30 s state cache; the server
+     flag is honored too, and the recover route stays the authority (it refuses a save that is not yet stale). */
+  const NOTE_STALE_MS = 120000;
+  BB.noteFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'notes.write' && (q.stalled || (['approved', 'recovering'].includes(q.status) && BB.now() - Date.parse(q.status === 'recovering' ? (q.recoverStartedAt || q.decidedAt) : q.decidedAt) > NOTE_STALE_MS)));
   BB.emailFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'email.send' && q.status === 'outcome_unknown');
   /* Receipts: finished jobs plus standalone action receipts (no taskId), newest first. A job-linked receipt stays inside its job, each
      receipt id appears once, and a standalone receipt is linked to its request when that request is still in the retained history. */
@@ -347,6 +364,7 @@
     const items = [];
     BB.pendingReqs().forEach(q => { const a = BB.agent(q.agentId); items.push({ type: 'approval', id: 'req:' + q.id, at: q.createdAt, a, q }); });
     BB.emailFollowups().forEach(q => items.push({ type: 'email', id: 'email:' + q.id, at: q.executedAt || q.decidedAt, a: BB.agent(q.agentId), q }));
+    BB.noteFollowups().forEach(q => items.push({ type: 'notesave', id: 'notesave:' + q.id, at: q.decidedAt, a: BB.agent(q.agentId), q }));
     ((BB.money && BB.money.requests) || []).filter(q => q.status === 'pending_review' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'spend', id: 'spend:' + q.id, at: q.createdAt, a: BB.agent(q.agentId), q }));
     ((BB.cards && BB.cards.proposals) || []).filter(q => q.status === 'pending' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'card', id: 'card:' + q.id, at: q.createdAt, a: BB.agent(q.botId), q }));
     BB.agents().filter(a => BB.presence(a) === 'reconnect').forEach(a => items.push({ type: 'reconnect', id: 'rec:' + a.id, at: (a.connection && a.connection.failedAt) || a.lastSeen, a }));
@@ -383,14 +401,17 @@
     let j;
     /* An email is approved only from a view that shows all of it. Compact cards (floor tray, lists, pop-down) open the full review instead. */
     if (item.type === 'approval' && item.q.action === 'email.send' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewEmail(item);
+    if (item.type === 'approval' && item.q.action === 'notes.write' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewNote(item);
     if (item.type === 'approval') j = await BB.api('/api/requests/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     else if (item.type === 'email') j = await BB.api('/api/requests/' + item.q.id + '/' + (item.q.status === 'outcome_unknown' ? 'reconcile' : 'delivery'), 'POST');
+    else if (item.type === 'notesave') j = await BB.api('/api/requests/' + item.q.id + '/recover', 'POST', {});
     else if (item.type === 'spend') j = await BB.api('/api/money/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     else if (item.type === 'card') j = await BB.api('/api/cards/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     BB.toast(BB.outcome(item, j, d)); await BB.sync(true); return j;
   };
   BB.outcome = function (item, j, d) {
     if (!j || j.error) return 'Not confirmed: ' + ((j && j.error) || 'try again');
+    if (item.type === 'notesave') { const st = j.request && j.request.status; return st === 'executed' ? 'Saved. The note you approved is in your workspace.' : st === 'blocked' ? 'Not saved: ' + (j.request.reason || 'a permission or limit changed') : st === 'failed' ? 'Not saved: ' + ((j.request.result && j.request.result.error) || 'see the job log') : 'Decision saved.'; }
     if (item.type === 'approval' || item.type === 'email') {
       const q = j.request, st = q && q.status;
       if (q && q.action === 'email.send') return BB.emailOutcome(q);

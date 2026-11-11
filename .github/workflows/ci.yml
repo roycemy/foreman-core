@@ -1,0 +1,44 @@
+name: ci
+# Runs every *-regression.cjs on pull requests and on pushes to main. No secrets, no deploy, no network store:
+# the suite runs the real handler on its in-memory store and stubs outbound fetch itself.
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: package.json # engines.node
+      - name: Refuse a real store
+        run: |
+          for v in KV_REST_API_URL KV_REST_API_TOKEN UPSTASH_REDIS_REST_URL UPSTASH_REDIS_REST_TOKEN; do
+            if [ -n "${!v}" ]; then echo "$v is set; CI must use the in-memory store"; exit 1; fi
+          done
+      - run: npm ci --ignore-scripts
+      - name: Regression suite
+        run: |
+          set -u
+          tests=$(git ls-files '*-regression.cjs')
+          count=$(printf '%s\n' "$tests" | grep -c . || true)
+          echo "found $count regression files"
+          if [ "$count" -lt 90 ]; then echo "expected at least 90 regression files"; exit 1; fi
+          pass=0; failed=()
+          for t in $tests; do
+            echo "::group::$t"
+            if timeout 300 node "$t"; then pass=$((pass+1)); else failed+=("$t"); fi
+            echo "::endgroup::"
+          done
+          echo "passed $pass of $count"
+          if [ ${#failed[@]} -gt 0 ]; then printf 'FAILED %s\n' "${failed[@]}"; exit 1; fi

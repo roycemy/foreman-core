@@ -136,7 +136,7 @@
     const rc2 = P.querySelector('[data-newcode]'); if (rc2) rc2.onclick = () => BB.reconnect && BB.reconnect(a.id);
     const ng = P.querySelector('[data-nudge]'); if (ng) ng.onclick = async () => { const msg = BB.nudgeText(a); try { await navigator.clipboard.writeText(msg); } catch (e) { window.prompt('Copy this nudge', msg); } BB.toast('Copied - paste it into ' + a.name); };
     const rv = P.querySelector('[data-revoke]'); if (rv) rv.onclick = async () => { if (!rv.dataset.arm) { rv.dataset.arm = 1; rv.textContent = 'Click again to revoke'; return; } await BB.api('/api/agents/' + a.id + '/revoke', 'POST'); BB.toast('Access revoked. It must reconnect after you restore it.'); BB.sync(true); };
-    const rs = P.querySelector('[data-restore]'); if (rs) rs.onclick = async () => { await BB.api('/api/agents/' + a.id + '/restore', 'POST'); BB.toast('Access restored.'); BB.sync(true); };
+    const rs = P.querySelector('[data-restore]'); if (rs) rs.onclick = async () => { const j = await BB.api('/api/agents/' + a.id + '/restore', 'POST'); BB.toast(j && j.needsNewKey ? 'Access restored. Its old key no longer works: reconnect it with a new key.' : 'Access restored.'); BB.sync(true); };
     const rmv = P.querySelector('[data-remove]'); if (rmv) {
       const removing = removeState.get(a.id) === 'pending';
       rmv.disabled = removing;
