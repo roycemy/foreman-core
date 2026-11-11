@@ -81,7 +81,7 @@ function memCmd(c) {
     case 'SREM': { const x=(mem.kv.get(k)||[]).filter(v=>v!==a[0]); mem.kv.set(k,x); return 1; }
     case 'SMEMBERS': return mem.kv.get(k) || [];
     case 'EXPIRE': return 1;
-    case 'DEL': mem.kv.delete(k); mem.lists.delete(k); return 1;
+    case 'DEL': for (const x of c.slice(1)) { mem.kv.delete(x); mem.lists.delete(x); } return 1; // like Redis, every key given is deleted
   }
   throw new Error('memcmd ' + op);
 }
@@ -2031,6 +2031,10 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='room' && !Object.prototype.hasOwnProperty.call(rooms,body.room))return res.status(400).json({error:'Choose a valid room'});
       if(op==='strengths' && (!Array.isArray(body.strengths) || body.strengths.length>8 || body.strengths.some(k=>!Object.prototype.hasOwnProperty.call(CATEGORY_KEYWORDS,k))))return res.status(400).json({error:'Choose job types from the list'});
       if(op==='permissions' && (!ACTIONS[body.action] || !['AUTO','ASK','NEVER'].includes(body.mode)))return res.status(400).json({error:'bad input'});
+      // Restoring a REVOKED bot does not bring its old gateway key back: the key records are removed first (a crash after this leaves the bot
+      // revoked, the safe side), and the owner issues a new key. A bot that is not revoked keeps its working key.
+      let needsNewKey = false;
+      if (op === 'restore') { const cur = await getJ('fm:agent:' + m[1]); if (cur && cur.status === 'revoked') { const kh = await r(['GET', 'fm:gatewayKeyHash:' + cur.id]); if (kh) { await r(['DEL', 'fm:key:' + kh, 'gl:key:' + kh, 'fm:gatewayKeyHash:' + cur.id]); needsNewKey = true; } } }
       const a=await updateAgent(m[1],a=>{
         if(op==='room'){a.room=body.room;}
         if(op==='revoke'){a.status='revoked';a.revokedAt=now();a.oauthEpoch=(a.oauthEpoch||0)+1;}
@@ -2049,7 +2053,7 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='strengths')await event(a.id,'strengths_changed','Best at: '+(effStrengths(a).join(', ')||'nothing declared'),{strengths:effStrengths(a)});
       if(op==='room')await event(a.id,'room_changed','Moved to '+rooms[a.room],{room:a.room});
       if(op==='pause')await event(a.id,body.on?'paused':'resumed',body.on?'Owner paused '+a.name:'Owner resumed '+a.name,{source:'owner'});
-      return res.json({ agent: a });
+      return res.json(op === 'restore' ? { agent: a, needsNewKey } : { agent: a });
     }
     if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
     if (path === '/kill' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
