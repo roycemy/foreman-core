@@ -1041,6 +1041,9 @@ async function runAndReceipt(agent, action, params, reqId, approvedBy, taskId, e
     const out = await execute(agent, action, params, reqId);
     await recordCost(agent, action, taskId, reqId || null);
     const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null, ...(extra||{}), ...(out.receipt||{}) });
+    // A per-request completion marker (just the receipt id): "already completed" must not depend on the receipt still being among the
+    // last 300 kept in fm:receipts.
+    if (reqId) await r(['SET', 'fm:done:' + reqId, rec.id]);
     await event(agent.id, 'completed', out.summary, { receiptId: rec.id });
     return { rec, out };
   } catch (e) {
@@ -1171,7 +1174,9 @@ function noteStalled(q) {
   const t = q.status === 'approved' ? q.decidedAt : q.status === 'recovering' ? (q.recoverStartedAt || q.decidedAt) : null;
   return !!t && Date.now() - Date.parse(t) > INFLIGHT_STALE_MS;
 }
+// The completed receipt of a request: its completion marker first; requests completed before the marker existed fall back to the last 300.
 async function completedReceiptFor(reqId) {
+  const id = await r(['GET', 'fm:done:' + reqId]); if (id) return { id, requestId: reqId, outcome: 'completed' };
   for (const x of await r(['LRANGE', 'fm:receipts', 0, 299])) { try { const c = JSON.parse(x); if (c.requestId === reqId && c.outcome === 'completed') return c; } catch {} }
   return null;
 }
