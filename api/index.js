@@ -1855,6 +1855,7 @@ async function noteDelete(id) {
 async function routes(req, res, path, body, agentPre) {
   const send = (o) => res.status(o.status).json(o.body);
   const origin = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host;
+  const foreign = () => req.headers.origin !== origin; // owner writes must come from the app's own origin
   try {
     if (wsId() === 'legacy') {await seed();
       // Owner-approved cleanup of accidental OAuth authorization on the hidden demo.
@@ -1925,8 +1926,8 @@ async function routes(req, res, path, body, agentPre) {
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
-    if(path==='/tasks/plan'&&req.method==='POST')return res.json(await planTaskParts(body));
-    if (path === '/tasks' && req.method === 'POST') { if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started');if(body.orchestrate===true){const out=await createTaskParts(body);return res.status(out.status).json(out.body);}
+    if(path==='/tasks/plan'&&req.method==='POST'){if(foreign())return res.status(403).json({error:'origin'});return res.json(await planTaskParts(body));}
+    if (path === '/tasks' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); await track('first_task_started');if(body.orchestrate===true){const out=await createTaskParts(body);return res.status(out.status).json(out.body);}
       let routed = null, category = null, routingReason = null, unrouted = false, allAsleep = false, assignee = body.assignee || null, handoffPlan = null, brief = body.brief;
       if (body.route === true && !assignee) {
         // One message can span categories: a lead bot takes the strongest one, further matched
@@ -1992,7 +1993,7 @@ async function routes(req, res, path, body, agentPre) {
       }
       return res.json({ task: await newTask({ title: body.title, brief, assignee, category, routingReason, unrouted, allAsleep, handoffPlan }), routed, unrouted, ...(allAsleep ? { allAsleep: true } : {}) }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
-    {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST')return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}
+    {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST'){if(foreign())return res.status(403).json({error:'origin'});return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
     {const wm=path.match(/^\/agents\/(\w+)\/wake$/);if(wm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setOwnerWake(wm[1],body));}}
     {const pm=path.match(/^\/agents\/(\w+)\/pairing$/);if(pm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuePairing(pm[1]));}}
@@ -2022,8 +2023,8 @@ async function routes(req, res, path, body, agentPre) {
       res.setHeader('Cache-Control','no-store');return res.json({agent:updated,key,connectionStatus:'awaiting_bot'});
       }finally{if(await r(['GET',lockKey])===lock)await r(['DEL',lockKey]);}
     }}
-    if (path === '/agents' && req.method === 'POST') { const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
-    if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits|room|pause|strengths)$/)) && req.method === 'POST') {
+    if (path === '/agents' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); const c = await createAgent(body.name, body.role, body.provider); return res.json(c); }
+    if ((m = path.match(/^\/agents\/(\w+)\/(revoke|restore|permissions|limits|room|pause|strengths)$/)) && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'});
       const op=m[2];
       const rooms={ops:'Execution Center',sales:'Outreach Center',marketing:'Creative / Marketing',finance:'Research Center',support:'Outreach Center',lounge:'Lounge'};
       if(op==='room' && !Object.prototype.hasOwnProperty.call(rooms,body.room))return res.status(400).json({error:'Choose a valid room'});
@@ -2049,10 +2050,10 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='pause')await event(a.id,body.on?'paused':'resumed',body.on?'Owner paused '+a.name:'Owner resumed '+a.name,{source:'owner'});
       return res.json({ agent: a });
     }
-    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
-    if (path === '/kill' && req.method === 'POST') { bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
+    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
+    if (path === '/kill' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
     // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
-    if (path === '/connect' && req.method === 'POST') {
+    if (path === '/connect' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'});
       const _ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();if(await ipRateLimited('connect',_ip,30,3600))return res.status(429).json({error:'Too many connection attempts. Try again later.'});
       const prov = String(body.provider || 'custom'); const name = String(body.name || '').trim() || (prov === 'grok' ? 'Grok' : 'AI employee');
       const preset = PRESETS[body.preset] ? body.preset : 'balanced'; const base = setupOriginFor(req);
