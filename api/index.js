@@ -251,9 +251,12 @@ async function execute(agent, action, params, reqId) {
     // recent-notes list stays for compatibility and is still capped at 100.
     const rq = reqId ? await getJ('fm:req:' + reqId) : null;
     if (rq && rq.action === 'notes.write') { const n = await writeNoteOnce(agent, params, rq); return n.deleted ? { summary: `Note ${n.id} was deleted by the owner; not written again`, data: { note_id: n.id, deleted: true } } : { summary: `Wrote note "${n.title}" (${n.id}) to the shared workspace`, data: { note_id: n.id } }; }
-    const note = { id: rid('note'), by: agent.id, ...noteMessage(params), at: now(), requestId: rq ? rq.id : null, taskId: rq && rq.taskId ? rq.taskId : null };
-    await setJ('fm:note:' + note.id, note); await r(['SADD', 'fm:noteids', note.id]);
-    await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]);
+    // A plain write (no request, no source_id) uses the same locked writer as every other note write: the id joins fm:noteids before the
+    // record exists and the list entry is written under the note lock, so a delete-all running meanwhile waits for it instead of deleting
+    // the record and then having the text pushed back into the recent list.
+    const id = rid('note');
+    const note = await withNoteLock(id, () => writeNoteLocked(agent, params, { id, requestId: rq ? rq.id : null, taskId: rq && rq.taskId ? rq.taskId : null }));
+    if (note.deleted) return { summary: `Note ${note.id} was deleted by the owner; not written again`, data: { note_id: note.id, deleted: true } };
     return { summary: `Wrote note "${note.title}" (${note.id}) to the shared workspace`, data: { note_id: note.id } };
   }
   if (action === 'notes.delete') {
@@ -275,9 +278,10 @@ async function execute(agent, action, params, reqId) {
     for (const x of await entries()) {
       let n = null; try { n = JSON.parse(x); } catch {}
       if (!n || !n.id) { await r(['LREM', 'fm:notes', 0, x]); continue; }
-      if (await r(['GET', 'fm:note:' + n.id])) continue; // has a record: handled above, or written since
-      const adopted = await r(['GET', 'fm:adopted:' + n.id]);
-      if (adopted && !(await guarded(n.id, async () => { await setJ('fm:note:' + n.id, await tombstoneOf(n.id, null, at)); await r(['SADD', 'fm:noteids', n.id]); }))) continue;
+      const raw = await r(['GET', 'fm:note:' + n.id]); let rec = null; try { rec = raw && JSON.parse(raw); } catch {}
+      if (rec && !rec.deleted) continue; // a live record: handled above, or written since. A tombstone is not live: its list copy goes.
+      if (!rec) { const adopted = await r(['GET', 'fm:adopted:' + n.id]);
+        if (adopted && !(await guarded(n.id, async () => { await setJ('fm:note:' + n.id, await tombstoneOf(n.id, null, at)); await r(['SADD', 'fm:noteids', n.id]); }))) continue; }
       await r(['LREM', 'fm:notes', 0, x]);
     }
     bust();
