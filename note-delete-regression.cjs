@@ -66,6 +66,8 @@ async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'u
  {const rj=fs.readFileSync(path.join(__dirname,'public/js/receipts.js'),'utf8');
   assert.ok(/q\.noteDeleted/.test(rj)&&/Note deleted/.test(rj),'the receipt renders a deleted note as "Note deleted", not a link');
   assert.ok(/x\.deleted/.test(rj)&&/This note was deleted/.test(rj),'opening a deleted note says so');
+  assert.ok(!/no longer stored/.test(rj),'no claim that the content is gone everywhere: approval and receipt records keep what was approved');
+  assert.ok(/approval and receipt records/i.test(rj),'the confirm step and the deleted view say that approval and receipt records may still hold the text');
   assert.ok(/data-note-delete/.test(rj)&&/Delete this note\?/.test(rj)&&/confirmed: true/.test(rj),'Delete asks to confirm and sends confirmed: true');}
  console.log('PASS note delete: owner-only, same-origin, own workspace, confirm required; the note becomes a content-free tombstone and leaves the recent list; a second delete is harmless; recovery, a racing recovery and the bot\'s delete-all cannot bring it back; older list-only notes delete too; a concurrent write is not lost; receipts say the note was deleted; nothing reaches shared receipts');
 })().catch(e=>{console.error(e);process.exit(1)});
