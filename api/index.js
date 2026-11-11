@@ -67,7 +67,7 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'EVAL': { const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
+    case 'EVAL': { if(k===CHARGE_ONCE){const [n,marker,counter,amount,val]=a;if(Number(n)!==2)throw Error('unsupported local EVAL');if(mem.kv.has(marker))return 0;mem.kv.set(marker,val);mem.kv.set(counter,String(parseInt(mem.kv.get(counter)||'0',10)+parseInt(amount,10)));return 1;} const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'SET': if(a.includes('NX')&&mem.kv.has(k))return null;mem.kv.set(k, a[0]); return 'OK';
@@ -89,6 +89,8 @@ const bust = () => { CACHES.delete(wsId()); };
 const getJ = async k => { const v = await r(['GET', k]); return v ? JSON.parse(v) : null; };
 const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
 // Policy JSON is authoritative; heartbeats never rewrite it.
+// Record a cost once per key, atomically: set the per-key marker only if absent, and only then add to the counter.
+const CHARGE_ONCE = "if redis.call('SET',KEYS[1],ARGV[2],'NX') then redis.call('INCRBY',KEYS[2],ARGV[1]); return 1 end; return 0";
 const AGENT_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2]); return 1";
 // Same compare-and-set, but keeps the key's TTL so expiring bot-link pairing records stay expiring.
 const BOTLINK_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2],'KEEPTTL'); return 1";
@@ -1011,12 +1013,33 @@ async function policy(agent, action, mode) {
   return null;
 }
 
+// Cost accounting. These counters are an internal ledger (no money moves) that gates: policy() blocks at limits.dailyCents and jobPolicy
+// at the job grant's budgetCents. With a key (an approved request id) each counter is charged once per key: the daily counter through
+// CHARGE_ONCE, the job ledger by recording the key in jobGrant.charged in the same compare-and-set as the amount. They are independent,
+// so a crash between them still ends with each charged exactly once. Without a key (the AUTO path) every call charges, as before.
+async function recordCost(agent, action, taskId, key) {
+  const cost = ACTIONS[action].costCents, spendKey = `fm:spend:${agent.id}:${now().slice(0, 10)}`;
+  if (!key) {
+    await r(['INCRBY', spendKey, cost]);
+    if (agent.permissionScope === 'job' && taskId) { const t = await getJ('fm:task:' + taskId); t.jobGrant.spentCents = Number(t.jobGrant.spentCents || 0) + cost; await setJ('fm:task:' + taskId, t); }
+    return;
+  }
+  await r(['EVAL', CHARGE_ONCE, 2, 'fm:charged:' + key, spendKey, cost, now()]);
+  if (agent.permissionScope === 'job' && taskId) {
+    for (let i = 0; i < 8; i++) {
+      const raw = await r(['GET', 'fm:task:' + taskId]), t = raw && JSON.parse(raw); if (!t || !t.jobGrant) return;
+      const charged = Array.isArray(t.jobGrant.charged) ? t.jobGrant.charged : []; if (charged.includes(key)) return;
+      t.jobGrant = { ...t.jobGrant, spentCents: Number(t.jobGrant.spentCents || 0) + cost, charged: [...charged, key].slice(-500) };
+      if (await r(['EVAL', AGENT_CAS, 1, 'fm:task:' + taskId, raw, JSON.stringify(t)]) === 1) return;
+    }
+    throw new Error('job ledger busy');
+  }
+}
 async function runAndReceipt(agent, action, params, reqId, approvedBy, taskId, extra) {
   const a = ACTIONS[action];
   try {
     const out = await execute(agent, action, params, reqId);
-    await r(['INCRBY', `fm:spend:${agent.id}:${now().slice(0, 10)}`, a.costCents]);
-    if(agent.permissionScope==='job'&&taskId){const t=await getJ('fm:task:'+taskId);t.jobGrant.spentCents=Number(t.jobGrant.spentCents||0)+a.costCents;await setJ('fm:task:'+taskId,t);}
+    await recordCost(agent, action, taskId, reqId || null);
     const rec = await receipt(agent, action, params, 'completed', a.costCents, out.summary, reqId, { approvedBy: approvedBy || 'policy:AUTO',taskId:taskId||null, ...(extra||{}), ...(out.receipt||{}) });
     await event(agent.id, 'completed', out.summary, { receiptId: rec.id });
     return { rec, out };

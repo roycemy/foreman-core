@@ -15,6 +15,8 @@ assert.equal(typeof ctx.r,'function','the store function is reachable for fault 
 const origR=ctx.r;let hook=null;
 ctx.r=function(cmd){if(hook&&hook.match(cmd)){const h=hook;hook=null;h.hit=true;return new Promise(()=>{});}return origR(cmd);};
 const isSet=re=>c=>c[0]==='SET'&&re.test(String(c[1])),isCmd=(n,re)=>c=>c[0]===n&&re.test(String(c[1]));
+// the cost write: an approved request's cost goes through the charge-once script (CHARGE_ONCE, keyed fm:charged:<request>)
+const atCost=c=>c[0]==='EVAL'&&/^fm:charged:/.test(String(c[3]));
 async function crashDuring(match,fn){const h={match,hit:false};hook=h;const p=fn();p.catch(()=>{});for(let i=0;i<600&&!h.hit;i++)await sleep(5);hook=null;assert.ok(h.hit,'the fault was injected');/* never hand back p: the frozen call must not be awaited */}
 async function http(method,url,{key,cookie,body,origin}={}){let out;const headers={host:'localhost',origin:origin||'http://localhost'};if(key)headers.authorization='Bearer '+key;if(cookie)headers.cookie='fm_sess='+cookie;
  const res={setHeader(){},status(c){this.code=c;return this},json(j){out={code:this.code||200,j};return out},send(b){out={code:this.code||200,j:b};return out},end(){out={code:this.code||204};return out}};
@@ -69,7 +71,7 @@ async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'u
   await age(s);const rc=await recover(s);assert.equal(rc.code,200,JSON.stringify(rc.j));
   const q=await assertRecovered(s,'crash before the list entry');assert.equal(q.result.note_id,id,'the same note, not a second one');assert.equal((await inA(()=>f.getJ('fm:note:'+id))).at,rec0.at,'its saved time is the original');}
  // ===== 3. crash after the note is fully written, before the cost and receipt
- {const s=await scenario();s.before=(await noteIds()).length;await crashDuring(isCmd('INCRBY',/^fm:spend:/),()=>approve(s));
+ {const s=await scenario();s.before=(await noteIds()).length;await crashDuring(atCost,()=>approve(s));
   const id=(await noteIds())[(await noteIds()).length-1];assert.equal((await listEntries(id)).length,1,'the note is fully written');assert.equal((await receiptsFor(s.rid)).length,0,'no receipt yet');assert.equal(await spent(s),0);
   await age(s);assert.equal((await recover(s)).code,200);const q=await assertRecovered(s,'crash before the receipt');assert.equal(q.result.note_id,id);}
  // ===== 4. crash after the receipt, before the request is finalized: no second receipt, no second charge
@@ -96,11 +98,11 @@ async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'u
   const rc=await recover(s);assert.equal(rc.code,200);assert.equal(rc.j.request.status,'blocked','a revoked bot: not written');assert.equal((await noteIds()).length,s.before,'no note was written');assert.equal((await receiptsFor(s.rid)).length,0);}
  {const s=await scenario();await crashDuring(isSet(/^fm:note:/),()=>approve(s));await age(s);await inA(()=>f.r(['SET','fm:kill','1']));
   const rc=await recover(s);assert.equal(rc.j.request.status,'blocked','kill switch on: not written');await inA(()=>f.r(['DEL','fm:kill']));}
- {const s=await scenario();s.before=(await noteIds()).length;await crashDuring(isCmd('INCRBY',/^fm:spend:/),()=>approve(s));await age(s);
+ {const s=await scenario();s.before=(await noteIds()).length;await crashDuring(atCost,()=>approve(s));await age(s);
   await inA(async()=>{const a=await f.getJ('fm:agent:'+s.bot.agent.id);a.status='revoked';await f.setJ('fm:agent:'+s.bot.agent.id,a);});
   const rc=await recover(s);assert.equal(rc.code,200);assert.equal(rc.j.request.status,'executed','the note was already written under the owner\'s approval: finalized, nothing new written');
   assert.equal((await noteIds()).length,s.before+1);}
- {const s=await scenario();s.before=(await noteIds()).length;await crashDuring(isCmd('INCRBY',/^fm:spend:/),()=>approve(s));await age(s);
+ {const s=await scenario();s.before=(await noteIds()).length;await crashDuring(atCost,()=>approve(s));await age(s);
   await inA(()=>f.r(['DEL','fm:agent:'+s.bot.agent.id]));const rc=await recover(s);assert.equal(rc.code,200,JSON.stringify(rc.j));assert.equal(rc.j.request.status,'executed','a removed bot: the already written note is still finalized');assert.equal((await noteIds()).length,s.before+1);
 }
  {const s=await scenario();s.before=(await noteIds()).length;await crashDuring(isSet(/^fm:note:/),()=>approve(s));await age(s);await inA(()=>f.r(['DEL','fm:agent:'+s.bot.agent.id]));
