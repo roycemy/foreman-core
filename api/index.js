@@ -1562,6 +1562,10 @@ async function cardControlUnlocked(body){
 const OAUTH_ORIGIN='https://foreman-core.vercel.app';
 const PUBLIC_ORIGIN='https://www.alterhq.app';
 const originOk=o=>o===OAUTH_ORIGIN||o===PUBLIC_ORIGIN;
+// Runner console calls come from the deployment that issued the pair: the production origins, or the
+// request's own validated host elsewhere (a Preview), the same trust setup links already use. The Host
+// header is validated by setupOriginFor; cookie + CSRF token checks below are unchanged.
+const runnerOriginOk=(req,o)=>originOk(o)||o===setupOriginFor(req);
 // Gateway, runner and pairing setup links point a bot at the deployment it is being paired with: the live site on production hosts, the
 // request's own origin elsewhere (a Preview), because a key or pairing code only works against the store that issued it. A Host header
 // that is not a plain host[:port] falls back to the live site. Remote MCP and OAuth are not routed through this: their issuer is the live site.
@@ -1715,9 +1719,9 @@ async function runnerRoutes(req,res,path,body){
  res.setHeader('Cache-Control','no-store');
  const m=path.match(/^\/runner\/(agent_[a-f0-9]+)\/(.*)$/);if(!m)return res.status(404).json({error:'Runner not found'});
  const id=m[1],action=m[2],sess=await runnerSession(req,id);if(!sess)return res.status(401).json({error:'Runner session unavailable. Pair this bot again.'});
- if(req.headers.origin&&!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
+ if(req.headers.origin&&!runnerOriginOk(req,req.headers.origin))return res.status(403).json({error:'origin'});
  if(req.headers['sec-fetch-site']==='cross-site')return res.status(403).json({error:'cross-site'});
- if(req.method!=='GET'&&(!originOk(req.headers.origin)||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
+ if(req.method!=='GET'&&(!runnerOriginOk(req,req.headers.origin)||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
  if(action==='session'&&req.method==='GET'){
   // Validation above checks exact bot, epoch, gateway key, expiry and request origin.
   // Preserve the token and CSRF value so simultaneous tabs do not invalidate each other.
