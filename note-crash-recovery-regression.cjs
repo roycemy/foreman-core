@@ -127,7 +127,7 @@ async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'u
   vm.createContext(cctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'public/js/core.js'),'utf8'),cctx);const BB=win.BB;
   BB.api=async(p,m,b)=>{apiCalls.push([p,m,b]);return {request:{action:'notes.write',status:'executed',result:{note_id:'note_1'}},receipt:{outcome:'completed'}}};BB.toast=()=>{};BB.sync=async()=>{};
   const stuck={id:'req_n',action:'notes.write',status:'approved',stalled:true,agentId:'agent_t',decidedAt:new Date(Date.now()-5*60000).toISOString(),params:{title:'Plan',text:'Body'},detailsHash:'a'.repeat(64)};
-  const fresh={...stuck,id:'req_f',stalled:false},email={...stuck,id:'req_e',action:'email.send',stalled:true};
+  const fresh={...stuck,id:'req_f',stalled:false,decidedAt:new Date().toISOString()},email={...stuck,id:'req_e',action:'email.send',stalled:true};
   BB.S={killed:false,agents:[{id:'agent_t',name:'Bot',status:'active',connection:{status:'active',transport:'gateway',lastCallAt:new Date().toISOString()}}],tasks:[],requests:[stuck,fresh,email],events:[],receipts:[]};BB.money={requests:[]};BB.cards={proposals:[]};
   const on=BB.onYou();assert.deepEqual(on.filter(i=>i.type==='notesave').map(i=>i.q.id),['req_n'],'only a stalled note save is offered; a fresh one and an email are not');
   assert(fs.readFileSync(path.join(__dirname,'public/js/floor.js'),'utf8').includes("i.type === 'notesave' ? 'Note not saved yet'"),'the item is titled Note not saved yet');assert.equal(BB.teamSummary().needs,on.filter(i=>i.type!=='dark').length,'counts agree with the list');

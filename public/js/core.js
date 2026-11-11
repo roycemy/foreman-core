@@ -92,8 +92,11 @@
   };
   /* Needs you: only an email whose outcome is unknown (the owner must reconcile). A sent email is a receipt, not unresolved work: it
      lives in Receipts with its provider id and delivery state. */
-  /* A note the owner approved whose save never finished (the server flags it once it is stale): offered as Finish saving. */
-  BB.noteFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'notes.write' && q.stalled);
+  /* A note the owner approved whose save never finished: offered as Finish saving. Decided here from decidedAt (or recoverStartedAt) and the
+     server-synced clock with the server's own threshold, so it shows on the 1 s redraw rather than after the 30 s state cache; the server
+     flag is honored too, and the recover route stays the authority (it refuses a save that is not yet stale). */
+  const NOTE_STALE_MS = 120000;
+  BB.noteFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'notes.write' && (q.stalled || (['approved', 'recovering'].includes(q.status) && BB.now() - Date.parse(q.status === 'recovering' ? (q.recoverStartedAt || q.decidedAt) : q.decidedAt) > NOTE_STALE_MS)));
   BB.emailFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'email.send' && q.status === 'outcome_unknown');
   /* Receipts: finished jobs plus standalone action receipts (no taskId), newest first. A job-linked receipt stays inside its job, each
      receipt id appears once, and a standalone receipt is linked to its request when that request is still in the retained history. */
