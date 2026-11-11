@@ -46,14 +46,20 @@
   function savedNotes(j) {
     const qs = (j.requests || []).filter(q => q.action === 'notes.write' && q.status === 'executed' && q.result && q.result.note_id);
     if (!qs.length) return '';
-    return `<div class="tl saved-notes"><h5>Saved notes</h5><ol class="steps">${qs.map(q => `<li><button class="b out" type="button" data-note="${esc(q.result.note_id)}" data-req="${esc(q.id)}">Open note: ${esc((q.params && q.params.title) || 'untitled')}</button></li>`).join('')}</ol></div>`;
+    return `<div class="tl saved-notes"><h5>Saved notes</h5><ol class="steps">${qs.map(q => q.noteDeleted ? `<li class="note-gone"><span class="meta">Note deleted</span></li>` : `<li><button class="b out" type="button" data-note="${esc(q.result.note_id)}" data-req="${esc(q.id)}">Open note: ${esc((q.params && q.params.title) || 'untitled')}</button></li>`).join('')}</ol></div>`;
   }
   BB.openNote = async function (id, reqId) {
     const x = await BB.api('/api/notes/' + encodeURIComponent(id) + (reqId ? '?request=' + encodeURIComponent(reqId) : ''));
-    if (!x || x.error || !x.note) return BB.toast('That note is not available. It may have been deleted.');
+    if (x && x.deleted) return BB.modal(`<h3>Note deleted</h3><p class="meta">This note was deleted${x.note && x.note.deletedAt ? ' on ' + esc(new Date(x.note.deletedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })) : ''}. Its content is no longer stored in your workspace.</p>`, { label: 'Note deleted' });
+    if (!x || x.error || !x.note) return BB.toast('That note is not available.');
     const n = x.note, l = x.link, at = n.at ? new Date(n.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
     const from = l ? `From job ${l.taskId ? `<a href="#receipts/${esc(l.taskId)}" data-close>${esc(l.taskTitle || 'this job')}</a>` : '(no job)'} · request ${esc(l.requestId)}${l.approvedAt ? ' · you approved it ' + esc(new Date(l.approvedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })) : ''} · ${l.matchesApproval ? 'matches what you approved' : 'does not match the approved fingerprint'}` : 'Not linked to an approved request';
-    BB.modal(`<h3 class="note-title">${esc(n.title)}</h3><p class="meta">Saved by ${esc(n.botName || 'a bot')}${at ? ' · ' + esc(at) : ''}</p><div class="note-text" style="white-space:pre-wrap;max-height:55vh;overflow:auto;margin:.75em 0;padding:.75em;border:1px solid currentColor;border-radius:8px">${esc(n.text)}</div><p class="meta note-link">${from}</p>`, { label: 'Saved note', wide: true });
+    const box = BB.modal(`<h3 class="note-title">${esc(n.title)}</h3><p class="meta">Saved by ${esc(n.botName || 'a bot')}${at ? ' · ' + esc(at) : ''}</p><div class="note-text" style="white-space:pre-wrap;max-height:55vh;overflow:auto;margin:.75em 0;padding:.75em;border:1px solid currentColor;border-radius:8px">${esc(n.text)}</div><p class="meta note-link">${from}</p><div class="btns"><button class="b out" type="button" data-note-delete>Delete note</button></div>`, { label: 'Saved note', wide: true });
+    box.querySelector('[data-note-delete]').onclick = () => {
+      const c = BB.modal('<h3>Delete this note?</h3><p>It is removed from your workspace and cannot be restored. Receipts will show it as deleted.</p><div class="btns"><button class="b pri grow" type="button" data-ok>Delete</button><button class="b out grow" type="button" data-no>Keep it</button></div>', { label: 'Delete note' });
+      c.querySelector('[data-no]').onclick = () => BB.closeModal();
+      c.querySelector('[data-ok]').onclick = async () => { const d = await BB.api('/api/notes/' + encodeURIComponent(id) + '/delete', 'POST', { confirmed: true }); BB.closeModal(); BB.toast(d && d.deleted ? 'Note deleted.' : 'Not deleted: ' + ((d && d.error) || 'try again')); if (openId) { delete cache[openId]; detail(openId); } };
+    };
   };
   async function detail(id) {
     openId = id;

@@ -55,7 +55,8 @@ async function owner(tag){const email=tag+'@owner.example',ws='ws_'+tag,u={id:'u
  assert.equal(rv.code,200,JSON.stringify(rv.j));const sj=JSON.stringify(rv.j.snapshot);for(const leak of ['Monday plan','Clear the inbox',noteId,'note_'])assert.ok(!sj.includes(leak),'shared receipt leaks '+leak);
  // 7. notes.delete still deletes everything, durable records included
  const del=await http('POST','/api/gateway/act',{key:bot.key,body:{action:'notes.delete',params:{}}});assert.equal(del.code,200,JSON.stringify(del.j));
- assert.equal((await http('GET','/api/notes/'+noteId,{cookie:A.cookie})).code,404,'a deleted note is gone');
+ {const gone=await http('GET','/api/notes/'+noteId,{cookie:A.cookie});assert.equal(gone.code,410,'a deleted note reads as deleted');assert.ok(!JSON.stringify(gone.j).includes('Clear the inbox'),'with no content');
+  const tomb=await f.als.run({ws:A.ws},()=>f.getJ('fm:note:'+noteId));assert.ok(tomb.deleted&&!('text' in tomb)&&!('title' in tomb),'only a content-free tombstone remains');}
  assert.equal(calls.length,0,'no network');
  console.log('PASS note readback: full approved body, bot and time from the stored note; server-validated job and request link; older notes past the 10 in state and the 100-entry list; pre-change notes readable; other workspace, no session and bot keys refused; nothing in the shared receipt; notes.delete removes durable notes');
 })().catch(e=>{console.error(e);process.exit(1)});

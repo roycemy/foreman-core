@@ -70,6 +70,7 @@ function memCmd(c) {
     case 'EVAL': { if(k===CHARGE_ONCE){const [n,marker,counter,amount,val]=a;if(Number(n)!==2)throw Error('unsupported local EVAL');if(mem.kv.has(marker))return 0;mem.kv.set(marker,val);mem.kv.set(counter,String(parseInt(mem.kv.get(counter)||'0',10)+parseInt(amount,10)));return 1;} const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
+    case 'LREM': { const l = L(), out = l.filter(x => x !== a[1]); mem.lists.set(k, out); return l.length - out.length; }
     case 'SET': if(a.includes('NX')&&mem.kv.has(k))return null;mem.kv.set(k, a[0]); return 'OK';
     case 'INCRBY': { const v = (parseInt(mem.kv.get(k) || '0', 10)) + parseInt(a[0], 10); mem.kv.set(k, String(v)); return v; }
     case 'LPUSH': { const l = L(); l.unshift(a[0]); mem.lists.set(k, l); return l.length; }
@@ -151,6 +152,7 @@ async function writeNoteOnce(agent, params, rq) {
   const id = noteIdFor(rq.id);
   return withNoteLock(id, async () => {
     let note = await getJ('fm:note:' + id);
+    if (note && note.deleted) return note; // deleted by the owner: never recreated or relisted
     if (!note) {
       const fresh = { id, by: agent.id, ...noteMessage(params), at: now(), requestId: rq.id, taskId: rq.taskId || null };
       if (await r(['SET', 'fm:note:' + id, JSON.stringify(fresh), 'NX'])) note = fresh; else note = await getJ('fm:note:' + id);
@@ -217,15 +219,15 @@ async function execute(agent, action, params, reqId) {
     // Each note is also kept as its own record, linked to the request (and its job) that wrote it, so it can be opened later; the
     // recent-notes list stays for compatibility and is still capped at 100.
     const rq = reqId ? await getJ('fm:req:' + reqId) : null;
-    if (rq && rq.action === 'notes.write') { const n = await writeNoteOnce(agent, params, rq); return { summary: `Wrote note "${n.title}" (${n.id}) to the shared workspace`, data: { note_id: n.id } }; }
+    if (rq && rq.action === 'notes.write') { const n = await writeNoteOnce(agent, params, rq); return n.deleted ? { summary: `Note ${n.id} was deleted by the owner; not written again`, data: { note_id: n.id, deleted: true } } : { summary: `Wrote note "${n.title}" (${n.id}) to the shared workspace`, data: { note_id: n.id } }; }
     const note = { id: rid('note'), by: agent.id, ...noteMessage(params), at: now(), requestId: rq ? rq.id : null, taskId: rq && rq.taskId ? rq.taskId : null };
     await setJ('fm:note:' + note.id, note); await r(['SADD', 'fm:noteids', note.id]);
     await r(['LPUSH', 'fm:notes', JSON.stringify(note)]); await r(['LTRIM', 'fm:notes', 0, 99]);
     return { summary: `Wrote note "${note.title}" (${note.id}) to the shared workspace`, data: { note_id: note.id } };
   }
   if (action === 'notes.delete') {
-    for (const id of await r(['SMEMBERS', 'fm:noteids'])) await r(['DEL', 'fm:note:' + id]);
-    await r(['DEL', 'fm:noteids']); await r(['DEL', 'fm:notes']);
+    const at = now(); for (const id of await r(['SMEMBERS', 'fm:noteids'])) await setJ('fm:note:' + id, { id, deleted: true, deletedAt: at });
+    await r(['DEL', 'fm:notes']);
     return { summary: 'Deleted all notes', data: {} };
   }
   if(action==='work.assign'){
@@ -636,6 +638,7 @@ async function jobDetail(id){
  const ids=new Set([id,...kids.map(k=>k.id)]);
  const events=parse(await r(['LRANGE','fm:events',0,299])).filter(e=>ids.has(e.taskId)||ids.has(e.childTaskId)).reverse();
  const reqIds=await r(['SMEMBERS','fm:taskreqs:'+id]);const requests=reqIds.length?parse(await r(['MGET',...reqIds.map(x=>'fm:req:'+x)])).map(pub):[];
+ for(const q of requests)if(q.action==='notes.write'&&q.result&&q.result.note_id){const n=await getJ('fm:note:'+q.result.note_id);if(n&&n.deleted)q.noteDeleted=true;}
  const receipts=parse(await r(['LRANGE','fm:receipts',0,299])).filter(x=>x.taskId===id).reverse();
  const agents=await listAgents(),name=x=>(agents.find(a=>a.id===x)||{}).name||'A bot';
  return {task:t,children:kids,events,requests,receipts,timeline:timelineOf(t,events,requests,receipts,kids,name)};}
@@ -1220,7 +1223,7 @@ async function recoverNoteReqUnlocked(id) {
   if (!q.detailsHash || reqHash('notes.write', approved) !== q.detailsHash) return block('details_changed', 'What would be saved no longer matches what you approved');
   let nid = noteIdFor(q.id), written = await getJ('fm:note:' + nid), adopted = false;
   if (!written) { const older = await olderNoteFor(q, approved); if (older) { nid = older.id; written = older; adopted = true; } }
-  if (written && (written.title !== approved.title || written.text !== approved.text)) return block('details_changed', 'The stored note does not match what you approved');
+  if (written && !written.deleted && (written.title !== approved.title || written.text !== approved.text)) return block('details_changed', 'The stored note does not match what you approved');
   // Not written yet: policy is checked now, as at approval. Already written under the owner's approval: finish the record, write nothing new.
   if (!written) {
     if (!agent) return block('revoked', 'The bot no longer exists');
@@ -1759,6 +1762,7 @@ async function noteRead(id, reqHint) {
   let note = await getJ('fm:note:' + id), legacy = false;
   if (!note) { for (const x of await r(['LRANGE', 'fm:notes', 0, 99])) { try { const n = JSON.parse(x); if (n && n.id === id) { note = n; legacy = true; break; } } catch {} } }
   if (!note) return null;
+  if (note.deleted) return { deleted: true, note: { id: note.id, deletedAt: note.deletedAt || null } };
   const rid = note.requestId || (/^req_[A-Za-z0-9]{4,40}$/.test(String(reqHint || '')) ? String(reqHint) : null);
   let link = null;
   if (rid) {
@@ -1771,6 +1775,21 @@ async function noteRead(id, reqHint) {
   }
   const bot = note.by ? await getJ('fm:agent:' + note.by) : null;
   return { note: { id: note.id, title: note.title, text: note.text, at: note.at, by: note.by || null, botName: bot ? bot.name : null }, link, legacy };
+}
+// Owner delete of one note, under the same lock as writes. The record becomes a content-free tombstone (kept so recovery or a retry of the
+// same request cannot recreate it) and every recent-list copy is removed with LREM, so a concurrent write of another note is not lost.
+// A repeated delete is harmless and also clears any list copy a crash left behind.
+async function noteDelete(id) {
+  if (!/^note_[A-Za-z0-9]{4,40}$/.test(String(id || ''))) return { status: 404, body: { error: 'not found' } };
+  return withNoteLock(id, async () => {
+    const rec = await getJ('fm:note:' + id);
+    const copies = (await r(['LRANGE', 'fm:notes', 0, 99])).filter(x => { try { return JSON.parse(x).id === id; } catch { return false; } });
+    if (!rec && !copies.length) return { status: 404, body: { error: 'not found' } };
+    const already = !!(rec && rec.deleted), deletedAt = already ? rec.deletedAt : now();
+    if (!already) { await setJ('fm:note:' + id, { id, deleted: true, deletedAt }); await r(['SADD', 'fm:noteids', id]); }
+    for (const x of copies) await r(['LREM', 'fm:notes', 0, x]);
+    bust(); return { status: 200, body: { deleted: true, id, deletedAt, ...(already ? { alreadyDeleted: true } : {}) } };
+  });
 }
 async function routes(req, res, path, body, agentPre) {
   const send = (o) => res.status(o.status).json(o.body);
@@ -1840,7 +1859,8 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/public-receipts/publish'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptPublish(body));}
     {const rv=path.match(/^\/public-receipts\/([a-f0-9]{48})\/revoke$/);if(rv&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptRevoke(rv[1]));}}
     {const jm=path.match(/^\/jobs\/(\w+)$/);if(jm&&req.method==='GET'){const j=await jobDetail(jm[1]);return j?res.json(j):res.status(404).json({error:'not found'});}}
-    {const nm=path.match(/^\/notes\/([A-Za-z0-9_]{1,60})$/);if(nm&&req.method==='GET'){res.setHeader('Cache-Control','no-store');const x=await noteRead(nm[1],new URL(req.url||'/','https://local.invalid').searchParams.get('request'));return x?res.json(x):res.status(404).json({error:'not found'});}}
+    {const nm=path.match(/^\/notes\/([A-Za-z0-9_]{1,60})$/);if(nm&&req.method==='GET'){res.setHeader('Cache-Control','no-store');const x=await noteRead(nm[1],new URL(req.url||'/','https://local.invalid').searchParams.get('request'));return !x?res.status(404).json({error:'not found'}):x.deleted?res.status(410).json({error:'deleted',...x}):res.json(x);}}
+    {const dm=path.match(/^\/notes\/([A-Za-z0-9_]{1,60})\/delete$/);if(dm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});if(body.confirmed!==true)return res.status(400).json({error:'Confirm the delete'});return send(await noteDelete(dm[1]));}}
     {const tm=path.match(/^\/tasks\/(\w+)\/reassign$/);if(tm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await reassignTask(tm[1],body));}}
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
