@@ -67,7 +67,7 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'EVAL': { if(k===CHARGE_ONCE){const [n,marker,counter,amount,val]=a;if(Number(n)!==2)throw Error('unsupported local EVAL');if(mem.kv.has(marker))return 0;mem.kv.set(marker,val);mem.kv.set(counter,String(parseInt(mem.kv.get(counter)||'0',10)+parseInt(amount,10)));return 1;} const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
+    case 'EVAL': { if(k===CHARGE_ONCE){const n=Number(a[0]);if(n!==2&&n!==3)throw Error('unsupported local EVAL');const keys=a.slice(1,1+n),[amount,val]=a.slice(1+n);if(mem.kv.has(keys[0]))return 0;mem.kv.set(keys[0],val);for(const c of keys.slice(1))mem.kv.set(c,String(parseInt(mem.kv.get(c)||'0',10)+parseInt(amount,10)));return 1;} const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'LREM': { const l = L(), out = l.filter(x => x !== a[1]); mem.lists.set(k, out); return l.length - out.length; }
@@ -91,7 +91,10 @@ const getJ = async k => { const v = await r(['GET', k]); return v ? JSON.parse(v
 const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
 // Policy JSON is authoritative; heartbeats never rewrite it.
 // Record a cost once per key, atomically: set the per-key marker only if absent, and only then add to the counter.
-const CHARGE_ONCE = "if redis.call('SET',KEYS[1],ARGV[2],'NX') then redis.call('INCRBY',KEYS[2],ARGV[1]); return 1 end; return 0";
+// One atomic operation: claim the charge marker (KEYS[1]), then add the amount to the daily counter (KEYS[2]) and, for a job-scoped bot, to
+// the job's ledger counter (KEYS[3]). All of it happens or none of it does, so a crash at any point can never leave the two ledgers
+// apart, and a retry of any age finds the permanent marker and does nothing.
+const CHARGE_ONCE = "if redis.call('SET',KEYS[1],ARGV[2],'NX') then redis.call('INCRBY',KEYS[2],ARGV[1]); if KEYS[3] then redis.call('INCRBY',KEYS[3],ARGV[1]) end; return 1 end; return 0";
 const AGENT_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2]); return 1";
 // Same compare-and-set, but keeps the key's TTL so expiring bot-link pairing records stay expiring.
 const BOTLINK_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2],'KEEPTTL'); return 1";
@@ -798,8 +801,8 @@ function receiptPage(x,origin,brand){
 async function withJobLock(id,fn){const k='fm:joblock:'+id,v=rid('lock');if(!await r(['SET',k,v,'NX','PX',120000]))return {status:409,body:{error:'Job is busy. Retry after the current action finishes'}};try{return await fn()}finally{if(await r(['GET',k])===v)await r(['DEL',k]);}}
 async function cancelJobRequests(id,reason){for(const qid of await r(['SMEMBERS','fm:reqs'])){const q=await getJ('fm:req:'+qid);if(q&&q.taskId===id&&q.status==='pending'){q.status='blocked';q.reason=reason;q.decidedAt=now();await finishReq(q);await event(q.agentId,'blocked',reason,{kind:'BLOCKED',taskId:id,requestId:qid});}}}
 async function setJobScope(id,body){if(body.confirmed!==true||!['job','standing'].includes(body.scope))return {status:400,body:{error:'Review and confirm the permission scope'}};const a=await getJ('fm:agent:'+id);if(!a||a.status!=='active'||a.harness||a.hosted)return {status:404,body:{error:'Active external worker required'}};await updateAgent(id,x=>{x.permissionScope=body.scope});if(body.scope==='job'){for(const qid of await r(['SMEMBERS','fm:reqs'])){const q=await getJ('fm:req:'+qid);if(q&&q.agentId===id&&q.status==='pending'&&!q.taskId){q.status='blocked';q.reason='Standing action permission closed by owner';q.decidedAt=now();await finishReq(q);await event(id,'blocked',q.reason,{requestId:qid});}}}await event(id,'permission','Owner set gated actions to '+body.scope+' scope',{kind:'INTERACTION'});return {status:200,body:{agentId:id,permissionScope:body.scope}};}
-async function grantJob(id,body){return withJobLock(id,async()=>{const t=await getJ('fm:task:'+id),a=t&&await getJ('fm:agent:'+t.assignee);if(!t||!a||a.status!=='active'||a.harness||a.hosted)return {status:404,body:{error:'Task and active worker required'}};if(body.confirmed!==true||body.expectedAssignee!==t.assignee||!['running','queued'].includes(t.status))return {status:409,body:{error:'Review this unfinished job and worker again'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace paused'}};const modes=body.actions;if(!modes||typeof modes!=='object'||Array.isArray(modes)||!Object.keys(modes).length||Object.entries(modes).some(([k,v])=>!ACTIONS[k]||!['AUTO','ASK'].includes(v)||((a.permissions||{})[k]||DEFAULT_PERMS[k]||'NEVER')==='NEVER'))return {status:400,body:{error:'Choose supported actions and AUTO/ASK modes; NEVER remains blocked'}};if(!Number.isSafeInteger(body.budgetCents)||body.budgetCents<0||body.budgetCents>1000000)return {status:400,body:{error:'Exact ledger budget required (0 to 1000000 cents)'}};const old=t.jobGrant,spent=Number(old?.spentCents||0);if(body.budgetCents<spent)return {status:400,body:{error:'Budget cannot be below already-used ledger cents'}};t.jobGrant={id:rid('grant'),agentId:a.id,actions:{...modes},budgetCents:body.budgetCents,spentCents:spent,status:'active',issuedAt:now(),by:'owner',note:'Gateway ledger only. Not payment authorization.'};await setJ('fm:task:'+id,t);await cancelJobRequests(id,'Job grant changed. Request again under the new grant');bust();await event(a.id,'permission','Owner granted scoped actions for '+t.title,{kind:'INTERACTION',taskId:id});return {status:200,body:{task:t}};});}
-async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return {code:'unknown_action',reason:'Action is not in the catalog'};if(agent.permissionScope!=='job')return null;if(!taskId)return {code:'job_required',reason:'Register or claim the real job first; gated actions require an owner job grant'};const t=await getJ('fm:task:'+taskId),g=t?.jobGrant;if(!t||t.assignee!==agent.id||t.status!=='running')return {code:'job_inactive',reason:'Job is not running under this worker'};if(!g||g.status!=='active'||g.agentId!==agent.id||grantId&&g.id!==grantId)return {code:'job_grant_required',reason:'Owner must grant actions and a ledger budget for this job'};if(!g.actions[action])return {code:'job_action',reason:'Action is outside the job grant'};if(Number(g.spentCents||0)+ACTIONS[action].costCents>g.budgetCents)return {code:'limit_job',reason:'Job ledger budget would be exceeded'};return null;}
+async function grantJob(id,body){return withJobLock(id,async()=>{const t=await getJ('fm:task:'+id),a=t&&await getJ('fm:agent:'+t.assignee);if(!t||!a||a.status!=='active'||a.harness||a.hosted)return {status:404,body:{error:'Task and active worker required'}};if(body.confirmed!==true||body.expectedAssignee!==t.assignee||!['running','queued'].includes(t.status))return {status:409,body:{error:'Review this unfinished job and worker again'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace paused'}};const modes=body.actions;if(!modes||typeof modes!=='object'||Array.isArray(modes)||!Object.keys(modes).length||Object.entries(modes).some(([k,v])=>!ACTIONS[k]||!['AUTO','ASK'].includes(v)||((a.permissions||{})[k]||DEFAULT_PERMS[k]||'NEVER')==='NEVER'))return {status:400,body:{error:'Choose supported actions and AUTO/ASK modes; NEVER remains blocked'}};if(!Number.isSafeInteger(body.budgetCents)||body.budgetCents<0||body.budgetCents>1000000)return {status:400,body:{error:'Exact ledger budget required (0 to 1000000 cents)'}};const old=t.jobGrant,spent=await jobSpent(id,old);if(body.budgetCents<spent)return {status:400,body:{error:'Budget cannot be below already-used ledger cents'}};t.jobGrant={id:rid('grant'),agentId:a.id,actions:{...modes},budgetCents:body.budgetCents,spentCents:spent,status:'active',issuedAt:now(),by:'owner',note:'Gateway ledger only. Not payment authorization.'};await setJ('fm:task:'+id,t);await cancelJobRequests(id,'Job grant changed. Request again under the new grant');bust();await event(a.id,'permission','Owner granted scoped actions for '+t.title,{kind:'INTERACTION',taskId:id});return {status:200,body:{task:t}};});}
+async function jobPolicy(agent,action,taskId,grantId){if(!ACTIONS[action])return {code:'unknown_action',reason:'Action is not in the catalog'};if(agent.permissionScope!=='job')return null;if(!taskId)return {code:'job_required',reason:'Register or claim the real job first; gated actions require an owner job grant'};const t=await getJ('fm:task:'+taskId),g=t?.jobGrant;if(!t||t.assignee!==agent.id||t.status!=='running')return {code:'job_inactive',reason:'Job is not running under this worker'};if(!g||g.status!=='active'||g.agentId!==agent.id||grantId&&g.id!==grantId)return {code:'job_grant_required',reason:'Owner must grant actions and a ledger budget for this job'};if(!g.actions[action])return {code:'job_action',reason:'Action is outside the job grant'};if((await jobSpent(taskId,g))+ACTIONS[action].costCents>g.budgetCents)return {code:'limit_job',reason:'Job ledger budget would be exceeded'};return null;}
 async function closeJobGrant(t,reason){if(t.jobGrant){t.jobGrant={...t.jobGrant,status:'closed',closedAt:now(),closeReason:reason};}await cancelJobRequests(t.id,reason);}
 
 async function reconcileTaskParents(){for(const p of (await listTasks()).filter(t=>t.orchestration&&t.status==='running'))await refreshTaskParent(p.id);}
@@ -1040,30 +1043,19 @@ async function policy(agent, action, mode) {
 }
 
 // Cost accounting. These counters are an internal ledger (no money moves) that gates: policy() blocks at limits.dailyCents and jobPolicy
-// at the job grant's budgetCents. With a key (an approved request id) each counter is charged once per key: the daily counter through
-// CHARGE_ONCE, the job ledger by recording the key in jobGrant.charged in the same compare-and-set as the amount. They are independent,
-// so a crash between them still ends with each charged exactly once. Without a key (the AUTO path) every call charges, as before.
+// at the job grant's budgetCents. The job's spend is its grant's base (spentCents, carried over when the owner re-grants) plus a per-grant
+// counter, so every charge is an atomic INCRBY. With a key (an approved request id or an invocation) the charge is CHARGE_ONCE: marker,
+// daily counter and job counter in one operation. Without a key (the AUTO path) every call charges, as before.
+const jobCounterKey = (taskId, g) => `fm:jobspent:${taskId}:${g.id}`;
+async function jobSpent(taskId, g) { return g ? Number(g.spentCents || 0) + parseInt((await r(['GET', jobCounterKey(taskId, g)])) || '0', 10) : 0; }
+// Copies of tasks for output only (never written back): a job grant's spentCents shown as its current spend, base plus counter.
+async function withJobSpend(ts) { return Promise.all(ts.map(async t => t && t.jobGrant && t.jobGrant.id ? { ...t, jobGrant: { ...t.jobGrant, spentCents: await jobSpent(t.id, t.jobGrant) } } : t)); }
 async function recordCost(agent, action, taskId, key) {
   const cost = ACTIONS[action].costCents, spendKey = `fm:spend:${agent.id}:${now().slice(0, 10)}`;
-  if (!key) {
-    await r(['INCRBY', spendKey, cost]);
-    if (agent.permissionScope === 'job' && taskId) { const t = await getJ('fm:task:' + taskId); t.jobGrant.spentCents = Number(t.jobGrant.spentCents || 0) + cost; await setJ('fm:task:' + taskId, t); }
-    return;
-  }
-  await r(['EVAL', CHARGE_ONCE, 2, 'fm:charged:' + key, spendKey, cost, now()]);
-  if (agent.permissionScope === 'job' && taskId) {
-    // The job ledger is a compare-and-set update that records the key in a short list (the bridge for a crash between the ledger write and
-    // its marker). Once the ledger is written a permanent marker is set, so a retry of any age, however many charges came after it, is a no-op.
-    const marker = 'fm:jcharged:' + taskId + ':' + key; if (await r(['GET', marker])) return;
-    for (let i = 0; i < 8; i++) {
-      const raw = await r(['GET', 'fm:task:' + taskId]), t = raw && JSON.parse(raw); if (!t || !t.jobGrant) return;
-      const charged = Array.isArray(t.jobGrant.charged) ? t.jobGrant.charged : [];
-      if (charged.includes(key)) { await r(['SET', marker, '1']); return; }
-      t.jobGrant = { ...t.jobGrant, spentCents: Number(t.jobGrant.spentCents || 0) + cost, charged: [...charged, key].slice(-500) };
-      if (await r(['EVAL', AGENT_CAS, 1, 'fm:task:' + taskId, raw, JSON.stringify(t)]) === 1) { await r(['SET', marker, '1']); return; }
-    }
-    throw new Error('job ledger busy');
-  }
+  let jobKey = null;
+  if (agent.permissionScope === 'job' && taskId) { const t = await getJ('fm:task:' + taskId); if (t && t.jobGrant && t.jobGrant.id) jobKey = jobCounterKey(taskId, t.jobGrant); }
+  if (!key) { await r(['INCRBY', spendKey, cost]); if (jobKey) await r(['INCRBY', jobKey, cost]); return; }
+  await r(['EVAL', CHARGE_ONCE, jobKey ? 3 : 2, 'fm:charged:' + key, spendKey, ...(jobKey ? [jobKey] : []), cost, now()]);
 }
 async function runAndReceipt(agent, action, params, reqId, approvedBy, taskId, extra) {
   const a = ACTIONS[action];
@@ -1337,7 +1329,7 @@ async function fullState() {
   for (const x of pend) if (x.status === 'pending' && x.expiresAt && Date.parse(x.expiresAt) <= Date.now()) x.expired = true;
   const day = now().slice(0, 10);
   const sp = agents.length ? await r(['MGET', ...agents.map(a => `fm:spend:${a.id}:${day}`)]) : [];
-  const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await listTasks();
+  const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await withJobSpend(await listTasks());
   const cls = agents.length ? await r(['MGET', ...agents.map(a => 'fm:claimSeen:' + a.id)]) : [];
   const connections=await Promise.all(agents.map(connectionState));const conversations=await Promise.all(agents.map(a=>getJ('fm:conversation:'+a.id)));
   const agentsPub = agents.map((a, i) => ({ ...a, wake: a.wake && a.wake.channel ? { channel: a.wake.channel, declaredAt: a.wake.declaredAt || null, hasSecret: !!a.wake.secret, verified: a.wake.channel === 'email' ? !!a.wake.verified : undefined, pending: a.wake.channel === 'email' ? !!a.wake.pending || !wakeEmailAllowed(a.wake.target) : undefined } : null, instantWake: !!(a.status === 'active' && !a.paused && !a.hosted && wakeChannelFor(a)), strengths:effStrengths(a), lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
