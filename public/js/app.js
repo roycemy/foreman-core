@@ -30,7 +30,7 @@
   $$('[data-go]').forEach(b => b.onclick = () => BB.go(b.dataset.go));
 
   /* ---------- sign-in ---------- */
-  let mode = 'in';
+  let mode = 'in';const earlyToken=()=>{try{return sessionStorage.getItem('alter-early-invite')||''}catch{return ''}};
   const au = $('#auth');
   function needAuth() { au.classList.add('on'); setTimeout(() => { const f = $('#aue'); if (f && !f.value) f.focus(); }, 30); }
   BB.onAuth = needAuth;
@@ -43,11 +43,11 @@
   $('#aucl').onclick = () => { setMode('up'); $('#auc-l').hidden = false; $('#auc').focus(); };
   $('#authf').onsubmit = async e => {
     e.preventDefault(); $('#aur').textContent = ''; $('#aug').disabled = true;
-    const b = { email: $('#aue').value.trim(), password: $('#aup').value }; if (mode === 'up' && $('#auc').value.trim()) b.claim = $('#auc').value.trim();
+    const b = { email: $('#aue').value.trim(), password: $('#aup').value }; if(mode==='up')b.earlyToken=earlyToken(); if (mode === 'up' && $('#auc').value.trim()) b.claim = $('#auc').value.trim();
     try {
       const j = await BB.api('/api/auth/' + (mode === 'in' ? 'login' : 'signup'), 'POST', b);
       if (j.error) { $('#aur').textContent = j.error; return; }
-      $('#aup').value = ''; au.classList.remove('on'); await boot();
+      $('#aup').value = ''; au.classList.remove('on');if(mode==='up'){try{sessionStorage.removeItem('alter-early-invite')}catch{}} await boot();
     } finally { $('#aug').disabled = false; }
   };
 
@@ -59,7 +59,7 @@
   menu.addEventListener('keydown', e => { if (e.key === 'Escape') { setMenu(false); acct.focus(); } });
   document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (!b) return; setMenu(false); BB.act(b.dataset.act); });
   BB.act = function (k) {
-    if (k === 'invite') return BB.openInvite();
+    if (k === 'invite') {if(!BB.who?.legacy)return BB.openInvite();const box=BB.modal('<h3>Choose invitation</h3><p>Waitlist links save a founding place. Early-access links let invitees create their own workspace now.</p><div class="stackf"><button class="b ink" id="earlychoice">Early access for the pitch</button><button class="b out" id="waitchoice">Public waitlist invitation</button></div>',{label:'Invitation type'});box.querySelector('#earlychoice').onclick=()=>{BB.closeModal();BB.openEarlyInvite()};box.querySelector('#waitchoice').onclick=()=>{BB.closeModal();BB.openInvite()};return;}
     if (k === 'connect') return BB.openConnect ? BB.openConnect() : null;
     if (k === 'perms') return BB.openPermsOverview ? BB.openPermsOverview() : null;
     if (k === 'emergency') return openEmergency();
@@ -267,12 +267,12 @@
   let who = null;
   async function boot() {
     try { who = await BB.api('/api/me'); } catch (e) { return; }
-    if (who.error) return needAuth();
+    if (who.error){if(earlyToken())setMode('up');return needAuth();}
     au.classList.remove('on');
     $('#acctmail').textContent = who.email; acct.textContent = BB.initials(who.email.split('@')[0].replace(/[._-]+/g, ' ')); acct.setAttribute('aria-label', 'Account (' + who.email + ')');
     BB.who = who; applyRoute(); if (location.hash.replace(/^#/,'').split('/')[0] === 'connect') { history.replaceState(null, '', '#floor'); BB.openConnect && BB.openConnect(); } await BB.sync(true); BB.startPolling();
   }
-  BB.boot = boot;
+  BB.boot = boot;BB.openEarlyInvite=async()=>{const box=BB.modal('<h3>Early access for your pitch</h3><p>A separate link lets up to 25 people create their own workspaces for 7 days. It does not share yours or connect their bots automatically.</p><button class="b ink" id="earlycreate">Create early-access invitation</button><p id="earlyout" style="overflow-wrap:anywhere"></p>',{label:'Early access'});box.querySelector('#earlycreate').onclick=async()=>{const b=box.querySelector('#earlycreate');b.disabled=true;const j=await BB.api('/api/early/create','POST',{});const out=box.querySelector('#earlyout');if(j.error){out.textContent=j.error;b.disabled=false;return}out.textContent=j.url+' Valid until '+new Date(j.expiresAt).toLocaleString();b.textContent='Revoke this invitation';b.disabled=false;b.onclick=async()=>{b.disabled=true;const r=await BB.api('/api/early/revoke','POST',{id:j.id});out.textContent=r.error||'Invitation revoked. Existing accounts keep their own workspaces.';};};};
   if (window.BRAND) BB.t = BRAND.t;
   applyRoute(); boot();
 })();
