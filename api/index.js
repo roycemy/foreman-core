@@ -1305,7 +1305,7 @@ async function recoverNoteReqUnlocked(id) {
     // The older build wrote the note but left no receipt: record it once, and charge once (keyed; the older build may already have
     // counted it, so at most 2c is counted twice for a request stranded across the upgrade).
     await recordCost(actor, q.action, q.taskId, q.id);
-    rec = await receipt(actor, q.action, q.params, 'completed', ACTIONS[q.action].costCents, written.deleted ? `Note ${written.id} was deleted by the owner; not written again (recovered)` : `Wrote note "${written.title}" (${written.id}) to the shared workspace (recovered)`, q.id, { approvedBy: 'owner:approve', taskId: q.taskId || null, detailsHash: q.detailsHash || null, recovered: true });
+    rec = await receipt(actor, q.action, q.params, 'completed', ACTIONS[q.action].costCents, written.deleted ? `Note ${written.id} was deleted by the owner; not written again (recovered)` : `Wrote note "${written.title}" (${written.id}) to the shared workspace (recovered)`, q.id, { approvedBy: 'owner:approve', taskId: q.taskId || null, detailsHash: q.detailsHash || null, recovered: true, onceKey: 'req:' + q.id });
     await r(['SET', 'fm:done:' + q.id, rec.id]); out = { data: { note_id: nid, ...(written.deleted ? { deleted: true } : {}) } };
   }
   if (!rec) ({ rec, out, error } = await runAndReceipt(actor, q.action, q.rawParams, q.id, 'owner:approve', q.taskId, { detailsHash: q.detailsHash || null, recovered: true }));
