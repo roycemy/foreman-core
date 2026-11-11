@@ -31,7 +31,9 @@ async function http(method,url,{key,cookie,body}={}){let out;const headers={host
  {const s=await scenario();assert.equal((await approve(s)).j.request.status,'executed');assert.deepEqual([await daily(s),await receipts(s)],[2,1],'approval charges once');}
  {const s=await scenario({job:true});assert.equal((await approve(s)).j.request.status,'executed');assert.deepEqual([await daily(s),await ledger(s)],[2,2],'a job-scoped bot: the daily counter and the job ledger each once');}
  {const s=await scenario({job:true});await approve(s);const st=await http('GET','/api/state',{cookie:'cookie_a'});const tk=st.j.tasks.find(x=>x.id===s.t.id);
-  assert.equal(tk.jobGrant.spentCents,2,'/api/state shows the job grant\'s current spend (base plus counter)');assert.equal((await inA(()=>f.getJ('fm:task:'+s.t.id))).jobGrant.spentCents,0,'the stored base is untouched, so nothing can fold the counter in twice');}
+  assert.equal(tk.jobGrant.spentCents,2,'/api/state shows the job grant\'s current spend (base plus counter)');assert.equal((await inA(()=>f.getJ('fm:task:'+s.t.id))).jobGrant.spentCents,0,'the stored base is untouched, so nothing can fold the counter in twice');
+  const jd=await http('GET','/api/jobs/'+s.t.id,{cookie:'cookie_a'});assert.equal(jd.j.task.jobGrant.spentCents,2,'the job detail shows the current spend, not the stale base');
+  const bt=await http('GET','/api/gateway/tasks/'+s.t.id,{key:s.bot.key});assert.equal(bt.j.task.jobGrant.spentCents,2,'the bot reading its own job sees the current spend too');}
  {const bot=await inA(()=>f.createAgent('Auto bot','Ops','custom',false,{preset:'balanced'}));await inA(async()=>{const a=await f.getJ('fm:agent:'+bot.agent.id);a.permissions={'notes.write':'AUTO'};await f.setJ('fm:agent:'+a.id,a);});
   for(let i=0;i<2;i++)assert.equal((await http('POST','/api/gateway/act',{key:bot.key,body:{action:'notes.write',params:{title:'Same',text:'Same'}}})).code,200);
   assert.equal(Number(await inA(()=>f.r(['GET','fm:spend:'+bot.agent.id+':'+day]))),4,'the AUTO path without an identity charges every call, as before');}

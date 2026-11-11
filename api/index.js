@@ -429,7 +429,7 @@ async function setOwnerWake(agentId, body) {
 async function taskForAgent(agent,id) {
   const t=await getJ('fm:task:' + id);if(!t)return null;
   // Original worker can read its delegated child result; recipient can read its own assignment.
-  if(t.assignee===agent.id || t.createdBy===agent.id)return t;
+  if(t.assignee===agent.id || t.createdBy===agent.id)return (await withJobSpend([t]))[0];
   return null;
 }
 
@@ -674,7 +674,8 @@ async function jobDetail(id){
  for(const q of requests)if(q.action==='notes.write'&&q.result&&q.result.note_id){const n=await getJ('fm:note:'+q.result.note_id);if(n&&n.deleted)q.noteDeleted=true;}
  const receipts=parse(await r(['LRANGE','fm:receipts',0,299])).filter(x=>x.taskId===id).reverse();
  const agents=await listAgents(),name=x=>(agents.find(a=>a.id===x)||{}).name||'A bot';
- return {task:t,children:kids,events,requests,receipts,timeline:timelineOf(t,events,requests,receipts,kids,name)};}
+ const [taskOut, ...kidsOut] = await withJobSpend([t, ...kids]);
+ return {task:taskOut,children:kidsOut,events,requests,receipts,timeline:timelineOf(t,events,requests,receipts,kids,name)};}
 const ACTION_WORDS={'email.send':['Sent','email','emails','email'],'web.fetch':['Read','web page','web pages','web fetch'],'notes.write':['Saved','note','notes','note'],'notes.delete':['Deleted','note set','note sets','delete'],'work.handoff':['Handed off','part','parts','handoff'],'work.assign':['Assigned','job','jobs','assign'],'work.enqueue':['Queued','job','jobs','queue']};
 const REQ_WORDS={'email.send':'send an email','web.fetch':'read a web page','notes.write':'save a note','notes.delete':'delete notes','work.handoff':'hand off a part','work.assign':'assign a job','work.enqueue':'queue a job'};
 // Steps in plain language. `detail` is owner-only (urls, note titles, tool output); public receipts drop it.
