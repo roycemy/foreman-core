@@ -1,6 +1,6 @@
 # Alter
 
-**The control layer for your AI bots.** Your bots keep working. Nothing spends, sends or deletes without your tap.
+**The control layer for your AI bots.** Your bots keep working. Connected bots act inside your rules, and anything you mark Ask waits for your tap.
 
 Website and waitlist: https://www.alterhq.app (waitlist at https://www.alterhq.app/waitlist)
 
@@ -18,6 +18,7 @@ Alter sits between you and the bots you already use (Instinct, Grok Bot, Muse an
 
 - Real today: connecting bots, rules, the approval flow, receipts, kill switch, and the waitlist.
 - Sandbox only: the card flow. There is no live card issuing yet, and native provider bills stay outside Alter.
+- Scope: Alter controls what bots do through Alter. It does not intercept bots that are not connected, or actions they take outside Alter.
 - Early stage: this is an early build. Some hardening work is still in review (see open pull requests), so treat the hosted app as a preview, not a production service.
 
 ## How it works (technical)
