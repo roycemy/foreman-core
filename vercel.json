@@ -37,6 +37,48 @@
       "source": "/.well-known/:path*",
       "destination": "/api/index"
     },
+  "redirects": [
+    {
+      "source": "/",
+      "has": [
+        {
+          "type": "cookie",
+          "key": "fm_sess"
+        }
+      ],
+      "destination": "/hq",
+      "permanent": false
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/connect",
+      "destination": "/connect.html"
+    },
+    {
+      "source": "/pair/:id",
+      "destination": "/pair.html"
+    },
+    {
+      "source": "/api/issuing",
+      "destination": "/api/issuing"
+    },
+    {
+      "source": "/waitlist",
+      "destination": "/waitlist.html"
+    },
+    {
+      "source": "/share",
+      "destination": "/share.html"
+    },
+    {
+      "source": "/runner",
+      "destination": "/runner.html"
+    },
+    {
+      "source": "/.well-known/:path*",
+      "destination": "/api/index"
+    },
     {
       "source": "/oauth/authorize",
       "destination": "/oauth.html"
@@ -154,4 +196,4 @@
       "schedule": "0 13 * * *"
     }
   ]
-}
+    }
