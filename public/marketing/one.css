@@ -61,5 +61,5 @@ h3{font-size:20px;letter-spacing:-.02em;font-weight:600;line-height:1.25}.grid3 
 h2{font-size:clamp(28px,3.4vw,44px);letter-spacing:-.035em;line-height:1.08;font-weight:600;max-width:18ch;margin:0 auto}
 .foot{border-top:1px solid var(--line)}.foot a:not(.wm){font-size:14px;color:var(--stone)}
 @media (max-width:900px){.hero{padding:32px 0 24px}.hero-in{grid-template-columns:1fr;gap:24px}.phones{height:340px;transform:none}.phone{transform-origin:center}.p1{transform:translateX(-84px) translateY(12px) rotate(-3deg) scale(.76)}.p2{transform:translateX(84px) translateY(-6px) rotate(2deg) scale(.76)}.grid3{grid-template-columns:1fr;gap:32px}.sec{padding:64px 0 0}.final{padding:72px 0}}
-@media (max-width:640px){h1{font-size:34px}.ctas{gap:16px;margin-top:24px}.vid{aspect-ratio:9/16;max-height:78vh;margin:0 auto;border-radius:16px}.nav .wrap{gap:16px}}
+@media (max-width:640px){h1{font-size:34px}.ctas{gap:16px;margin-top:24px}.vid{aspect-ratio:16/9;margin:0 auto;border-radius:16px}.vid video{object-fit:contain;background:#111}.nav .wrap{gap:16px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
