@@ -21,10 +21,8 @@
 <section id="denied" class="panel" hidden><p>This view is limited to Royce and Yash. Sign out and back in with one of their accounts.</p></section>
 
 <section id="claim" class="panel" hidden>
-<p>One more step for your first visit: activate this account once. The easiest way is an activation link emailed to your own address.</p>
+<p>One more step for your first visit: activate this account with a one-time link emailed to your own address.</p>
 <button class="primary" id="emailme" type="button">Email me an activation link</button>
-<p style="margin:22px 0 0;font-size:13px">If you were given a one-time access code instead, enter it here:</p>
-<form id="claimform"><label for="code">Access code</label><input id="code" type="text" autocomplete="one-time-code" spellcheck="false" required><button class="primary" type="submit">Activate with code</button></form>
 </section>
 
 <section id="data" hidden>
@@ -72,7 +70,6 @@
  $('toggle').onclick=e=>{e.preventDefault();mode=mode==='login'?'signup':'login';$('go').textContent=mode==='login'?'Sign in':'Create account';$('toggle').textContent=mode==='login'?'Create your account':'Sign in instead';$('password').autocomplete=mode==='login'?'current-password':'new-password';};
  $('creds').onsubmit=async e=>{e.preventDefault();$('go').disabled=true;$('status').textContent=mode==='login'?'Signing in...':'Creating your account...';const r=await api('/api/auth/'+mode,{email:$('email').value.trim().toLowerCase(),password:$('password').value});$('go').disabled=false;if(!r.ok){$('status').textContent=(r.j&&r.j.error)||'Could not sign in.';return}$('status').textContent='';await load();};
  $('out').onclick=async()=>{await api('/api/auth/logout',{});cache=null;show('auth');};
- $('claimform').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;$('status').textContent='Activating...';const r=await api('/api/waitlist/admin/claim',{code:$('code').value});b.disabled=false;if(!r.ok){$('status').textContent=(r.j&&r.j.error)||'Could not activate. Check the code.';return}$('code').value='';await load();};
  $('emailme').onclick=async e=>{const b=e.target;b.disabled=true;$('status').textContent='Sending...';const r=await api('/api/waitlist/admin/claim-email',{});b.disabled=false;$('status').textContent=r.ok?'Sent. Check your inbox - the link works once and expires in 1 hour.':((r.j&&r.j.error)||'Could not send the email right now.');};
  $('refresh').onclick=load;
  $('csv').onclick=()=>{if(!cache)return;const escCsv=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';const lines=['seat,email,requestedAt,source,campaign'].concat((cache.signups||[]).map(s=>[s.seat||'',s.email,s.requestedAt,s.source||'',s.campaign||''].map(escCsv).join(',')));const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/csv'}));a.download='alter-waitlist.csv';a.click();URL.revokeObjectURL(a.href);};

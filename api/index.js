@@ -1332,16 +1332,13 @@ async function joinWaitlist(req,res,body){
 
 // Waitlist admin: read-only signup list for the two founders. Signup has no email verification, so an allowlisted email alone never grants access: each founder redeems a one-time code (delivered out of band) from their own signed-in account; only sha256 hashes live here.
 const WAITLIST_ADMINS=new Set(['roycemyers20@gmail.com','yashshah8778@gmail.com']);
-const WAITLIST_ADMIN_CLAIMS={'cc5834e7e7dcc7515cb529be9ba20341c14715bf141f0993e858d20061e06c43':'9ae986d39e03354af59a651e6fb030ecb821d37e015bcb90561c8214d2b68d41'}; // sha256(code) -> sha256(email); Royce's grant is already claimed and uid-bound, his code is retired
 async function waitlistAdmin(req,res){
  res.setHeader('Cache-Control','no-store');
  res.setHeader('X-Robots-Tag','noindex, nofollow');
  if(req.method!=='GET')return res.status(405).json({error:'GET required'});
  const sess=await getSession(req);if(!sess)return res.status(401).json({error:'Sign in required'});
  if(!WAITLIST_ADMINS.has(sess.email))return res.status(403).json({error:'This view is limited to the Alter founders'});
- const flagKey='gl:waitlistAdmin:'+sha(sess.email);let flag=await r(['GET',flagKey]);
- if(flag==='1'){flag=JSON.stringify({uid:sess.uid,at:now()});await r(['SET',flagKey,flag]);} // one-time upgrade: bind the pre-existing grant to the account's immutable id
- let grant=null;try{grant=flag&&JSON.parse(flag);}catch(e){}
+ let grant=null;try{grant=JSON.parse(await r(['GET','gl:waitlistAdmin:'+sha(sess.email)])||'null');}catch(e){}
  if(!grant||grant.uid!==sess.uid)return res.status(403).json({error:'claim_required'});
  const rate='gl:waitlistAdminRate:'+sess.uid+':'+Math.floor(Date.now()/3600000),n=Number(await r(['INCRBY',rate,1]));if(n===1)await r(['EXPIRE',rate,3600]);
  if(n>240)return res.status(429).json({error:'Too many requests. Try again later.'});
@@ -1353,22 +1350,6 @@ async function waitlistAdmin(req,res){
  const signups=rows.map((x,i)=>{if(!x)return null;const e=JSON.parse(x);return{seat:access[ids[i]]||null,email:e.email,requestedAt:e.requestedAt,source:e.source||null,campaign:e.campaign||null};}).filter(Boolean).sort((a,b)=>String(a.requestedAt).localeCompare(String(b.requestedAt)));
  const campaigns={};for(const s of signups){const k=s.campaign||'no tag';campaigns[k]=(campaigns[k]||0)+1;}
  return res.json({taken:await foundingSeats.total(),limit:1000,inPerson,onlineSignups:signups.length,campaigns,signups});
-}
-async function waitlistAdminClaim(req,res,body){
- res.setHeader('Cache-Control','no-store');
- if(req.method!=='POST')return res.status(405).json({error:'POST required'});
- if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
- const sess=await getSession(req);if(!sess)return res.status(401).json({error:'Sign in required'});
- const ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();
- const rate='gl:waitlistClaimRate:'+sha(ip)+':'+Math.floor(Date.now()/3600000),n=Number(await r(['INCRBY',rate,1]));if(n===1)await r(['EXPIRE',rate,3600]);
- if(n>10)return res.status(429).json({error:'Too many attempts. Try again later.'});
- const codeHash=sha(String(body&&body.code||'').trim()),bound=WAITLIST_ADMIN_CLAIMS[codeHash];
- if(!bound)return res.status(400).json({error:'That code is not valid'});
- if(bound!==sha(sess.email))return res.status(403).json({error:'That code belongs to a different account'});
- if(await r(['GET','gl:waitlistAdminClaim:'+codeHash]))return res.status(409).json({error:'That code was already used'});
- await r(['SET','gl:waitlistAdminClaim:'+codeHash,JSON.stringify({email:sess.email,at:now()})]);
- await r(['SET','gl:waitlistAdmin:'+sha(sess.email),JSON.stringify({uid:sess.uid,at:now()})]);
- return res.json({ok:true});
 }
 
 async function sendWaitlistAdminEmail(to,link){
@@ -1516,7 +1497,6 @@ module.exports = async (req, res) => {
     if(path==='/founding/count'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');await foundingSeats.reconcile();return res.json({taken:await foundingSeats.total(),limit:1000});}
     if(path==='/founding/receipt'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});const found=await foundingSeats.readReceipt(body.receipt);return found?res.json(found):res.status(404).json({error:'Receipt unavailable'});}
     if(path==='/waitlist/admin')return await waitlistAdmin(req,res);
-    if(path==='/waitlist/admin/claim')return await waitlistAdminClaim(req,res,body);
     if(path==='/waitlist/admin/claim-email')return await waitlistAdminClaimEmail(req,res);
     if(path==='/waitlist/admin/claim-token')return await waitlistAdminClaimToken(req,res,body);
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
