@@ -1,0 +1,67 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');const source=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.test={waitlistAdmin,waitlistAdminClaim,WAITLIST_ADMIN_CLAIMS,r,getJ,sha};';const ctx={module:{exports:{}},require,process:{env:{}},global:{},console,URL,setTimeout,clearTimeout,AbortSignal,fetch:()=>{throw Error('NO NETWORK')}};vm.runInNewContext(source,ctx);const f=ctx.module.exports.test;
+(async()=>{
+ const sha=f.sha,r=f.r,ORIGIN='https://foreman-core.vercel.app';
+ async function call(handler,{cookie,method='GET',body,ip='127.0.0.1'}={}){let out,code;const res={setHeader(){},status(c){code=c;return this},json(j){out={code:code||200,j};return out}};await handler({method,headers:{cookie:cookie||'',origin:ORIGIN,'x-forwarded-for':ip}},res,body||{});return out;}
+ const mk=async(id,email)=>{await r(['SET','gl:user:'+sha(email),JSON.stringify({id,email,ws:'wsA',salt:'s',hash:'h'})]);const t=id+'tok';await r(['SET','gl:sess:'+sha(t),JSON.stringify({uid:id,email,ws:'wsA'})]);return 'fm_sess='+t;};
+ // recover the plaintext test codes by inverting the claim map with our own test emails is not possible; instead inject test claims through the same hashing path
+ // seed two online signups + 3 in-person reservations
+ await r(['SET','gl:waitlist:'+sha('first@example.test'),JSON.stringify({email:'first@example.test',requestedAt:'2026-11-18T01:00:00.000Z',consent:'Access availability email only',source:'alter-site'})]);
+ await r(['SADD','gl:waitlist',sha('first@example.test')]);
+ await r(['SET','gl:waitlist:'+sha('second@example.test'),JSON.stringify({email:'second@example.test',requestedAt:'2026-11-19T14:00:00.000Z',consent:'Access availability email only',source:'alter-site',campaign:'yash-conf'})]);
+ await r(['SADD','gl:waitlist',sha('second@example.test')]);
+ await r(['SET','gl:foundingInPerson','3']);
+ // build a claim pair for a test founder by patching the claims map the same way production codes are made
+ const testCode=crypto.randomBytes(32).toString('hex'),founder='founder@example.test';
+ f.WAITLIST_ADMIN_CLAIMS[sha(testCode)]=sha(founder);
+ // the production map must bind the two real founders' emails and nothing human-readable
+ const entries=Object.entries(f.WAITLIST_ADMIN_CLAIMS);
+ assert.equal(entries.length,3);
+ assert.ok(entries.every(([c,e])=>/^[a-f0-9]{64}$/.test(c)&&/^[a-f0-9]{64}$/.test(e)));
+ assert.ok(entries.some(([,e])=>e===sha('roycemyers20@gmail.com')));
+ assert.ok(entries.some(([,e])=>e===sha('yashshah8778@gmail.com')));
+ // waitlistAdmin is not patched for the test founder (allowlist is real), so exercise claim flow with the real founders and data flow via a claim grant
+ const stranger=await mk('u1','stranger@example.test'),admin=await mk('u2','roycemyers20@gmail.com'),admin2=await mk('u3','yashshah8778@gmail.com');
+ // claim: auth, method, origin, bad code, wrong account, rate limit
+ assert.equal((await call(f.waitlistAdminClaim,{method:'POST',body:{code:testCode}})).code,401);
+ assert.equal((await call(f.waitlistAdminClaim,{cookie:admin,method:'GET'})).code,405);
+ assert.equal((await call(f.waitlistAdminClaim,{cookie:admin,method:'POST',body:{code:testCode}})).code,403); // code bound to someone else
+ assert.equal((await call(f.waitlistAdminClaim,{cookie:stranger,method:'POST',body:{code:testCode}})).code,403);
+ assert.equal((await call(f.waitlistAdminClaim,{cookie:admin,method:'POST',body:{code:'nope'}})).code,400);
+ // admin view before any claim: founders get claim_required, strangers stay out
+ let out=await call(f.waitlistAdmin,{cookie:admin});
+ assert.equal(out.code,403);assert.equal(out.j.error,'claim_required');
+ assert.equal((await call(f.waitlistAdmin,{cookie:stranger})).code,403);
+ assert.equal((await call(f.waitlistAdmin)).code,401);
+ assert.equal((await call(f.waitlistAdmin,{cookie:admin,method:'POST'})).code,405);
+ // grant the founder view by redeeming a code bound to roycemyers20@gmail.com through the real claim path: find the production code hash for that email and simulate redemption result
+ const royceClaim=entries.find(([,e])=>e===sha('roycemyers20@gmail.com'))[0];
+ await r(['SET','gl:waitlistAdminClaim:'+royceClaim,JSON.stringify({email:'roycemyers20@gmail.com',at:'2026-11-19T20:00:00.000Z'})]);
+ await r(['SET','gl:waitlistAdmin:'+sha('roycemyers20@gmail.com'),'1']);
+ // replay of a redeemed code is rejected even from the right account
+ // (its plaintext is unknowable here, so assert the redeemed marker path via a fresh code bound to the same email)
+ const replayCode=crypto.randomBytes(32).toString('hex');f.WAITLIST_ADMIN_CLAIMS[sha(replayCode)]=sha('roycemyers20@gmail.com');
+ await r(['SET','gl:waitlistAdminClaim:'+sha(replayCode),JSON.stringify({email:'roycemyers20@gmail.com',at:'2026-11-19T20:01:00.000Z'})]);
+ assert.equal((await call(f.waitlistAdminClaim,{cookie:admin,method:'POST',body:{code:replayCode}})).code,409);
+ // the granted founder gets the full read
+ out=await call(f.waitlistAdmin,{cookie:admin});
+ assert.equal(out.code,200);
+ assert.equal(out.j.onlineSignups,2);
+ assert.equal(out.j.inPerson,3);
+ assert.equal(out.j.taken,5);
+ assert.equal(out.j.campaigns['yash-conf'],1);
+ assert.equal(out.j.campaigns['no tag'],1);
+ assert.equal(out.j.signups[0].email,'first@example.test');
+ assert.equal(out.j.signups[0].seat,4);
+ assert.equal(out.j.signups[1].seat,5);
+ assert.equal(out.j.signups[1].campaign,'yash-conf');
+ // the other founder is still locked out until their own claim
+ out=await call(f.waitlistAdmin,{cookie:admin2});
+ assert.equal(out.code,403);assert.equal(out.j.error,'claim_required');
+ // claim rate limit: 10 tries per IP per hour
+ for(let i=0;i<10;i++)await call(f.waitlistAdminClaim,{cookie:admin,method:'POST',body:{code:'nope'},ip:'10.9.9.9'});
+ assert.equal((await call(f.waitlistAdminClaim,{cookie:admin,method:'POST',body:{code:'nope'},ip:'10.9.9.9'})).code,429);
+ // read cap for the granted founder
+ for(let i=0;i<239;i++)await call(f.waitlistAdmin,{cookie:admin});
+ assert.equal((await call(f.waitlistAdmin,{cookie:admin})).code,429);
+ console.log('PASS waitlist admin: claim-gated founders only, code binding, replay rejection, claim_required state, seats after in-person offset, campaign counts, claim and read rate limits; no network.');
+})().catch(e=>{console.error(e);process.exit(1)});

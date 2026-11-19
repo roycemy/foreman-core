@@ -30,6 +30,10 @@
       "destination": "/api/issuing"
     },
     {
+      "source": "/waitlist-admin",
+      "destination": "/waitlist-admin.html"
+    },
+    {
       "source": "/waitlist",
       "destination": "/waitlist.html"
     },
@@ -139,6 +143,32 @@
         {
           "key": "Cache-Control",
           "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/waitlist-admin",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/waitlist-admin.html",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
         }
       ]
     }
