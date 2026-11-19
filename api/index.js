@@ -1332,14 +1332,17 @@ async function joinWaitlist(req,res,body){
 
 // Waitlist admin: read-only signup list for the two founders. Signup has no email verification, so an allowlisted email alone never grants access: each founder redeems a one-time code (delivered out of band) from their own signed-in account; only sha256 hashes live here.
 const WAITLIST_ADMINS=new Set(['roycemyers20@gmail.com','yashshah8778@gmail.com']);
-const WAITLIST_ADMIN_CLAIMS={'4127f56bf023329557b274b812909c3a600442cec8c3c564b9f7f74f4488454f':'afd7143796678b5daeecc9e88d3b484e0c1cd524f8c69bcb5320bd1b8ecd15bc','a564245cbfa886ffabe053e13d5c8601a57bae451cc5d1945734570832c7027f':'9ae986d39e03354af59a651e6fb030ecb821d37e015bcb90561c8214d2b68d41'};
+const WAITLIST_ADMIN_CLAIMS={'cc5834e7e7dcc7515cb529be9ba20341c14715bf141f0993e858d20061e06c43':'9ae986d39e03354af59a651e6fb030ecb821d37e015bcb90561c8214d2b68d41'}; // sha256(code) -> sha256(email); Royce's grant is already claimed and uid-bound, his code is retired
 async function waitlistAdmin(req,res){
  res.setHeader('Cache-Control','no-store');
  res.setHeader('X-Robots-Tag','noindex, nofollow');
  if(req.method!=='GET')return res.status(405).json({error:'GET required'});
  const sess=await getSession(req);if(!sess)return res.status(401).json({error:'Sign in required'});
  if(!WAITLIST_ADMINS.has(sess.email))return res.status(403).json({error:'This view is limited to the Alter founders'});
- if(!await r(['GET','gl:waitlistAdmin:'+sha(sess.email)]))return res.status(403).json({error:'claim_required'});
+ const flagKey='gl:waitlistAdmin:'+sha(sess.email);let flag=await r(['GET',flagKey]);
+ if(flag==='1'){flag=JSON.stringify({uid:sess.uid,at:now()});await r(['SET',flagKey,flag]);} // one-time upgrade: bind the pre-existing grant to the account's immutable id
+ let grant=null;try{grant=flag&&JSON.parse(flag);}catch(e){}
+ if(!grant||grant.uid!==sess.uid)return res.status(403).json({error:'claim_required'});
  const rate='gl:waitlistAdminRate:'+sess.uid+':'+Math.floor(Date.now()/3600000),n=Number(await r(['INCRBY',rate,1]));if(n===1)await r(['EXPIRE',rate,3600]);
  if(n>240)return res.status(429).json({error:'Too many requests. Try again later.'});
  await foundingSeats.reconcile();
@@ -1364,7 +1367,7 @@ async function waitlistAdminClaim(req,res,body){
  if(bound!==sha(sess.email))return res.status(403).json({error:'That code belongs to a different account'});
  if(await r(['GET','gl:waitlistAdminClaim:'+codeHash]))return res.status(409).json({error:'That code was already used'});
  await r(['SET','gl:waitlistAdminClaim:'+codeHash,JSON.stringify({email:sess.email,at:now()})]);
- await r(['SET','gl:waitlistAdmin:'+sha(sess.email),'1']);
+ await r(['SET','gl:waitlistAdmin:'+sha(sess.email),JSON.stringify({uid:sess.uid,at:now()})]);
  return res.json({ok:true});
 }
 
