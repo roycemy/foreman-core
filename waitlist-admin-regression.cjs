@@ -1,4 +1,4 @@
-const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');const source=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.test={waitlistAdmin,waitlistAdminClaim,WAITLIST_ADMIN_CLAIMS,r,getJ,sha};';const ctx={module:{exports:{}},require,process:{env:{}},global:{},console,URL,setTimeout,clearTimeout,AbortSignal,fetch:()=>{throw Error('NO NETWORK')}};vm.runInNewContext(source,ctx);const f=ctx.module.exports.test;
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');const source=fs.readFileSync('api/index.js','utf8')+'\nmodule.exports.test={waitlistAdmin,waitlistAdminClaim,waitlistAdminClaimEmail,waitlistAdminClaimToken,WAITLIST_ADMIN_CLAIMS,r,getJ,sha};';const ctx={module:{exports:{}},require,process:{env:{}},global:{},console,URL,setTimeout,clearTimeout,AbortSignal,fetch:()=>{throw Error('NO NETWORK')}};vm.runInNewContext(source,ctx);const f=ctx.module.exports.test;
 (async()=>{
  const sha=f.sha,r=f.r,ORIGIN='https://foreman-core.vercel.app';
  async function call(handler,{cookie,method='GET',body,ip='127.0.0.1'}={}){let out,code;const res={setHeader(){},status(c){code=c;return this},json(j){out={code:code||200,j};return out}};await handler({method,headers:{cookie:cookie||'',origin:ORIGIN,'x-forwarded-for':ip}},res,body||{});return out;}
@@ -76,5 +76,37 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require(
  assert.equal(out.code,403);assert.equal(out.j.error,'claim_required');
  // the pre-deletion session is invalidated too (its uid no longer matches the record)
  assert.equal((await call(f.waitlistAdmin,{cookie:admin})).code,401);
- console.log('PASS waitlist admin: claim-gated founders only, uid-bound grants, legacy grant upgrade, no inheritance across re-registration, rotated claims map, replay rejection, claim_required state, seats after in-person offset, campaign counts, claim and read rate limits; no network.');
+ // email-verified enrollment: request link, redeem on the right account, reject everything else
+ const sent=[],realFetch=ctx.fetch;
+ ctx.process.env.RESEND_API_KEY='test-key';ctx.process.env.WAKE_EMAIL_FROM='wake@mail.alterhq.app';
+ assert.equal((await call(f.waitlistAdminClaimEmail,{method:'POST'})).code,401);
+ assert.equal((await call(f.waitlistAdminClaimEmail,{cookie:stranger,method:'POST'})).code,403);
+ // sender failure -> 503, no grant (fresh uid: adminRe)
+ ctx.fetch=async()=>({ok:false,status:422});
+ assert.equal((await call(f.waitlistAdminClaimEmail,{cookie:adminRe,method:'POST'})).code,503);
+ // the founder requests their activation email; it goes only to their own allowlisted address
+ ctx.fetch=async(url,opts)=>{sent.push({url,body:JSON.parse(opts.body)});return{ok:true,status:200};};
+ const reqOut=await call(f.waitlistAdminClaimEmail,{cookie:admin2,method:'POST'});
+ assert.equal(reqOut.code,200);assert.equal(reqOut.j.ok,true);
+ assert.equal(sent.length,1);
+ assert.equal(sent[0].body.to[0],'yashshah8778@gmail.com');
+ const link=sent[0].body.text.match(/https:\/\/www\.alterhq\.app\/waitlist-admin\?claim=([a-f0-9]{64})/);
+ assert.ok(link,'activation link in email');const emailedToken=link[1];
+ // redemption: auth, method, shape, unknown, wrong account, right account, replay
+ assert.equal((await call(f.waitlistAdminClaimToken,{method:'POST',body:{token:emailedToken}})).code,401);
+ assert.equal((await call(f.waitlistAdminClaimToken,{cookie:admin2,method:'GET'})).code,405);
+ assert.equal((await call(f.waitlistAdminClaimToken,{cookie:admin2,method:'POST',body:{token:'zzz'}})).code,400);
+ assert.equal((await call(f.waitlistAdminClaimToken,{cookie:admin2,method:'POST',body:{token:crypto.randomBytes(32).toString('hex')}})).code,400);
+ assert.equal((await call(f.waitlistAdminClaimToken,{cookie:adminRe,method:'POST',body:{token:emailedToken}})).code,403); // right inbox, wrong account: no grant
+ const okT=await call(f.waitlistAdminClaimToken,{cookie:admin2,method:'POST',body:{token:emailedToken}});
+ assert.equal(okT.code,200);assert.equal(okT.j.ok,true);
+ const emailGrant=JSON.parse(await r(['GET','gl:waitlistAdmin:'+sha('yashshah8778@gmail.com')]));
+ assert.equal(emailGrant.uid,'u3');assert.equal(emailGrant.via,'email');
+ assert.equal((await call(f.waitlistAdminClaimToken,{cookie:admin2,method:'POST',body:{token:emailedToken}})).code,400); // single use
+ // request rate limit: 3 emails per account per hour (admin2 used 1)
+ await call(f.waitlistAdminClaimEmail,{cookie:admin2,method:'POST'});
+ await call(f.waitlistAdminClaimEmail,{cookie:admin2,method:'POST'});
+ assert.equal((await call(f.waitlistAdminClaimEmail,{cookie:admin2,method:'POST'})).code,429);
+ ctx.fetch=realFetch;delete ctx.process.env.RESEND_API_KEY;delete ctx.process.env.WAKE_EMAIL_FROM;
+ console.log('PASS waitlist admin: claim-gated founders only, uid-bound grants, legacy grant upgrade, no inheritance across re-registration, rotated claims map, email-verified enrollment (request, redemption, wrong-account and replay rejection, request rate limits), replay rejection, claim_required state, seats after in-person offset, campaign counts, claim and read rate limits; no network.');
 })().catch(e=>{console.error(e);process.exit(1)});
