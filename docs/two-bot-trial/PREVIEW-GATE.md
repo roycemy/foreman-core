@@ -1,6 +1,11 @@
 # Preview gate for `feat/two-bot-handoff-trial`
 
-**Status:** the branch is pushed with Vercel auto-deploy suppressed for it (`git.deploymentEnabled` in `vercel.json`). No pull request exists yet. The isolation preflight has not run yet.
+**Status (Nov 20):** steps 1-4 are done, as reported from the owner's Vercel project:
+- The suppressed push created no deployment.
+- Six Preview-only variables are scoped to this branch: the five below, plus `KV_REST_API_READ_ONLY_TOKEN` overridden to the isolated store.
+- The preflight printed `RESULT: PASS`, with the Preview host `valued-glider-198085.upstash.io` differing from production's. That is static configuration evidence, not a runtime proof.
+
+Step 5 removes the suppression block.
 
 ## The real order
 

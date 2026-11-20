@@ -1,9 +1,4 @@
 {
-  "git": {
-    "deploymentEnabled": {
-      "feat/two-bot-handoff-trial": false
-    }
-  },
   "redirects": [
     {
       "source": "/",
