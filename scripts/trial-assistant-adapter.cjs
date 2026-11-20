@@ -26,6 +26,8 @@ if (!KEY) die('Set ALTER_GATEWAY_KEY or ALTER_GATEWAY_KEY_FILE (this bot\'s own 
 // sent only as the x-vercel-protection-bypass header, never printed.
 const bypassFile = process.env.ALTER_PROTECTION_BYPASS_FILE;
 const BYPASS = String(process.env.ALTER_PROTECTION_BYPASS || (bypassFile ? fs.readFileSync(bypassFile.replace(/^~/, process.env.HOME || ''), 'utf8') : '')).trim();
+// Every line this tool prints is scrubbed of the gateway key and the bypass value, including text a server sends back.
+for (const k of ['log', 'error']) { const orig = console[k].bind(console); console[k] = (...xs) => orig(...xs.map(x => { let t = typeof x === 'string' ? x : JSON.stringify(x); for (const v of [KEY, BYPASS]) if (v) t = t.split(v).join('[redacted]'); return t; })); }
 const ID = /^[A-Za-z0-9_]{1,64}$/;
 async function call(method, path, body) {
   let res, j = {};
