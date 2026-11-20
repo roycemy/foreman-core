@@ -21,8 +21,8 @@
 <section id="denied" class="panel" hidden><p>This view is limited to Royce and Yash. Sign out and back in with one of their accounts.</p></section>
 
 <section id="claim" class="panel" hidden>
-<p>One more step for your first visit: enter the one-time access code you were given for this view. It activates this account once and is never shown again.</p>
-<form id="claimform"><label for="code">Access code</label><input id="code" type="text" autocomplete="one-time-code" spellcheck="false" required><button class="primary" type="submit">Activate my view</button></form>
+<p>One more step for your first visit: activate this account with a one-time link emailed to your own address.</p>
+<button class="primary" id="emailme" type="button">Email me an activation link</button>
 </section>
 
 <section id="data" hidden>
@@ -47,7 +47,16 @@
  async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});let j=null;try{j=await r.json()}catch{}return{ok:r.ok,status:r.status,j};}
  function fmt(iso){const d=new Date(iso);return isNaN(d)?'':d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
  function show(which){for(const s of ['auth','denied','claim','data'])$(s).hidden=s!==which;$('out').hidden=which==='auth';}
- async function load(){const st=$('status');st.textContent='Loading signups...';const r=await api('/api/waitlist/admin');
+ const qp=new URLSearchParams(location.search),claimTok=qp.get('claim');
+ if(claimTok){try{sessionStorage.setItem('wa_claim',claimTok)}catch(e){}history.replaceState(null,'',location.pathname);}
+ async function redeemClaim(){let t=null;try{t=sessionStorage.getItem('wa_claim')}catch(e){}
+  if(!t)return false;
+  const r=await api('/api/waitlist/admin/claim-token',{token:t});
+  if(r.status===401)return false; // not signed in yet; keep it stashed for after sign-in
+  try{sessionStorage.removeItem('wa_claim')}catch(e){}
+  if(!r.ok){$('status').textContent=(r.j&&r.j.error)||'That activation link did not work.';return false}
+  return true;}
+ async function load(){const st=$('status');await redeemClaim();st.textContent='Loading signups...';const r=await api('/api/waitlist/admin');
   if(r.status===401){show('auth');st.textContent='';return}
   if(r.status===403){show(r.j&&r.j.error==='claim_required'?'claim':'denied');st.textContent='';return}
   if(!r.ok||!r.j){st.textContent=(r.j&&r.j.error)||'Could not load. Try again.';return}
@@ -61,7 +70,7 @@
  $('toggle').onclick=e=>{e.preventDefault();mode=mode==='login'?'signup':'login';$('go').textContent=mode==='login'?'Sign in':'Create account';$('toggle').textContent=mode==='login'?'Create your account':'Sign in instead';$('password').autocomplete=mode==='login'?'current-password':'new-password';};
  $('creds').onsubmit=async e=>{e.preventDefault();$('go').disabled=true;$('status').textContent=mode==='login'?'Signing in...':'Creating your account...';const r=await api('/api/auth/'+mode,{email:$('email').value.trim().toLowerCase(),password:$('password').value});$('go').disabled=false;if(!r.ok){$('status').textContent=(r.j&&r.j.error)||'Could not sign in.';return}$('status').textContent='';await load();};
  $('out').onclick=async()=>{await api('/api/auth/logout',{});cache=null;show('auth');};
- $('claimform').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;$('status').textContent='Activating...';const r=await api('/api/waitlist/admin/claim',{code:$('code').value});b.disabled=false;if(!r.ok){$('status').textContent=(r.j&&r.j.error)||'Could not activate. Check the code.';return}$('code').value='';await load();};
+ $('emailme').onclick=async e=>{const b=e.target;b.disabled=true;$('status').textContent='Sending...';const r=await api('/api/waitlist/admin/claim-email',{});b.disabled=false;$('status').textContent=r.ok?'Sent. Check your inbox - the link works once and expires in 1 hour.':((r.j&&r.j.error)||'Could not send the email right now.');};
  $('refresh').onclick=load;
  $('csv').onclick=()=>{if(!cache)return;const escCsv=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';const lines=['seat,email,requestedAt,source,campaign'].concat((cache.signups||[]).map(s=>[s.seat||'',s.email,s.requestedAt,s.source||'',s.campaign||''].map(escCsv).join(',')));const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/csv'}));a.download='alter-waitlist.csv';a.click();URL.revokeObjectURL(a.href);};
  load();
