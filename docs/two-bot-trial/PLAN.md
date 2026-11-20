@@ -80,7 +80,7 @@ Every one is written once, keyed so it can't be duplicated.
 
 **Contract enforcement:**
 - On a trial job, the only allowed action is `pilot.handoff`, by the source bot.
-- While a bot holds an unfinished trial job, its `work.assign`, `work.enqueue` and `work.handoff` are refused, including standing ones, so it can't move work outside the contract.
+- While a bot holds an unfinished trial job, every other routed action is refused, including standing ones: `work.*`, `web.fetch`, notes and email. So trial text can't leave through Alter any other way.
 - Other bots and other jobs are unaffected.
 
 **Credential screen.** The transcript, instructions and every snapshot field are checked for credential-looking values: common provider key formats, bearer tokens, private keys, JWTs, Alter keys, and `password=` or `token=` pairs. A hit is refused, with a receipt naming the kind and never the value. Pattern matching can't catch every secret or every piece of personal data; the minimal payload and the owner's exact-content review remain necessary.
@@ -93,6 +93,44 @@ Every one is written once, keyed so it can't be duplicated.
 - **No retraction.** Alter cannot recall text after B has read it.
 - **No outside control.** Alter governs only what is routed through it. An assistant with its own internet access can share text outside Alter.
 
+**System bookkeeping is not progress.** Alter's own cancellation of a job's pending requests no longer refreshes that job's heartbeat. This was pre-existing on the stack: it also made stopping a job with a pending request fail with "Job changed" whenever the clock moved.
+
+## Where things are
+
+| Piece | Location |
+|---|---|
+| Contract code | `api/index.js` (search `two-bot handoff trial`) |
+| Owner page and review | `public/js/trial.js`, `public/styles/components/trial.css` |
+| Real-assistant matrix and connection steps | `ASSISTANTS.md` |
+| Synthetic input | `fixture-transcript.txt` |
+| Remote delivery gate | `PREVIEW-GATE.md` |
+
+## How to verify
+
+Offline suite, which includes `pilot-handoff-regression.cjs`, `pilot-ui-regression.cjs` and `trial-adapter-regression.cjs`:
+```bash
+for t in $(git ls-files '*-regression.cjs'); do node "$t" || echo "FAIL $t"; done
+```
+
+Real local Redis, scripted workers:
+```bash
+node scripts/pilot-real-redis-e2e.cjs
+```
+
 ## Progress log
 
 - Base created; baseline 102/102.
+- Contract built. 103/103.
+- Real-Redis E2E 5/5. The original real-Redis proof is still 6/6.
+- Owner page and review modal built; local Chromium check at desktop and iPhone 13 widths:
+  - no page errors and no horizontal overflow
+  - adversarial text renders as text
+  - HQ "Approve" opens the review first
+  - the phone review scrolls inside its box
+- Security review fixes:
+  - participants have no other routed action
+  - the expiry is bound to the package
+  - the sweep takes no lock for trials still waiting on the owner
+  - the heartbeat and stop race is fixed (pre-existing)
+- Real-assistant adapter and its test added. Suite 105/105.
+- **Remote delivery is blocked on the Preview binding (PREVIEW-GATE.md).** No push, no PR, no real assistant run.
