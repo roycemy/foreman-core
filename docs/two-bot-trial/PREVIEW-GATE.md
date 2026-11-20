@@ -46,20 +46,10 @@ Notes:
 
 Then, on your machine, pull both environments for this branch and run the preflight. Check `vercel env pull --help` for the branch flag first (`--git-branch` in current CLIs). Any export that shows this branch's effective Preview values will do. Keep both files `chmod 600` and outside the repo:
 
-```bash
-vercel env pull --environment=preview --git-branch=feat/two-bot-handoff-trial preview.env
-```
+Run this from the repo root, on your machine. The env files live in a private temporary folder outside the repo, and they are deleted even if a step fails:
 
 ```bash
-vercel env pull --environment=production production.env
-```
-
-```bash
-node scripts/preview-isolation-preflight.cjs --preview preview.env --production production.env
-```
-
-```bash
-rm preview.env production.env
+D=$(mktemp -d) && chmod 700 "$D" && trap 'rm -rf "$D"' EXIT && umask 077 && vercel env pull --environment=preview --git-branch=feat/two-bot-handoff-trial "$D/preview.env" && vercel env pull --environment=production "$D/production.env" && node scripts/preview-isolation-preflight.cjs --preview "$D/preview.env" --production "$D/production.env"; rm -rf "$D"; trap - EXIT
 ```
 
 `RESULT: PASS` (hosts only, no secrets) is the evidence I need before pushing.
