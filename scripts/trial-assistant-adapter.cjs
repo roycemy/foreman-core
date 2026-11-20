@@ -22,11 +22,16 @@ const die = (msg, code) => { console.error(msg); process.exit(code || 2); };
 if (!/^https?:\/\/[^/]+$/.test(BASE)) die('Set ALTER_BASE to the Alter origin, e.g. https://example.vercel.app');
 if (!/^https:\/\//.test(BASE) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(BASE)) die('ALTER_BASE must be https (http only for localhost)');
 if (!KEY) die('Set ALTER_GATEWAY_KEY or ALTER_GATEWAY_KEY_FILE (this bot\'s own gateway key). The key is never printed.');
+// Optional: a Vercel "Protection Bypass for Automation" secret, for a Preview behind Vercel Authentication. Read from env or file,
+// sent only as the x-vercel-protection-bypass header, never printed.
+const bypassFile = process.env.ALTER_PROTECTION_BYPASS_FILE;
+const BYPASS = String(process.env.ALTER_PROTECTION_BYPASS || (bypassFile ? fs.readFileSync(bypassFile.replace(/^~/, process.env.HOME || ''), 'utf8') : '')).trim();
 const ID = /^[A-Za-z0-9_]{1,64}$/;
 async function call(method, path, body) {
   let res, j = {};
-  try { res = await fetch(BASE + '/api' + path, { method, headers: { authorization: 'Bearer ' + KEY, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) }); }
+  try { res = await fetch(BASE + '/api' + path, { method, headers: { authorization: 'Bearer ' + KEY, 'content-type': 'application/json', ...(BYPASS ? { 'x-vercel-protection-bypass': BYPASS } : {}) }, redirect: 'manual', body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) }); }
   catch (e) { die('Network error: ' + String(e && e.message || e).slice(0, 120) + '. Nothing was changed by this tool; run the same command again.', 3); }
+  if (res.status >= 300 && res.status < 400) die('The Preview redirected this call (HTTP ' + res.status + '), which usually means Vercel Authentication is on. Set ALTER_PROTECTION_BYPASS_FILE to the project\'s automation bypass secret. Nothing was changed.', 5);
   try { j = await res.json(); } catch {}
   return { code: res.status, j };
 }

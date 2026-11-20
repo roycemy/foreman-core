@@ -28,6 +28,21 @@ Both use their **own** Alter gateway key (`Authorization: Bearer …`). Nothing 
 
 **Not assumed:** that any chat app can accept MCP tools, poll, receive a wake, or keep running in the background.
 
+## Deployment protection on the Preview
+
+The trial's Preview is behind **Vercel Authentication**. A signed-in browser gets through; a bot's or the adapter's API call gets a redirect to Vercel sign-in and never reaches Alter.
+
+For the trial, the owner either:
+- **Recommended:** creates a "Protection Bypass for Automation" secret in the project's Deployment Protection settings, or
+- decides some other way to let the two assistants reach this one Preview.
+
+Turning protection off project-wide is not recommended: it would also expose Previews that use the shared production store.
+
+With a bypass secret:
+- **The adapter** reads it from `ALTER_PROTECTION_BYPASS_FILE`, sends it as the `x-vercel-protection-bypass` header, and never prints it.
+- **An HTTP-capable assistant** must send the same header on every call, next to its `Authorization` header.
+- **Never paste the secret into a chat.**
+
 ## Connection steps (on an isolated Preview only; see PREVIEW-GATE.md)
 
 1. **Two bots, two keys.** In Alter on the Preview, go to Connect, then choose Custom agent, then HTTP gateway, once for each assistant. Each bot gets its own gateway key.
