@@ -1,6 +1,17 @@
 # Preview gate for `feat/two-bot-handoff-trial`
 
-**Status: remote delivery BLOCKED.** The branch is not pushed and no pull request exists. A push can start a Vercel Preview build, and it is not established that this branch's Preview would use a non-production database.
+**Status:** the branch is pushed with Vercel auto-deploy suppressed for it (`git.deploymentEnabled` in `vercel.json`). No pull request exists yet. The isolation preflight has not run yet.
+
+## The real order
+
+Vercel refuses branch-scoped variables for a branch that isn't on GitHub yet ("Branch … not found in the connected Git repository"). A plain push would build a Preview bound to the shared production store. So:
+
+1. **Push with suppression.** The pushed head's `vercel.json` has `"git": {"deploymentEnabled": {"feat/two-bot-handoff-trial": false}}`. Per Vercel's Git configuration docs, this map names branches that "should not trigger a deployment upon commits"; branches not listed keep deploying.
+2. **Confirm no deployment exists** for this branch in the project's Deployments list. If one exists, stop.
+3. **Set the five branch-scoped Preview variables** (below).
+4. **Run the preflight** (below). It must print `RESULT: PASS`.
+5. **Remove the suppression block and push.** The first deployment builds bound to the isolated database. Check that its commit equals the branch head, and that `/api/health` shows `store: "upstash"`.
+6. **Open the draft pull request** based on `fix/email-loop-hardening`. Never merge it.
 
 ## What was checked (from the repo, without secrets)
 
@@ -30,7 +41,7 @@ With neither set, the app uses an in-memory store. That writes nothing durable, 
 - A new branch does not inherit another branch's overrides. Without its own overrides, `feat/two-bot-handoff-trial`'s Preview gets the shared defaults.
 - The preflight requires every store URL variable in the Preview export (`KV_REST_API_URL`, `UPSTASH_REDIS_REST_URL`, `KV_URL`, `REDIS_URL`) to name one single host, and that host must differ from production's. With only the REST pair overridden, the export would still carry the production `KV_URL`/`REDIS_URL` host, and the preflight fails with "ambiguous store". The app reads only the REST pair (`api/index.js:52-53`), but the preflight is strict on purpose.
 
-## The one missing step: five branch-scoped Preview variables
+## Step 3: five branch-scoped Preview variables
 
 For **Preview** only, scoped to the **branch `feat/two-bot-handoff-trial`**, add:
 
@@ -56,9 +67,4 @@ D=$(mktemp -d) && chmod 700 "$D" && trap 'rm -rf "$D"' EXIT && umask 077 && verc
 
 ## After PASS
 
-1. I push the branch and open a **draft** pull request, which is never merged.
-2. Confirm the Preview deployment's commit equals the branch head, and `GET /api/health` shows `store: "upstash"`.
-3. Sign up a Preview-only owner.
-4. Connect the two assistants (ASSISTANTS.md).
-5. Run the trial. You approve or deny it yourself, on your phone or desktop.
-6. Run one deny trial as well.
+Steps 5 and 6 above, then the owner self-test in ASSISTANTS.md: sign up a Preview-only owner, connect the two assistants, and run one approve and one deny.
