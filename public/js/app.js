@@ -9,7 +9,7 @@
   $$('.menu button svg,.menu a svg').forEach(s => { s.setAttribute('width', 15); s.setAttribute('height', 15); });
 
   /* ---------- routing ---------- */
-  const VIEWS = ['floor', 'inbox', 'business', 'receipts', 'card'];
+  const VIEWS = ['floor', 'inbox', 'business', 'receipts', 'card', 'trial'];
   BB.route = () => { const h = location.hash.replace(/^#/, ''); const [v, ...rest] = h.split('/'); return { v: VIEWS.includes(v) ? v : (BB.phone() ? 'inbox' : 'floor'), arg: rest.join('/') || null }; };
   BB.go = h => { if (location.hash !== h) location.hash = h; else applyRoute(); };
   const routeHooks = BB._routeHooks;
@@ -62,6 +62,7 @@
     if (k === 'invite') return BB.openInvite();
     if (k === 'connect') return BB.openConnect ? BB.openConnect() : null;
     if (k === 'perms') return BB.openPermsOverview ? BB.openPermsOverview() : null;
+    if (k === 'trial') return BB.go('#trial');
     if (k === 'emergency') return openEmergency();
     if (k === 'reset-workspace') return resetWorkspace();
     if (k === 'signout') return signOut();
