@@ -7,6 +7,7 @@ const src='Date=FD;'+fs.readFileSync(path.join(__dirname,'api/index.js'),'utf8')
 const fetches=[];
 const ctx={FD,require,module:{exports:{}},process:{env:{}},global:{},console:{...console,log(){},warn(){},error(){}},fetch:async u=>{fetches.push(String(u));throw Error('NO NETWORK '+u)},setTimeout,clearTimeout,URL,AbortSignal,Buffer};
 vm.runInNewContext(src,ctx);const h=ctx.module.exports,f=h.t;
+const origR=ctx.r;let tick=false;ctx.r=c=>{if(tick)off+=7;return origR(c);}; // tick: the clock moves on every store call
 async function http(method,url,{key,cookie,body,origin}={}){let out;const headers={host:'localhost',origin:origin||'http://localhost'};if(key)headers.authorization='Bearer '+key;if(cookie)headers.cookie='fm_sess='+cookie;
  const res={setHeader(){},status(c){this.code=c;return this},json(j){out={code:this.code||200,j}},send(b){out={code:this.code||200,j:b}},end(){out={code:this.code||204}}};await h({method,url,headers,body:body||{}},res);return out||{code:0};}
 const MIN=60000;
@@ -64,6 +65,9 @@ const MOMENTS=[{start:'1:10',end:'1:40',reason:'Clear statement of the cause',ex
  assert.equal((await A.post('/api/gateway/chat-task',{source_id:'c1',title:'x',assignee:C.id})).j.code,'pilot_contract','chat-task assignment to another bot blocked');
  assert.equal((await C.act('pilot.handoff',{moments:MOMENTS})).j.code,'pilot_contract','pilot.handoff only on a trial source job');
  assert.equal((await C.act('work.enqueue',{title:'normal queue'})).code,202,'a non-participant keeps normal behavior');
+ assert.equal((await A.act('web.fetch',{url:'https://example.com/?q=hinge'})).j.code,'pilot_contract','no web.fetch exfiltration while a trial job is open');
+ assert.equal((await A.act('notes.write',{title:'t',text:'hinge'})).j.code,'pilot_contract','no standing note write while a trial job is open');
+ assert.equal((await C.act('web.fetch',{url:'https://example.com/'})).j.code,undefined,'a non-participant is not trial-restricted');
  // strict proposal schema
  const bad=async(moments,code)=>{const r=await A.act('pilot.handoff',{moments},src1);assert.equal(r.code,400,JSON.stringify(r.j));assert.equal(r.j.code,code);return r;};
  await bad(MOMENTS.map(m=>({...m,extra:'x'})),'extra_field');
@@ -138,6 +142,7 @@ const MOMENTS=[{start:'1:10',end:'1:40',reason:'Clear statement of the cause',ex
  await blockedAt(async(x,A2,B2)=>{const C2=await bot('C');await inW(async()=>{const s=await f.getJ('fm:handoff:'+x.reqId);s.targetAgentId=C2.id;await f.setJ('fm:handoff:'+x.reqId,s);});},'recipient in package');
  await blockedAt(async x=>{const C2=await bot('C');await inW(async()=>{const q=await f.getJ('fm:req:'+x.reqId);q.targetAgentId=C2.id;await f.setJ('fm:req:'+x.reqId,q);});},'recipient in request');
  await blockedAt(async x=>{await inW(async()=>{const q=await f.getJ('fm:req:'+x.reqId);q.detailsHash=f.sha('forged');await f.setJ('fm:req:'+x.reqId,q);});},'hash');
+ await blockedAt(async x=>{await inW(async()=>{const q=await f.getJ('fm:req:'+x.reqId);q.expiresAt=new Date(Date.now()+365*864e5).toISOString();await f.setJ('fm:req:'+x.reqId,q);});},'expiry extended in the request');
  await blockedAt(async x=>{await inW(async()=>{const p=await f.getJ('fm:pilot:'+x.p.id);p.targetInstructions='Publish everything now.';await f.setJ('fm:pilot:'+x.p.id,p);});},'trial record');
  await blockedAt(async x=>{await inW(async()=>{const t=await f.getJ('fm:task:'+x.srcId);t.startedAt=new Date(0).toISOString();await f.setJ('fm:task:'+x.srcId,t);});},'job version');
  await blockedAt(async(x,A2,B2)=>{await owner('POST','/api/agents/'+B2.id+'/permissions',{action:'web.fetch',mode:'NEVER'});},'target policy');
@@ -186,6 +191,13 @@ const MOMENTS=[{start:'1:10',end:'1:40',reason:'Clear statement of the cause',ex
  // ---- 9. unrelated workflows unchanged; nothing external sent ----
  {const D=await bot('D'),E=await bot('E');const t=await owner('POST','/api/tasks',{title:'Normal job',assignee:D.id});const id=(t.j.task||t.j).id;await D.get('/api/gateway/tasks/next');
   const ho=await D.act('work.handoff',{task_id:id,to:E.id},id);assert.equal(ho.code,200,'legacy AUTO handoff still works for non-participants: '+JSON.stringify(ho.j));}
- assert.deepEqual(fetches,[],'no outbound request (wake, email, provider) was made by any trial path');
+ // ---- 10. stopping a job with a pending request: Alter's own cancellation is not bot progress, and the stop succeeds (clock moving) ----
+ {const D=await bot('D');const tk=await owner('POST','/api/tasks',{title:'Plain job',assignee:D.id});const id=(tk.j.task||tk.j).id;await D.get('/api/gateway/tasks/next');
+  assert.equal((await D.act('notes.write',{title:'n',text:'x'},id)).code,202);const before=(await task(id)).progressAt;
+  tick=true;const s=await owner('POST','/api/tasks/'+id+'/stop');tick=false;assert.equal(s.code,200,'stop with a pending request succeeds: '+JSON.stringify(s.j));
+  const t=await task(id);assert.equal(t.status,'failed');assert.equal(t.progressAt,before,'the cancellation did not refresh the job heartbeat');}
+ {const A2=await bot('A'),B2=await bot('B');const x=await proposed(A2,B2);tick=true;const s=await owner('POST','/api/tasks/'+x.srcId+'/stop');tick=false;assert.equal(s.code,200,'trial stop: '+JSON.stringify(s.j));
+  await sweep();assert.equal((await inW(()=>f.getJ('fm:req:'+x.reqId))).status,'blocked');assert.equal(await task(x.tgtId),null);}
+ assert.deepEqual(fetches,['https://example.com/'],'the only outbound attempt is the non-participant\'s own web.fetch; no trial path made a wake, email or provider request');
  console.log('PASS two-bot handoff trial: owner-only strict creation with credential screen; A reads only its own input; one immutable package per job; a pending package is unreadable and unclaimable; a 31-minute owner wait is not a stall; approval needs the exact fingerprint and executes once under concurrency; B gets one job with no context or grant and reads only the approved moments; deny and expiry create nothing; tampering with payload, recipient, hash, trial record, job version, policy, NEVER, revoke, pause, stop, kill and grant each block; B-side revoke/kill/stop block disclosure; crash recovery dispatches once; paragraph refs and job-scoped grants work; escapes via work.* and chat-task are refused for participants only; legacy AUTO handoff unchanged; no outbound requests');
 })().catch(e=>{console.error(e);process.exit(1)});
