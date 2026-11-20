@@ -24,20 +24,27 @@ With neither set, the app uses an in-memory store. That writes nothing durable, 
 
 `scripts/preview-isolation-preflight.cjs` fails if any of these is present on the Preview, unless you explicitly allow it.
 
-**Environment precedence (from your observation; I have no Vercel access):**
+**Environment precedence (corrected after an independent read of the live Vercel project):**
 - The Preview-only `KV_REST_API_URL`, `KV_REST_API_TOKEN` and `ENC_SECRET` are scoped to the branch `fix/email-loop-hardening`.
-- Shared Production-and-Preview defaults also exist.
-- A new branch does not inherit another branch's overrides. Unless you add overrides for `feat/two-bot-handoff-trial`, its Preview would get the shared defaults, and those are assumed to point at production.
+- Shared defaults scoped to **Production and Preview** also exist, including `KV_URL` and `REDIS_URL`. They point at the production store.
+- A new branch does not inherit another branch's overrides. Without its own overrides, `feat/two-bot-handoff-trial`'s Preview gets the shared defaults.
+- The preflight requires every store URL variable in the Preview export (`KV_REST_API_URL`, `UPSTASH_REDIS_REST_URL`, `KV_URL`, `REDIS_URL`) to name one single host, and that host must differ from production's. With only the REST pair overridden, the export would still carry the production `KV_URL`/`REDIS_URL` host, and the preflight fails with "ambiguous store". The app reads only the REST pair (`api/index.js:52-53`), but the preflight is strict on purpose.
 
-## The one missing step (owner action in Vercel)
+## The one missing step: five branch-scoped Preview variables
 
 For **Preview** only, scoped to the **branch `feat/two-bot-handoff-trial`**, add:
 
-1. `KV_REST_API_URL` and `KV_REST_API_TOKEN`: the same non-production database already used for `fix/email-loop-hardening`'s Preview, or a new free one.
-2. `ENC_SECRET`: a freshly generated value, not the production one.
-3. No `RESEND_API_KEY`, `WAKE_*`, `ALTER_MODEL_*`, `CRON_SECRET` or `STRIPE_*` for this branch. If shared defaults supply any of them, override them with empty values for this branch, or tell me which must stay.
+1. `KV_REST_API_URL`: the non-production database already used for the `fix/email-loop-hardening` Preview, or a new free one.
+2. `KV_REST_API_TOKEN`: from the same database.
+3. `KV_URL`: the same non-production database's `rediss://` URL. Its host is the same as the REST URL's host.
+4. `REDIS_URL`: the same value as `KV_URL`.
+5. `ENC_SECRET`: freshly generated, for example with `openssl rand -hex 32`. It must not be the production value or the other branch's value.
 
-Then, on your machine, pull both environments for this branch and run the preflight. The `--git-branch` flag is from the Vercel CLI docs as I know them and is not verified here; any export that shows this branch's effective Preview values will do:
+Notes:
+- `KV_REST_API_READ_ONLY_TOKEN` may stay as it is. The app code does not read it, and the preflight does not check it.
+- No outbound-capable variable (`RESEND_API_KEY`, `WAKE_*`, `ALTER_MODEL_*`, `CRON_SECRET`, `STRIPE_*`) currently applies to this branch's Preview, so no empty-value overrides are needed. The preflight still checks them, and that check must pass.
+
+Then, on your machine, pull both environments for this branch and run the preflight. Check `vercel env pull --help` for the branch flag first (`--git-branch` in current CLIs). Any export that shows this branch's effective Preview values will do. Keep both files `chmod 600` and outside the repo:
 
 ```bash
 vercel env pull --environment=preview --git-branch=feat/two-bot-handoff-trial preview.env
