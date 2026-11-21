@@ -41,7 +41,7 @@
 (function () {
   'use strict';
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const STEP = { assigned: 'The owner assigned the job', claimed: 'A bot took the job', actions: n => 'Completed ' + n + ' permitted action' + (n === 1 ? '' : 's'), approved: 'The owner approved a step', denied: 'The owner denied a step', blocked: 'A step was blocked', handoff: 'Part of the job went to another bot', part_done: 'A delegated part finished', delivered: 'Delivered', stopped: 'Stopped without a result' };
+  const STEP = { assigned: 'The owner assigned the job', claimed: 'A bot took the job', actions: n => 'Completed ' + n + ' permitted action' + (n === 1 ? '' : 's'), approved: 'The owner approved a step', denied: 'The owner denied a step', blocked: 'A step was blocked', handoff: 'Part of the job went to another bot', part_done: 'A delegated part finished', delivered: 'Delivered', finished: 'Finished', stopped: 'Stopped without a result' };
   const clock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
   const day = iso => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
   const elapsed = s => s == null ? 'Not tracked' : s < 60 ? s + ' s' : s < 3600 ? Math.round(s / 60) + ' min' : s < 86400 ? (Math.round(s / 360) / 10) + ' h' : Math.round(s / 8640) / 10 + ' d';

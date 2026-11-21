@@ -16,13 +16,16 @@ BB.checkInWhy=function(a){const ps=BB.pollSec?BB.pollSec(a):0;
  if((a.providerId||'').toLowerCase()==='muse')return first(a.name)+' checks in when you message it';
  return '';};
 /* Offline = connected on paper but silent 30+ min (Muse, hosted, revoked and not-yet-connected bots never count). */
-BB.isOffline=a=>{if(!a||a.status!=='active'||a.hosted||!a.lastSeen||(a.providerId||'')==='muse'||(BB.isGhost&&BB.isGhost(a))||(BB.presence&&BB.presence(a)==='reconnect'))return false;return Date.now()-Date.parse(a.lastSeen)>=1800000;};
+/* A gateway-key bot is never 'Offline, re-paste': its key does not expire by silence. Idle and went-dark cover it (BB.gatewayIdle, BB.wentDark). */
+BB.isOffline=a=>{if(!a||a.status!=='active'||a.hosted||!a.lastSeen||(a.connection&&a.connection.transport==='gateway'&&a.connection.polledAt!==undefined)||(a.providerId||'')==='muse'||(BB.isGhost&&BB.isGhost(a))||(BB.presence&&BB.presence(a)==='reconnect'))return false;return Date.now()-Date.parse(a.lastSeen)>=1800000;};
 BB.honestStatus=function(a){const p=BB.presence?BB.presence(a):'connected';
  if(BB.isOffline(a))return{s:'reconnect',line:'Offline',why:'No check-in for '+ago(a.lastSeen).replace(' ago','')+'. One tap copies a fresh setup message.'};
  if(p==='reconnect')return{s:'reconnect',line:'Needs reconnect',why:WHY[BB.reconnectReason(a)]};
  if(a.paused||(BB.S&&BB.S.killed))return{s:'paused',line:'Paused',why:BB.S&&BB.S.killed?'Everything is paused':'You paused this bot'};
  const t=BB.runningTask&&BB.runningTask(a);
  if(t&&BB.signal&&BB.signal(a)==='working')return{s:'working',line:'Working · '+t.title,why:''};
+ /* valid key, used, never checked in: say exactly that. Active = a call in the last 10 min; Idle = older. Neither means a worker is running. */
+ const c=a.connection||{};if(c.transport==='gateway'&&c.status==='active'&&c.polledAt===null){const last=c.lastCallAt||a.lastSeen,recent=last&&Date.now()-Date.parse(last)<600000;return{s:'queued',line:(recent?'Active':'Idle')+' · last call '+(last?ago(last):'never'),why:'Its key works. Nothing checks in, so Alter can’t tell whether a worker is running.'};}
  const waiting=BB.tasks&&BB.tasks().some(x=>x.status==='queued'&&x.assignee===a.id),claimAge=a.lastClaimAt?Date.now()-Date.parse(a.lastClaimAt):Infinity;
  /* a bot that pings but never asks for work looks healthy and is not: say so */
  const why=waiting&&claimAge>600000?first(a.name)+' is checking in but has not asked for work ('+(a.lastClaimAt?'last '+ago(a.lastClaimAt):'never')+'). Jobs are waiting.':BB.checkInWhy(a);

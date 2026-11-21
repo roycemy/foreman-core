@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const src=fs.readFileSync(__dirname+'/api/index.js','utf8')+'\nmodule.exports.t={AUTHZ,r,setJ,getJ,als,cardControl,cardPropose,cardDecision,cardData,createAgent,grantJob,gatewayAct,decide,newTask};';
+const src=fs.readFileSync(__dirname+'/api/index.js','utf8')+'\nmodule.exports.t={AUTHZ,jobSpent,r,setJ,getJ,als,cardControl,cardPropose,cardDecision,cardData,createAgent,grantJob,gatewayAct,decide,newTask};';
 const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:()=>{throw Error('NO NETWORK OR PAYMENT')},setTimeout,clearTimeout,URL,AbortSignal};vm.runInNewContext(src,ctx);const f=ctx.module.exports.t;
 (async()=>{await f.als.run({ws:'auth-test'},async()=>{
  const {agent:a}=await f.createAgent('Fixture','Ops','custom',false,{preset:'balanced'});a.permissionScope='job';a.permissions={'notes.write':'AUTO','notes.delete':'NEVER'};await f.setJ('fm:agent:'+a.id,a);
@@ -19,7 +19,7 @@ const ctx={require,module:{exports:{}},process:{env:{}},global:{},console,fetch:
  // Real gateway ledger loop: exact cap, concurrent admission, approval-time recheck, replay.
  await f.grantJob(t.id,{expectedAssignee:a.id,confirmed:true,budgetCents:2,actions:{'notes.write':'AUTO'}});
  const act={action:'notes.write',task_id:t.id,params:{title:'Synthetic',text:'test'}};
- let r=await Promise.all([f.gatewayAct(a,act),f.gatewayAct(a,act)]);assert(r.some(x=>x.status===200));assert(r.some(x=>x.status===409));assert.equal((await f.gatewayAct(a,act)).body.code,'limit_job');assert.equal((await f.getJ('fm:task:'+t.id)).jobGrant.spentCents,2);
+ let r=await Promise.all([f.gatewayAct(a,act),f.gatewayAct(a,act)]);assert(r.some(x=>x.status===200));assert(r.some(x=>x.status===409));assert.equal((await f.gatewayAct(a,act)).body.code,'limit_job');{const lt=await f.getJ('fm:task:'+t.id);assert.equal(await f.jobSpent(t.id,lt.jobGrant),2);}
  await f.grantJob(t.id,{expectedAssignee:a.id,confirmed:true,budgetCents:4,actions:{'notes.write':'ASK'}});let ask=await f.gatewayAct(a,act);assert.equal(ask.status,202);
  // spend remaining budget through a fixture state change; approval must not overshoot.
  let live=await f.getJ('fm:task:'+t.id);live.jobGrant.spentCents=4;await f.setJ('fm:task:'+t.id,live);assert.equal((await f.decide(ask.body.request_id,'approve')).body.request.status,'blocked');assert.equal((await f.decide(ask.body.request_id,'approve')).status,409);

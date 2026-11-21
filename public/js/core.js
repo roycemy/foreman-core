@@ -63,12 +63,64 @@
   BB.tasks = () => (BB.S && BB.S.tasks) || [];
   BB.task = id => BB.tasks().find(t => t.id === id) || null;
   BB.pendingReqs = () => ((BB.S && BB.S.requests) || []).filter(q => q.status === 'pending');
+  /* email.send after approval. Words follow evidence: Resend accepting it is not delivery; unknown stays unknown. */
+  BB.EMAIL_STATE = { accepted: 'Accepted by Resend. Delivery not confirmed yet.', delivered: 'Delivered to the recipient’s mail server (Resend).', delayed: 'Delivery delayed (Resend).', bounced: 'Bounced: the recipient’s server rejected it.', complained: 'Delivered, then marked as spam.', failed: 'Resend could not send it.', suppressed: 'Not sent: the address is on Resend’s suppression list.', unknown: 'Outcome unknown. Nothing was retried.', not_sent: 'Not sent.' };
+  BB.emailOutcome = q => q.status === 'outcome_unknown' ? 'Approved, but the result is unknown. Nothing was retried. Reconcile to find out.' : q.status === 'expired' ? 'Expired. Nothing was sent.' : q.status === 'blocked' ? 'Blocked: ' + (q.reason || 'something changed') + ' Nothing was sent.' : q.status === 'denied' ? 'Denied. Nothing was sent.' : q.status === 'failed' ? 'Not sent: ' + ((q.result && q.result.error) || 'Resend rejected it') : q.delivery ? BB.EMAIL_STATE[q.delivery.state] || 'Sent.' : 'Decision saved.';
+  /* the exact email under review: every field in full, escaped, plus the fingerprint and expiry ---------- */
+  BB.emailReview = q => {
+    const p = q.params || {}, left = q.expiresAt ? Math.max(0, Math.round((Date.parse(q.expiresAt) - Date.now()) / 60000)) : null;
+    return '<span class="email-review"><b>From</b> ' + esc(p.from) + '<br><b>To</b> ' + esc(p.to) + '<br><b>Subject</b> ' + esc(p.subject) + '</span><span class="email-body" style="display:block;white-space:pre-wrap;max-height:40vh;overflow:auto;margin:.5em 0;padding:.5em;border:1px solid currentColor;border-radius:6px">' + esc(p.text) + '</span><small>Fingerprint ' + esc(String(q.detailsHash || '').slice(0, 12)) + (q.expired ? ' · expired: approving now sends nothing' : left != null ? ' · expires in ' + left + ' min' : '') + ' · Alter sends it, not the bot</small>';
+  };
+  /* A note is approved only from a view that shows all of it: the title and full text Alter will write, escaped, with the fingerprint. */
+  BB.noteReview = q => {
+    const p = q.params || {}, left = q.expiresAt ? Math.max(0, Math.round((Date.parse(q.expiresAt) - Date.now()) / 60000)) : null;
+    return '<span class="note-review"><b>Note</b> ' + esc(p.title) + '</span><span class="note-body" style="display:block;white-space:pre-wrap;max-height:40vh;overflow:auto;margin:.5em 0;padding:.5em;border:1px solid currentColor;border-radius:6px">' + esc(p.text) + '</span><small>Fingerprint ' + esc(String(q.detailsHash || '').slice(0, 12)) + (q.expired ? ' · expired: approving now saves nothing' : left != null ? ' · expires in ' + left + ' min' : '') + ' · Alter saves it to your workspace, not the bot</small>';
+  };
+  BB.reviewNote = function (item) {
+    if (!BB.modal) return null;
+    const box = BB.modal('<h3>Review this note</h3><p>' + BB.noteReview(item.q) + '</p><div class="btns"><button class="b pri grow" type="button" data-ok>Approve and save</button><button class="b out grow" type="button" data-no>Deny</button></div>', { label: 'Review note', wide: true });
+    box.querySelector('[data-ok]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'approve', { reviewed: true }); };
+    box.querySelector('[data-no]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'deny'); };
+    return null;
+  };
+  BB.reviewEmail = function (item) {
+    if (!BB.modal) return null;
+    const box = BB.modal('<h3>Review this email</h3><p>' + BB.emailReview(item.q) + '</p><div class="btns"><button class="b pri grow" type="button" data-ok>Approve and send</button><button class="b out grow" type="button" data-no>Deny</button></div>', { label: 'Review email', wide: true });
+    box.querySelector('[data-ok]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'approve', { reviewed: true }); };
+    box.querySelector('[data-no]').onclick = async () => { BB.closeModal(); await BB.decide(item, 'deny'); };
+    return null;
+  };
+  /* Needs you: only an email whose outcome is unknown (the owner must reconcile). A sent email is a receipt, not unresolved work: it
+     lives in Receipts with its provider id and delivery state. */
+  /* A note the owner approved whose save never finished: offered as Finish saving. Decided here from decidedAt (or recoverStartedAt) and the
+     server-synced clock with the server's own threshold, so it shows on the 1 s redraw rather than after the 30 s state cache; the server
+     flag is honored too, and the recover route stays the authority (it refuses a save that is not yet stale). */
+  const NOTE_STALE_MS = 120000;
+  BB.noteFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'notes.write' && (q.stalled || (['approved', 'recovering'].includes(q.status) && BB.now() - Date.parse(q.status === 'recovering' ? (q.recoverStartedAt || q.decidedAt) : q.decidedAt) > NOTE_STALE_MS)));
+  BB.emailFollowups = () => ((BB.S && BB.S.requests) || []).filter(q => q.action === 'email.send' && q.status === 'outcome_unknown');
+  /* Receipts: finished jobs plus standalone action receipts (no taskId), newest first. A job-linked receipt stays inside its job, each
+     receipt id appears once, and a standalone receipt is linked to its request when that request is still in the retained history. */
+  BB.receiptFeed = function () {
+    const S = BB.S || {}, reqs = new Map((S.requests || []).map(q => [q.id, q])), seen = new Set();
+    const jobs = BB.tasks().filter(t => ['done', 'failed'].includes(t.status) && t.finishedAt).map(t => ({ kind: 'job', at: t.finishedAt, t }));
+    const acts = (S.receipts || []).filter(r => r && r.id && !r.taskId && !seen.has(r.id) && seen.add(r.id)).map(r => ({ kind: 'action', at: r.at, r, q: (r.requestId && reqs.get(r.requestId)) || null }));
+    return jobs.concat(acts).sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+  };
+  const OUTCOME_WORD = { completed: 'Done', denied: 'Denied', blocked: 'Blocked', expired: 'Expired', failed: 'Failed', unknown: 'Outcome unknown' };
+  BB.receiptLine = function (x) {
+    const r = x.r, q = x.q, c = BB.ACTION_COPY[r.action] || {};
+    if (r.action === 'email.send' && r.outcome === 'completed') {
+      const to = (q && q.params && q.params.to) || (r.params && r.params.to) || '', id = (q && q.delivery && q.delivery.providerMessageId) || r.providerMessageId;
+      return 'Sent an email to ' + to + ' · ' + (q ? BB.emailOutcome(q) : 'Accepted by Resend. Delivery not confirmed yet.') + (id ? ' · Resend id ' + id : '');
+    }
+    return (c.ask || r.action) + ' · ' + (OUTCOME_WORD[r.outcome] || r.outcome) + (r.summary ? ' · ' + String(r.summary).slice(0, 140) : '');
+  };
 
   /* ---------- presence: derived from the server's grant state, never from a stale heartbeat ---------- */
   BB.linkWaiting = null;
   BB.presence = function (d) {
     if (!d) return 'prepared'; if (d.status === 'revoked') return 'revoked';
-    const c = d.connection, seen = !!(d.lastSeen || d.state);
+    const c = d.connection, seen = !!(d.lastSeen || d.state || (c && c.lastCallAt));
     if (c && c.status) {
       if (c.status === 'needs_reauth') return 'reconnect'; if (c.status === 'revoked') return 'revoked'; if (c.status === 'not_applicable') return 'connected';
       if (c.status === 'active') return seen ? 'connected' : 'waiting'; if (c.status === 'verification_pending') return 'waiting';
@@ -138,7 +190,9 @@
     'notes.delete': { verb: 'Delete notes', what: 'Removes notes from your workspace', ask: 'Delete workspace notes', doing: 'tidying notes' },
     'work.handoff': { verb: 'Hand off work', what: 'Passes a job to another bot', ask: 'Hand off a job', doing: 'handing off work' },
     'work.assign': { verb: 'Assign jobs', what: 'Gives a job to another bot', ask: 'Assign a job', doing: 'assigning a job' },
-    'work.enqueue': { verb: 'Queue new jobs', what: 'Adds unassigned jobs to your inbox', ask: 'Queue a job', doing: 'queueing a job' }
+    'work.enqueue': { verb: 'Queue new jobs', what: 'Adds unassigned jobs to your inbox', ask: 'Queue a job', doing: 'queueing a job' },
+    'email.send': { verb: 'Send email', what: 'Alter sends each email only after you approve it', ask: 'Send an email', doing: 'drafting an email' },
+    'pilot.handoff': { verb: 'Trial handoff', what: 'Hands approved trial moments to another bot', ask: 'Hand moments to another bot', doing: 'picking moments' }
   };
   BB.MODE_COPY = { AUTO: 'Allowed', ASK: 'Ask first', NEVER: 'Never' };
   BB.reqTitle = q => {
@@ -208,8 +262,11 @@
   BB.DARK_MS = 150000;
   BB.wentDark = (a, at) => {
     if (!a || a.status !== 'active' || !a.connection || a.connection.status !== 'active' || a.connection.transport === 'botlink' || !a.lastSeen) return false;
+    /* a gateway-key bot only goes dark if it was checking in and stopped. polledAt null = the server knows it never checked in: idle, not dark.
+       polledAt absent = an older server sent no evidence either way, so the last-seen rule stays. */
+    const pa = a.connection.polledAt, last = a.connection.transport === 'gateway' && pa !== undefined ? pa : a.lastSeen; if (!last) return false;
     const ps = BB.pollSec(a);
-    return ((at || BB.now()) - Date.parse(a.lastSeen)) >= (ps ? 2 * ps * 1000 : BB.DARK_MS);
+    return ((at || BB.now()) - Date.parse(last)) >= (ps ? 2 * ps * 1000 : BB.DARK_MS);
   };
   /* the owner alarm only covers live channels: pollers show Late in their own status and Muse is Dark by default */
   BB.goneDark = (a, at) => BB.wentDark(a, at) && !BB.pollSec(a) && a.providerId !== 'muse';
@@ -307,6 +364,8 @@
   BB.onYou = function () {
     const items = [];
     BB.pendingReqs().forEach(q => { const a = BB.agent(q.agentId); items.push({ type: 'approval', id: 'req:' + q.id, at: q.createdAt, a, q }); });
+    BB.emailFollowups().forEach(q => items.push({ type: 'email', id: 'email:' + q.id, at: q.executedAt || q.decidedAt, a: BB.agent(q.agentId), q }));
+    BB.noteFollowups().forEach(q => items.push({ type: 'notesave', id: 'notesave:' + q.id, at: q.decidedAt, a: BB.agent(q.agentId), q }));
     ((BB.money && BB.money.requests) || []).filter(q => q.status === 'pending_review' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'spend', id: 'spend:' + q.id, at: q.createdAt, a: BB.agent(q.agentId), q }));
     ((BB.cards && BB.cards.proposals) || []).filter(q => q.status === 'pending' && Date.parse(q.expiresAt) > BB.now()).forEach(q => items.push({ type: 'card', id: 'card:' + q.id, at: q.createdAt, a: BB.agent(q.botId), q }));
     BB.agents().filter(a => BB.presence(a) === 'reconnect').forEach(a => items.push({ type: 'reconnect', id: 'rec:' + a.id, at: (a.connection && a.connection.failedAt) || a.lastSeen, a }));
@@ -319,7 +378,7 @@
     });
     BB.tasks().forEach(t => { const b = BB.budgetBlock(t); if (b) items.push({ type: 'budget', id: 'budget:' + t.id + ':' + b.id, at: b.at, a: BB.agent(t.assignee), t, r: b }); });
     BB.tasks().filter(t => t.status === 'queued' && !t.assignee).forEach(t => items.push({ type: 'unassigned', id: 'task:' + t.id, at: t.createdAt, t }));
-    const rank = { approval: 0, spend: 0, card: 0, budget: 0, reconnect: 1, dark: 1, asleep: 1, unassigned: 2 };
+    const rank = { approval: 0, spend: 0, card: 0, budget: 0, email: 1, reconnect: 1, dark: 1, asleep: 1, unassigned: 2 };
     return items.sort((x, y) => rank[x.type] - rank[y.type] || String(y.at || '').localeCompare(String(x.at || '')));
   };
   /* One summary for the crew pill, the pop-down, the rail and the phone Inbox, all on the 60-second activity rule.
@@ -328,7 +387,7 @@
     at = at || BB.now();
     const as = BB.agents().filter(a => a.status !== 'revoked'), dark = as.filter(a => BB.goneDark(a, at));
     const active = as.filter(a => BB.signal(a, at) !== 'inactive'), working = as.filter(a => BB.signal(a, at) === 'working');
-    const needs = BB.onYou().filter(i => i.type !== 'dark').length;
+    const needs = BB.onYou().filter(i => i.type !== 'dark' && !(i.type === 'email' && i.q.status === 'executed')).length;
     const running = BB.tasks().filter(t => t.status === 'running' && t.assignee && BB.agent(t.assignee) && BB.signal(BB.agent(t.assignee), at) === 'working').length;
     const parts = [];
     if (needs) parts.push(needs + (needs === 1 ? ' needs' : ' need') + ' you');
@@ -339,17 +398,27 @@
   };
 
   /* ---------- decisions ---------- */
-  BB.decide = async function (item, d) {
+  BB.decide = async function (item, d, opts) {
     let j;
-    if (item.type === 'approval') j = await BB.api('/api/requests/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST');
+    /* An email is approved only from a view that shows all of it. Compact cards (floor tray, lists, pop-down) open the full review instead. */
+    if (item.type === 'approval' && item.q.action === 'email.send' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewEmail(item);
+    if (item.type === 'approval' && item.q.action === 'notes.write' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewNote(item);
+    /* a trial handoff is approved only from the review that shows the recipient and the exact package */
+    if (item.type === 'approval' && item.q.action === 'pilot.handoff' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewHandoff ? BB.reviewHandoff(item) : null;
+    if (item.type === 'approval') j = await BB.api('/api/requests/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
+    else if (item.type === 'email') j = await BB.api('/api/requests/' + item.q.id + '/' + (item.q.status === 'outcome_unknown' ? 'reconcile' : 'delivery'), 'POST');
+    else if (item.type === 'notesave') j = await BB.api('/api/requests/' + item.q.id + '/recover', 'POST', {});
     else if (item.type === 'spend') j = await BB.api('/api/money/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     else if (item.type === 'card') j = await BB.api('/api/cards/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     BB.toast(BB.outcome(item, j, d)); await BB.sync(true); return j;
   };
   BB.outcome = function (item, j, d) {
     if (!j || j.error) return 'Not confirmed: ' + ((j && j.error) || 'try again');
-    if (item.type === 'approval') {
+    if (item.type === 'notesave') { const st = j.request && j.request.status; return st === 'executed' ? 'Saved. The note you approved is in your workspace.' : st === 'blocked' ? 'Not saved: ' + (j.request.reason || 'a permission or limit changed') : st === 'failed' ? 'Not saved: ' + ((j.request.result && j.request.result.error) || 'see the job log') : 'Decision saved.'; }
+    if (item.type === 'approval' || item.type === 'email') {
       const q = j.request, st = q && q.status;
+      if (q && q.action === 'email.send') return BB.emailOutcome(q);
+      if (q && q.action === 'pilot.handoff' && st === 'executed') return 'Approved. Alter queued one caption job for ' + ((q.params && q.params.to) || 'the second bot') + '.';
       if (st === 'executed' && j.receipt && j.receipt.outcome === 'completed') return 'Approved. It ran and left a receipt.';
       if (st === 'denied') return 'Denied. Nothing ran.';
       if (st === 'blocked') return 'Blocked: ' + (q.reason || 'a permission or limit changed');
