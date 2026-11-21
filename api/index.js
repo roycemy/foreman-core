@@ -315,6 +315,8 @@ async function execute(agent, action, params, reqId) {
     const t = await getJ('fm:task:' + params.task_id); if (!t || t.orchestration || t.assignee !== agent.id) throw new Error('task not found or not yours');
     const to = (await listAgents()).find(x => x.id === params.to || x.name.toLowerCase() === String(params.to || '').toLowerCase());
     if (!to || to.id === agent.id) throw new Error('unknown target agent'); if (to.status !== 'active') throw new Error('target agent is not active');
+    // Retry-safe: a repeat of the same handoff (same task, same target) returns the child it already made instead of a second job and wake.
+    if (t.childId && t.handedTo === to.id) { const prev = await getJ('fm:task:' + t.childId); if (prev) return { summary: `Already handed "${t.title}" to ${to.name} (task ${prev.id})`, data: { child_task_id: prev.id, to: to.name, duplicate: true } }; }
     const child = await newTask({ title: String(params.title || t.title).slice(0, 120), brief: String(params.brief || '').slice(0, 1500), assignee: to.id, parentId: t.id, context: t.result || '', createdBy: agent.id });
     t.handedTo = to.id; t.childId = child.id; await setJ('fm:task:' + t.id, t);
     await event(agent.id, 'handoff', `Handed "${t.title}" to ${to.name}`, { kind: 'HANDOFF', toAgentId: to.id, taskId: t.id, childTaskId: child.id });
