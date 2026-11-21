@@ -1215,9 +1215,9 @@ async function runHosted(agent, t) {
 const COOKIE = 'fm_sess';
 const LEGACY_CLAIM_HASH = '939eed690d2af252b4940442b755cb84ba4c27be515142877a44b1a32424454d';
 const cookieOf = req => { const m = String(req.headers.cookie || '').match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)')); return m ? m[1] : null; };
-async function getSession(req) { const t = cookieOf(req); if (!t) return null; const v = await r(['GET', 'gl:sess:' + sha(t)]);if(!v)return null;const sess=JSON.parse(v),u=await getJ('gl:user:'+sha(sess.email));return u&&u.id===sess.uid&&u.ws===sess.ws?sess:null; }
+async function getSession(req) { const t = cookieOf(req); if (!t) return null; const v = await r(['GET', 'gl:sess:' + sha(t)]);if(!v)return null;const sess=JSON.parse(v),u=await getJ('gl:user:'+sha(sess.email));if(u&&u.pwAt&&!(Number(sess.at)>=Number(u.pwAt)))return null;return u&&u.id===sess.uid&&u.ws===sess.ws?sess:null; }
 const setCookie = (res, v, maxAge) => res.setHeader('Set-Cookie', `${COOKIE}=${v}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`);
-async function startSession(res, user) { const t = crypto.randomBytes(32).toString('hex'); await r(['SET', 'gl:sess:' + sha(t), JSON.stringify({ uid: user.id, email: user.email, ws: user.ws }), 'EX', 2592000]); setCookie(res, t, 2592000); }
+async function startSession(res, user) { const t = crypto.randomBytes(32).toString('hex'); await r(['SET', 'gl:sess:' + sha(t), JSON.stringify({ uid: user.id, email: user.email, ws: user.ws, at: Date.now() }), 'EX', 2592000]); setCookie(res, t, 2592000); }
 // funnel instrumentation: first time each workspace reaches a step, record it once
 const STEPS = ['signup', 'connect_started', 'connected', 'first_task_started', 'approval_shown', 'approval_completed', 'first_receipt'];
 async function track(step, extra, ws) { try { ws = ws || wsId(); if (!STEPS.includes(step)) return; const first = await r(['SET', 'gl:fn:' + ws + ':' + step, '1', 'NX']); if (!first) return; await r(['LPUSH', 'gl:funnel', JSON.stringify({ ws, step, at: now(), ...(extra || {}) })]); await r(['LTRIM', 'gl:funnel', 0, 4999]); } catch (e) {} }
@@ -1269,6 +1269,7 @@ async function handleAuth(req, res, path, body) {
   if(path==='/auth/reset-workspace'&&req.method==='POST')return resetOwnerWorkspace(req,res,body);
   if (path === '/me') { const s = await getSession(req); if (!s) return res.status(401).json({ error: 'auth' }); if (s.ws !== 'legacy') await mark('visit', null, s.ws); return res.json({ email: s.email, legacy: s.ws === 'legacy', workspace:s.ws }); }
   if (path === '/auth/logout') { const t = cookieOf(req); if (t) await r(['DEL', 'gl:sess:' + sha(t)]); setCookie(res, '', 0); return res.json({ ok: true }); }
+  if (path === '/auth/reset-request' || path === '/auth/reset') return passwordReset(req, res, path, body);
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
   const email = String(body.email || '').trim().toLowerCase(), pw = String(body.password || '');
   if (!/^[^@\s]{1,64}@[^@\s]{1,120}\.[^@\s]{2,}$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
@@ -1976,6 +1977,59 @@ async function waitlistAdmin(req,res){
  return res.json({taken:await foundingSeats.total(),limit:1000,inPerson,onlineSignups:signups.length,campaigns,signups});
 }
 
+// ---------- password recovery: email-token reset ----------
+// Request: the owner types their email; if it is a founder account (the same recipients production's waitlist-admin activation mail
+// already goes to, from the same sender), Alter mails a single-use link valid for 30 minutes. Everyone gets the same answer, so the
+// route does not reveal which addresses have accounts. Reset: the token (from the link's #fragment, never a query string) and a new
+// password; the token is consumed by compare-and-set, so it works once even under concurrency; the password change ends every older
+// session. Nothing here logs the token, the link or the password.
+const RESET_TTL_S = 1800, resetAllowed = email => WAITLIST_ADMINS.has(email); // the founders: the same recipients as the waitlist-admin activation mail
+const resetOrigin = () => process.env.VERCEL_ENV === 'preview' && /^[a-z0-9.-]+\.vercel\.app$/.test(String(process.env.VERCEL_BRANCH_URL || process.env.VERCEL_URL || '')) ? 'https://' + (process.env.VERCEL_BRANCH_URL || process.env.VERCEL_URL) : PUBLIC_ORIGIN;
+async function sendResetEmail(to, link) {
+  const from = process.env.WAKE_EMAIL_FROM, key = process.env.RESEND_API_KEY; if (!from || !key) return false;
+  try { const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' }, signal: AbortSignal.timeout(8000), body: JSON.stringify({ from, to: [to], subject: 'Alter: reset your password', text: 'Someone (hopefully you) asked to reset the password for your Alter account. Open this link to choose a new one. It works once and expires in 30 minutes.\n\n' + link + '\n\nIf you did not ask for this, ignore this email. Your password stays the same.' }) }); return resp.ok; } catch (e) { return false; }
+}
+async function passwordReset(req, res, path, body) {
+  res.setHeader('Cache-Control', 'no-store');
+  if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
+  const own = (/^localhost/.test(req.headers.host || '') ? 'http://' : 'https://') + req.headers.host;
+  if (req.headers.origin !== own && !originOk(req.headers.origin)) return res.status(403).json({ error: 'origin' });
+  const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').split(',')[0].trim(), hour = Math.floor(Date.now() / 3600000);
+  const bump = async (k, ttl) => { const n = Number(await r(['INCRBY', k, 1])); if (n === 1) await r(['EXPIRE', k, ttl]); return n; };
+  if (path === '/auth/reset-request') {
+    const email = String(body.email || '').trim().toLowerCase(), generic = { ok: true, message: 'If this address can be recovered, a reset link is on its way. It works once and expires in 30 minutes.' };
+    if (!/^[^@\s]{1,64}@[^@\s]{1,120}\.[^@\s]{2,}$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
+    if (await bump('gl:resetReqIp:' + sha(ip) + ':' + hour, 3600) > 10) return res.status(429).json({ error: 'Too many requests. Try again in a while.' });
+    if (await bump('gl:resetReqEmail:' + sha(email) + ':' + hour, 3600) > 3) return res.status(429).json({ error: 'Too many requests. Try again in a while.' });
+    const u = await getJ('gl:user:' + sha(email));
+    if (!u || !resetAllowed(email)) return res.json(generic);
+    const token = crypto.randomBytes(32).toString('hex'), th = sha(token);
+    const prev = await r(['GET', 'gl:pwresetUser:' + u.id]); if (prev) await r(['DEL', 'gl:pwreset:' + prev]); // only the newest link works
+    await r(['SET', 'gl:pwreset:' + th, JSON.stringify({ uid: u.id, email, at: Date.now(), used: false }), 'EX', RESET_TTL_S]);
+    await r(['SET', 'gl:pwresetUser:' + u.id, th, 'EX', RESET_TTL_S]);
+    if (!await sendResetEmail(email, resetOrigin() + '/hq#reset=' + token)) { await r(['DEL', 'gl:pwreset:' + th]); return res.status(503).json({ error: 'Reset email is not available right now. Nothing was changed.' }); }
+    return res.json(generic);
+  }
+  // path === '/auth/reset'
+  if (await bump('gl:resetTryIp:' + sha(ip) + ':' + Math.floor(Date.now() / 900000), 900) > 10) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
+  const token = String(body.token || ''), pw = String(body.password || ''), bad = { error: 'This reset link is invalid, used or expired. Ask for a new one.' };
+  if (!/^[a-f0-9]{64}$/.test(token)) return res.status(400).json(bad);
+  if (pw.length < 8 || pw.length > 200) return res.status(400).json({ error: 'Use a password of 8 to 200 characters' });
+  const key = 'gl:pwreset:' + sha(token), raw = await r(['GET', key]), t = raw && JSON.parse(raw);
+  if (!t || t.used || Date.now() - Number(t.at) > RESET_TTL_S * 1000) return res.status(400).json(bad);
+  if (await r(['EVAL', AGENT_CAS, 1, key, raw, JSON.stringify({ ...t, used: true, usedAt: Date.now() })]) !== 1) return res.status(400).json(bad); // single use, even under concurrency
+  const ukey = 'gl:user:' + sha(t.email);
+  for (let i = 0; i < 5; i++) {
+    const uraw = await r(['GET', ukey]), u = uraw && JSON.parse(uraw);
+    if (!u || u.id !== t.uid) return res.status(400).json(bad); // the account was replaced since the link was issued
+    const salt = crypto.randomBytes(16).toString('hex'), next = { ...u, salt, hash: crypto.scryptSync(pw, salt, 32).toString('hex'), pwAt: Date.now() };
+    if (await r(['EVAL', AGENT_CAS, 1, ukey, uraw, JSON.stringify(next)]) === 1) {
+      await r(['DEL', 'gl:pwresetUser:' + u.id]); await r(['DEL', key]); await r(['DEL', 'gl:rl:' + sha(t.email)]);
+      await startSession(res, next); return res.json({ ok: true, email: next.email, legacy: next.ws === 'legacy' });
+    }
+  }
+  return res.status(409).json({ error: 'Your account changed while resetting. Ask for a new link.' });
+}
 async function sendWaitlistAdminEmail(to,link){
  const from=process.env.WAKE_EMAIL_FROM,key=process.env.RESEND_API_KEY;if(!from||!key)return false;
  try{const resp=await fetch('https://api.resend.com/emails',{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({from,to:[to],subject:'Alter: activate your waitlist signup view',text:'Open this link while signed in to your Alter account to activate the founders-only signup view. It works once and expires in 1 hour.\n\n'+link+'\n\nIf you did not ask for this, ignore it.'})});return resp.ok;}catch(e){return false;}

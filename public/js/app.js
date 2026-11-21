@@ -32,19 +32,29 @@
   /* ---------- sign-in ---------- */
   let mode = 'in';
   const au = $('#auth');
-  function needAuth() { au.classList.add('on'); setTimeout(() => { const f = $('#aue'); if (f && !f.value) f.focus(); }, 30); }
+  function needAuth() { if (resetToken && mode !== 'reset') setMode('reset'); au.classList.add('on'); setTimeout(() => { const f = $(mode === 'reset' ? '#aup' : '#aue'); if (f && !f.value) f.focus(); }, 30); }
   BB.onAuth = needAuth;
+  /* password recovery: 'forgot' asks for a link by email; 'reset' sets a new password with the one-time token from the link's #reset= fragment */
+  let resetToken = null;
+  { const mt = /^#reset=([a-f0-9]{64})$/.exec(location.hash); if (mt) { resetToken = mt[1]; history.replaceState(null, '', location.pathname); } }
   function setMode(m) {
-    mode = m; $('#aug').textContent = m === 'in' ? 'Sign in' : 'Create account'; $('#auth-h').textContent = m === 'in' ? 'Sign in' : 'Create your account';
-    $('#aum').textContent = m === 'in' ? 'Create an account' : 'I already have an account'; $('#aup').autocomplete = m === 'in' ? 'current-password' : 'new-password';
-    if (m === 'in') $('#auc-l').hidden = true;
+    mode = m; const T = { in: ['Sign in', 'Sign in'], up: ['Create your account', 'Create account'], forgot: ['Reset your password', 'Email me a reset link'], reset: ['Choose a new password', 'Save new password'] }[m];
+    $('#auth-h').textContent = T[0]; $('#aug').textContent = T[1];
+    $('#aum').textContent = m === 'in' ? 'Create an account' : m === 'up' ? 'I already have an account' : 'Back to sign in'; $('#aup').autocomplete = m === 'in' ? 'current-password' : 'new-password'; $('#aur').style.color = '';
+    $('#aue').closest('label').hidden = m === 'reset'; $('#aue').required = m !== 'reset';
+    $('#aup').closest('label').hidden = m === 'forgot'; $('#aup').required = m !== 'forgot';
+    $('#aucl').hidden = m === 'forgot' || m === 'reset'; $('#auf').hidden = m !== 'in';
+    if (m !== 'up') $('#auc-l').hidden = true;
   }
+  $('#auf').onclick = () => { setMode('forgot'); $('#aur').textContent = ''; $('#aue').focus(); };
   $('#aum').onclick = () => setMode(mode === 'in' ? 'up' : 'in');
   $('#aucl').onclick = () => { setMode('up'); $('#auc-l').hidden = false; $('#auc').focus(); };
   $('#authf').onsubmit = async e => {
     e.preventDefault(); $('#aur').textContent = ''; $('#aug').disabled = true;
     const b = { email: $('#aue').value.trim(), password: $('#aup').value }; if (mode === 'up' && $('#auc').value.trim()) b.claim = $('#auc').value.trim();
     try {
+      if (mode === 'forgot') { const j = await BB.api('/api/auth/reset-request', 'POST', { email: b.email }); $('#aur').textContent = j.error || j.message; $('#aur').style.color = j.error ? '' : 'var(--stone)'; return; }
+      if (mode === 'reset') { const j = await BB.api('/api/auth/reset', 'POST', { token: resetToken, password: b.password }); if (j.error) { $('#aur').textContent = j.error; return; } resetToken = null; $('#aup').value = ''; au.classList.remove('on'); setMode('in'); await boot(); return; }
       const j = await BB.api('/api/auth/' + (mode === 'in' ? 'login' : 'signup'), 'POST', b);
       if (j.error) { $('#aur').textContent = j.error; return; }
       $('#aup').value = ''; au.classList.remove('on'); await boot();
@@ -275,5 +285,5 @@
   }
   BB.boot = boot;
   if (window.BRAND) BB.t = BRAND.t;
-  applyRoute(); boot();
+  applyRoute(); if (resetToken) needAuth(); else boot();
 })();
