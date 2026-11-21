@@ -36,25 +36,39 @@
   BB.onAuth = needAuth;
   /* password recovery: 'forgot' asks for a link by email; 'reset' sets a new password with the one-time token from the link's #reset= fragment */
   let resetToken = null;
+  let resetSentAt = 0, resetSentMsg = '', aumToForgot = false;
   { const mt = /^#reset=([a-f0-9]{64})$/.exec(location.hash); if (mt) { resetToken = mt[1]; history.replaceState(null, '', location.pathname); } }
+  function showResetSent(msg) {
+    /* Prominent announced confirmation after a reset request. Hides the form so a repeat tap cannot send another email; newest link already voids older ones. */
+    $('#auth-h').textContent = 'Check your email';
+    $('#aue').closest('label').hidden = true; $('#aue').required = false;
+    $('#aup').closest('label').hidden = true; $('#aup').required = false;
+    $('#aucl').hidden = true; $('#auf').hidden = true; $('#aug').hidden = true;
+    $('#aum').textContent = 'Back to sign in';
+    const r = $('#aur'); r.textContent = msg || resetSentMsg;
+    r.style.cssText = 'display:block;font-size:16px;line-height:1.5;color:#121212;background:#fff;border:1px solid #e0e0db;border-radius:12px;padding:14px 16px;margin-top:12px';
+  }
   function setMode(m) {
     mode = m; const T = { in: ['Sign in', 'Sign in'], up: ['Create your account', 'Create account'], forgot: ['Reset your password', 'Email me a reset link'], reset: ['Choose a new password', 'Save new password'] }[m];
-    $('#auth-h').textContent = T[0]; $('#aug').textContent = T[1];
-    $('#aum').textContent = m === 'in' ? 'Create an account' : m === 'up' ? 'I already have an account' : 'Back to sign in'; $('#aup').autocomplete = m === 'in' ? 'current-password' : 'new-password'; $('#aur').style.color = '';
+    aumToForgot = false;
+    $('#auth-h').textContent = T[0]; $('#aug').textContent = T[1]; $('#aug').hidden = false;
+    $('#aur').textContent = ''; $('#aur').style.cssText = '';
+    $('#aum').textContent = m === 'in' ? 'Create an account' : m === 'up' ? 'I already have an account' : 'Back to sign in'; $('#aup').autocomplete = m === 'in' ? 'current-password' : 'new-password';
     $('#aue').closest('label').hidden = m === 'reset'; $('#aue').required = m !== 'reset';
     $('#aup').closest('label').hidden = m === 'forgot'; $('#aup').required = m !== 'forgot';
     $('#aucl').hidden = m === 'forgot' || m === 'reset'; $('#auf').hidden = m !== 'in';
     if (m !== 'up') $('#auc-l').hidden = true;
+    if (m === 'forgot' && resetSentAt && Date.now() - resetSentAt < 60000) showResetSent();
   }
-  $('#auf').onclick = () => { setMode('forgot'); $('#aur').textContent = ''; $('#aue').focus(); };
-  $('#aum').onclick = () => setMode(mode === 'in' ? 'up' : 'in');
+  $('#auf').onclick = () => { setMode('forgot'); if (!$('#aug').hidden) $('#aue').focus(); };
+  $('#aum').onclick = () => { if (aumToForgot) { aumToForgot = false; setMode('forgot'); if (!$('#aug').hidden) $('#aue').focus(); return; } setMode(mode === 'in' ? 'up' : 'in'); };
   $('#aucl').onclick = () => { setMode('up'); $('#auc-l').hidden = false; $('#auc').focus(); };
   $('#authf').onsubmit = async e => {
     e.preventDefault(); $('#aur').textContent = ''; $('#aug').disabled = true;
     const b = { email: $('#aue').value.trim(), password: $('#aup').value }; if (mode === 'up' && $('#auc').value.trim()) b.claim = $('#auc').value.trim();
     try {
-      if (mode === 'forgot') { const j = await BB.api('/api/auth/reset-request', 'POST', { email: b.email }); $('#aur').textContent = j.error || j.message; $('#aur').style.color = j.error ? '' : 'var(--stone)'; return; }
-      if (mode === 'reset') { const j = await BB.api('/api/auth/reset', 'POST', { token: resetToken, password: b.password }); if (j.error) { $('#aur').textContent = j.error; return; } resetToken = null; $('#aup').value = ''; au.classList.remove('on'); setMode('in'); await boot(); return; }
+      if (mode === 'forgot') { const j = await BB.api('/api/auth/reset-request', 'POST', { email: b.email }); if (j.error) { $('#aur').textContent = j.error; $('#aur').style.color = ''; return; } resetSentAt = Date.now(); resetSentMsg = j.message || 'If this address can be recovered, a reset link is on its way. It works once and expires in 30 minutes.'; showResetSent(resetSentMsg); return; }
+      if (mode === 'reset') { const j = await BB.api('/api/auth/reset', 'POST', { token: resetToken, password: b.password }); if (j.error) { $('#aur').textContent = j.error; if (/invalid, used or expired/.test(j.error)) { aumToForgot = true; $('#aum').textContent = 'Email me a new link'; } return; } resetToken = null; $('#aup').value = ''; au.classList.remove('on'); setMode('in'); await boot(); return; }
       const j = await BB.api('/api/auth/' + (mode === 'in' ? 'login' : 'signup'), 'POST', b);
       if (j.error) { $('#aur').textContent = j.error; return; }
       $('#aup').value = ''; au.classList.remove('on'); await boot();
@@ -287,3 +301,4 @@
   if (window.BRAND) BB.t = BRAND.t;
   applyRoute(); if (resetToken) needAuth(); else boot();
 })();
+
