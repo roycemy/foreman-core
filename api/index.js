@@ -771,7 +771,12 @@ async function jobDetail(id){
  const agents=await listAgents(),name=x=>(agents.find(a=>a.id===x)||{}).name||'A bot';
  const [taskOut, ...kidsOut] = await withJobSpend([t, ...kids]);
  const pilot=t.pilot?await pilotView(t.pilot.id):null;
- return {task:taskOut,children:kidsOut,events,requests,receipts,timeline:timelineOf(t,events,requests,receipts,kids,name),...(pilot?{pilot}:{})};}
+ // Pickup timeline for latency measurement: assignment, first wake sent (and any deferral), claim, finish, with seconds between them.
+ const wakeEv=events.filter(e=>e.taskId===id&&e.type==='wake_sent'),defEv=events.find(e=>e.taskId===id&&e.type==='wake_deferred'),assignedAt=t.assignedAt||t.createdAt||null;
+ const secs=(a,b)=>a&&b&&Number.isFinite(Date.parse(a))&&Number.isFinite(Date.parse(b))?Math.round((Date.parse(b)-Date.parse(a))/100)/10:null;
+ const pickup={assignee:t.assignee||null,assignedAt,wakeSentAt:wakeEv[0]?wakeEv[0].at:null,wakeChannel:wakeEv[0]?((/\(([a-z]+)\)/.exec(wakeEv[0].text)||[])[1]||null):null,wakeDeferredAt:defEv?defEv.at:null,claimedAt:t.startedAt||null,finishedAt:t.finishedAt||null,
+  secondsAssignToWake:secs(assignedAt,wakeEv[0]&&wakeEv[0].at),secondsWakeToClaim:secs(wakeEv[0]&&wakeEv[0].at,t.startedAt),secondsAssignToClaim:secs(assignedAt,t.startedAt),secondsClaimToFinish:secs(t.startedAt,t.finishedAt)};
+ return {task:taskOut,children:kidsOut,events,requests,receipts,timeline:timelineOf(t,events,requests,receipts,kids,name),pickup,...(pilot?{pilot}:{})};}
 const ACTION_WORDS={'pilot.handoff':['Handed over','trial package','trial packages','handoff'],'email.send':['Sent','email','emails','email'],'web.fetch':['Read','web page','web pages','web fetch'],'notes.write':['Saved','note','notes','note'],'notes.delete':['Deleted','note set','note sets','delete'],'work.handoff':['Handed off','part','parts','handoff'],'work.assign':['Assigned','job','jobs','assign'],'work.enqueue':['Queued','job','jobs','queue']};
 const REQ_WORDS={'pilot.handoff':'hand approved moments to another bot','email.send':'send an email','web.fetch':'read a web page','notes.write':'save a note','notes.delete':'delete notes','work.handoff':'hand off a part','work.assign':'assign a job','work.enqueue':'queue a job'};
 // Steps in plain language. `detail` is owner-only (urls, note titles, tool output); public receipts drop it.
