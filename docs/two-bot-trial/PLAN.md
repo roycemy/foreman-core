@@ -56,7 +56,7 @@ Nothing else crosses: not A's job, transcript, notes, receipts, keys or permissi
 2. A proposes `pilot.handoff` while its job is running. This creates an ASK request linked to the job; it is always ASK, whatever the preset, and NEVER is honored.
 3. A's job shows "Waiting for your approval". The stall sweep skips a trial job waiting on a pending, unexpired approval, so the wait doesn't count as stalled. If the approval expires, the sweep records it as expired.
 4. **On approve:** re-check everything, then dispatch:
-   - B's job is created with a deterministic id via `SET NX`, assigned to B, created by the owner, with no copied context, no inherited grant and no wake ping.
+   - B's job is created with a deterministic id via `SET NX`, assigned to B, created by the owner, with no copied context and no inherited grant. B gets the same content-free wake ping as any assigned job; the package is read only through `/input`.
    - A's job finishes as "handed off".
 5. **On deny or expiry:** A's job finishes as denied or expired, no B job exists, and nothing is readable.
 6. B claims its job, reads the snapshot, and completes it with captions (result capped at 4,000 characters, as today). The owner sees the linked result.
@@ -89,7 +89,7 @@ Every one is written once, keyed so it can't be duplicated.
 
 ## Limits (stated, not hidden)
 
-- **Manual start.** Real assistants are started manually: trial jobs send no wake pings. No always-on pickup is claimed.
+- **Wake, not always-on.** Trial jobs send the same content-free wake ping as any assigned job, where the bot has a wake channel. Whether a bot picks up within seconds depends on its own trigger; nothing is claimed without a measured run.
 - **No retraction.** Alter cannot recall text after B has read it.
 - **No outside control.** Alter governs only what is routed through it. An assistant with its own internet access can share text outside Alter.
 

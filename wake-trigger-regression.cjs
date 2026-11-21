@@ -191,7 +191,7 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
 });})().catch(e=>{console.error(e);process.exit(1)});
 // source contract
 const api=src;
-assert.ok(api.includes("'NX', 'PX', 30000]"),'30s dedupe window');
+assert.ok(api.includes("'NX', 'PX', WAKE_THROTTLE_MS]")&&api.includes('const WAKE_THROTTLE_MS = 30000;')&&api.includes('if (!got) return deferWake(a, jobId);'),'30s dedupe window; a throttled wake is deferred, not dropped');
 assert.ok(api.includes("subject: 'Alter: job waiting for ' + who"),'email subject is a fixed prefix plus the bot name');
 assert.ok(api.includes("'Alter: job waiting for Grok'"),'default slack text literal kept for the env fallback');
 assert.ok(api.includes("title: 'Alter: job waiting for Grok'"),'exact issue title');

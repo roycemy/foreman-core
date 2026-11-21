@@ -298,7 +298,7 @@ async function execute(agent, action, params, reqId) {
    const advice=await routing(String(params.category||'').toLowerCase());
    const t={id,title,parentId:parent?.id||null,context:parent?String(parent.result||parent.brief||'').slice(0,4000):'',routingReason:advice.suggested?advice.suggested.reason:'No scored category history. Explicit bot choice.',suggestedBotId:advice.suggested?.id||null,brief:String(params.brief||'').slice(0,1500),category:String(params.category||'').toLowerCase(),assignee:to.id,status:'queued',createdBy:agent.id,createdAt:now(),result:null,origin:'chat',sourceId:source};
    if(!await r(['SET','fm:task:'+id,JSON.stringify(t),'NX']))throw Error('Assignment registered concurrently; read the task before retrying');await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);
-   await event(agent.id,'handoff','Assigned "'+title+'" to '+to.name,{kind:'HANDOFF',taskId:id,toAgentId:to.id});await event(to.id,'assigned',agent.name+' assigned "'+title+'"',{kind:'WAITING',taskId:id,fromAgentId:agent.id});
+   await event(agent.id,'handoff','Assigned "'+title+'" to '+to.name,{kind:'HANDOFF',taskId:id,toAgentId:to.id});await event(to.id,'assigned',agent.name+' assigned "'+title+'"',{kind:'WAITING',taskId:id,fromAgentId:agent.id});await maybeWakeBot(to,id);
    return {summary:'Assigned "'+title+'" to '+to.name,data:{task_id:id,status:'queued',assignee:to.id}};
   }
   if (action === 'work.enqueue') {
@@ -376,7 +376,7 @@ async function touchAgent(agent) {
   await r(['SET','fm:seen:'+agent.id,now()]);
 }
 /* heartbeat economy (100-user scale): every accepted beat still stamps fm:seen - lastSeen drives all honest status - but the event feed only hears about a return after 10+ minutes away. A resume is feed-worthy; a steady pulse is not. This keeps fm:events useful and cuts each beat to a single SET. */
-async function runnerPresenceAccepted(agent){const prev=await r(['GET','fm:seen:'+agent.id]);await touchAgent(agent);if(!prev||Date.now()-Date.parse(prev)>=600000)await event(agent.id,'interaction','Runner presence resumed (not conversation or work)',{kind:'INTERACTION',source:'chat',presenceOnly:true});}
+async function runnerPresenceAccepted(agent){await flushDueWakes();const prev=await r(['GET','fm:seen:'+agent.id]);await touchAgent(agent);if(!prev||Date.now()-Date.parse(prev)>=600000)await event(agent.id,'interaction','Runner presence resumed (not conversation or work)',{kind:'INTERACTION',source:'chat',presenceOnly:true});}
 /* small fixed-window IP bucket for the public unauthenticated write endpoints (connect, pairing redeem). Same pattern as the waitlist limiter. */
 async function ipRateLimited(name,ip,limit,windowSec){const k='gl:rl:'+name+':'+sha(ip)+':'+Math.floor(Date.now()/(windowSec*1000));const n=await r(['INCRBY',k,1]);await r(['EXPIRE',k,windowSec]);return n>limit;}
 /* presence model: a bot may self-declare its poll cadence (60-3600s) on any authenticated gateway call. It drives honest status (Checks in every N min / Late), never a Live claim. */
@@ -391,21 +391,52 @@ async function noteWakeNonce(agent,body){const n=String(body&&body.wakeNonce||''
 const WAKE_TEST_COOLDOWN_MS=600000;
 function wakeTestOwed(wk){return !!wk&&wk.channel==='email'&&wakeEmailAllowed(wk.target)&&!wk.verified&&!wk.testSentAt&&!(wk.testTriedAt&&Date.now()-wk.testTriedAt<WAKE_TEST_COOLDOWN_MS);}
 async function sendWakeTestOnce(agent){const k='fm:agent:'+agent.id;const live=await getJ(k);if(!live||!wakeTestOwed(live.wake))return;if(!await r(['SET','gl:wakeTest:'+agent.id+':'+live.wake.target,'1','NX','PX',WAKE_TEST_COOLDOWN_MS]))return;live.wake.testTriedAt=Date.now();await setJ(k,live);const ok=await sendWakeTestEmail(agent,live.wake);const cur=await getJ(k);if(ok&&cur&&cur.wake&&cur.wake.nonce===live.wake.nonce){cur.wake.testSentAt=Date.now();await setJ(k,cur);}}
-async function noteWakeTarget(agent,w){const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active')return;if(live.wake&&live.wake.channel===w.channel&&live.wake.target===w.target&&live.wake.secret===w.secret&&!wakeTestOwed(live.wake))return;if(w.channel==='email'&&live.wake&&live.wake.target!==w.target){const ck='gl:wakeChg:'+agent.id;let chg=await getJ(ck);if(!chg||chg.exp<Date.now())chg={n:0,exp:Date.now()+86400000};if(chg.n>=5)return;chg.n++;await setJ(ck,chg);}live.wake={channel:w.channel,target:w.target,...(w.secret?{secret:w.secret}:{}),declaredAt:now(),...(w.channel==='email'?{nonce:(live.wake&&live.wake.target===w.target&&live.wake.nonce)||crypto.randomBytes(6).toString('hex'),verified:false,pending:!wakeEmailAllowed(w.target),...(live.wake&&live.wake.target===w.target&&live.wake.testSentAt?{testSentAt:live.wake.testSentAt}:{}),...(live.wake&&live.wake.target===w.target&&live.wake.testTriedAt?{testTriedAt:live.wake.testTriedAt}:{})}:{})};await setJ('fm:agent:'+agent.id,live);if(w.channel==='email'){if(live.wake.pending)await event(agent.id,'wake_pending','Wake email address saved but not used: it is not on the owner allowlist, so Alter will not mail it',{kind:'WAKE',presenceOnly:true});else await sendWakeTestOnce(agent);}bust();if(w.channel==='webhook'){let ok=false,st=0,er='';try{const rp=await postSignedPing(live.wake);st=rp.status;ok=rp.status===202||rp.ok;}catch(e){er=String((e&&e.message)||e).slice(0,80);}await event(agent.id,ok?'wake_sent':'wake_failed',ok?'Test wake accepted (webhook)':'Test wake failed (webhook): '+(st?'HTTP '+st:er),{kind:'WAKE',presenceOnly:true});}}
+/* wake signing secrets and bearer tokens are stored encrypted (secretEnc / tokenEnc). Records written before this keep a plaintext `secret`;
+   they still work, and the owner's one-time migration (POST /api/wake/encrypt-secrets) moves them to secretEnc after a decrypt check. */
+const wakeSecretOf = w => { if (!w) return ''; if (w.secretEnc) { try { return dec(w.secretEnc); } catch { return ''; } } return String(w.secret || ''); };
+const wakeTokenOf = w => { if (!w || !w.tokenEnc) return ''; try { return dec(w.tokenEnc); } catch { return ''; } };
+const wakeHasSecret = w => !!(w && (w.secret || w.secretEnc || w.tokenEnc));
+async function noteWakeTarget(agent,w){const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active')return;if(live.wake&&live.wake.channel===w.channel&&live.wake.target===w.target&&wakeSecretOf(live.wake)===String(w.secret||'')&&!wakeTestOwed(live.wake))return;if(w.channel==='email'&&live.wake&&live.wake.target!==w.target){const ck='gl:wakeChg:'+agent.id;let chg=await getJ(ck);if(!chg||chg.exp<Date.now())chg={n:0,exp:Date.now()+86400000};if(chg.n>=5)return;chg.n++;await setJ(ck,chg);}live.wake={channel:w.channel,target:w.target,...(w.secret?{secretEnc:enc(w.secret)}:{}),declaredAt:now(),...(w.channel==='email'?{nonce:(live.wake&&live.wake.target===w.target&&live.wake.nonce)||crypto.randomBytes(6).toString('hex'),verified:false,pending:!wakeEmailAllowed(w.target),...(live.wake&&live.wake.target===w.target&&live.wake.testSentAt?{testSentAt:live.wake.testSentAt}:{}),...(live.wake&&live.wake.target===w.target&&live.wake.testTriedAt?{testTriedAt:live.wake.testTriedAt}:{})}:{})};await setJ('fm:agent:'+agent.id,live);if(w.channel==='email'){if(live.wake.pending)await event(agent.id,'wake_pending','Wake email address saved but not used: it is not on the owner allowlist, so Alter will not mail it',{kind:'WAKE',presenceOnly:true});else await sendWakeTestOnce(agent);}bust();if(w.channel==='webhook'){let ok=false,st=0,er='';try{const rp=await postSignedPing(live.wake);st=rp.status;ok=rp.status===202||rp.ok;}catch(e){er=String((e&&e.message)||e).slice(0,80);}await event(agent.id,ok?'wake_sent':'wake_failed',ok?'Test wake accepted (webhook)':'Test wake failed (webhook): '+(st?'HTTP '+st:er),{kind:'WAKE',presenceOnly:true});}}
 /* wake ladder, rung 1 (free, trigger-only): when a job is queued to a bot, ping it on the free push channel wired at setup so it wakes now instead of at the next poll or routine tick. Instinct: a content-free email to its inbox (RESEND_API_KEY + WAKE_EMAIL_FROM). Grok: a content-free email to the owner's Gmail, where the bot's own email-trigger automation fires the check (RESEND_API_KEY + WAKE_EMAIL_FROM; needs the owner's Gmail connected to the bot); alternatives: a signed, content-free POST to the bot's declared Webhook Trigger automation, a content-free Slack message (declared or WAKE_GROK_SLACK_WEBHOOK incoming webhook) or, as a developer extra, a content-free trigger issue Alter closes right after creation - the creation notification is the wake signal (WAKE_GITHUB_TOKEN + WAKE_GITHUB_REPO as owner/repo). Rung 2 is the bot's own scheduled poll or routine; rung 3 is "acts when messaged" + the Copy nudge. Every trigger carries no task details and no instructions - the bot authenticates itself. Deduped to one ping per 30s per bot; silent no-op when no channel is wired, and the bot's own schedule still covers it. */
+// A second wake for the same bot inside the throttle window is not dropped: it is recorded as due (coalesced per bot) and sent once the
+// window passes, if a job is still waiting for that bot. Due wakes are flushed on later traffic: the owner's HQ refresh, any bot claim or
+// presence call, and every new wake attempt. Each deferral and each follow-up is an owner-visible event.
+const WAKE_THROTTLE_MS = 30000;
+async function deferWake(a, jobId) {
+  const k = 'gl:wakeDue:' + a.id, cur = await getJ(k), jobs = [...new Set([...((cur && cur.jobs) || []), ...(jobId ? [jobId] : [])])].slice(-20);
+  const held = Number(await r(['GET', 'gl:wake:' + a.id])) || Date.now();
+  await setJ(k, { ws: wsId(), agentId: a.id, jobs, dueAt: held + WAKE_THROTTLE_MS }); await r(['SADD', 'gl:wakeDueSet', a.id]);
+  if (!cur) await event(a.id, 'wake_deferred', 'Wake deferred ' + Math.ceil(WAKE_THROTTLE_MS / 1000) + 's (another wake was just sent); it follows if the job is still waiting', { kind: 'WAKE', presenceOnly: true, taskId: jobId || null });
+}
+async function flushDueWakes() {
+  const ids = await r(['SMEMBERS', 'gl:wakeDueSet']); if (!ids || !ids.length) return 0; let sent = 0;
+  for (const id of ids) {
+    const k = 'gl:wakeDue:' + id, raw = await r(['GET', k]), due = raw && JSON.parse(raw);
+    if (!due) { await r(['SREM', 'gl:wakeDueSet', id]); continue; }
+    if (due.dueAt > Date.now()) continue;
+    if (await r(['EVAL', AGENT_CAS, 1, k, raw, JSON.stringify({ ...due, flushing: Date.now(), dueAt: Date.now() + 60000 })]) !== 1) continue; // one flusher per due wake
+    await als.run({ ws: due.ws }, async () => {
+      const a = await getJ('fm:agent:' + id), ts = (await Promise.all((due.jobs || []).map(j => getJ('fm:task:' + j)))).filter(t => t && t.assignee === id && t.status === 'queued');
+      await r(['DEL', k]); await r(['SREM', 'gl:wakeDueSet', id]);
+      if (a && ts.length) { await maybeWakeBot(a, ts[0].id); sent++; }
+    });
+  }
+  return sent;
+}
 async function maybeWakeBot(a, jobId) {
   if (!a || a.status !== 'active' || a.paused || a.hosted) return;
   if (await r(['GET', 'fm:kill'])) return; // the kill switch is on: no new work is announced to any bot
   const w = a.wake && a.wake.channel ? a.wake : null; // a bot's own declared target wins; deployment env is the fallback
   const channel = wakeChannelFor(a);
   if (!channel) return; // no free push channel wired for this bot: silent no-op; its own schedule still covers it
-  const got = await r(['SET', 'gl:wake:' + a.id, String(now()), 'NX', 'PX', 30000]);
-  if (!got) return;
+  const got = await r(['SET', 'gl:wake:' + a.id, String(Date.now()), 'NX', 'PX', WAKE_THROTTLE_MS]);
+  if (!got) return deferWake(a, jobId);
   try {
     let ok = false, status = 0;
     if (channel === 'email') {
-      const who = (w && w.channel === 'email') || a.providerId === 'grok' ? String(a.name || 'your bot').slice(0, 40) : 'Instinct';
-      const to = w && w.channel === 'email' ? (wakeEmailAllowed(w.target) ? w.target : '') : (a.providerId === 'grok' ? process.env.WAKE_GROK_EMAIL : process.env.WAKE_INSTINCT_EMAIL);
+      // unchanged subjects for existing receivers: the Instinct env inbox keeps 'Instinct' (a filter may match it); every other bot uses its name
+      const who = !(w && w.channel === 'email') && a.providerId === 'instinct' ? 'Instinct' : String(a.name || 'your bot').slice(0, 40);
+      const to = w && w.channel === 'email' ? (wakeEmailAllowed(w.target) ? w.target : '') : envWakeEmail(a);
       if (!to) return; // no owner-configured or owner-allowlisted inbox: no ping
       const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [to], subject: 'Alter: job waiting for ' + who, text: 'A job is waiting for ' + who + ' in Alter.' + (w && w.channel === 'email' && jobId ? ' Job: ' + jobId + '. Claim it with foreman_next_task or foreman_claim; if it is already claimed, stop quietly.' : '') }) });
       ok = resp.ok; status = resp.status;
@@ -426,13 +457,15 @@ async function maybeWakeBot(a, jobId) {
     await event(a.id, 'wake_failed', 'Instant wake failed: ' + String((e && e.message) || e).slice(0, 120), { kind: 'WAKE', presenceOnly: true });
   }
 }
+// Owner-set env fallback inbox for any provider: WAKE_<PROVIDER>_EMAIL (WAKE_GROK_EMAIL, WAKE_INSTINCT_EMAIL, WAKE_MUSE_EMAIL, ...).
+// Used only when the bot declared no wake target. Owner-configured in the deployment, so it is not subject to the bot allowlist.
+function envWakeEmail(a) { const p = String((a && a.providerId) || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); const v = p ? String(process.env['WAKE_' + p + '_EMAIL'] || '').trim() : ''; return /^[^@\s]{1,64}@[^@\s]{1,120}\.[^@\s]{2,}$/.test(v) ? v : ''; }
 function wakeChannelFor(a) {
   const w = a.wake && a.wake.channel ? a.wake : null; // a bot's own declared target wins; deployment env is the fallback
-  return w && w.channel === 'webhook' && w.secret ? 'webhook'
+  return w && w.channel === 'webhook' && wakeHasSecret(w) ? 'webhook'
     : w && w.channel === 'email' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM && wakeEmailAllowed(w.target) && (a.providerId !== 'grok' || w.verified) ? 'email'
     : w && w.channel === 'slack' ? 'slack'
-    : !w && a.providerId === 'instinct' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM && process.env.WAKE_INSTINCT_EMAIL ? 'email'
-    : !w && a.providerId === 'grok' && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM && process.env.WAKE_GROK_EMAIL ? 'email'
+    : !w && process.env.RESEND_API_KEY && process.env.WAKE_EMAIL_FROM && envWakeEmail(a) ? 'email'
     : !w && a.providerId === 'grok' && process.env.WAKE_GROK_SLACK_WEBHOOK ? 'slack'
     : !w && a.providerId === 'grok' && process.env.WAKE_GITHUB_TOKEN && process.env.WAKE_GITHUB_REPO ? 'github'
     : null;
@@ -440,16 +473,43 @@ function wakeChannelFor(a) {
 async function postSignedPing(w) {
   const ping = JSON.stringify({ event: 'alter.job.waiting' });
   const msgId = 'msg_' + crypto.randomBytes(16).toString('hex'), ts = String(Math.floor(Date.now() / 1000));
-  const sig = crypto.createHmac('sha256', Buffer.from(String(w.secret).replace(/^whsec_/, ''), 'base64')).update(msgId + '.' + ts + '.' + ping).digest('base64');
-  return fetch(w.target, { method: 'POST', headers: { 'content-type': 'application/json', 'webhook-id': msgId, 'webhook-timestamp': ts, 'webhook-signature': 'v1,' + sig }, body: ping });
+  // Bearer mode (Grok Bot routine receivers): Authorization: Bearer <token>. Standard Webhooks HMAC mode (grok.com Automations): whsec_ signature.
+  if (w.mode === 'bearer') { const tok = wakeTokenOf(w); if (!tok) throw new Error('wake token unreadable; re-enter it in the bot settings'); return fetch(w.target, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok, 'webhook-id': msgId }, body: ping, signal: AbortSignal.timeout(8000) }); }
+  const secret = wakeSecretOf(w); if (!secret) throw new Error('wake secret unreadable; re-enter it in the bot settings');
+  const sig = crypto.createHmac('sha256', Buffer.from(secret.replace(/^whsec_/, ''), 'base64')).update(msgId + '.' + ts + '.' + ping).digest('base64');
+  return fetch(w.target, { method: 'POST', headers: { 'content-type': 'application/json', 'webhook-id': msgId, 'webhook-timestamp': ts, 'webhook-signature': 'v1,' + sig }, body: ping, signal: AbortSignal.timeout(8000) });
 }
 /* owner-set wake target (connect page paste): same validation as a bot-declared one; the secret is stored server side and never returned. */
+// Owner-run, one-time migration of wake signing secrets written before encryption. Each plaintext secret is encrypted, the result is
+// decrypted and compared, and only an exact match replaces the plaintext (compare-and-set on the agent record). A mismatch or a concurrent
+// change leaves that record as it was. Answers with counts only, never secrets. Recovery if ENC_SECRET is ever lost: the owner re-pastes
+// the signing secret from the receiver's settings (POST /api/agents/:id/wake); live receivers keep the same secret either way.
+async function encryptWakeSecrets(body){
+  if(!body||body.confirmed!==true)return {status:400,body:{error:'Confirm the migration'}};
+  let migrated=0,already=0,skipped=0;
+  for(const id of await r(['SMEMBERS','fm:agents'])){
+    const k='fm:agent:'+id,raw=await r(['GET',k]),a=raw&&JSON.parse(raw);if(!a||!a.wake||!a.wake.secret){if(a&&a.wake&&(a.wake.secretEnc||a.wake.tokenEnc))already++;continue;}
+    const e=enc(a.wake.secret);let ok=false;try{ok=dec(e)===a.wake.secret;}catch{}
+    if(!ok){skipped++;continue;}
+    const {secret,...rest}=a.wake;if(await r(['EVAL',AGENT_CAS,1,k,raw,JSON.stringify({...a,wake:{...rest,secretEnc:e}})])===1)migrated++;else skipped++;
+  }
+  bust();return {status:200,body:{migrated,already,skipped}};
+}
 async function setOwnerWake(agentId, body) {
   const live = await getJ('fm:agent:' + agentId); if (!live || live.status !== 'active') return { status: 404, body: { error: 'Bot not found or not active.' } };
   if (body && body.clear) { delete live.wake; await setJ('fm:agent:' + agentId, live); bust(); return { status: 200, body: { ok: true, cleared: true } }; }
-  const w = wakeTargetFrom({ wakeChannel: 'webhook', wakeTarget: body && body.url, wakeSecret: body && body.secret });
-  if (!w) return { status: 400, body: { error: 'Paste the trigger URL (https, x.ai or grok.com) and its signing secret (starts with whsec_).' } };
-  live.wake = { channel: 'webhook', target: w.target, secret: w.secret, declaredAt: now(), by: 'owner' }; await setJ('fm:agent:' + agentId, live); bust();
+  if (body && body.mode === 'bearer') {
+    let u = null; try { u = new URL(String(body.url || '')); } catch {}
+    const tok = String(body.token || '').trim();
+    if (!u || u.protocol !== 'https:' || !/(^|\.)(x\.ai|grok\.com)$/.test(u.hostname)) return { status: 400, body: { error: 'Paste the routine webhook URL (https, on x.ai or grok.com).' } };
+    if (!/^[\x21-\x7e]{16,512}$/.test(tok)) return { status: 400, body: { error: 'Paste the routine\'s Bearer token (16 to 512 visible characters, no spaces).' } };
+    live.wake = { channel: 'webhook', mode: 'bearer', target: u.toString(), tokenEnc: enc(tok), declaredAt: now(), by: 'owner' };
+  } else {
+    const w = wakeTargetFrom({ wakeChannel: 'webhook', wakeTarget: body && body.url, wakeSecret: body && body.secret });
+    if (!w) return { status: 400, body: { error: 'Paste the trigger URL (https, x.ai or grok.com) and its signing secret (starts with whsec_).' } };
+    live.wake = { channel: 'webhook', target: w.target, secretEnc: enc(w.secret), declaredAt: now(), by: 'owner' };
+  }
+  await setJ('fm:agent:' + agentId, live); bust();
   let status = 0, ok = false, err = '';
   try { const resp = await postSignedPing(live.wake); status = resp.status; ok = resp.status === 202 || resp.ok; } catch (e) { err = String((e && e.message) || e).slice(0, 80); }
   await event(agentId, ok ? 'wake_sent' : 'wake_failed', ok ? 'Test wake accepted (webhook)' : 'Test wake failed (webhook): ' + (status ? 'HTTP ' + status : err), { kind: 'WAKE', presenceOnly: true });
@@ -506,7 +566,9 @@ async function routingOrDeclared(cat) {
 // category history, then a declared strength, then any awake external bot - and says who was skipped.
 function botFreshnessWindowMs(a) {
   const ps = Number(a && a.pollSec);
-  return (Number.isFinite(ps) && ps >= 60 && ps <= 3600) ? 2 * ps * 1000 : 150000;
+  // Two missed beats of the declared cadence, but never less than two 5-minute beats: a runner or routine that checks in every 5 minutes
+  // (while declaring a shorter cadence, or none) is not asleep, and its queued work is not moved away from it.
+  return 2 * Math.max((Number.isFinite(ps) && ps >= 60 && ps <= 3600) ? ps : 0, 300) * 1000;
 }
 function botAwake(a, atMs) {
   if (!a || a.status !== 'active' || a.paused || a.harness) return false;
@@ -935,7 +997,8 @@ async function pilotCreate(body) {
   await r(['LPUSH', 'fm:tasklist', srcId]); await r(['LTRIM', 'fm:tasklist', 0, 59]);
   await r(['LPUSH', 'fm:pilotlist', id]); await r(['LTRIM', 'fm:pilotlist', 0, 49]);
   await r(['LPUSH', 'fm:pilottasks', srcId]); await r(['LTRIM', 'fm:pilottasks', 0, 99]);
-  bust(); await event(A.id, 'assigned', 'Owner started a trial: pick moments for ' + B.name + '. Manual start: claim it with GET /gateway/tasks/next.', { kind: 'WAITING', taskId: srcId });
+  bust(); await event(A.id, 'assigned', 'Owner started a trial: pick moments for ' + B.name + '. Claim it with GET /gateway/tasks/next.', { kind: 'WAITING', taskId: srcId });
+  await maybeWakeBot(A, srcId); // content-free wake: no trial text travels in it
   return { status: 201, body: { pilot: await pilotView(id) } };
 }
 // Re-checks, run at approval, at dispatch and when B reads its input. Any failure blocks the step.
@@ -993,7 +1056,8 @@ async function pilotDispatch(reqId) {
   const fresh = await r(['SET', 'fm:task:' + id, JSON.stringify(t), 'NX']);
   if (!fresh) { const old = await getJ('fm:task:' + id); if (!old || !old.pilot || old.pilot.requestId !== q.id) throw new Error('target job id collision'); }
   else { await r(['LPUSH', 'fm:tasklist', id]); await r(['LTRIM', 'fm:tasklist', 0, 59]); await r(['LPUSH', 'fm:pilottasks', id]); await r(['LTRIM', 'fm:pilottasks', 0, 99]); bust();
-    await event(snap.targetAgentId, 'assigned', 'Owner approved a handoff from ' + snap.sourceName + ': ' + snap.request.title + '. Manual start: claim it with GET /gateway/tasks/next.', { kind: 'WAITING', taskId: id }); }
+    await event(snap.targetAgentId, 'assigned', 'Owner approved a handoff from ' + snap.sourceName + ': ' + snap.request.title + '. Claim it with GET /gateway/tasks/next.', { kind: 'WAITING', taskId: id });
+    const tb = await getJ('fm:agent:' + snap.targetAgentId); if (tb) await maybeWakeBot(tb, id); } // content-free wake; the package is read only through /input
   return { summary: 'Handed ' + snap.moments.length + ' approved moment' + (snap.moments.length === 1 ? '' : 's') + ' to ' + snap.targetName + ' (job ' + id + ')', data: { task_id: id, to: snap.targetName, duplicate: !fresh } };
 }
 const PILOT_END = { executed: ['done', 'handed_off', 'Handed off: the owner approved the package and Alter queued the caption job'], denied: ['failed', 'denied', 'Owner denied the handoff; nothing was sent'], expired: ['failed', 'expired', 'The approval window closed; nothing was sent'], blocked: ['failed', 'blocked', 'Handoff blocked at a re-check; nothing was sent'], failed: ['failed', 'failed', 'Handoff could not be delivered'], cancelled: ['failed', 'blocked', 'Handoff cancelled; nothing was sent'] };
@@ -1088,7 +1152,7 @@ async function pilotList() { const ids = await r(['LRANGE', 'fm:pilotlist', 0, 4
 async function pilotHeld(agentId) { const ids = await r(['LRANGE', 'fm:pilottasks', 0, 99]); if (!ids.length) return false; return (await r(['MGET', ...ids.map(i => 'fm:task:' + i)])).filter(Boolean).map(x => JSON.parse(x)).some(t => t.assignee === agentId && ['queued', 'running'].includes(t.status)); }
 
 async function reconcileTaskParents(){for(const p of (await listTasks()).filter(t=>t.orchestration&&t.status==='running'))await refreshTaskParent(p.id);}
-async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;await r(['SET','fm:claimSeen:'+agent.id,now(),'EX','604800']);await expireStalledTasks();await reconcileTaskParents();await reassignAsleepQueuedTasks(agent.id);const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => !t.orchestration && t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
+async function claimTask(agent) { if(agent.status!=='active'||agent.paused||await r(['GET','fm:kill']))return null;await flushDueWakes();await r(['SET','fm:claimSeen:'+agent.id,now(),'EX','604800']);await expireStalledTasks();await reconcileTaskParents();await reassignAsleepQueuedTasks(agent.id);const active=(await listTasks()).find(t=>t.assignee===agent.id&&t.status==='running');if(active)return active;const ts = (await listTasks()).filter(t => !t.orchestration && t.status === 'queued' && (t.assignee === agent.id || !t.assignee)).reverse(); const t = ts[0]; if (!t) return null;
   const key='fm:task:'+t.id,raw=await r(['GET',key]),live=raw&&JSON.parse(raw);if(!live||live.status!=='queued'||(live.assignee&&live.assignee!==agent.id))return null;t.status = 'running'; t.assignee = agent.id; t.startedAt = now(); t.progressAt = t.startedAt;if(await r(['EVAL',AGENT_CAS,1,key,raw,JSON.stringify(t)])!==1)return null; await event(agent.id, 'task_started', 'Started: ' + t.title, { kind: 'TASK_STARTED', taskId: t.id }); return t; }
 async function completeTask(agent,id,body){return withJobLock(id,()=>completeTaskUnlocked(agent,id,body));}
 async function completeTaskUnlocked(agent, id, body) { const raw=await r(['GET','fm:task:'+id]),t=raw&&JSON.parse(raw); if (!t || t.orchestration || t.assignee !== agent.id) return { status: 404, body: { error: 'task not found' } };
@@ -1645,6 +1709,7 @@ async function fullState() {
   await expireStalledTasks();
   await reassignAsleepQueuedTasks();
   await reconcileTaskParents();
+  await flushDueWakes();
   const agents = await listAgents();
   const ids = await r(['SMEMBERS', 'fm:reqs']);
   const parse = a => (a || []).filter(Boolean).map(x => JSON.parse(x));
@@ -1659,7 +1724,7 @@ async function fullState() {
   const sts = agents.length ? await r(['MGET', ...agents.map(a => 'fm:st:' + a.id)]) : []; const tasks = await withJobSpend(await listTasks());
   const cls = agents.length ? await r(['MGET', ...agents.map(a => 'fm:claimSeen:' + a.id)]) : [];
   const connections=await Promise.all(agents.map(connectionState));const conversations=await Promise.all(agents.map(a=>getJ('fm:conversation:'+a.id)));
-  const agentsPub = agents.map((a, i) => ({ ...a, wake: a.wake && a.wake.channel ? { channel: a.wake.channel, declaredAt: a.wake.declaredAt || null, hasSecret: !!a.wake.secret, verified: a.wake.channel === 'email' ? !!a.wake.verified : undefined, pending: a.wake.channel === 'email' ? !!a.wake.pending || !wakeEmailAllowed(a.wake.target) : undefined } : null, instantWake: !!(a.status === 'active' && !a.paused && !a.hosted && wakeChannelFor(a)), strengths:effStrengths(a), lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
+  const agentsPub = agents.map((a, i) => ({ ...a, wake: a.wake && a.wake.channel ? { channel: a.wake.channel, declaredAt: a.wake.declaredAt || null, hasSecret: wakeHasSecret(a.wake), mode: a.wake.mode === 'bearer' ? 'bearer' : (a.wake.channel === 'webhook' ? 'hmac' : null), verified: a.wake.channel === 'email' ? !!a.wake.verified : undefined, pending: a.wake.channel === 'email' ? !!a.wake.pending || !wakeEmailAllowed(a.wake.target) : undefined } : null, instantWake: !!(a.status === 'active' && !a.paused && !a.hosted && wakeChannelFor(a)), strengths:effStrengths(a), lastClaimAt: cls[i] || null, visibleRoom:taskRoom(a,tasks), ownerConversation:conversations[i]?.epoch===(a.oauthEpoch||0)?conversations[i]:null, connection:connections[i], spentTodayCents: parseInt(sp[i] || '0', 10), state: sts[i] ? JSON.parse(sts[i]) : null })).filter(a => !a.harness);
   const [kill, receipts, events, notes] = await Promise.all([r(['GET', 'fm:kill']), r(['LRANGE', 'fm:receipts', 0, 59]), r(['LRANGE', 'fm:events', 0, 79]), r(['LRANGE', 'fm:notes', 0, 9])]);
   const v = { now: now(), killed: !!kill, actions: ACTIONS, agents: agentsPub, requests: [...pend, ...hist].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1), receipts: parse(receipts), events: parse(events), notes: parse(notes), tasks, kinds: KINDS, providers: PROVIDERS };
   CACHES.set(wsId(), { t: Date.now(), v }); return v;
@@ -2443,6 +2508,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST'){if(foreign())return res.status(403).json({error:'origin'});return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
+    if(path==='/wake/encrypt-secrets'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await encryptWakeSecrets(body));}
     {const wm=path.match(/^\/agents\/(\w+)\/wake$/);if(wm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setOwnerWake(wm[1],body));}}
     {const pm=path.match(/^\/agents\/(\w+)\/pairing$/);if(pm&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await issuePairing(pm[1]));}}
     if(path==='/routing'&&req.method==='GET')return res.json(await routing(new URL(req.url,'https://local.invalid').searchParams.get('category')||''));

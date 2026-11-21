@@ -13,6 +13,6 @@ const srv=fs.readFileSync('api/index.js','utf8');
 assert(/SET','fm:claimSeen:'\+agent\.id/.test(srv),'claimTask records the claim time');
 assert(/lastClaimAt: cls\[i\]/.test(srv),'state exposes lastClaimAt');
 console.log('PASS claim-seen: pinging without claiming is visible');
-assert(/a\.providerId === 'grok' && process\.env\.RESEND_API_KEY && process\.env\.WAKE_EMAIL_FROM && process\.env\.WAKE_GROK_EMAIL \? 'email'/.test(srv),'grok email wake via WAKE_GROK_EMAIL (Gmail, then a Gmail filter forwards to the bot inbox)');
+assert(/!w && process\.env\.RESEND_API_KEY && process\.env\.WAKE_EMAIL_FROM && envWakeEmail\(a\) \? 'email'/.test(srv)&&/process\.env\['WAKE_' \+ p \+ '_EMAIL'\]/.test(srv),'grok email wake via WAKE_GROK_EMAIL, now through the per-provider WAKE_<PROVIDER>_EMAIL fallback (Gmail, then a Gmail filter forwards to the bot inbox)');
 assert(/Alter: job waiting for ' \+ who/.test(srv),'subject stays "Alter: job waiting for <bot name>"');
 assert(/Waiting on '\+\[\.\.\.new Set\(openKids/.test(srv)&&/openKids\.length\?'Waiting on '/.test(srv),'a done parent with an open handed-off part reads Waiting on <bot>, not Delivered');

@@ -1,6 +1,6 @@
 // Asleep fallback (owner ask, Oct 21): an auto-routed job never sits with a sleeping bot.
 // - Routing freshness mirrors the honest status model: two missed beats of the bot's own declared
-//   cadence (10 min at pollSec 300), or the 150 s console-heartbeat window when none is declared.
+//   cadence, never less than two 5-minute beats (10 min), so a healthy 5-minute poller is never treated as asleep.
 //   Never-checked-in bots and message-mode bots with no cadence are asleep for routing.
 // - A fresh auto-route skips the sleeping pick: scored history, then declared strength, then any
 //   awake external bot. Routing ambiguity (no single pick) still stays unrouted - no guessing.
@@ -24,7 +24,7 @@ const ago = s => new Date(Date.now() - s * 1000).toISOString();
   const A = o => Object.assign({ id: 'x', name: 'X', status: 'active', providerId: 'grok', lastSeen: ago(10) }, o || {});
   assert.equal(f.botAwake(A({}), Date.now()), true, 'fresh no-cadence bot is awake');
   assert.equal(f.botAwake(A({ lastSeen: ago(149) }), Date.now()), true, '149s inside the 150s window');
-  assert.equal(f.botAwake(A({ lastSeen: ago(151) }), Date.now()), false, '151s past the window: asleep');
+  assert.equal(f.botAwake(A({ lastSeen: ago(151) }), Date.now()), true, '151s: inside the 10-minute floor');assert.equal(f.botAwake(A({ lastSeen: ago(601) }), Date.now()), false, 'past the 10-minute floor: asleep');assert.equal(f.botAwake(A({ pollSec: 120, lastSeen: ago(299) }), Date.now()), true, 'declares 120s but checks in every 5 min: awake');
   assert.equal(f.botAwake(A({ pollSec: 300, lastSeen: ago(599) }), Date.now()), true, 'cadence bot inside two beats');
   assert.equal(f.botAwake(A({ pollSec: 300, lastSeen: ago(601) }), Date.now()), false, 'cadence bot past two missed beats: asleep');
   assert.equal(f.botAwake(A({ lastSeen: null }), Date.now()), false, 'never checked in: asleep');
@@ -33,7 +33,7 @@ const ago = s => new Date(Date.now() - s * 1000).toISOString();
   assert.equal(f.botAwake(A({ paused: true }), Date.now()), false, 'paused is not a routing target');
   assert.equal(f.botAwake(A({ status: 'revoked' }), Date.now()), false, 'revoked is not a routing target');
   assert.equal(f.botFreshnessWindowMs(A({ pollSec: 300 })), 600000, 'two declared beats');
-  assert.equal(f.botFreshnessWindowMs(A({})), 150000, 'flat console window');
+  assert.equal(f.botFreshnessWindowMs(A({})), 600000, 'no declared cadence: 10-minute floor');assert.equal(f.botFreshnessWindowMs(A({ pollSec: 120 })), 600000, 'short cadence: floored at two 5-minute beats');assert.equal(f.botFreshnessWindowMs(A({ pollSec: 900 })), 1800000, 'long cadence: two declared beats');
   assert.equal(f.ASLEEP_FALLBACK_MAX, 3, 'auto moves are capped');
 
   // workspace: Muse asleep on a 5-min cadence, Grok + Instinct awake on 5-min cadences

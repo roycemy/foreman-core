@@ -3,20 +3,22 @@ const fs=require('fs'),assert=require('assert'),crypto=require('crypto');
 const srv=fs.readFileSync('api/index.js','utf8');
 const grab=n=>{const i=srv.indexOf(n);assert(i>=0,n);let d=0,j=srv.indexOf('{',i);const st=j;for(;j<srv.length;j++){if(srv[j]==='{')d++;if(srv[j]==='}'){d--;if(!d)break;}}return srv.slice(i,j+1);};
 let seen;const fetch=async(u,o)=>{seen={u,o};return {status:202,ok:true};};
-const code=grab('function wakeTargetFrom')+';'+grab('async function postSignedPing');
-const {wakeTargetFrom,postSignedPing}=new Function('crypto','fetch',code+';return {wakeTargetFrom,postSignedPing};')(crypto,fetch);
+const code=grab('const wakeSecretOf')+';'+grab('const wakeTokenOf')+';'+grab('function wakeTargetFrom')+';'+grab('async function postSignedPing');
+const {wakeTargetFrom,postSignedPing}=new Function('crypto','fetch','dec',code+';return {wakeTargetFrom,postSignedPing};')(crypto,fetch,x=>Buffer.from(String(x),'base64').toString()); // dec stub: base64 stands in for the app's cipher here
 const sec='whsec_'+crypto.randomBytes(24).toString('base64');
 assert(wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://api.x.ai/hook/abc',wakeSecret:sec}),'valid x.ai trigger accepted');
 assert(!wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://evil.example/hook',wakeSecret:sec}),'other hosts refused');
 assert(!wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'http://api.x.ai/hook',wakeSecret:sec}),'http refused');
 assert(!wakeTargetFrom({wakeChannel:'webhook',wakeTarget:'https://api.x.ai/hook',wakeSecret:'nope'}),'bad secret refused');
 (async()=>{
-  await postSignedPing({target:'https://api.x.ai/hook/abc',secret:sec});
-  const h=seen.o.headers,body=seen.o.body;
+  // a record written before encryption (plaintext secret) still signs; an encrypted one (secretEnc) signs the same
+  await postSignedPing({target:'https://api.x.ai/hook/abc',secret:sec});const legacySig=seen.o.headers;
+  await postSignedPing({target:'https://api.x.ai/hook/abc',secretEnc:Buffer.from(sec).toString('base64')});
+  const h=seen.o.headers,body=seen.o.body;assert.ok(legacySig['webhook-signature'].startsWith('v1,'),'legacy plaintext secret still signs');
   const exp=crypto.createHmac('sha256',Buffer.from(sec.replace(/^whsec_/,''),'base64')).update(h['webhook-id']+'.'+h['webhook-timestamp']+'.'+body).digest('base64');
   assert.strictEqual(h['webhook-signature'],'v1,'+exp,'signature matches the Standard Webhooks recipe');
   assert(!/task|brief/i.test(body),'ping carries no task details');
-  assert(/wake: a\.wake && a\.wake\.channel \? \{ channel: a\.wake\.channel, declaredAt: a\.wake\.declaredAt \|\| null, hasSecret/.test(srv),'state shows only channel and hasSecret, never the secret');
+  assert(/wake: a\.wake && a\.wake\.channel \? \{ channel: a\.wake\.channel, declaredAt: a\.wake\.declaredAt \|\| null, hasSecret: wakeHasSecret\(a\.wake\)/.test(srv),'state shows only channel and hasSecret, never the secret');
   assert(/agents\\\/\(\\w\+\)\\\/wake\$/.test(srv)&&/origin'\}\);return send\(await setOwnerWake/.test(srv),'owner endpoint is origin checked');
   console.log('PASS wake-url: owner-pasted webhook is validated, signed, hidden');
 })().catch(e=>{console.error('FAIL',e.message);process.exit(1)});
