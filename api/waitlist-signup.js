@@ -15,7 +15,7 @@ function createHandler({r,getJ}){
   if(Buffer.byteLength(JSON.stringify(body))>4096)return res.status(413).json({error:'Request too large'});
   if(body.website)return res.json({ok:true});
   const email=String(body.email||'').trim().toLowerCase();
-  if(email.length>254||! /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||body.consent!==true)return res.status(400).json({error:'Enter your email and agree to an access update.'});
+  if(email.length>254||! /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||(body.consent!==true&&body.consent!==false))return res.status(400).json({error:'Enter a valid email address.'});
   try{
    const ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim(),hour=Math.floor(Date.now()/3600000);
    const networkKey='gl:waitlistRate:'+sha(ip)+':'+hour,n=Number(await r(['INCRBY',networkKey,1]));if(n===1)await r(['EXPIRE',networkKey,3600]);
@@ -25,7 +25,7 @@ function createHandler({r,getJ}){
    await seats.reconcile();
    const campaign=typeof body.src==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(body.src)?body.src:null;
    const token=/^[a-f0-9]{64}$/.test(body.signupToken||'')?body.signupToken:null;
-   const hash=sha(email),entry={email,requestedAt:new Date().toISOString(),consent:'Access availability email only',source:'alter-site',...(campaign?{campaign}:{}),...(token?{claimHash:sha(token)}:{})};
+   const hash=sha(email),entry={email,requestedAt:new Date().toISOString(),consent:body.consent===true?'Access availability email only':'none',source:'alter-site',...(campaign?{campaign}:{}),...(token?{claimHash:sha(token)}:{})};
    const added=await r(['SET','gl:waitlist:'+hash,JSON.stringify(entry),'NX']);
    await r(['SADD','gl:waitlist',hash]);
    return res.json({ok:true,...await seats.receipt(hash,!!added,body.receipt,token)});
