@@ -67,7 +67,7 @@ async function r(cmd0) {
 function memCmd(c) {
   const [op, k, ...a] = c; const L = () => mem.lists.get(k) || [];
   switch (op.toUpperCase()) {
-    case 'EVAL': { if(k===RECEIPT_ONCE){const [n,marker,head,list,json,hash,val]=a;if(Number(n)!==3)throw Error('unsupported local EVAL');if(mem.kv.has(marker))return 0;mem.kv.set(marker,val);mem.kv.set(head,hash);const l=mem.lists.get(list)||[];l.unshift(json);mem.lists.set(list,l.slice(0,300));return 1;} if(k===CHARGE_ONCE){const n=Number(a[0]);if(n!==2&&n!==3)throw Error('unsupported local EVAL');const keys=a.slice(1,1+n),[amount,val]=a.slice(1+n);if(mem.kv.has(keys[0]))return 0;mem.kv.set(keys[0],val);for(const c of keys.slice(1))mem.kv.set(c,String(parseInt(mem.kv.get(c)||'0',10)+parseInt(amount,10)));return 1;} const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
+    case 'EVAL': { if(k===RECEIPT_ONCE){const [n,marker,head,list,json,hash,val]=a;if(Number(n)!==3)throw Error('unsupported local EVAL');if(mem.kv.has(marker))return 0;mem.kv.set(marker,val);mem.kv.set(head,hash);const l=mem.lists.get(list)||[];l.unshift(json);mem.lists.set(list,l.slice(0,300));return 1;} if(k===CHARGE_ONCE){const n=Number(a[0]);if(n!==2&&n!==3)throw Error('unsupported local EVAL');const keys=a.slice(1,1+n),[amount,val]=a.slice(1+n);if(mem.kv.has(keys[0]))return 0;mem.kv.set(keys[0],val);for(const c of keys.slice(1))mem.kv.set(c,String(parseInt(mem.kv.get(c)||'0',10)+parseInt(amount,10)));return 1;} if(k===DEL_IF_EQ){const [n,key,expected]=a;if(Number(n)!==1)throw Error('unsupported local EVAL');if(mem.kv.get(key)!==expected)return 0;mem.kv.delete(key);return 1;} const [script,n,key,expected,replacement]=[k,...a]; if((script!==AGENT_CAS&&script!==BOTLINK_CAS) || Number(n)!==1)throw Error('unsupported local EVAL'); const old=mem.kv.get(key); if(old==null)return -1;if(old!==expected)return 0;mem.kv.set(key,replacement);return 1; }
     case 'MGET': return c.slice(1).map(x => mem.kv.has(x) ? mem.kv.get(x) : null);
     case 'GET': return mem.kv.has(k) ? mem.kv.get(k) : null;
     case 'LREM': { const l = L(), out = l.filter(x => x !== a[1]); mem.lists.set(k, out); return l.length - out.length; }
@@ -98,6 +98,7 @@ const setJ = (k, o) => r(['SET', k, JSON.stringify(o)]);
 // A receipt keyed by onceKey is written at most once: marker, chain head and list entry in one operation, under an id derived from the key.
 const RECEIPT_ONCE = "if redis.call('SET',KEYS[1],ARGV[3],'NX') then redis.call('SET',KEYS[2],ARGV[2]); redis.call('LPUSH',KEYS[3],ARGV[1]); redis.call('LTRIM',KEYS[3],0,299); return 1 end; return 0";
 const CHARGE_ONCE = "if redis.call('SET',KEYS[1],ARGV[2],'NX') then redis.call('INCRBY',KEYS[2],ARGV[1]); if KEYS[3] then redis.call('INCRBY',KEYS[3],ARGV[1]) end; return 1 end; return 0";
+const DEL_IF_EQ = "if redis.call('GET',KEYS[1])==ARGV[1] then redis.call('DEL',KEYS[1]) return 1 end return 0";
 const AGENT_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2]); return 1";
 // Same compare-and-set, but keeps the key's TTL so expiring bot-link pairing records stay expiring.
 const BOTLINK_CAS = "local old=redis.call('GET',KEYS[1]); if not old then return -1 end; if old~=ARGV[1] then return 0 end; redis.call('SET',KEYS[1],ARGV[2],'KEEPTTL'); return 1";
@@ -403,37 +404,62 @@ const wakeTokenOf = w => { if (!w || !w.tokenEnc) return ''; try { return dec(w.
 const wakeHasSecret = w => !!(w && (w.secret || w.secretEnc || w.tokenEnc));
 async function noteWakeTarget(agent,w){const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active')return;if(live.wake&&live.wake.channel===w.channel&&live.wake.target===w.target&&wakeSecretOf(live.wake)===String(w.secret||'')&&!wakeTestOwed(live.wake))return;if(w.channel==='email'&&live.wake&&live.wake.target!==w.target){const ck='gl:wakeChg:'+agent.id;let chg=await getJ(ck);if(!chg||chg.exp<Date.now())chg={n:0,exp:Date.now()+86400000};if(chg.n>=5)return;chg.n++;await setJ(ck,chg);}live.wake={channel:w.channel,target:w.target,...(w.secret?{secretEnc:enc(w.secret)}:{}),declaredAt:now(),...(w.channel==='email'?{nonce:(live.wake&&live.wake.target===w.target&&live.wake.nonce)||crypto.randomBytes(6).toString('hex'),verified:false,pending:!wakeEmailAllowed(w.target),...(live.wake&&live.wake.target===w.target&&live.wake.testSentAt?{testSentAt:live.wake.testSentAt}:{}),...(live.wake&&live.wake.target===w.target&&live.wake.testTriedAt?{testTriedAt:live.wake.testTriedAt}:{})}:{})};await setJ('fm:agent:'+agent.id,live);if(w.channel==='email'){if(live.wake.pending)await event(agent.id,'wake_pending','Wake email address saved but not used: it is not on the owner allowlist, so Alter will not mail it',{kind:'WAKE',presenceOnly:true});else await sendWakeTestOnce(agent);}bust();if(w.channel==='webhook'){let ok=false,st=0,er='';try{const rp=await postSignedPing(live.wake);st=rp.status;ok=rp.status===202||rp.ok;}catch(e){er=String((e&&e.message)||e).slice(0,80);}await event(agent.id,ok?'wake_sent':'wake_failed',ok?'Test wake accepted (webhook)':'Test wake failed (webhook): '+(st?'HTTP '+st:er),{kind:'WAKE',presenceOnly:true});}}
 /* wake ladder, rung 1 (free, trigger-only): when a job is queued to a bot, ping it on the free push channel wired at setup so it wakes now instead of at the next poll or routine tick. Instinct: a content-free email to its inbox (RESEND_API_KEY + WAKE_EMAIL_FROM). Grok: a content-free email to the owner's Gmail, where the bot's own email-trigger automation fires the check (RESEND_API_KEY + WAKE_EMAIL_FROM; needs the owner's Gmail connected to the bot); alternatives: a signed, content-free POST to the bot's declared Webhook Trigger automation, a content-free Slack message (declared or WAKE_GROK_SLACK_WEBHOOK incoming webhook) or, as a developer extra, a content-free trigger issue Alter closes right after creation - the creation notification is the wake signal (WAKE_GITHUB_TOKEN + WAKE_GITHUB_REPO as owner/repo). Rung 2 is the bot's own scheduled poll or routine; rung 3 is "acts when messaged" + the Copy nudge. Every trigger carries no task details and no instructions - the bot authenticates itself. Deduped to one ping per 30s per bot; silent no-op when no channel is wired, and the bot's own schedule still covers it. */
-// A second wake for the same bot inside the throttle window is not dropped: it is recorded as due (coalesced per bot) and sent once the
-// window passes, if a job is still waiting for that bot. Due wakes are flushed on later traffic: the owner's HQ refresh, any bot claim or
-// presence call, and every new wake attempt. Each deferral and each follow-up is an owner-visible event.
-const WAKE_THROTTLE_MS = 30000;
+// A second wake for the same bot inside the throttle window is not dropped. It is recorded as due in gl:wakeDue:<bot> (coalesced per bot, with
+// one stable event id) and delivered after the window by three layers that share one compare-and-set lease, so they never double-send:
+//   1. an in-invocation timer kept alive with waitUntil (@vercel/functions): fires at dueAt with no further traffic (seconds-level);
+//   2. GET /api/cron/flush-wakes, secret-protected, for a scheduled caller (minute-level backstop for total idle);
+//   3. traffic: the owner's HQ refresh, any bot claim or presence call (as before).
+// Delivery is at-least-once: a send that fails is retried with backoff (5 attempts, then an owner-visible wake_gave_up); a crash mid-send
+// leaves the leased record, which any layer retries after the lease. A timeout after the receiver accepted can therefore repeat a ping;
+// every attempt of one deferred wake carries the same event id (webhook-id, Resend Idempotency-Key) so receivers that dedupe drop repeats,
+// and claiming an already-claimed job stops quietly on the bot side.
+const WAKE_THROTTLE_MS = 30000, WAKE_LEASE_MS = 60000, WAKE_MAX_ATTEMPTS = 5, WAKE_TIMER_MAX_MS = 45000;
+const VF = (() => { try { return require('@vercel/functions'); } catch { return null; } })();
+// Keep this invocation alive until p settles (Vercel waitUntil; bounded by the function's maxDuration). Elsewhere a no-op: p still runs.
+function keepAlive(p) { try { if (VF && VF.waitUntil) VF.waitUntil(p); } catch {} return p; }
+function scheduleWakeFlush(dueAt) {
+  const ms = Math.max(0, dueAt - Date.now()) + 250; if (ms > WAKE_TIMER_MAX_MS) return; // beyond this invocation's budget: layers 2 and 3 cover it
+  keepAlive(new Promise(ok => setTimeout(ok, ms)).then(() => flushDueWakes()).catch(() => {}));
+}
 async function deferWake(a, jobId) {
   const k = 'gl:wakeDue:' + a.id, cur = await getJ(k), jobs = [...new Set([...((cur && cur.jobs) || []), ...(jobId ? [jobId] : [])])].slice(-20);
-  const held = Number(await r(['GET', 'gl:wake:' + a.id])) || Date.now();
-  await setJ(k, { ws: wsId(), agentId: a.id, jobs, dueAt: held + WAKE_THROTTLE_MS }); await r(['SADD', 'gl:wakeDueSet', a.id]);
+  const held = Number(await r(['GET', 'gl:wake:' + a.id])) || Date.now(), dueAt = Math.max(held + WAKE_THROTTLE_MS, (cur && cur.dueAt) || 0);
+  await setJ(k, { ws: wsId(), agentId: a.id, id: (cur && cur.id) || 'wake_' + crypto.randomBytes(12).toString('hex'), attempts: (cur && cur.attempts) || 0, jobs, dueAt, deferredAt: (cur && cur.deferredAt) || Date.now() });
+  await r(['SADD', 'gl:wakeDueSet', a.id]);
   if (!cur) await event(a.id, 'wake_deferred', 'Wake deferred ' + Math.ceil(WAKE_THROTTLE_MS / 1000) + 's (another wake was just sent); it follows if the job is still waiting', { kind: 'WAKE', presenceOnly: true, taskId: jobId || null });
+  scheduleWakeFlush(dueAt);
+  return { deferred: true };
 }
 async function flushDueWakes() {
-  const ids = await r(['SMEMBERS', 'gl:wakeDueSet']); if (!ids || !ids.length) return 0; let sent = 0;
+  const ids = await r(['SMEMBERS', 'gl:wakeDueSet']); if (!ids || !ids.length) return { sent: 0, pending: 0 }; let sent = 0, pending = 0;
   for (const id of ids) {
     const k = 'gl:wakeDue:' + id, raw = await r(['GET', k]), due = raw && JSON.parse(raw);
     if (!due) { await r(['SREM', 'gl:wakeDueSet', id]); continue; }
-    if (due.dueAt > Date.now()) continue;
-    if (await r(['EVAL', AGENT_CAS, 1, k, raw, JSON.stringify({ ...due, flushing: Date.now(), dueAt: Date.now() + 60000 })]) !== 1) continue; // one flusher per due wake
+    if (due.dueAt > Date.now()) { pending++; continue; }
+    const leased = JSON.stringify({ ...due, dueAt: Date.now() + WAKE_LEASE_MS, leasedAt: Date.now() });
+    if (await r(['EVAL', AGENT_CAS, 1, k, raw, leased]) !== 1) continue; // one flusher per due wake, across every layer and instance
     await als.run({ ws: due.ws }, async () => {
       const a = await getJ('fm:agent:' + id), ts = (await Promise.all((due.jobs || []).map(j => getJ('fm:task:' + j)))).filter(t => t && t.assignee === id && t.status === 'queued');
-      await r(['DEL', k]); await r(['SREM', 'gl:wakeDueSet', id]);
-      if (a && ts.length) { await maybeWakeBot(a, ts[0].id); sent++; }
+      const done = async () => { if (await r(['EVAL', DEL_IF_EQ, 1, k, leased]) === 1) await r(['SREM', 'gl:wakeDueSet', id]); };
+      if (!a || !ts.length) return done(); // nothing waits any more: drop it
+      const out = await maybeWakeBot(a, ts[0].id, { eventId: due.id }) || {};
+      if (out.sent) { sent++; return done(); }
+      if (out.deferred || out.skipped) return out.skipped ? done() : undefined; // re-deferred (merged into the record), or no channel any more
+      const attempts = (due.attempts || 0) + 1;
+      if (attempts >= WAKE_MAX_ATTEMPTS) { await done(); await event(id, 'wake_gave_up', 'Wake not delivered after ' + attempts + ' attempts; the job still waits for its next check-in', { kind: 'WAKE', presenceOnly: true, taskId: ts[0].id }); return; }
+      const next = Date.now() + Math.min(WAKE_THROTTLE_MS * attempts, 300000);
+      if (await r(['EVAL', AGENT_CAS, 1, k, leased, JSON.stringify({ ...due, attempts, dueAt: next })]) === 1) scheduleWakeFlush(next);
     });
   }
-  return sent;
+  return { sent, pending };
 }
-async function maybeWakeBot(a, jobId) {
-  if (!a || a.status !== 'active' || a.paused || a.hosted) return;
-  if (await r(['GET', 'fm:kill'])) return; // the kill switch is on: no new work is announced to any bot
+async function maybeWakeBot(a, jobId, opts) {
+  const eventId = opts && opts.eventId;
+  if (!a || a.status !== 'active' || a.paused || a.hosted) return { skipped: 'bot_unavailable' };
+  if (await r(['GET', 'fm:kill'])) return { skipped: 'killed' }; // the kill switch is on: no new work is announced to any bot
   const w = a.wake && a.wake.channel ? a.wake : null; // a bot's own declared target wins; deployment env is the fallback
   const channel = wakeChannelFor(a);
-  if (!channel) return; // no free push channel wired for this bot: silent no-op; its own schedule still covers it
+  if (!channel) return { skipped: 'no_channel' }; // no free push channel wired for this bot: its own schedule still covers it
   const got = await r(['SET', 'gl:wake:' + a.id, String(Date.now()), 'NX', 'PX', WAKE_THROTTLE_MS]);
   if (!got) return deferWake(a, jobId);
   try {
@@ -442,11 +468,11 @@ async function maybeWakeBot(a, jobId) {
       // unchanged subjects for existing receivers: the Instinct env inbox keeps 'Instinct' (a filter may match it); every other bot uses its name
       const who = !(w && w.channel === 'email') && a.providerId === 'instinct' ? 'Instinct' : String(a.name || 'your bot').slice(0, 40);
       const to = w && w.channel === 'email' ? (wakeEmailAllowed(w.target) ? w.target : '') : envWakeEmail(a);
-      if (!to) return; // no owner-configured or owner-allowlisted inbox: no ping
-      const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [to], subject: 'Alter: job waiting for ' + who, text: 'A job is waiting for ' + who + ' in Alter.' + (w && w.channel === 'email' && jobId ? ' Job: ' + jobId + '. Claim it with foreman_next_task or foreman_claim; if it is already claimed, stop quietly.' : '') }) });
+      if (!to) return { skipped: 'no_inbox' }; // no owner-configured or owner-allowlisted inbox: no ping
+      const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json', ...(eventId ? { 'idempotency-key': eventId } : {}) }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [to], subject: 'Alter: job waiting for ' + who, text: 'A job is waiting for ' + who + ' in Alter.' + (w && w.channel === 'email' && jobId ? ' Job: ' + jobId + '. Claim it with foreman_next_task or foreman_claim; if it is already claimed, stop quietly.' : '') }) });
       ok = resp.ok; status = resp.status;
     } else if (channel === 'webhook') {
-      const resp = await postSignedPing(w);
+      const resp = await postSignedPing(w, eventId);
       ok = resp.status === 202 || resp.ok; status = resp.status;
     } else if (channel === 'slack') {
       const resp = await fetch(w && w.channel === 'slack' ? w.target : process.env.WAKE_GROK_SLACK_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: w && w.channel === 'slack' ? 'Alter: job waiting for ' + String(a.name || 'your bot').slice(0, 40) : 'Alter: job waiting for Grok' }) });
@@ -458,8 +484,10 @@ async function maybeWakeBot(a, jobId) {
       if (ok) { const issue = await resp.json(); await fetch('https://api.github.com/repos/' + process.env.WAKE_GITHUB_REPO + '/issues/' + issue.number, { method: 'PATCH', headers: hdr, body: JSON.stringify({ state: 'closed', state_reason: 'completed' }) }); }
     }
     await event(a.id, ok ? 'wake_sent' : 'wake_failed', ok ? 'Instant wake sent (' + channel + ')' : 'Instant wake failed (' + channel + '): HTTP ' + status, { kind: 'WAKE', presenceOnly: true, taskId:jobId||null });
+    return { sent: ok, status, channel };
   } catch (e) {
     await event(a.id, 'wake_failed', 'Instant wake failed: ' + String((e && e.message) || e).slice(0, 120), { kind: 'WAKE', presenceOnly: true });
+    return { sent: false, error: true, channel };
   }
 }
 // Owner-set env fallback inbox for any provider: WAKE_<PROVIDER>_EMAIL (WAKE_GROK_EMAIL, WAKE_INSTINCT_EMAIL, WAKE_MUSE_EMAIL, ...).
@@ -475,9 +503,9 @@ function wakeChannelFor(a) {
     : !w && a.providerId === 'grok' && process.env.WAKE_GITHUB_TOKEN && process.env.WAKE_GITHUB_REPO ? 'github'
     : null;
 }
-async function postSignedPing(w) {
+async function postSignedPing(w, eventId) {
   const ping = JSON.stringify({ event: 'alter.job.waiting' });
-  const msgId = 'msg_' + crypto.randomBytes(16).toString('hex'), ts = String(Math.floor(Date.now() / 1000));
+  const msgId = eventId ? 'msg_' + String(eventId).replace(/[^A-Za-z0-9_]/g, '').slice(0, 60) : 'msg_' + crypto.randomBytes(16).toString('hex'), ts = String(Math.floor(Date.now() / 1000));
   // Bearer mode (Grok Bot routine receivers): Authorization: Bearer <token>. Standard Webhooks HMAC mode (grok.com Automations): whsec_ signature.
   if (w.mode === 'bearer') { const tok = wakeTokenOf(w); if (!tok) throw new Error('wake token unreadable; re-enter it in the bot settings'); return fetch(w.target, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok, 'webhook-id': msgId }, body: ping, signal: AbortSignal.timeout(8000) }); }
   const secret = wakeSecretOf(w); if (!secret) throw new Error('wake secret unreadable; re-enter it in the bot settings');
@@ -2314,6 +2342,11 @@ module.exports = async (req, res) => {
     if(path.startsWith('/pair/')||path==='/link/call')return await botLinkBotRoutes(req,res,path,body);
     if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN&&req.headers.origin!=='https://'+req.headers.host)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);if(o.status===200&&body.persistent===true){const ws=await r(['GET','gl:key:'+sha(o.body.key)]);const out=await startRunnerSession(res,ws,o.body.agent.id,o.body.key);return res.status(200).json(out);}return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
+    // Deferred-wake backstop (layer 2): GET with Authorization: Bearer <CRON_SECRET>, the contract Vercel Cron uses and the GitHub Actions
+    // workflow mirrors. Fails closed without the secret; timing-safe compare; at most 12 runs a minute; answers with counts only.
+    if (path === '/cron/flush-wakes') { res.setHeader('Cache-Control', 'no-store'); if (req.method !== 'GET') return res.status(405).json({ error: 'GET' }); if (!bizCronOk(req)) return res.status(401).json({ error: 'auth' });
+      const n = Number(await r(['INCRBY', 'gl:rl:cronFlush:' + Math.floor(Date.now() / 60000), 1])); if (n === 1) await r(['EXPIRE', 'gl:rl:cronFlush:' + Math.floor(Date.now() / 60000), 120]); if (n > 12) return res.status(429).json({ error: 'rate' });
+      const o = await flushDueWakes(); return res.json({ ok: true, sent: o.sent, pending: o.pending }); }
     if (path === '/cron/business-daily' && req.method === 'GET') { if (!bizCronOk(req)) return res.status(401).json({ error: 'auth' }); const o = await bizDailyTick(); return res.status(o.status).json(o.body); }
     { const rm = (req.url || '').split('?')[0].match(/^\/receipt\/([^/?#]+)$/) || path.match(/^\/receipt\/([^/?#]+)$/); if (rm && req.method === 'GET') { const x = await publicReceiptRead(rm[1]); const host = (/^localhost/.test(req.headers.host) ? 'http://' : 'https://') + req.headers.host; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); res.setHeader('Referrer-Policy', 'no-referrer'); return res.status(x ? 200 : 404).send(receiptPage(x, host, BRAND_NAME)); } }
     { const pm = path.match(/^\/public-receipts\/([a-f0-9]{48})$/); if (pm && req.method === 'GET') { res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow'); const x = await publicReceiptRead(pm[1]); return x ? res.json(x) : res.status(404).json({ error: 'Receipt unavailable or expired' }); } }

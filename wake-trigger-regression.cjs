@@ -191,13 +191,13 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
 });})().catch(e=>{console.error(e);process.exit(1)});
 // source contract
 const api=src;
-assert.ok(api.includes("'NX', 'PX', WAKE_THROTTLE_MS]")&&api.includes('const WAKE_THROTTLE_MS = 30000;')&&api.includes('if (!got) return deferWake(a, jobId);'),'30s dedupe window; a throttled wake is deferred, not dropped');
+assert.ok(api.includes("'NX', 'PX', WAKE_THROTTLE_MS]")&&/const WAKE_THROTTLE_MS = 30000[,;]/.test(api)&&api.includes('if (!got) return deferWake(a, jobId);'),'30s dedupe window; a throttled wake is deferred, not dropped');
 assert.ok(api.includes("subject: 'Alter: job waiting for ' + who"),'email subject is a fixed prefix plus the bot name');
 assert.ok(api.includes("'Alter: job waiting for Grok'"),'default slack text literal kept for the env fallback');
 assert.ok(api.includes("title: 'Alter: job waiting for Grok'"),'exact issue title');
 assert.ok(api.includes("state_reason: 'completed'"),'trigger issue closed as completed');
 assert.ok(!/text:.*t\.title/.test(api),'trigger bodies never interpolate task data');
-assert.ok(api.includes("presenceOnly: true, taskId:jobId||null });\n  } catch"),'wake events never count as bot activity');
+assert.ok(/presenceOnly: true, taskId:jobId\|\|null \}\);\n    return \{ sent: ok, status, channel \};\n  \} catch/.test(api),'wake events never count as bot activity');
 assert.ok(api.includes('declared target wins'),'per-bot declared target documented as winning over env');
 assert.ok(api.includes('gl:wakeChg:'),'email target changes are capped per bot per day');
 assert.ok(api.includes('hooks\\.slack\\.com\\/services\\/'),'slack targets locked to webhook URLs');

@@ -40,7 +40,7 @@ The other hypotheses (cookie not presented; lookup failed) now produce different
 | Measurement | `GET /api/jobs/:id` → `pickup`: assigned, wake sent and its channel, deferred, claimed, finished, and the seconds between them. | `pickup-timeline-regression.cjs` |
 | Security | The pairing replay key is encrypted at rest. The branch diff contains no secrets (scanned). | `pair-replay-regression.cjs` |
 
-**Offline suite:** 118 files, all passing (`for t in $(git ls-files '*-regression.cjs'); do node "$t"; done`).
+**Offline suite:** 119 files, all passing (`for t in $(git ls-files '*-regression.cjs'); do node "$t"; done`).
 
 **UI checked in Chromium:** desktop 1280×900 and iPhone 13. No console errors and no horizontal overflow. The token never appeared in the page.
 
@@ -54,9 +54,59 @@ The other hypotheses (cookie not presented; lookup failed) now produce different
 | Muse pickup | **Blocked by a missing dependency** | Muse reports no inbound push trigger. Next: (a) measure the floor with its recurring tasks; (b) if it can watch an inbox, set `WAKE_MUSE_EMAIL`; (c) otherwise, true push needs Meta to expose a trigger. |
 | Muse 401 cause | **Waiting** on the instrumented pairing (needs owner approval) | Run the pairing test below and read the `runner_401` log lines. |
 | Instinct | **Unverified** | Same trivial-job measurement. |
-| Deferred wake with no traffic at all | **Gap stated** | A deferred wake goes out at the next request to Alter (owner HQ, any bot poll). Next step: a scheduled flush (for example a 5-minute GitHub Actions call to a secret-protected endpoint). That needs an owner-configured secret, so it isn't built. |
+| Deferred wake with no traffic at all | **Built, unproven on Vercel.** The local timer is proven (see "Autonomous deferred-wake delivery"). | Observe one idle deferral on a deployed Preview or production after the owner's go, and read the `wake_sent` time against `dueAt`. |
 | Handoff without the owner relaying content | **Built** (trial contract plus wakes); **not live-tested** | Instinct → Grok trial on production after deploy. |
 | Existing plaintext signing secrets | **Migration built, not run** | After deploy, the owner runs the migration from HQ (below). Live receivers keep working either way. |
+
+## Autonomous deferred-wake delivery
+
+**Mechanism.** A throttled wake is recorded in `gl:wakeDue:<bot>`: coalesced per bot, with one stable event id and an attempt count. Three layers deliver it. They share one compare-and-set lease, so together they send at most one attempt at a time.
+
+1. **In-invocation timer (seconds-level).**
+   - The request that defers the wake schedules a flush for the end of the window, and keeps its invocation alive with `waitUntil` from `@vercel/functions` (pinned 3.11.0, released 2026-11-05).
+   - No further request is needed.
+   - `api/index.js` `maxDuration` is raised from 30 s to 60 s so a timer of up to 45 s fits. Longer delays are left to layers 2 and 3.
+2. **`GET /api/cron/flush-wakes` (minute-level backstop for total idle).**
+   - Takes `Authorization: Bearer <CRON_SECRET>` (Vercel Cron's documented contract), compared in constant time.
+   - Fails closed without the secret, allows at most 12 calls a minute, and answers with counts only.
+   - Caller: `.github/workflows/flush-wakes.yml`, every 5 minutes. GitHub may run it later than scheduled.
+   - It needs a repository secret `CRON_SECRET` (the deployment's value) and a repository variable `ALTER_FLUSH_URL`. Until then it skips. It runs only from the default branch.
+3. **Traffic (unchanged).** The owner's HQ refresh, any bot claim or presence call.
+
+**Delivery is durable at-least-once, not exactly-once.**
+- The record is leased before a send and closed by compare-and-delete only after success, so a crash mid-send leaves it for any layer to retry after the 60 s lease.
+- A failed send is retried with backoff. After 5 attempts it ends in an owner-visible `wake_gave_up` event.
+- A timeout after the receiver accepted the ping is ambiguous, so a retry can repeat it.
+- Every attempt of one deferred wake carries the same event id: webhook `webhook-id`, and Resend `Idempotency-Key`. Receivers that dedupe drop repeats. Bot-side claim safety (claiming an already-claimed job stops quietly) is the second line.
+- Slack and GitHub channels have no dedupe, so a repeat there is possible.
+
+**Measured latency.**
+
+| Run | Setup | Delivered after the window ended |
+|---|---|---|
+| Offline regression (`wake-flush-regression.cjs`) | virtual clock at 30x | 0.30 s |
+| Real time (`scripts/wake-flush-real-redis.cjs`, also a CI step) | real 30 s throttle; real Redis TTL; no request to either app instance after the deferral | **0.26 s** (30.3 s after the first wake) |
+
+Both runs are a long-lived local Node process.
+
+**Platform limits** (verified in Vercel's documentation on 2026-11-21):
+- **Function duration:** with Fluid compute, Hobby's maximum is 300 s, and Pro/Enterprise allow up to 800 s. Without Fluid compute, Hobby's maximum is 60 s, so this branch's 60 s fits either way.
+- **`waitUntil`:** "Promises passed to waitUntil() will have the same timeout as the function itself."
+- **Vercel Cron:** Hobby allows once per day (±59 min precision), so it can't be the backstop. Pro allows once per minute.
+- **Unverified here:**
+  - The account's plan, and whether Fluid compute is on for this project. Earlier reports say Hobby; I have no Vercel access.
+  - Whether a `waitUntil` timer actually survives 30 s on this deployment.
+
+**Where the seconds-level target is not met yet:**
+- **On Vercel:** unproven until observed. If the runtime ends the invocation early, the record survives and layers 2 and 3 deliver it later: 5 minutes or more with the GitHub schedule, or the next request.
+- **Retries 2 and beyond:** they wait 60 s or longer, beyond one invocation's timer budget, so they ride on layers 2 and 3.
+- **Vercel Cron on Pro** would give a minute-level backstop. That would mean a plan change, which needs the owner's go.
+
+**What would prove production idle behavior:**
+1. After the owner's go, on a deployment, assign two jobs to one bot within 30 s.
+2. Make no further requests for a minute.
+3. Check that the bot's events show `wake_deferred`, then `wake_sent` about 30 s after the first wake.
+4. Check that `GET /api/jobs/<job 2>` shows `pickup.wakeSentAt`.
 
 ## Validation steps for Royce to run with each bot
 

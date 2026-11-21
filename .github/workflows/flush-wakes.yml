@@ -1,0 +1,25 @@
+name: flush-wakes
+# Backstop (layer 2) for deferred bot wakes: asks the deployment to send any wake whose throttle window has passed. The seconds-level path
+# is the in-invocation timer; this covers total idle at GitHub's schedule granularity (5 minutes at best, often later).
+# Needs, set by the owner: repository secret CRON_SECRET (the same value as the deployment's CRON_SECRET) and repository variable
+# ALTER_FLUSH_URL (for example https://www.alterhq.app). Without them it does nothing. Schedules run only from the default branch.
+on:
+  schedule: [{ cron: '*/5 * * * *' }]
+  workflow_dispatch: {}
+permissions: {}
+concurrency: { group: flush-wakes, cancel-in-progress: false }
+jobs:
+  flush:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Flush due wakes
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ALTER_FLUSH_URL: ${{ vars.ALTER_FLUSH_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$ALTER_FLUSH_URL" ]; then echo "not configured; skipping"; exit 0; fi
+          case "$ALTER_FLUSH_URL" in https://*) ;; *) echo "ALTER_FLUSH_URL must be https"; exit 1;; esac
+          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 30 -H "Authorization: Bearer $CRON_SECRET" "$ALTER_FLUSH_URL/api/cron/flush-wakes")
+          echo "HTTP $code"; head -c 200 /tmp/out.json; echo
+          [ "$code" = "200" ] || [ "$code" = "429" ]

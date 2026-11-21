@@ -180,7 +180,7 @@
   ],
   "functions": {
     "api/index.js": {
-      "maxDuration": 30
+      "maxDuration": 60
     },
     "api/og.js": {
       "maxDuration": 15,
