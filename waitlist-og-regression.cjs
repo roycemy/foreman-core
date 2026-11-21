@@ -1,0 +1,28 @@
+// Link preview for /waitlist (text-message card only): public/waitlist.html carries one og/twitter tag set that points at the approved
+// founding-seat card at /brand/og-founding.png (static, 1200x630 PNG), canonical and og:url are the bare /waitlist so ?src=... links
+// share one card. Updated for #125, which rewrote the page copy and card text and dropped og:image:type and the image alt tags (owner change on
+// production; this test follows it rather than restoring them). Static check: node, fs and assert only, no network.
+const fs=require('fs'),assert=require('assert');
+const page=fs.readFileSync('public/waitlist.html','utf8');
+const tag=(attr,name)=>[...page.matchAll(new RegExp('<meta '+attr+'="'+name.replace(/[:.]/g,m=>'\\'+m)+'" content="([^"]*)">','g'))].map(m=>m[1]);
+const once=(attr,name)=>{const v=tag(attr,name);assert.equal(v.length,1,name+' appears exactly once (found '+v.length+')');return v[0];};
+const IMG='https://www.alterhq.app/brand/og-founding.png';
+// the card: exactly one og:image, an absolute production URL for the committed file
+const ogImage=once('property','og:image');assert.ok(ogImage===IMG||ogImage.startsWith(IMG+'?v='),'og:image points at '+IMG+' (got '+ogImage+')');
+assert.equal(once('name','twitter:image'),ogImage,'twitter:image is the same address as og:image');
+assert.equal(once('name','twitter:card'),'summary_large_image','twitter:card is summary_large_image');
+assert.equal(once('property','og:image:width'),'1200','og:image:width is 1200');assert.equal(once('property','og:image:height'),'630','og:image:height is 630');
+// the card text and the page address
+assert.equal(once('property','og:title'),'Your place starts here · Alter');assert.equal(once('name','twitter:title'),'Your place starts here · Alter');
+assert.equal(once('property','og:description'),'The control layer for all your bots. Join the waitlist and get your own number.');
+assert.equal(once('property','og:type'),'website');assert.equal(once('property','og:site_name'),'Alter');
+assert.equal(once('property','og:url'),'https://www.alterhq.app/waitlist','og:url is the bare /waitlist, so ?src= links group under one URL');
+assert.equal((page.match(/<link rel="canonical" href="([^"]*)">/g)||[]).length,1);assert.ok(page.includes('<link rel="canonical" href="https://www.alterhq.app/waitlist">'),'canonical is the bare /waitlist');
+// the tags sit directly after the existing description, and the page's own content is intact
+assert.ok(page.includes('<title>Alter · Your place starts here</title>'),'the #125 title');
+for(const must of ['Join the waitlist and get your own number.',"fetch('/api/waitlist'",'consent'])assert.ok(page.includes(must),'the page still contains '+must);
+// the committed card: a real PNG, 1200x630
+const png=fs.readFileSync('public/brand/og-founding.png');
+assert.deepEqual([...png.subarray(0,8)],[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a],'public/brand/og-founding.png is a PNG');
+assert.equal(png.toString('ascii',12,16),'IHDR');assert.deepEqual([png.readUInt32BE(16),png.readUInt32BE(20)],[1200,630],'the PNG IHDR reads 1200x630');
+console.log('PASS waitlist link preview: one og/twitter tag set pointing at the static founding-seat card (png, 1200x630), bare /waitlist canonical and og:url, summary_large_image, #125 page copy');

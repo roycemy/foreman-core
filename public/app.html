@@ -18,6 +18,7 @@
 <link rel="stylesheet" href="/styles/components/meeting.css">
 <link rel="stylesheet" href="/styles/components/receipt-ship.css">
 <link rel="stylesheet" href="/styles/components/reconnect-flag.css">
+<link rel="stylesheet" href="/styles/components/trial.css">
 <script src="/brand.js"></script>
 </head>
 <body class="app">
@@ -37,6 +38,7 @@
       <a role="menuitem" class="site-return" href="/index.html">Back to Alter website ↗</a>
       <button role="menuitem" data-act="invite">Invite someone ↗</button>
       <button role="menuitem" data-act="perms">${grid} All permissions</button>
+      <button role="menuitem" data-act="trial">Two-bot trial</button>
       <hr>
       <button role="menuitem" data-act="emergency" class="danger">${stop} Emergency stop</button>
       <hr>
@@ -65,6 +67,7 @@
   <section class="view page" id="v-business" aria-label="Business"></section>
   <section class="view page" id="v-receipts" aria-label="Receipts"></section>
   <section class="view page" id="v-card" aria-label="Card"></section>
+  <section class="view page" id="v-trial" aria-label="Two-bot trial"></section>
 </main>
 
 <aside class="panel" id="rail" role="dialog" aria-modal="false" aria-labelledby="rail-h" tabindex="-1"></aside>
@@ -98,7 +101,7 @@
       <p class="err" id="aur" role="alert"></p>
       <button class="b ink lg block" type="submit" id="aug">Sign in</button>
     </form>
-    <div class="links"><button type="button" id="aum">Create an account</button><button type="button" id="aucl">Have a claim code?</button></div>
+    <div class="links"><button type="button" id="aum">Create an account</button><button type="button" id="aucl">Have a claim code?</button><button type="button" id="auf">Forgot password?</button></div>
   </div>
 </div>
 
@@ -114,6 +117,7 @@
 <script src="/js/business.js"></script>
 <script src="/js/receipts.js"></script>
 <script src="/js/share.js"></script>
+<script src="/js/trial.js"></script>
 <script src="/js/components/dock.js"></script>
 <script src="/js/components/bot-status.js"></script>
 <script src="/js/components/estimate.js"></script>

@@ -42,3 +42,8 @@ jobs:
           done
           echo "passed $pass of $count"
           if [ ${#failed[@]} -gt 0 ]; then printf 'FAILED %s\n' "${failed[@]}"; exit 1; fi
+      - name: Password-reset session sweep on a real redis-server
+        # A throwaway local redis-server (Ubuntu package, no credentials, no network store) behind the script's own REST shim.
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq redis-server
+          timeout 300 node scripts/session-sweep-real-redis.cjs

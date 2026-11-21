@@ -191,7 +191,8 @@
     'work.handoff': { verb: 'Hand off work', what: 'Passes a job to another bot', ask: 'Hand off a job', doing: 'handing off work' },
     'work.assign': { verb: 'Assign jobs', what: 'Gives a job to another bot', ask: 'Assign a job', doing: 'assigning a job' },
     'work.enqueue': { verb: 'Queue new jobs', what: 'Adds unassigned jobs to your inbox', ask: 'Queue a job', doing: 'queueing a job' },
-    'email.send': { verb: 'Send email', what: 'Alter sends each email only after you approve it', ask: 'Send an email', doing: 'drafting an email' }
+    'email.send': { verb: 'Send email', what: 'Alter sends each email only after you approve it', ask: 'Send an email', doing: 'drafting an email' },
+    'pilot.handoff': { verb: 'Trial handoff', what: 'Hands approved trial moments to another bot', ask: 'Hand moments to another bot', doing: 'picking moments' }
   };
   BB.MODE_COPY = { AUTO: 'Allowed', ASK: 'Ask first', NEVER: 'Never' };
   BB.reqTitle = q => {
@@ -402,6 +403,8 @@
     /* An email is approved only from a view that shows all of it. Compact cards (floor tray, lists, pop-down) open the full review instead. */
     if (item.type === 'approval' && item.q.action === 'email.send' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewEmail(item);
     if (item.type === 'approval' && item.q.action === 'notes.write' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewNote(item);
+    /* a trial handoff is approved only from the review that shows the recipient and the exact package */
+    if (item.type === 'approval' && item.q.action === 'pilot.handoff' && d === 'approve' && !(opts && opts.reviewed)) return BB.reviewHandoff ? BB.reviewHandoff(item) : null;
     if (item.type === 'approval') j = await BB.api('/api/requests/' + item.q.id + '/' + (d === 'deny' ? 'deny' : 'approve'), 'POST', { detailsHash: item.q.detailsHash });
     else if (item.type === 'email') j = await BB.api('/api/requests/' + item.q.id + '/' + (item.q.status === 'outcome_unknown' ? 'reconcile' : 'delivery'), 'POST');
     else if (item.type === 'notesave') j = await BB.api('/api/requests/' + item.q.id + '/recover', 'POST', {});
@@ -415,6 +418,7 @@
     if (item.type === 'approval' || item.type === 'email') {
       const q = j.request, st = q && q.status;
       if (q && q.action === 'email.send') return BB.emailOutcome(q);
+      if (q && q.action === 'pilot.handoff' && st === 'executed') return 'Approved. Alter queued one caption job for ' + ((q.params && q.params.to) || 'the second bot') + '.';
       if (st === 'executed' && j.receipt && j.receipt.outcome === 'completed') return 'Approved. It ran and left a receipt.';
       if (st === 'denied') return 'Denied. Nothing ran.';
       if (st === 'blocked') return 'Blocked: ' + (q.reason || 'a permission or limit changed');
