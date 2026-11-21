@@ -4,17 +4,17 @@
 // never stored in plain form or printed, and existing account data kept.
 const fs=require('fs'),vm=require('vm'),path=require('path'),assert=require('assert');
 let off=0;class FD extends Date{constructor(...a){if(a.length)super(...a);else super(Date.now()+off)}static now(){return Date.now()+off}}
-const API=path.join(__dirname,'api/index.js'),src='Date=FD;'+fs.readFileSync(API,'utf8')+'\nmodule.exports.t={r,setJ,getJ,sha,als};';
+const API=path.join(__dirname,'api/index.js'),src='Date=FD;'+fs.readFileSync(API,'utf8')+'\nmodule.exports.t={r,setJ,getJ,sha,als,WAITLIST_ADMINS};';
 const sent=[],printed=[];let providerOk=true;const env={RESEND_API_KEY:'re_synthetic_test_only',WAKE_EMAIL_FROM:'Alter <wake@mail.example>'};
 const cap=(...a)=>printed.push(a.map(String).join(' '));
 const ctx={FD,require:require('module').createRequire(API),module:{exports:{}},process:{env},global:{},console:{log:cap,warn:cap,error:cap,info:cap},
  fetch:async(u,o)=>{if(String(u)==='https://api.resend.com/emails'){sent.push(JSON.parse(o.body));return {ok:providerOk,status:providerOk?200:500,json:async()=>({id:'x'})};}throw Error('NO NETWORK '+u)},setTimeout,clearTimeout,URL,AbortSignal,Buffer};
-vm.runInNewContext(src,ctx);const h=ctx.module.exports,f=h.t;
+vm.runInNewContext(src,ctx);const h=ctx.module.exports,f=h.t;const FOUNDER=[...f.WAITLIST_ADMINS][0]; // a founder account, read from the app's own list
 let ipN=0;
 async function http(method,url,{body,cookie,origin,ip}={}){let out,set=null;const headers={host:'www.alterhq.app',origin:origin===undefined?'https://www.alterhq.app':origin,'x-forwarded-for':ip||'203.0.113.'+(++ipN%200)};if(cookie)headers.cookie='fm_sess='+cookie;
  const res={setHeader(k,v){if(k==='Set-Cookie'){const m=/fm_sess=([^;]*)/.exec(String(v));if(m)set=m[1];}},status(c){this.code=c;return this},json(j){out={code:this.code||200,j}},send(b){out={code:this.code||200,j:b}},end(){out={code:this.code||204}}};
  await h({method,url,headers,body:body||{}},res);return {...out,cookie:set};}
-const FOUNDER='roycemyers20@gmail.com',OTHER='someone@example.com';
+const OTHER='someone@example.com';
 const signup=async(email,pw)=>{const r=await http('POST','/api/auth/signup',{body:{email,password:pw}});assert.equal(r.code,200,JSON.stringify(r.j));return r.cookie;};
 const login=async(email,pw)=>http('POST','/api/auth/login',{body:{email,password:pw}});
 const me=async c=>(await http('GET','/api/me',{cookie:c})).code;

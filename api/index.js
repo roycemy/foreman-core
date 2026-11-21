@@ -80,6 +80,7 @@ function memCmd(c) {
     case 'SADD': { const s = new Set(mem.kv.get(k) || []); s.add(a[0]); mem.kv.set(k, [...s]); return 1; }
     case 'SREM': { const x=(mem.kv.get(k)||[]).filter(v=>v!==a[0]); mem.kv.set(k,x); return 1; }
     case 'SMEMBERS': return mem.kv.get(k) || [];
+    case 'SCAN': { const o = {}; for (let i = 0; i < a.length; i += 2) o[String(a[i]).toUpperCase()] = a[i + 1]; const re = new RegExp('^' + String(o.MATCH || '*').replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$'); const keys = [...mem.kv.keys(), ...mem.lists.keys()].sort(), from = parseInt(k, 10) || 0, n = parseInt(o.COUNT || '10', 10), page = keys.slice(from, from + n), next = from + n >= keys.length ? '0' : String(from + n); return [next, page.filter(x => re.test(x))]; }
     case 'EXPIRE': return 1;
     case 'DEL': for (const x of c.slice(1)) { mem.kv.delete(x); mem.lists.delete(x); } return 1; // like Redis, every key given is deleted
   }
@@ -1217,7 +1218,27 @@ const LEGACY_CLAIM_HASH = '939eed690d2af252b4940442b755cb84ba4c27be515142877a44b
 const cookieOf = req => { const m = String(req.headers.cookie || '').match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)')); return m ? m[1] : null; };
 async function getSession(req) { const t = cookieOf(req); if (!t) return null; const v = await r(['GET', 'gl:sess:' + sha(t)]);if(!v)return null;const sess=JSON.parse(v),u=await getJ('gl:user:'+sha(sess.email));if(u&&u.pwAt&&!(Number(sess.at)>=Number(u.pwAt)))return null;return u&&u.id===sess.uid&&u.ws===sess.ws?sess:null; }
 const setCookie = (res, v, maxAge) => res.setHeader('Set-Cookie', `${COOKIE}=${v}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`);
-async function startSession(res, user) { const t = crypto.randomBytes(32).toString('hex'); await r(['SET', 'gl:sess:' + sha(t), JSON.stringify({ uid: user.id, email: user.email, ws: user.ws, at: Date.now() }), 'EX', 2592000]); setCookie(res, t, 2592000); }
+async function startSession(res, user) { const t = crypto.randomBytes(32).toString('hex'), key = 'gl:sess:' + sha(t); await r(['SET', key, JSON.stringify({ uid: user.id, email: user.email, ws: user.ws, at: Date.now() }), 'EX', 2592000]); setCookie(res, t, 2592000); return key; }
+// Deletes every owner session of one account: sessions made before this code existed too, since they are found by scanning gl:sess:*
+// and reading each one's uid, not through an index. A pass that deletes nothing proves none were left when it ran; passes repeat until
+// one is clean. Correctness does not depend on keyspace size: the scan runs to the end or the call throws (store error or the 20 s budget),
+// and callers treat a throw as "not signed out". Touches only keys whose stored uid equals this account's id. Logs nothing.
+async function deleteUserSessions(uid, budgetMs) {
+  const until = Date.now() + (budgetMs || 20000);
+  for (let pass = 0; pass < 4; pass++) {
+    let cursor = '0', deleted = 0;
+    do {
+      if (Date.now() > until) throw new Error('session sweep timed out');
+      const [next, keys] = await r(['SCAN', cursor, 'MATCH', 'gl:sess:*', 'COUNT', 1000]); cursor = String(next);
+      if (keys && keys.length) {
+        const vals = await r(['MGET', ...keys]), mine = keys.filter((k, i) => { try { return vals[i] && JSON.parse(vals[i]).uid === uid; } catch { return false; } });
+        if (mine.length) { await r(['DEL', ...mine]); deleted += mine.length; }
+      }
+    } while (cursor !== '0');
+    if (!deleted) return;
+  }
+  throw new Error('sessions kept appearing');
+}
 // funnel instrumentation: first time each workspace reaches a step, record it once
 const STEPS = ['signup', 'connect_started', 'connected', 'first_task_started', 'approval_shown', 'approval_completed', 'first_receipt'];
 async function track(step, extra, ws) { try { ws = ws || wsId(); if (!STEPS.includes(step)) return; const first = await r(['SET', 'gl:fn:' + ws + ':' + step, '1', 'NX']); if (!first) return; await r(['LPUSH', 'gl:funnel', JSON.stringify({ ws, step, at: now(), ...(extra || {}) })]); await r(['LTRIM', 'gl:funnel', 0, 4999]); } catch (e) {} }
@@ -1286,7 +1307,12 @@ async function handleAuth(req, res, path, body) {
     const raw = await r(['GET', 'gl:user:' + sha(email)]); const u = raw && JSON.parse(raw);
     const okp = u && crypto.timingSafeEqual(Buffer.from(crypto.scryptSync(pw, u.salt, 32).toString('hex')), Buffer.from(u.hash));
     if (!okp) return res.status(401).json({ error: 'Email or password is wrong' });
-    await startSession(res, u); return res.json({ ok: true, email, legacy: u.ws === 'legacy' });
+    // Issuance barrier against a concurrent password reset: write the session, then re-read the account. If the record changed (a reset
+    // committed), withdraw the session. Either this re-read sees the reset, or the session existed before the reset's sweep began and the
+    // sweep finds it, so a login racing a reset never survives it.
+    const sk = await startSession(res, u);
+    if (await r(['GET', 'gl:user:' + sha(email)]) !== raw) { await r(['DEL', sk]); setCookie(res, '', 0); return res.status(409).json({ error: 'Your account changed while signing in. Sign in again.' }); }
+    return res.json({ ok: true, email, legacy: u.ws === 'legacy' });
   }
   return res.status(404).json({ error: 'not found' });
 }
@@ -2016,19 +2042,32 @@ async function passwordReset(req, res, path, body) {
   if (!/^[a-f0-9]{64}$/.test(token)) return res.status(400).json(bad);
   if (pw.length < 8 || pw.length > 200) return res.status(400).json({ error: 'Use a password of 8 to 200 characters' });
   const key = 'gl:pwreset:' + sha(token), raw = await r(['GET', key]), t = raw && JSON.parse(raw);
-  if (!t || t.used || Date.now() - Number(t.at) > RESET_TTL_S * 1000) return res.status(400).json(bad);
-  if (await r(['EVAL', AGENT_CAS, 1, key, raw, JSON.stringify({ ...t, used: true, usedAt: Date.now() })]) !== 1) return res.status(400).json(bad); // single use, even under concurrency
+  if (!t || t.phase === 'done' || Date.now() - Number(t.at) > RESET_TTL_S * 1000) return res.status(400).json(bad);
   const ukey = 'gl:user:' + sha(t.email);
-  for (let i = 0; i < 5; i++) {
-    const uraw = await r(['GET', ukey]), u = uraw && JSON.parse(uraw);
-    if (!u || u.id !== t.uid) return res.status(400).json(bad); // the account was replaced since the link was issued
-    const salt = crypto.randomBytes(16).toString('hex'), next = { ...u, salt, hash: crypto.scryptSync(pw, salt, 32).toString('hex'), pwAt: Date.now() };
-    if (await r(['EVAL', AGENT_CAS, 1, ukey, uraw, JSON.stringify(next)]) === 1) {
-      await r(['DEL', 'gl:pwresetUser:' + u.id]); await r(['DEL', key]); await r(['DEL', 'gl:rl:' + sha(t.email)]);
-      await startSession(res, next); return res.json({ ok: true, email: next.email, legacy: next.ws === 'legacy' });
+  // Order: (1) claim the token, (2) commit the new password (account write), (3) sweep every session of the account, (4) only then sign
+  // the resetter in and report success. Logins racing step 2 are withdrawn by the login barrier; any session that existed when step 3
+  // began is deleted by it. If step 3 fails, the token stays claimable for the same person (same new password) to finish the sweep.
+  let u;
+  if (!t.phase) {
+    if (await r(['EVAL', AGENT_CAS, 1, key, raw, JSON.stringify({ ...t, phase: 'sweeping', usedAt: Date.now() })]) !== 1) return res.status(400).json(bad); // single use, even under concurrency
+    for (let i = 0; i < 5 && !u; i++) {
+      const uraw = await r(['GET', ukey]), cur = uraw && JSON.parse(uraw);
+      if (!cur || cur.id !== t.uid) { await r(['DEL', key]); return res.status(400).json(bad); } // the account was replaced since the link was issued
+      const salt = crypto.randomBytes(16).toString('hex'), next = { ...cur, salt, hash: crypto.scryptSync(pw, salt, 32).toString('hex'), pwAt: Date.now() };
+      if (await r(['EVAL', AGENT_CAS, 1, ukey, uraw, JSON.stringify(next)]) === 1) u = next;
     }
+    if (!u) { // contention: the password did not change and no session was touched; give the link back so it can be retried
+      const cur = await r(['GET', key]); if (cur) await r(['EVAL', AGENT_CAS, 1, key, cur, JSON.stringify({ ...t, phase: undefined })]);
+      return res.status(409).json({ error: 'Your account was busy, so nothing changed. Your password is the same. Try the link again.' });
+    }
+  } else { // finishing an interrupted sweep: only the person who set the new password can, with that same password
+    u = await getJ(ukey);
+    if (!u || u.id !== t.uid || !crypto.timingSafeEqual(Buffer.from(crypto.scryptSync(pw, u.salt, 32).toString('hex')), Buffer.from(u.hash))) return res.status(400).json({ error: 'To finish, enter the same new password you chose with this link.' });
   }
-  return res.status(409).json({ error: 'Your account changed while resetting. Ask for a new link.' });
+  try { await deleteUserSessions(u.id); }
+  catch (e) { return res.status(503).json({ error: 'Your password was changed, but signing out your other sessions did not finish, so you are not signed in yet. Open the same link again and enter the same new password to finish.', code: 'sweep_incomplete' }); }
+  await r(['SET', key, JSON.stringify({ ...t, phase: 'done' }), 'EX', RESET_TTL_S]); await r(['DEL', 'gl:pwresetUser:' + u.id]); await r(['DEL', 'gl:rl:' + sha(t.email)]);
+  await startSession(res, u); return res.json({ ok: true, email: u.email, legacy: u.ws === 'legacy', signedOutEverywhere: true });
 }
 async function sendWaitlistAdminEmail(to,link){
  const from=process.env.WAKE_EMAIL_FROM,key=process.env.RESEND_API_KEY;if(!from||!key)return false;
