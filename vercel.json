@@ -1,9 +1,4 @@
 {
-  "git": {
-    "deploymentEnabled": {
-      "feat/native-bot-pickup": false
-    }
-  },
   "redirects": [
     {
       "source": "/",
