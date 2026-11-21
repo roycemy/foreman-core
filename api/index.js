@@ -1954,6 +1954,68 @@ async function joinWaitlist(req,res,body){
  return res.json({ok:true,...await foundingSeats.receipt(sha(email),!!added,body.receipt)});
 }
 
+// Waitlist admin: read-only signup list for the two founders. Signup has no email verification, so an allowlisted email alone never grants access: each founder redeems a one-time code (delivered out of band) from their own signed-in account; only sha256 hashes live here.
+const WAITLIST_ADMINS=new Set(['roycemyers20@gmail.com','yashshah8778@gmail.com']);
+async function waitlistAdmin(req,res){
+ res.setHeader('Cache-Control','no-store');
+ res.setHeader('X-Robots-Tag','noindex, nofollow');
+ if(req.method!=='GET')return res.status(405).json({error:'GET required'});
+ const sess=await getSession(req);if(!sess)return res.status(401).json({error:'Sign in required'});
+ if(!WAITLIST_ADMINS.has(sess.email))return res.status(403).json({error:'This view is limited to the Alter founders'});
+ let grant=null;try{grant=JSON.parse(await r(['GET','gl:waitlistAdmin:'+sha(sess.email)])||'null');}catch(e){}
+ if(!grant||grant.uid!==sess.uid)return res.status(403).json({error:'claim_required'});
+ const rate='gl:waitlistAdminRate:'+sess.uid+':'+Math.floor(Date.now()/3600000),n=Number(await r(['INCRBY',rate,1]));if(n===1)await r(['EXPIRE',rate,3600]);
+ if(n>240)return res.status(429).json({error:'Too many requests. Try again later.'});
+ await foundingSeats.reconcile();
+ const ids=await r(['SMEMBERS','gl:waitlist']);
+ const rows=ids.length?await r(['MGET',...ids.map(x=>'gl:waitlist:'+x)]):[];
+ const access=await getJ('gl:foundingAccess')||{};
+ const inPerson=Number(await r(['GET','gl:foundingInPerson']))||0;
+ const signups=rows.map((x,i)=>{if(!x)return null;const e=JSON.parse(x);return{seat:access[ids[i]]||null,email:e.email,requestedAt:e.requestedAt,source:e.source||null,campaign:e.campaign||null};}).filter(Boolean).sort((a,b)=>String(a.requestedAt).localeCompare(String(b.requestedAt)));
+ const campaigns={};for(const s of signups){const k=s.campaign||'no tag';campaigns[k]=(campaigns[k]||0)+1;}
+ return res.json({taken:await foundingSeats.total(),limit:1000,inPerson,onlineSignups:signups.length,campaigns,signups});
+}
+
+async function sendWaitlistAdminEmail(to,link){
+ const from=process.env.WAKE_EMAIL_FROM,key=process.env.RESEND_API_KEY;if(!from||!key)return false;
+ try{const resp=await fetch('https://api.resend.com/emails',{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({from,to:[to],subject:'Alter: activate your waitlist signup view',text:'Open this link while signed in to your Alter account to activate the founders-only signup view. It works once and expires in 1 hour.\n\n'+link+'\n\nIf you did not ask for this, ignore it.'})});return resp.ok;}catch(e){return false;}
+}
+// email-verified enrollment: the link proves inbox ownership of the allowlisted address; redemption still requires a session on that same account, then binds the grant to its immutable id. fail-closed: a squatted account gets nothing because the link holder cannot sign into it, and the account holder never sees the link.
+async function waitlistAdminClaimEmail(req,res){
+ res.setHeader('Cache-Control','no-store');
+ if(req.method!=='POST')return res.status(405).json({error:'POST required'});
+ if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
+ const sess=await getSession(req);if(!sess)return res.status(401).json({error:'Sign in required'});
+ if(!WAITLIST_ADMINS.has(sess.email))return res.status(403).json({error:'This view is limited to the Alter founders'});
+ const ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();
+ const rate='gl:waitlistClaimEmailRate:'+sess.uid+':'+Math.floor(Date.now()/3600000),n=Number(await r(['INCRBY',rate,1]));if(n===1)await r(['EXPIRE',rate,3600]);
+ if(n>3)return res.status(429).json({error:'Too many emails. Try again in a while.'});
+ const ipRate='gl:waitlistClaimEmailIp:'+sha(ip)+':'+Math.floor(Date.now()/3600000),m=Number(await r(['INCRBY',ipRate,1]));if(m===1)await r(['EXPIRE',ipRate,3600]);
+ if(m>6)return res.status(429).json({error:'Too many emails. Try again in a while.'});
+ const token=crypto.randomBytes(32).toString('hex');
+ await r(['SET','gl:waitlistAdminEmail:'+sha(token),JSON.stringify({email:sess.email,at:now()}),'EX',3600]);
+ if(!await sendWaitlistAdminEmail(sess.email,PUBLIC_ORIGIN+'/waitlist-admin?claim='+token))return res.status(503).json({error:'Activation email is not configured yet'});
+ return res.json({ok:true});
+}
+async function waitlistAdminClaimToken(req,res,body){
+ res.setHeader('Cache-Control','no-store');
+ if(req.method!=='POST')return res.status(405).json({error:'POST required'});
+ if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});
+ const sess=await getSession(req);if(!sess)return res.status(401).json({error:'Sign in required'});
+ const ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();
+ const rate='gl:waitlistClaimTokenRate:'+sha(ip)+':'+Math.floor(Date.now()/3600000),n=Number(await r(['INCRBY',rate,1]));if(n===1)await r(['EXPIRE',rate,3600]);
+ if(n>10)return res.status(429).json({error:'Too many attempts. Try again later.'});
+ const t=String(body&&body.token||'').trim();
+ if(!/^[a-f0-9]{64}$/.test(t))return res.status(400).json({error:'That link is not valid'});
+ const key='gl:waitlistAdminEmail:'+sha(t),raw=await r(['GET',key]);
+ if(!raw)return res.status(400).json({error:'That link expired or was already used'});
+ const rec=JSON.parse(raw);
+ if(rec.email!==sess.email)return res.status(403).json({error:'That link belongs to a different account'});
+ await r(['DEL',key]);
+ await r(['SET','gl:waitlistAdmin:'+sha(sess.email),JSON.stringify({uid:sess.uid,at:now(),via:'email'})]);
+ return res.json({ok:true});
+}
+
 const inviteFlow=(()=>{try{return require('../lib/invite-flow.cjs')}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;return require('./lib/invite-flow.cjs')}})()({r,getJ,origin:PUBLIC_ORIGIN,joinWaitlist,getSession,foundingSeats});
 
 // Runner sessions: scoped HttpOnly cookie; bearer stored encrypted server-side only.
@@ -2058,6 +2120,9 @@ module.exports = async (req, res) => {
     if(path==='/authorization/demo'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');return res.json(AUTHZ.demo());}
     if(path==='/founding/count'&&req.method==='GET'){res.setHeader('Cache-Control','no-store');await foundingSeats.reconcile();return res.json({taken:await foundingSeats.total(),limit:1000});}
     if(path==='/founding/receipt'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});const found=await foundingSeats.readReceipt(body.receipt);return found?res.json(found):res.status(404).json({error:'Receipt unavailable'});}
+    if(path==='/waitlist/admin')return await waitlistAdmin(req,res);
+    if(path==='/waitlist/admin/claim-email')return await waitlistAdminClaimEmail(req,res);
+    if(path==='/waitlist/admin/claim-token')return await waitlistAdminClaimToken(req,res,body);
     if(path==='/waitlist')return await joinWaitlist(req,res,body);
     if(path.startsWith('/invite-page/')&&req.method==='GET')return await invitePage(req,res,path);
     // Vercel routing middleware may retain the original incoming URL on the rewritten request.

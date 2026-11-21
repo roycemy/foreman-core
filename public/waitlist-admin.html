@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Alter · Waitlist signups</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles/tokens.css"><script src="/brand.js"></script>
+<style>
+*{box-sizing:border-box}.bar{height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 max(24px,5vw);border-bottom:1px solid var(--line)}.bar .ghost{width:auto}main{max-width:760px;margin:auto;padding:48px 24px 72px}.kick{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--stone)}h1{font-size:clamp(32px,5vw,44px);letter-spacing:-.05em;line-height:1.05;margin:14px 0 10px}p{color:var(--stone);line-height:1.6}.panel{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:28px;margin-top:28px;box-shadow:var(--sh1)}label{display:block;font-size:14px;font-weight:500}input{display:block;width:100%;font:inherit;height:48px;padding:0 14px;border:1px solid var(--line-2);border-radius:10px;margin:10px 0 18px;background:var(--surface);color:var(--ink)}input:focus-visible,button:focus-visible{outline:3px solid #8286dd;outline-offset:3px}button{font:inherit;font-weight:500;color:var(--on-ink);background:var(--ink);border:0;border-radius:10px;min-height:48px;padding:13px 18px;cursor:pointer}.primary{width:100%;margin-top:6px}button:disabled{opacity:.6}.ghost{background:transparent;color:var(--ink);border:1px solid var(--line-2);min-height:40px;font-size:13px}#status{min-height:22px;font-size:14px;color:var(--ink);margin-top:14px}.stats{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px}.stat{flex:1;min-width:120px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px}.stat b{display:block;font-size:26px;letter-spacing:-.03em;color:var(--ink)}.stat span{font-size:12px;color:var(--stone)}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.chip{font-size:12px;border:1px solid var(--line-2);border-radius:99px;padding:5px 12px;color:var(--ink)}table{width:100%;border-collapse:collapse;margin-top:6px;font-size:14px}th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--stone);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}td{padding:10px;border-bottom:1px solid var(--line);color:var(--ink);word-break:break-word}tr:last-child td{border-bottom:0}td.num{font-variant-numeric:tabular-nums;color:var(--stone);white-space:nowrap}.rowbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:30px;flex-wrap:wrap}.rowbar h2{font-size:18px;letter-spacing:-.03em;margin:0;color:var(--ink)}.rowbar .actions{display:flex;gap:8px}[hidden]{display:none!important}small{display:block;color:var(--stone);margin-top:18px;font-size:12px;line-height:1.6}a{color:var(--ink)}@media(max-width:560px){main{padding-top:32px}.panel{padding:22px}td,th{padding:8px 6px;font-size:13px}}
+</style></head><body>
+<header class="bar"><a class="wm" href="/" aria-label="Alter"><span class="mark" aria-hidden="true"></span><span data-brand="upper">alter</span></a><button id="out" class="ghost" type="button" hidden>Sign out</button></header>
+<main>
+<p class="kick">Founders only</p><h1>Waitlist signups</h1>
+
+<section id="auth" class="panel" hidden>
+<p>Sign in with your own Alter account. Only Royce's and Yash's accounts can open this view.</p>
+<form id="creds"><label for="email">Email</label><input id="email" type="email" autocomplete="username" required><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required minlength="8"><button class="primary" id="go" type="submit">Sign in</button></form>
+<p style="margin-top:18px;font-size:13px">First time here? <a href="#" id="toggle">Create your account</a> with your own email, then sign in.</p>
+</section>
+
+<section id="denied" class="panel" hidden><p>This view is limited to Royce and Yash. Sign out and back in with one of their accounts.</p></section>
+
+<section id="claim" class="panel" hidden>
+<p>One more step for your first visit: activate this account with a one-time link emailed to your own address.</p>
+<button class="primary" id="emailme" type="button">Email me an activation link</button>
+</section>
+
+<section id="data" hidden>
+<div class="stats">
+<div class="stat"><b id="taken">-</b><span>founding places claimed</span></div>
+<div class="stat"><b id="inperson">-</b><span>in-person reservations</span></div>
+<div class="stat"><b id="online">-</b><span>online signups</span></div>
+</div>
+<div class="chips" id="chips"></div>
+<div class="rowbar"><h2>Every online signup</h2><div class="actions"><button id="refresh" class="ghost" type="button">Refresh</button><button id="csv" class="ghost" type="button">Download CSV</button></div></div>
+<div class="panel" style="padding:8px 18px"><table><thead><tr><th>No.</th><th>Email</th><th>Signed up</th><th>Tag</th></tr></thead><tbody id="rows"></tbody></table></div>
+<small>Private to the founders' signed-in accounts. Signup emails stay here; the public site shows only the total count.</small>
+</section>
+
+<p id="status" role="status" aria-live="polite"></p>
+</main>
+<script>
+(()=>{
+ const $=id=>document.getElementById(id);
+ let mode='login',cache=null;
+ const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+ async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});let j=null;try{j=await r.json()}catch{}return{ok:r.ok,status:r.status,j};}
+ function fmt(iso){const d=new Date(iso);return isNaN(d)?'':d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
+ function show(which){for(const s of ['auth','denied','claim','data'])$(s).hidden=s!==which;$('out').hidden=which==='auth';}
+ const qp=new URLSearchParams(location.search),claimTok=qp.get('claim');
+ if(claimTok){try{sessionStorage.setItem('wa_claim',claimTok)}catch(e){}history.replaceState(null,'',location.pathname);}
+ async function redeemClaim(){let t=null;try{t=sessionStorage.getItem('wa_claim')}catch(e){}
+  if(!t)return false;
+  const r=await api('/api/waitlist/admin/claim-token',{token:t});
+  if(r.status===401)return false; // not signed in yet; keep it stashed for after sign-in
+  try{sessionStorage.removeItem('wa_claim')}catch(e){}
+  if(!r.ok){$('status').textContent=(r.j&&r.j.error)||'That activation link did not work.';return false}
+  return true;}
+ async function load(){const st=$('status');await redeemClaim();st.textContent='Loading signups...';const r=await api('/api/waitlist/admin');
+  if(r.status===401){show('auth');st.textContent='';return}
+  if(r.status===403){show(r.j&&r.j.error==='claim_required'?'claim':'denied');st.textContent='';return}
+  if(!r.ok||!r.j){st.textContent=(r.j&&r.j.error)||'Could not load. Try again.';return}
+  cache=r.j;show('data');st.textContent='';
+  $('taken').textContent=r.j.taken.toLocaleString()+' / '+r.j.limit.toLocaleString();
+  $('inperson').textContent=(r.j.inPerson||0).toLocaleString();
+  $('online').textContent=(r.j.onlineSignups||0).toLocaleString();
+  $('chips').innerHTML=Object.entries(r.j.campaigns||{}).map(([k,v])=>'<span class="chip">'+esc(k)+' · '+v+'</span>').join('');
+  const rows=(r.j.signups||[]).slice().sort((a,b)=>(b.seat||0)-(a.seat||0));
+  $('rows').innerHTML=rows.map(s=>'<tr><td class="num">'+(s.seat?'#'+s.seat:'-')+'</td><td>'+esc(s.email)+'</td><td class="num">'+esc(fmt(s.requestedAt))+'</td><td>'+esc(s.campaign||'')+'</td></tr>').join('')||'<tr><td colspan=4 style="color:var(--stone)">No online signups yet.</td></tr>';}
+ $('toggle').onclick=e=>{e.preventDefault();mode=mode==='login'?'signup':'login';$('go').textContent=mode==='login'?'Sign in':'Create account';$('toggle').textContent=mode==='login'?'Create your account':'Sign in instead';$('password').autocomplete=mode==='login'?'current-password':'new-password';};
+ $('creds').onsubmit=async e=>{e.preventDefault();$('go').disabled=true;$('status').textContent=mode==='login'?'Signing in...':'Creating your account...';const r=await api('/api/auth/'+mode,{email:$('email').value.trim().toLowerCase(),password:$('password').value});$('go').disabled=false;if(!r.ok){$('status').textContent=(r.j&&r.j.error)||'Could not sign in.';return}$('status').textContent='';await load();};
+ $('out').onclick=async()=>{await api('/api/auth/logout',{});cache=null;show('auth');};
+ $('emailme').onclick=async e=>{const b=e.target;b.disabled=true;$('status').textContent='Sending...';const r=await api('/api/waitlist/admin/claim-email',{});b.disabled=false;$('status').textContent=r.ok?'Sent. Check your inbox - the link works once and expires in 1 hour.':((r.j&&r.j.error)||'Could not send the email right now.');};
+ $('refresh').onclick=load;
+ $('csv').onclick=()=>{if(!cache)return;const escCsv=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';const lines=['seat,email,requestedAt,source,campaign'].concat((cache.signups||[]).map(s=>[s.seat||'',s.email,s.requestedAt,s.source||'',s.campaign||''].map(escCsv).join(',')));const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/csv'}));a.download='alter-waitlist.csv';a.click();URL.revokeObjectURL(a.href);};
+ load();
+})();
+</script></body></html>

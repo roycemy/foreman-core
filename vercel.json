@@ -14,6 +14,10 @@
   ],
   "rewrites": [
     {
+      "source": "/api/waitlist",
+      "destination": "/api/waitlist-signup"
+    },
+    {
       "source": "/connect",
       "destination": "/connect.html"
     },
@@ -24,6 +28,10 @@
     {
       "source": "/api/issuing",
       "destination": "/api/issuing"
+    },
+    {
+      "source": "/waitlist-admin",
+      "destination": "/waitlist-admin.html"
     },
     {
       "source": "/waitlist",
@@ -135,6 +143,32 @@
         {
           "key": "Cache-Control",
           "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/waitlist-admin",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/waitlist-admin.html",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
         }
       ]
     }
