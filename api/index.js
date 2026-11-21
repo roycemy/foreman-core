@@ -389,7 +389,7 @@ async function ipRateLimited(name,ip,limit,windowSec){const k='gl:rl:'+name+':'+
 function pollSecFrom(req,body){let v=Number(body&&body.pollSec);if(!Number.isFinite(v)){try{v=Number(new URL(req.url||'',OAUTH_ORIGIN).searchParams.get('pollSec'));}catch{v=NaN;}}return Number.isFinite(v)&&v>=60&&v<=3600?Math.round(v):0;}
 async function notePollCadence(agent,ps){const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active'||live.pollSec===ps)return;live.pollSec=ps;await setJ('fm:agent:'+agent.id,live);bust();}
 /* wake ladder, rung 1 target: a bot may self-declare its instant-wake target on any authenticated call - same trust model as pollSec, it can only redirect its own pings. email targets may be any valid address - the common case is the user's own Gmail, where Gmail push wakes their assistant in seconds; pings stay content-free and email target changes are capped per bot per day so the nudge cannot become an arbitrary-email cannon; slack targets must be incoming-webhook URLs, which are already capability secrets. webhook targets are Grok Webhook Trigger endpoints on x.ai/grok.com with their whsec_ signing secret (docs.x.ai/grok/automations/webhooks): the secret is stored on the bot record, never logged, and only ever signs a content-free ping to that exact endpoint. */
-function wakeTargetFrom(body){const ch=String(body&&body.wakeChannel||'').toLowerCase(),tg=String(body&&body.wakeTarget||'').trim();if(ch==='webhook'){const sc=String(body&&body.wakeSecret||'').trim();try{const u=new URL(tg);if(u.protocol==='https:'&&/(^|\.)(x\.ai|grok\.com)$/.test(u.hostname)&&/^whsec_[A-Za-z0-9+/=]{16,120}$/.test(sc))return {channel:'webhook',target:tg,secret:sc};}catch{}return null;}if(ch==='email'&&/^[^\s@]{1,64}@[^\s@]{1,190}$/.test(tg))return {channel:'email',target:tg};if(ch==='slack'&&/^https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/_-]{10,200}$/.test(tg))return {channel:'slack',target:tg};return null;}
+function wakeTargetFrom(body){const ch=String(body&&body.wakeChannel||'').toLowerCase(),tg=String(body&&body.wakeTarget||'').trim();if(ch==='webhook'){const sc=String(body&&body.wakeSecret||'').trim();try{const u=new URL(tg);const tu=String(process.env.ALTER_TEST_WEBHOOK_URL||'').trim();if(u.protocol==='https:'&&(/(^|\.)(x\.ai|grok\.com)$/.test(u.hostname)||(tu&&/^https:\/\//.test(tu)&&tg===tu))&&/^whsec_[A-Za-z0-9+/=]{16,120}$/.test(sc))return {channel:'webhook',target:tg,secret:sc};}catch{}return null;}if(ch==='email'&&/^[^\s@]{1,64}@[^\s@]{1,190}$/.test(tg))return {channel:'email',target:tg};if(ch==='slack'&&/^https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/_-]{10,200}$/.test(tg))return {channel:'slack',target:tg};return null;}
 /* email wake verification: a bot-declared inbox only counts as instant wake after a test email carrying a one-time code reaches it and the bot echoes the code back (wakeNonce). Proves delivery plus that its trigger really fires. */
 async function sendWakeTestEmail(agent,w){let ok=false,st=0;try{if(!process.env.RESEND_API_KEY||!process.env.WAKE_EMAIL_FROM)throw new Error('no sender');const resp=await fetch('https://api.resend.com/emails',{method:'POST',headers:{authorization:'Bearer '+process.env.RESEND_API_KEY,'content-type':'application/json'},body:JSON.stringify({from:process.env.WAKE_EMAIL_FROM,to:[w.target],subject:'Alter: wake test for '+String(agent.name||'your bot').slice(0,40),text:'Alter wake test. Check in now: call foreman_presence with wakeNonce "'+w.nonce+'". No task details.'})});ok=resp.ok;st=resp.status;}catch(e){}await event(agent.id,ok?'wake_sent':'wake_failed',ok?'Wake test email sent; waiting for the bot to echo its code':'Wake test email failed'+(st?': HTTP '+st:' (no verified sender yet)'),{kind:'WAKE',presenceOnly:true});return ok;}
 async function noteWakeNonce(agent,body){const n=String(body&&body.wakeNonce||'').trim();if(!n)return;const live=await getJ('fm:agent:'+agent.id);if(!live||live.status!=='active'||!live.wake||live.wake.channel!=='email'||live.wake.verified||!live.wake.nonce||live.wake.nonce!==n)return;live.wake.verified=true;live.wake.verifiedAt=now();delete live.wake.nonce;await setJ('fm:agent:'+agent.id,live);bust();await event(agent.id,'wake_sent','Wake verified (email): test email woke the bot',{kind:'WAKE',presenceOnly:true});}
@@ -2342,6 +2342,7 @@ module.exports = async (req, res) => {
     if(path.startsWith('/pair/')||path==='/link/call')return await botLinkBotRoutes(req,res,path,body);
     if(path==='/pairing/redeem'&&req.method==='POST'){res.setHeader('Cache-Control','no-store');if(req.headers.origin!==OAUTH_ORIGIN&&req.headers.origin!=='https://'+req.headers.host)return res.status(403).json({error:'origin'});const o=await redeemPairing(body,String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0]);if(o.status===200&&body.persistent===true){const ws=await r(['GET','gl:key:'+sha(o.body.key)]);const out=await startRunnerSession(res,ws,o.body.agent.id,o.body.key);return res.status(200).json(out);}return res.status(o.status).json(o.body);}
     if (path === '/health') return res.json({ ok: true, store: URL_ ? 'upstash' : 'memory', time: now(), v: 14 });
+    if (path === '/test/wake-receiver' && req.method === 'POST') return await testWakeReceiver(req, res, body); // isolated-proof scaffolding: proof branch only, fail-closed without test env
     // Deferred-wake backstop (layer 2): GET with Authorization: Bearer <CRON_SECRET>, the contract Vercel Cron uses and the GitHub Actions
     // workflow mirrors. Fails closed without the secret; timing-safe compare; at most 12 runs a minute; answers with counts only.
     if (path === '/cron/flush-wakes') { res.setHeader('Cache-Control', 'no-store'); if (req.method !== 'GET') return res.status(405).json({ error: 'GET' }); if (!bizCronOk(req)) return res.status(401).json({ error: 'auth' });
@@ -2898,6 +2899,32 @@ async function bizRespAct(id, op, body) {
 // Daily check-in: one engine run per active responsibility per day, only in workspaces the platform enabled.
 // This is owner-approved scheduled work inside the workspace, not monitoring of any external system.
 // Cron guard: fail CLOSED. No secret configured, or a missing/wrong bearer, is a 401 - never an open trigger.
+// --- isolated-proof scaffolding (proof/native-wake-flush ONLY; never merged to main) ---
+// Test wake receiver so the isolated proof deployment can point a bot's webhook wake target at itself:
+// exact-URL gate via branch-scoped ALTER_TEST_WEBHOOK_URL, fail-closed bearer (ALTER_TEST_RECEIVER_TOKEN),
+// Standard Webhooks HMAC verified with ALTER_TEST_WEBHOOK_SECRET, accepts only the content-free ping,
+// receipts land in the isolated store under test:wakeReceipt* keys. Production never sets these env vars.
+function testWebhookUrl(){ const u = String(process.env.ALTER_TEST_WEBHOOK_URL || '').trim(); return /^https:\/\/[A-Za-z0-9.-]+(:\d+)?(\/\S*)?$/.test(u) ? u : ''; }
+async function testWakeReceiver(req, res, body) {
+  res.setHeader('Cache-Control', 'no-store');
+  const tok = String(process.env.ALTER_TEST_RECEIVER_TOKEN || ''), tu = testWebhookUrl();
+  if (!tok || !tu) return res.status(401).json({ error: 'auth' });
+  const expect = 'Bearer ' + tok, got = String((req.headers && req.headers.authorization) || '');
+  if (got.length !== expect.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expect))) return res.status(401).json({ error: 'auth' });
+  const ping = '{"event":"alter.job.waiting"}'; // the only content the wake channel ever sends
+  if (JSON.stringify(body || {}) !== ping) return res.status(400).json({ error: 'content' });
+  const msgId = String(req.headers['webhook-id'] || ''), ts = String(req.headers['webhook-timestamp'] || ''), sig = String(req.headers['webhook-signature'] || '');
+  const sc = String(process.env.ALTER_TEST_WEBHOOK_SECRET || '');
+  let sigOk = false;
+  if (/^whsec_[A-Za-z0-9+/=]{16,120}$/.test(sc) && /^msg_[A-Za-z0-9_]{8,80}$/.test(msgId) && /^\d{9,11}$/.test(ts) && Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) <= 300) {
+    const want = 'v1,' + crypto.createHmac('sha256', Buffer.from(sc.replace(/^whsec_/, ''), 'base64')).update(msgId + '.' + ts + '.' + ping).digest('base64');
+    sigOk = sig.length === want.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want));
+  }
+  if (!sigOk) return res.status(401).json({ error: 'signature' });
+  await setJ('test:wakeReceipt:' + msgId, { at: Date.now(), event: 'alter.job.waiting' });
+  await r(['SADD', 'test:wakeReceipts', msgId]);
+  return res.status(202).json({ ok: true });
+}
 function bizCronOk(req) {
   const cs = String(process.env.CRON_SECRET || '');
   if (!cs) return false;
