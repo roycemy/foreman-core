@@ -5,7 +5,7 @@ The trial contract has two roles: A finds moments and proposes, and B drafts cap
 | Run | A (finds moments, proposes) | Owner, on the phone | B (captions) |
 |---|---|---|---|
 | 1 | **Instinct**, through the paired runner page | **Approve** | **Grok Bot**, through the adapter on the owner's PC |
-| 2 | **Muse**, through the adapter (see the route note) | **Deny** | Grok Bot: its claim must come back empty |
+| 2 | **Muse**, through the runner link, if it can reach the Preview (it currently can't; see below) | **Deny** | Grok Bot: its claim must come back empty |
 
 The one code change for this run: the paired runner page (`/runner?agent=…`, Instinct's pairing path) now offers `pilot.handoff` and a "Read trial input" button. Test: `runner-trial-regression.cjs`.
 
@@ -19,7 +19,7 @@ Every Preview is behind Vercel Authentication, so every caller needs one of thes
 |---|---|---|---|---|
 | **Instinct** | Paired runner page in a browser: Claim, Read trial input, Run through policy (`pilot.handoff`) | One-use, 5-minute pairing code from the HQ Connect/pairing step; the gateway key stays server-side in the runner session | **Only** if the browser Instinct drives is already signed in to the owner's Vercel account. Instinct's own cloud browser would need the bypass value in its URL or prompt, which the trial rules forbid. | Live, if it drives a signed-in browser. Otherwise **blocked**: the missing capability is "a browser session that passes Vercel Authentication without receiving the bypass value". |
 | **Grok Bot** (works with files on the owner's PC) | `scripts/trial-assistant-adapter.cjs` on the PC: `claim`, `input`, `complete` | Its own gateway key (HQ Connect → Custom agent → HTTP gateway), saved by the owner to a local file | `ALTER_PROTECTION_BYPASS_FILE`: a local file the owner saves on the PC | Live, **if Grok can run `node` on the PC**. If it can only read and write files, the owner runs the commands and the run is **owner-relayed**. The missing capability is command execution. |
-| **Muse** | No live route proven. The bot-link key (`POST /api/link/call`) accepts only `echo` and `act`, so it can't claim or read input. As a hosted bot it is excluded from trials and runs on billed Meta tokens. | Its own gateway key, used by the adapter on the owner's PC | The PC bypass file | **Owner-relayed only.** The owner pastes the adapter's `input` output into Muse's chat and runs `propose` with Muse's JSON. The missing capability is a way for Muse to make authenticated HTTPS calls carrying the bypass header. |
+| **Muse** (native Muse, its own computer and browser; "muse runs in muse", per INTERCEPTION.md) | The same one-paste runner link as Instinct, from HQ Connect: `<preview>/runner?agent=<id>&poll=120#pair=<one-time code>` | One-use pairing code in the link fragment; the gateway key stays server-side | **Blocked.** Muse's browser is not signed in to the owner's Vercel account, and the bypass value may not go into its instruction. | **Cannot connect** to this Preview. Missing step: Muse's browser passing Vercel Authentication. No Meta API stand-in and no owner relay. Muse's current browser abilities are unverified from this session. |
 
 ## Instinct's scoped job (relay this exact text)
 
@@ -46,7 +46,7 @@ Every Preview is behind Vercel Authentication, so every caller needs one of thes
    - The trial page shows "Finished".
    - The receipt list holds one each of: read, proposed, completed (delivery), delivered, completed.
 3. **Run 2, deny.**
-   - Muse's proposal (owner-relayed) is denied on the phone.
+   - Muse's proposal is denied on the phone. Run 2 is blocked while Muse can't reach the Preview.
    - The trial shows "Denied".
    - Grok's `claim` prints `"job": null`.
 4. **Exactly once.**
