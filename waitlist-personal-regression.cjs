@@ -6,7 +6,7 @@ async function join(email,extra={},ip='shared-fixture'){let out;const res={setHe
 (async()=>{
  const token=crypto.randomBytes(32).toString('hex');
  const a=await join('retry@fixture.test',{signupToken:token,src:'yash-group'});
- assert.equal(a.waitlistNumber,1);assert.equal(a.receipt,token);
+ assert.equal(a.waitlistNumber,1);assert.equal(a.receipt,token);assert.equal(a.emailUpdates,true);
  const entry=await f.getJ('gl:waitlist:'+f.sha('retry@fixture.test'));assert.equal(entry.campaign,'yash-group');assert.equal(entry.consent,'Access availability email only');assert.equal(entry.claimHash,f.sha(token));assert(!JSON.stringify(entry).includes(token));
  await f.r(['DEL','gl:seatReceipt:'+f.sha(token)]);
  assert.equal((await join('retry@fixture.test',{signupToken:token})).waitlistNumber,1,'retry recovers when receipt write failed');
@@ -22,7 +22,7 @@ async function join(email,extra={},ip='shared-fixture'){let out;const res={setHe
  assert.equal(await f.getJ('gl:waitlist:'+f.sha('limited@fixture.test')),null);
  const noMail=await join('nomail@fixture.test',{consent:false});
  assert.equal(noMail.status,200);assert.equal(typeof noMail.waitlistNumber,'number');
- const nm=await f.getJ('gl:waitlist:'+f.sha('nomail@fixture.test'));assert.equal(nm.consent,'none','unchecked means no access email opt-in, signup still saved');
+ const nm=await f.getJ('gl:waitlist:'+f.sha('nomail@fixture.test'));assert.equal(nm.consent,'none','unchecked means no access email opt-in, signup still saved');assert.equal(noMail.emailUpdates,false,'confirmation copy can suppress the email promise');
  let bad;{const res={setHeader(){},status(c){this.code=c;return this},json(j){bad={status:this.code||200,...j};return bad}};await f.joinWaitlist({method:'POST',headers:{origin:'https://www.alterhq.app','x-forwarded-for':'missing-consent'}},res,{email:'noconsent@fixture.test'});}
  assert.equal(bad.status,400,'missing consent flag is still rejected');
  assert.equal(await f.getJ('gl:waitlist:'+f.sha('noconsent@fixture.test')),null);
