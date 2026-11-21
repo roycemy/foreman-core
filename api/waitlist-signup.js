@@ -28,7 +28,7 @@ function createHandler({r,getJ}){
    const hash=sha(email),entry={email,requestedAt:new Date().toISOString(),consent:body.consent===true?'Access availability email only':'none',source:'alter-site',...(campaign?{campaign}:{}),...(token?{claimHash:sha(token)}:{})};
    const added=await r(['SET','gl:waitlist:'+hash,JSON.stringify(entry),'NX']);
    await r(['SADD','gl:waitlist',hash]);
-   return res.json({ok:true,...await seats.receipt(hash,!!added,body.receipt,token)});
+   return res.json({ok:true,...await seats.receipt(hash,!!added,body.receipt,token,body.consent)});
   }catch(e){res.setHeader('Retry-After','60');return res.status(503).json({error:'Waitlist temporarily unavailable. Please retry shortly.'});}
  };
 }
