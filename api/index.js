@@ -2124,18 +2124,31 @@ async function startRunnerSession(res,ws,agentId,key){
  res.setHeader('Set-Cookie',runnerCookie(agentId,token));
  return {agent:{id:a.id,name:a.name},csrf,persistent:true};
 }
-async function runnerSession(req,id){
- const match=String(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(runnerCookieName(id)+'='));if(!match)return null;
- const token=match.slice(match.indexOf('=')+1);if(!/^[a-f0-9]{64}$/.test(token))return null;
- const sess=await getJ('gl:runner:'+sha(token));if(!sess||sess.agentId!==id||sess.expires<=Date.now())return null;
- const a=await als.run({ws:sess.ws},()=>getJ('fm:agent:'+id));if(!a||a.status!=='active'||(a.oauthEpoch||0)!==sess.epoch)return null;
- const key=dec(sess.key),kh=await als.run({ws:sess.ws},()=>r(['GET','fm:gatewayKeyHash:'+id]));if(kh!==sha(key))return null;
- return {...sess,agent:a,tokenHash:sha(token)};
+// Runner session check with a reason for every refusal. Reasons: no-cookie, no-record, agent-mismatch, expired, revoked, epoch-mismatch,
+// keyhash-mismatch. Diagnostics carry only booleans and the reason code: never the cookie, token, key or any key derived from them.
+async function runnerAuth(req,id){
+ const match=String(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(runnerCookieName(id)+'='));
+ const no=(reason,recordFound)=>({sess:null,reason,cookiePresented:!!match,recordFound:!!recordFound});
+ if(!match)return no('no-cookie',false);
+ const token=match.slice(match.indexOf('=')+1);if(!/^[a-f0-9]{64}$/.test(token))return no('no-record',false);
+ const sess=await getJ('gl:runner:'+sha(token));if(!sess)return no('no-record',false);
+ if(sess.agentId!==id)return no('agent-mismatch',true);
+ if(sess.expires<=Date.now())return no('expired',true);
+ const a=await als.run({ws:sess.ws},()=>getJ('fm:agent:'+id));if(!a||a.status!=='active')return no('revoked',true);
+ if((a.oauthEpoch||0)!==sess.epoch)return no('epoch-mismatch',true);
+ const key=dec(sess.key),kh=await als.run({ws:sess.ws},()=>r(['GET','fm:gatewayKeyHash:'+id]));if(kh!==sha(key))return no('keyhash-mismatch',true);
+ return {sess:{...sess,agent:a,tokenHash:sha(token)},reason:null,cookiePresented:true,recordFound:true};
+}
+async function runnerSession(req,id){return (await runnerAuth(req,id)).sess;}
+async function runnerRefused(req,res,id,action,auth){
+ // One log line per refusal, for the instrumented pairing test: booleans and a reason code, plus the bot id and route (not secrets).
+ try{console.log(JSON.stringify({evt:'runner_401',agentId:/^agent_[a-f0-9]+$/.test(id)?id:'invalid',route:String(action||'').split('?')[0].replace(/[^a-z0-9/_-]/gi,'').slice(0,60),cookiePresented:auth.cookiePresented,recordFound:auth.recordFound,reason:auth.reason,at:new Date().toISOString()}));}catch{}
+ return res.status(401).json({error:'Runner session unavailable. Pair this bot again.',reason:auth.reason,cookiePresented:auth.cookiePresented,recordFound:auth.recordFound});
 }
 async function runnerRoutes(req,res,path,body){
  res.setHeader('Cache-Control','no-store');
  const m=path.match(/^\/runner\/(agent_[a-f0-9]+)\/(.*)$/);if(!m)return res.status(404).json({error:'Runner not found'});
- const id=m[1],action=m[2],sess=await runnerSession(req,id);if(!sess)return res.status(401).json({error:'Runner session unavailable. Pair this bot again.'});
+ const id=m[1],action=m[2],auth=await runnerAuth(req,id),sess=auth.sess;if(!sess)return runnerRefused(req,res,id,action,auth);
  if(req.headers.origin&&!runnerOriginOk(req,req.headers.origin))return res.status(403).json({error:'origin'});
  if(req.headers['sec-fetch-site']==='cross-site')return res.status(403).json({error:'cross-site'});
  if(req.method!=='GET'&&(!runnerOriginOk(req,req.headers.origin)||req.headers['x-alter-csrf']!==sess.csrf))return res.status(403).json({error:'csrf'});
