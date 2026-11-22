@@ -510,7 +510,9 @@ async function postSignedPing(w, eventId) {
   if (w.mode === 'bearer') { const tok = wakeTokenOf(w); if (!tok) throw new Error('wake token unreadable; re-enter it in the bot settings'); return fetch(w.target, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok, 'webhook-id': msgId }, body: ping, signal: AbortSignal.timeout(8000) }); }
   const secret = wakeSecretOf(w); if (!secret) throw new Error('wake secret unreadable; re-enter it in the bot settings');
   const sig = crypto.createHmac('sha256', Buffer.from(secret.replace(/^whsec_/, ''), 'base64')).update(msgId + '.' + ts + '.' + ping).digest('base64');
-  return fetch(w.target, { method: 'POST', headers: { 'content-type': 'application/json', 'webhook-id': msgId, 'webhook-timestamp': ts, 'webhook-signature': 'v1,' + sig }, body: ping, signal: AbortSignal.timeout(8000) });
+  const hdrs = { 'content-type': 'application/json', 'webhook-id': msgId, 'webhook-timestamp': ts, 'webhook-signature': 'v1,' + sig };
+  if (w.target === testWebhookUrl() && process.env.ALTER_TEST_RECEIVER_TOKEN) hdrs.authorization = 'Bearer ' + process.env.ALTER_TEST_RECEIVER_TOKEN; // proof scaffolding only (proof branch, never merge): the test receiver also gates on this bearer
+  return fetch(w.target, { method: 'POST', headers: hdrs, body: ping, signal: AbortSignal.timeout(8000) });
 }
 /* owner-set wake target (connect page paste): same validation as a bot-declared one; the secret is stored server side and never returned. */
 // Owner-run, one-time migration of wake signing secrets written before encryption. Each plaintext secret is encrypted, the result is
