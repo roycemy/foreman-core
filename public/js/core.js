@@ -102,7 +102,9 @@
      receipt id appears once, and a standalone receipt is linked to its request when that request is still in the retained history. */
   BB.receiptFeed = function () {
     const S = BB.S || {}, reqs = new Map((S.requests || []).map(q => [q.id, q])), seen = new Set();
-    const jobs = BB.tasks().filter(t => ['done', 'failed'].includes(t.status) && t.finishedAt).map(t => ({ kind: 'job', at: t.finishedAt, t }));
+    /* one entry per run: a plan's parts are nested under it (their own receipts stay reachable by link), and a plan whose parts are not all done is not listed as finished */
+    const runs = new Map((window.BBWork ? window.BBWork.buildRuns(BB.tasks()) : []).map(r => [r.id, r]));
+    const jobs = BB.tasks().filter(t => ['done', 'failed'].includes(t.status) && t.finishedAt && (!window.BBWork || (runs.has(t.id) && !runs.get(t.id).active))).map(t => ({ kind: 'job', at: t.finishedAt, t, run: runs.get(t.id) || null }));
     const acts = (S.receipts || []).filter(r => r && r.id && !r.taskId && !seen.has(r.id) && seen.add(r.id)).map(r => ({ kind: 'action', at: r.at, r, q: (r.requestId && reqs.get(r.requestId)) || null }));
     return jobs.concat(acts).sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
   };
