@@ -16,6 +16,21 @@ const act=(s)=>M.activeItems(s,NOW);
 // ---- running means claimed; "no update since claiming" is said when true
 {const r=task({status:'running',startedAt:iso(90),progressAt:iso(90)});assert.deepEqual(act(S({tasks:[r]}))[0].detail,['Claimed by Grok Bot 1 min ago','No update since it was claimed']);
  const r2=task({status:'running',startedAt:iso(90),progressAt:iso(10)});assert.ok(/Last update 10 s ago/.test(act(S({tasks:[r2]}))[0].detail[1]));}
+// ---- the label says Claimed until the bot reports real progress; only then In progress
+{const r=task({status:'running',startedAt:iso(90),progressAt:iso(90)});assert.equal(act(S({tasks:[r]}))[0].label,'Claimed','claimed with no progress report is not In progress');
+ const r2=task({status:'running',startedAt:iso(90),progressAt:iso(10)});assert.equal(act(S({tasks:[r2]}))[0].label,'In progress','a post-claim report means the bot is working');
+ const r3=task({status:'running',startedAt:iso(90)});assert.equal(act(S({tasks:[r3]}))[0].label,'Claimed','no progressAt at all is still only claimed');}
+// ---- finishCount: a plan is one job; only fully done counts as finished; partial/failed/stopped counted separately
+{const d0=Date.parse('2026-11-23T00:00:00Z');
+ const done1=task({id:'f1',status:'done',finishedAt:iso(60)}),old1=task({id:'f2',status:'done',finishedAt:new Date(d0-1000).toISOString()});
+ const failed1=task({id:'f3',status:'failed',finishedAt:iso(50)});
+ const parent=task({id:'pp',status:'failed',orchestration:true,partIds:['pa','pb'],finishedAt:iso(40)});
+ const pa=task({id:'pa',status:'done',parentId:'pp',partIndex:0,finishedAt:iso(41)}),pb=task({id:'pb',status:'failed',parentId:'pp',partIndex:1,finishedAt:iso(40)});
+ const c=M.finishCount([done1,old1,failed1,parent,pa,pb],d0);
+ assert.deepEqual(c,{done:1,bad:2},'one done today, one partial-failed plan (one job, not two), one failed; yesterday excluded');
+ const stopped=task({id:'f4',status:'failed',result:'Stopped by owner',finishedAt:iso(30)});
+ assert.deepEqual(M.finishCount([stopped],d0),{done:0,bad:1},'owner-stopped counts as not finished');
+ assert.deepEqual(M.finishCount([],d0),{done:0,bad:0});}
 // ---- a wake notice is never pickup
 {const t=task({id:'w1'});const ev=[{id:'e1',type:'wake_sent',taskId:'w1',agentId:'a1',at:iso(20),text:'Instant wake sent (email)'}];const d=act(S({tasks:[t],events:ev}))[0].detail;
  assert.ok(d.some(x=>/Wake sent by email 20 s ago; pickup not confirmed/.test(x)));assert.equal(act(S({tasks:[t],events:ev}))[0].phase,'queued','still queued after a wake');
