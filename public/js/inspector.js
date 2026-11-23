@@ -79,6 +79,35 @@
       <div class="perm"><div class="t"><b>Pause ${esc(a.name)}</b><small>Stops new steps. Nothing is deleted.</small></div><button class="tog" type="button" role="switch" aria-checked="${!!a.paused}" aria-label="Pause ${esc(a.name)}" data-pause></button></div>`;
   }
 
+  /* ---------- instant wake: shown as channel and mode only; secrets never come back from the server ---------- */
+  function wakeText(a) {
+    const w = a.wake; if (!w || !w.channel) return 'None set. The bot checks in on its own schedule.';
+    if (w.channel === 'webhook') return 'Webhook, ' + (w.mode === 'bearer' ? 'Bearer token' : 'signed (whsec)') + (w.hasSecret ? ', saved' : ', missing its secret');
+    if (w.channel === 'email') return 'Email' + (w.verified ? ', verified' : w.pending ? ', waiting for your allowlist' : ', not verified yet');
+    return w.channel.charAt(0).toUpperCase() + w.channel.slice(1);
+  }
+  function wakeModal(a) {
+    const isHook = a.wake && a.wake.channel === 'webhook';
+    const box = BB.modal(`<h3>Instant wake for ${esc(a.name)}</h3><p>When a job is assigned, Alter posts a content-free ping to this webhook so ${esc(a.name)} starts now instead of at its next check-in. The secret is stored encrypted and is never shown again.</p>
+      <form class="stackf" data-wakef autocomplete="off">
+        <label class="fld">Receiver<select class="in" name="mode"><option value="bearer">Grok Bot routine (Bearer token)</option><option value="hmac">Grok Automations (signing secret, whsec_)</option></select></label>
+        <label class="fld">Webhook URL (https, x.ai or grok.com)<input class="in" name="url" type="url" inputmode="url" required spellcheck="false"></label>
+        <label class="fld"><span data-seclabel>Bearer token</span><input class="in" name="secret" type="password" required autocomplete="new-password" spellcheck="false"></label>
+        <p class="err" data-wakeerr role="alert"></p>
+        <div class="acts">${isHook ? '<button class="b ghost" type="button" data-wakeclear style="margin-right:auto">Remove webhook</button>' : ''}<button class="b ink" type="submit">Save and send a test ping</button></div>
+      </form>`, { label: 'Instant wake', focus: '[name=url]' });
+    const f = box.querySelector('[data-wakef]'), lab = box.querySelector('[data-seclabel]');
+    f.mode.onchange = () => { lab.textContent = f.mode.value === 'bearer' ? 'Bearer token' : 'Signing secret (whsec_...)'; };
+    f.onsubmit = async e => {
+      e.preventDefault(); const body = { mode: f.mode.value, url: f.url.value.trim() }; body[f.mode.value === 'bearer' ? 'token' : 'secret'] = f.secret.value.trim();
+      f.secret.value = ''; // never kept in the page
+      const j = await BB.api('/api/agents/' + a.id + '/wake', 'POST', body);
+      if (j.error) { box.querySelector('[data-wakeerr]').textContent = j.error; return; }
+      BB.closeModal(); BB.toast(j.ok ? 'Saved. Test ping accepted (HTTP ' + j.httpStatus + ').' : 'Saved, but the test ping failed' + (j.httpStatus ? ' (HTTP ' + j.httpStatus + ')' : '') + '. Check the URL and secret.'); BB.sync(true);
+    };
+    const clr = box.querySelector('[data-wakeclear]'); if (clr) clr.onclick = async () => { const j = await BB.api('/api/agents/' + a.id + '/wake', 'POST', { clear: true }); BB.closeModal(); BB.toast(j.error || 'Webhook removed.'); BB.sync(true); };
+  }
+
   /* ---------- profile: role, provider, home room, connection, remove ---------- */
   function profile(a) {
     const p = BB.presence(a), home = BB.homeRoomOf(a), tag = BB.channelTag(a), bsk = BB.botState(a).kind;
@@ -87,6 +116,7 @@
       <div class="kv"><span class="k">Provider</span><span class="v">${esc(a.provider || 'Custom')}${a.model ? ' · ' + esc(a.model) : ''}</span></div>
       <div class="kv"><span class="k">Home room</span><span class="choice"><select data-room aria-label="Home room">${BB.ROOMS.map(k => `<option value="${k}"${home === k || (k === 'sales' && home === 'support') ? ' selected' : ''}>${esc(BB.roomName(k))}</option>`).join('')}</select></span></div>
       <div class="kv"><span class="k">Connection</span><span class="v"><span class="st ${tag.cls}"><i></i>${esc(tag.text)}</span><br><small class="meta">${esc(seen)}</small>${BB.wentDark(a) && bsk !== 'msg' ? `<br><span class="${BB.pollSec(a) ? 'badge-late' : 'badge-dim'}">${BB.pollSec(a) ? 'Late' : 'Went dark'} · last activity ${esc(new Date(a.lastSeen).toLocaleTimeString())}</span>` : ''}${['msg', 'dark', 'late'].includes(bsk) ? `<br><button class="b ghost sm" type="button" data-nudge style="margin-top:8px">Copy nudge</button>` : ''}</span></div>
+      <div class="kv"><span class="k">Instant wake</span><span class="v">${esc(wakeText(a))}${a.status === 'active' && !a.hosted ? `<br><button class="b ghost sm" type="button" data-wakeset style="padding-left:0">${a.wake && a.wake.channel === 'webhook' ? 'Change webhook' : 'Set a webhook'}</button>` : ''}</span></div>
       ${a.keyHint ? `<div class="kv"><span class="k">Key</span><span class="v"><code>${esc(a.keyHint)}</code></span></div>` : ''}
       <div class="kv"><span class="k">Bot ID</span><span class="v"><code>${esc(a.id)}</code></span></div>
       <div style="padding:8px 24px 24px;border-top:1px solid var(--line)">${a.status !== 'revoked' && !a.hosted ? `<button class="b ghost" type="button" data-revoke style="color:var(--vermilion-press);padding-left:0">Revoke access</button>` : ''}<button class="b ghost" type="button" data-remove style="color:var(--vermilion-press);padding-left:0">Remove ${esc(a.name)}</button><p class="meta">Disconnects it and deletes its stored key. Its receipts stay.</p></div>`;
@@ -129,6 +159,7 @@
     const pz = P.querySelector('[data-pause]'); if (pz) pz.onclick = async () => { const on = pz.getAttribute('aria-checked') !== 'true'; pz.setAttribute('aria-checked', on); const j = await BB.api('/api/agents/' + a.id + '/pause', 'POST', { on }); BB.toast(j.error || (on ? a.name + ' is paused. Nothing was deleted.' : a.name + ' is back to work.')); BB.sync(true); };
     const rm = P.querySelector('[data-room]'); if (rm) rm.onchange = async () => { const j = await BB.api('/api/agents/' + a.id + '/room', 'POST', { room: rm.value }); BB.toast(j.error || a.name + ' moved to the ' + BB.roomName(rm.value) + '.'); BB.sync(true); };
     const rc = P.querySelector('[data-rec]'); if (rc) rc.onclick = () => BB.reconnect && BB.reconnect(a.id);
+    const wk = P.querySelector('[data-wakeset]'); if (wk) wk.onclick = () => wakeModal(a);
     const oc = P.querySelector('[data-offcopy]'); if (oc) oc.onclick = async () => { oc.disabled = true;
       try { const j = await BB.api('/api/agents/' + a.id + '/pairing', 'POST', {}); if (!j || j.error || !j.code) throw Error('no code');
         await navigator.clipboard.writeText(BB.setupMessage(a, j.code)); BB.toast('Copied. Paste it into ' + a.name + '.'); oc.textContent = 'Copied'; }
