@@ -151,8 +151,10 @@
     if (m) { const bot = BB.assignable().find(a => a.name.toLowerCase().replace(/\s+/g, '') === m[1].toLowerCase()); if (bot) { assignee = bot.id; title = m[2]; } }
     ask.querySelector('button').disabled = true;
     if(!assignee&&/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){ask.querySelector('button').disabled=false;return BB.reviewParts(title,plan);}}
-    const j = await BB.api('/api/tasks', 'POST', assignee ? { title, assignee } : { title, route: true });
-    if (j.error) { BB.toast(j.error); ask.querySelector('button').disabled = false; return; }
+    const send = assignee ? { title, assignee } : { title, route: true };
+    /* pending is shown the moment Start is pressed; "queued" only after the server returns the task record. A failed send keeps the text and can be retried without a second task. */
+    const j = await (BB.work ? BB.work.send('/api/tasks', send, title) : BB.api('/api/tasks', 'POST', send));
+    if (j.error) { BB.toast('Not sent: ' + j.error + ' Your text is still here; try again.'); ask.querySelector('button').disabled = false; return; }
     askin.value = '';
     /* never say "Sent" without the catch: a bot that is not connected, needs reconnecting or is dark picks the job up later, not now */
     const sendNote = b => { if (!b) return ''; const pr = BB.presence(b); if (pr === 'prepared' || pr === 'waiting') return ' It isn\'t connected yet - it picks the job up once connected.'; if (pr === 'reconnect') return ' It needs reconnecting first - the job waits until then.'; if (BB.wentDark(b)) return ' It went dark; the job starts when it\'s back.'; return ''; };
@@ -160,7 +162,7 @@
     else if (j.unrouted) { BB.toast(j.allAsleep ? 'Every bot is asleep right now. It\'s queued - the first bot to check in takes it.' : 'Couldn\'t route this. It\'s in your inbox, marked unrouted.' + (BB.assignable().length ? '' : ' Connect a bot and assign it there.')); BB.sync(true); }
     else { BB.toast(assignee ? 'Sent to ' + BB.agent(assignee).name + '.' + sendNote(BB.agent(assignee)) : 'Added to your inbox. Pick a bot for it.' + (BB.assignable().length ? '' : ' Connect a bot first.')); BB.sync(true); }
   };
-  BB.reviewParts=function(title,plan,brief){const box=BB.modal(`<h3>Review the parts</h3><p>${esc(plan.note)}</p><form id="parts-form"><div class="parts-plan">${plan.parts.map((p,i)=>`<label class="fld">Part ${i+1}<input class="in" data-part-title value="${esc(p.title)}" maxlength="120" required><small>${esc(p.reason)}</small><select class="in" data-part-bot><option value="">First available bot</option>${BB.assignable().filter(a=>!a.hosted&&!a.paused).map(a=>`<option value="${esc(a.id)}" ${a.id===p.assignee?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label>`).join('')}</div><p class="meta">Each part waits for the previous result. No bot-to-bot connection is needed. Nothing has started yet.</p><div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit">Start these parts</button></div></form>`,{label:'Review task parts'});box.querySelector('#parts-form').onsubmit=async e=>{e.preventDefault();const b=box.querySelector('[type=submit]');b.disabled=true;const titles=[...box.querySelectorAll('[data-part-title]')],bots=[...box.querySelectorAll('[data-part-bot]')];const parts=plan.parts.map((p,i)=>({...p,title:titles[i].value.trim(),assignee:bots[i].value||null}));const j=await BB.api('/api/tasks','POST',{title,brief,orchestrate:true,parts});b.disabled=false;if(j.error)return BB.toast(j.error);askin.value='';BB.closeModal();BB.toast('Parts queued. Each starts after the previous result.');await BB.sync(true);BB.go('#receipts/'+j.task.id);};};
+  BB.reviewParts=function(title,plan,brief){const box=BB.modal(`<h3>Review the parts</h3><p>${esc(plan.note)}</p><form id="parts-form"><div class="parts-plan">${plan.parts.map((p,i)=>`<label class="fld">Part ${i+1}<input class="in" data-part-title value="${esc(p.title)}" maxlength="120" required><small>${esc(p.reason)}</small><select class="in" data-part-bot><option value="">First available bot</option>${BB.assignable().filter(a=>!a.hosted&&!a.paused).map(a=>`<option value="${esc(a.id)}" ${a.id===p.assignee?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label>`).join('')}</div><p class="meta">Each part waits for the previous result. No bot-to-bot connection is needed. Nothing has started yet.</p><div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit">Start these parts</button></div></form>`,{label:'Review task parts'});box.querySelector('#parts-form').onsubmit=async e=>{e.preventDefault();const b=box.querySelector('[type=submit]');b.disabled=true;const titles=[...box.querySelectorAll('[data-part-title]')],bots=[...box.querySelectorAll('[data-part-bot]')];const parts=plan.parts.map((p,i)=>({...p,title:titles[i].value.trim(),assignee:bots[i].value||null}));const j=await (BB.work?BB.work.send('/api/tasks',{title,brief,orchestrate:true,parts},title):BB.api('/api/tasks','POST',{title,brief,orchestrate:true,parts}));b.disabled=false;if(j.error)return BB.toast(j.error);askin.value='';BB.closeModal();BB.toast('Parts queued. Each starts after the previous result.');await BB.sync(true);BB.go('#receipts/'+j.task.id);};};
   BB.newJob = function () {
     const box = BB.modal(`<h3>New job</h3><p>Describe what you want done. Pick a bot, or let Alter choose an awake bot.</p>
       <form class="stackf" id="nj"><label class="fld">What should happen?<input class="in" id="nj-t" maxlength="120" required placeholder="Summarize this week's support tickets"></label>
@@ -169,7 +171,7 @@
       <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit">Add job</button></div></form>`, { label: 'New job' });
     box.querySelector('#nj').onsubmit = async e => {
       e.preventDefault();const title=$('#nj-t').value.trim(),brief=$('#nj-b').value.trim(),assignee=$('#nj-a').value||null;if(!assignee&&/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){BB.closeModal();return BB.reviewParts(title,plan,brief);}}
-      const j = await BB.api('/api/tasks', 'POST', {title,brief,assignee,route:!assignee});
+      const j = await (BB.work ? BB.work.send('/api/tasks', {title,brief,assignee,route:!assignee}, title) : BB.api('/api/tasks', 'POST', {title,brief,assignee,route:!assignee}));
       if (j.error) return BB.toast(j.error); BB.closeModal(); BB.toast('Job added.'); BB.sync(true);
     };
   };
@@ -262,7 +264,7 @@
   BB.reconnectFlag && BB.reconnectFlag.mount();
   let finSeen = null;
   BB.on(() => {
-    const fin = BB.tasks().filter(t => ['done', 'failed'].includes(t.status));
+    const byId = new Map(BB.tasks().map(t => [t.id, t])), fin = BB.tasks().filter(t => ['done', 'failed'].includes(t.status) && !(window.BBWork && window.BBWork.partParent(t, byId)));
     if (finSeen === null) { finSeen = new Set(fin.map(t => t.id)); return; }
     fin.forEach(t => { if (finSeen.has(t.id)) return; finSeen.add(t.id); if (!t.synthetic && BB.shipReceipt) BB.shipReceipt(t); });
   });

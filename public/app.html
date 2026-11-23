@@ -19,6 +19,7 @@
 <link rel="stylesheet" href="/styles/components/receipt-ship.css">
 <link rel="stylesheet" href="/styles/components/reconnect-flag.css">
 <link rel="stylesheet" href="/styles/components/trial.css">
+<link rel="stylesheet" href="/styles/components/work.css">
 <script src="/brand.js"></script>
 </head>
 <body class="app">
@@ -30,6 +31,7 @@
   <nav class="nav" id="nav" aria-label="Main"><a href="#floor" data-v="floor">Floor</a><a href="#business" data-v="business">Business</a><a href="#receipts" data-v="receipts">Receipts</a><a href="#card" data-v="card">Card</a></nav>
   <div class="sp"></div>
   <button class="kbar" id="kbar" type="button" aria-keyshortcuts="Meta+K Control+K"><span>Search or jump to a bot</span><span aria-hidden="true">⌘K</span></button>
+  <button class="wbtn" id="wbtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="wpanel"><span class="wdot" aria-hidden="true"></span><span class="wlabel">Work</span><b class="wcount" hidden></b></button>
   <button class="ibtn" id="ibtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="I">Inbox <span class="nw" id="nw" hidden></span><b class="count sr" id="icount" hidden></b></button>
   <div class="acct"><button class="av" id="acctbtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Account">·</button>
     <div class="menu" id="acctmenu" role="menu" aria-label="Account">
@@ -54,6 +56,7 @@
       <div class="floor" id="floor"></div>
       <div class="dimmer"></div>
       <button class="floor-back phone-only" type="button" data-go="#inbox">‹ Inbox</button>
+      <div class="floor-work phone-only"><button class="wbtn wphone" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="wpanel"><span class="wdot" aria-hidden="true"></span><span class="wlabel">Work</span><b class="wcount" hidden></b></button></div>
       <div class="floor-empty" id="floor-empty" hidden><h2>Your floor is empty</h2><p>Connect the bot you already use. It shows up here, and anything risky waits at the tray for you.</p><button class="b ink" type="button" data-act="connect">Connect a bot</button></div>
       <button class="crew" id="crew" type="button" aria-haspopup="dialog" aria-expanded="false"></button>
       <div class="roster" id="roster" role="dialog" aria-label="Crew"></div>
@@ -117,6 +120,8 @@
 <script src="/js/business.js"></script>
 <script src="/js/receipts.js"></script>
 <script src="/js/share.js"></script>
+<script src="/js/work-model.js"></script>
+<script src="/js/work.js"></script>
 <script src="/js/trial.js"></script>
 <script src="/js/components/dock.js"></script>
 <script src="/js/components/bot-status.js"></script>
