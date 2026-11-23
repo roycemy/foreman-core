@@ -89,6 +89,6 @@
 .rtag.bad{color:var(--vermilion-press);border-color:var(--vermilion)}
 
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .wtab[aria-selected=true]{background:rgba(255,255,255,.1)}}
-@media (max-width:760px){.wpanel{max-height:calc(100dvh - 72px)}.wi{padding:14px}.wlink,.wtab,.wclose{min-height:40px}.wlink{display:inline-flex;align-items:center}}
+@media (max-width:760px){.wpanel{max-height:calc(100dvh - 72px)}.wi{padding:14px}.wlink,.wtab,.wclose{min-height:40px}.wlink{display:inline-flex;align-items:center}.fx.wnote{max-width:124px;font-size:10px;padding:4px 7px;line-height:1.25}}
 
 #v-floor .floor-work{position:absolute;right:16px;top:calc(env(safe-area-inset-top,0px) + 16px);z-index:30}
