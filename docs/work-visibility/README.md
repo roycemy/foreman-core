@@ -18,7 +18,7 @@
 ## Honest limits
 
 - **Queued is not running.** A bot is shown as working only after it claims the job. A wake notice is never treated as pickup: it reads "Wake sent by email 20 s ago; pickup not confirmed".
-- **Claimed and started aren't separate in the data.** "In progress" means claimed. If the bot has reported nothing since, it says "No update since it was claimed".
+- **Claimed and started aren't separate in the data.** A claimed job reads **Claimed** until the bot reports real progress; only then does it read **In progress**. If the bot has reported nothing since, it says "No update since it was claimed".
 - **Check-in interval is shown only if the bot declared a valid one** (60 to 3600 s). Nothing is hard-coded, and no pickup time is promised.
 - **A cause is named only when state supports it:** revoked, paused, emergency stop, never checked in, last heard from X ago, waiting for the previous part, waiting for you, or no bot picked. Otherwise: "pickup not confirmed".
 - **Stale data is labelled.** If a refresh fails or is late, the panel says what you see is the last known state.
