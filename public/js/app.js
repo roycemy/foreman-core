@@ -182,7 +182,8 @@
     const as = BB.agents().filter(a => a.status !== 'revoked'); if (!as.length) { crew.hidden = true; roster.classList.remove('on'); return; } crew.hidden = false;
     const sum = BB.teamSummary();
     const fin = BB.finishedToday();
-    crew.innerHTML = `<span class="stack">${as.slice(0, 5).map((a, i) => BB.av(a, '', BB.glyph(a, -(i * .37)))).join('')}</span>` + (fin ? `<p><b>Your team finished ${fin} ${fin === 1 ? 'job' : 'jobs'} today.</b></p>` : `<p><b>${esc(sum.count)}</b> · ${esc(sum.parts.join(' · '))}</p>`);
+    const finLine = fin.done > 0 ? `Your team finished ${fin.done} ${fin.done === 1 ? 'job' : 'jobs'} today.${fin.bad > 0 ? ` ${fin.bad} didn't finish.` : ''}` : (fin.bad > 0 ? `${fin.bad} ${fin.bad === 1 ? 'job' : 'jobs'} didn't finish today.` : '');
+    crew.innerHTML = `<span class="stack">${as.slice(0, 5).map((a, i) => BB.av(a, '', BB.glyph(a, -(i * .37)))).join('')}</span>` + (finLine ? `<p><b>${esc(finLine)}</b></p>` : `<p><b>${esc(sum.count)}</b> · ${esc(sum.parts.join(' · '))}</p>`);
     crew.setAttribute('aria-label', sum.text + '. Open crew');
     if (roster.classList.contains('on')) paintRoster();
   }
@@ -194,8 +195,8 @@
   function setRoster(on) { roster.classList.toggle('on', on); crew.setAttribute('aria-expanded', on); if (on) paintRoster(); }
   crew.onclick = e => { e.stopPropagation(); setRoster(!roster.classList.contains('on')); };
   document.addEventListener('click', e => { if (!e.target.closest('#roster,#crew')) setRoster(false); });
-  /* round M: jobs finished today, counted from real finished jobs only (never invented) */
-  BB.finishedToday = () => { const d0 = new Date(); d0.setHours(0, 0, 0, 0); return BB.tasks().filter(t => t.status === 'done' && !t.synthetic && Date.parse(t.finishedAt) >= d0.getTime()).length; };
+  /* round M: jobs finished today, counted as runs by honest status (a plan is one job; only fully done counts as finished; partial, failed and stopped count separately) */
+  BB.finishedToday = () => { const d0 = new Date(); d0.setHours(0, 0, 0, 0); return window.BBWork ? BBWork.finishCount(BB.tasks(), d0.getTime()) : { done: BB.tasks().filter(t => t.status === 'done' && !t.synthetic && Date.parse(t.finishedAt) >= d0.getTime()).length, bad: 0 }; };
   /* round M: three example chips that fill the type box. Prefer the owner's own recent job titles. */
   const EXAMPLES = ['Write this week\u2019s memo', 'Find three competitors', 'Draft a launch email'];
   function paintChips() {
@@ -303,4 +304,3 @@
   if (window.BRAND) BB.t = BRAND.t;
   applyRoute(); if (resetToken) needAuth(); else boot();
 })();
-
