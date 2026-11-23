@@ -79,9 +79,10 @@
     if (pend.length) return { phase: 'waiting', label: 'Waiting for you', reason: 'approval', detail: [(name || 'The bot') + ' asked to ' + (pend[0].label ? String(pend[0].label).toLowerCase() : 'take an action')], ageMs: now - (ms(pend[0].createdAt) || now) };
     if (t.status === 'running') {
       const started = ms(t.startedAt), prog = ms(t.progressAt);
+      const working = prog != null && started != null && prog > started + 1000; // a post-claim progress report is the only evidence execution started
       detail.push(name ? 'Claimed by ' + name + ' ' + agoText(started, now) : 'Claimed ' + agoText(started, now));
-      detail.push(prog != null && started != null && prog > started + 1000 ? 'Last update ' + agoText(prog, now) : 'No update since it was claimed');
-      return { phase: 'running', label: 'In progress', reason: null, detail, ageMs: started == null ? null : now - started };
+      detail.push(working ? 'Last update ' + agoText(prog, now) : 'No update since it was claimed');
+      return { phase: 'running', label: working ? 'In progress' : 'Claimed', reason: null, detail, ageMs: started == null ? null : now - started };
     }
     if (t.status === 'waiting') {
       const dep = t.dependsOn && by.get(t.dependsOn), pi = dep && dep.partIndex != null ? dep.partIndex + 1 : null;
@@ -114,7 +115,7 @@
     return runs.map(r => {
       const cur = r.current || r.task, d = describe(cur, ctx), a = cur.assignee && ctx.agents.get(cur.assignee);
       const partNo = r.task.orchestration && r.current ? (r.current.partIndex != null ? r.current.partIndex : r.parts.indexOf(r.current)) + 1 : null;
-      return { id: r.id, title: r.task.title, status: r.status, label: r.task.orchestration && r.status === 'running' && !r.current ? 'In progress' : d.label, phase: d.phase, reason: d.reason, detail: d.detail, bot: a ? a.name : null, botId: a ? a.id : null, ageMs: d.ageMs,
+      return { id: r.id, title: r.task.title, status: r.status, label: d.label, phase: d.phase, reason: d.reason, detail: d.detail, bot: a ? a.name : null, botId: a ? a.id : null, ageMs: d.ageMs,
         part: r.task.orchestration ? { n: partNo, of: (r.task.partIds || []).length, title: r.current ? r.current.title : null } : null, failedSoFar: r.parts.filter(p => ['failed', 'notrun', 'stopped'].includes(phaseOf(p))).length, partsMissing: r.partsMissing,
         sortAt: ms(r.task.createdAt) || 0 };
     }).sort((x, y) => y.sortAt - x.sortAt);
@@ -177,7 +178,7 @@
       if (ph === 'done') { const f = ms(t.finishedAt); if (f != null && now - f <= RECENT_FINISH_MS) items.push({ pri: 4, tone: 'good', text: 'Finished: ' + short(t.title, 38), task: t.id, at: f }); continue; }
       if (ph === 'notrun' || ph === 'dismissed' || ph === 'unknown') continue;
       if (d.reason === 'approval') items.push({ pri: 1, tone: 'ask', text: 'Waiting for you', task: t.id, at: ms(t.progressAt) || 0 });
-      else if (ph === 'running') { const rep = latestReport(t.id, ctx.events, now); items.push({ pri: 2, tone: 'work', text: 'Working on ' + short(t.title, 34), sub: rep ? '“' + short(rep.text, 48) + '” (bot-reported, ' + agoText(rep.at, now) + ')' : null, task: t.id, at: ms(t.startedAt) || 0 }); }
+      else if (ph === 'running') { const rep = latestReport(t.id, ctx.events, now); const started = ms(t.startedAt), prog = ms(t.progressAt), working = rep || (prog != null && started != null && prog > started + 1000); items.push({ pri: 2, tone: 'work', text: (working ? 'Working on ' : 'Claimed: ') + short(t.title, 34), sub: rep ? '“' + short(rep.text, 48) + '” (bot-reported, ' + agoText(rep.at, now) + ')' : null, task: t.id, at: started || 0 }); }
       else if (ph === 'queued' && t.assignee) items.push({ pri: 3, tone: 'queue', text: (d.phase === 'waiting' ? "Can't start: " : 'Queued: ') + short(t.title, 34), task: t.id, at: ms(t.assignedAt) || ms(t.createdAt) || 0 });
       else if (ph === 'waiting') items.push({ pri: 3, tone: 'queue', text: 'Waiting: ' + short(t.title, 34), task: t.id, at: ms(t.createdAt) || 0 });
     }
@@ -203,5 +204,16 @@
   function unseen(finished, ack) { if (!ack) return []; return finished.filter(f => f.finishedAtMs > ack.since && !(ack.seen[f.id] >= f.finishedAtMs)); }
   function markSeen(ack, ids, finished) { const next = { ...ack, seen: { ...ack.seen } }; for (const f of finished) if (!ids || ids.includes(f.id)) next.seen[f.id] = f.finishedAtMs; const keys = Object.keys(next.seen); if (keys.length > 300) keys.sort((a, b) => next.seen[a] - next.seen[b]).slice(0, keys.length - 300).forEach(k => delete next.seen[k]); return next; }
 
-  return { phaseOf, buildRuns, describe, activeItems, finishedItems, finishedItem, snapshot, transitions, finishCopy, recentUpdates, botBubble, freshness, newAck, unseen, markSeen, urlsIn, cadence, ago, agoText, short, partParent, makeCtx };
+  /* jobs finished since dayStartMs, counted as runs (a plan is one job) by their honest status: only a fully done run counts as finished; partial, failed and stopped count separately as didn't finish. */
+  function finishCount(tasks, dayStartMs) {
+    let done = 0, bad = 0;
+    for (const r of buildRuns(tasks || [])) {
+      if (!r || !r.task || r.task.synthetic) continue;
+      const fin = r.finishedAtMs; if (fin == null || fin < dayStartMs) continue;
+      if (r.status === 'done') done++; else if (r.status === 'partial' || r.status === 'failed' || r.status === 'stopped') bad++;
+    }
+    return { done, bad };
+  }
+
+  return { phaseOf, buildRuns, describe, activeItems, finishedItems, finishedItem, snapshot, transitions, finishCopy, recentUpdates, botBubble, freshness, newAck, unseen, markSeen, urlsIn, cadence, ago, agoText, short, partParent, makeCtx, finishCount };
 });
