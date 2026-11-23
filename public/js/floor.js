@@ -301,9 +301,24 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     if (!built || !BB.S) return;
     const ov = $('#ov'); BB.$$('.fx,.collab', ov).forEach(e => e.remove());
     const pos = id => { const r = F[id]; return r && r.x != null ? [r.x, r.y] : null; };
+    const notes = [];
     BB.agents().forEach((a, i) => {
-      const r = F[a.id], p = pos(a.id); if (!r || !p || r.el.classList.contains('walk')) return;
+      const r = F[a.id], p = pos(a.id); if (!r || !p) return;
       const k = BB.activity(a), sit = r.key && r.key.includes('|sit|');
+      /* short update above the head, from the bot's real task state only (BBWork.botBubble). Text, no motion; stacked apart so neighbours never overlap.
+         Anything not shown here is in the Work panel's recent updates. */
+      if (window.BBWork) { const nb = window.BBWork.botBubble(a, BB.S, Math.floor(BB.now() / 15000) * 15000);
+        if (nb) { const SW = ov.clientWidth || 1000, SH = ov.clientHeight || 700;
+          const n = document.createElement('div'); n.className = 'fx wnote tone-' + nb.tone; n.textContent = nb.text; if (nb.sub) { const sb = document.createElement('small'); sb.textContent = nb.sub; n.appendChild(sb); } if (nb.more > 0) { const m = document.createElement('small'); m.textContent = '+' + nb.more + ' more in Work'; n.appendChild(m); } n.setAttribute('aria-hidden', 'true'); n.style.visibility = 'hidden'; ov.appendChild(n);
+          const wPct = Math.min(100, (n.offsetWidth || 172) / SW * 100), hPct = (n.offsetHeight || 52) / SH * 100; // the note's measured size as a share of the stage, so spacing works at any width
+          const clampTop = t => Math.max(2 + hPct, Math.min(t, 99)); // the clamp is part of every candidate: resolving against an unclamped spot and clamping after would re-overlap the notes
+          let top = clampTop(p[1] - (sit ? 17 : 20.5)); const left = Math.min(Math.max(p[0] + 1.2, wPct * 0.14 + 1), 100 - wPct * 0.86 - 1);
+          const boxOf = (l, t) => ({ l: l - 0.14 * wPct, r: l + 0.86 * wPct, t: t - hPct, b: t }); // translate(-14%,-100%): the anchor is the note's bottom, 14% in from its left
+          const hits = (l, t) => { const b = boxOf(l, t); return notes.some(q => b.l < q.r + 1 && b.r > q.l - 1 && b.t < q.b + 1 && b.b > q.t - 1); };
+          for (let k = 0; k < 12 && hits(left, top); k++) { const nt = clampTop(top - hPct - 1); if (nt === top) break; top = nt; }
+          if (hits(left, top)) { top = clampTop(p[1] - (sit ? 17 : 20.5)); for (let k = 0; k < 12 && hits(left, top); k++) { const nt = clampTop(top + hPct + 1); if (nt === top) break; top = nt; } } // no room above: stack below instead of overlapping
+          n.style.left = left + '%'; n.style.top = top + '%'; n.style.visibility = ''; notes.push(boxOf(left, top)); } }
+      if (r.el.classList.contains('walk')) return; // the glyphs below stay put while a bot is walking; the note above does not blink out
       if (k === 'message') { const b = document.createElement('div'); b.className = 'fx bubble'; b.style.left = (p[0] + 1.2) + '%'; b.style.top = (p[1] - (sit ? 9.6 : 12.4)) + '%'; b.innerHTML = '<i></i><i></i><i></i>'; b.setAttribute('aria-hidden', 'true'); ov.appendChild(b); }
       if (BB.signal(a) === 'working' && BB.runningTask(a) && !BB.withOwner(a)) { const w = document.createElement('div'); w.className = 'fx wdot'; w.style.left = p[0] + '%'; w.style.top = (p[1] - (sit ? 11.2 : 14)) + '%'; w.style.setProperty('--wd', (-(i * .37)) + 's'); w.setAttribute('aria-hidden', 'true'); ov.appendChild(w); if (BB.useDots && BB.useDots()) return; }
       else if (k && BB.useDots && BB.useDots() && BB.signal(a) === 'working') return;

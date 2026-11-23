@@ -22,17 +22,18 @@
     if (d.showCost !== false) facts.push(`<div><b>${esc(money(d.costUsd))}</b><small>${d.costUsd == null ? 'model costs not reported' : 'model costs'}</small></div>`);
     if (d.approvals != null) facts.push(`<div><b>${d.approvals}</b><small>owner ${d.approvals === 1 ? 'approval' : 'approvals'}</small></div>`);
     if (d.durationMs != null) facts.push(`<div><b>${esc(dur(d.durationMs))}</b><small>start to finish</small></div>`);
-    const art = d.artifact ? `<div class="art"><div class="prev"><span class="tag">${esc(o.artifactLabel || 'Result')}</span><div class="sw" aria-hidden="true"></div><h3>${esc(d.artifact.title)}</h3>${d.artifact.text ? `<p>${esc(d.artifact.text)}</p>` : ''}</div><div class="meta-row"><b>${esc(d.artifact.name || 'result.txt')}</b>${o.fullResult && d.artifact.full ? `<button type="button" class="link" data-full aria-expanded="false">Show all ↓</button>` : `<small>${d.artifact.words ? d.artifact.words + ' words' : ''}</small>`}</div>${o.fullResult && d.artifact.full ? `<div class="full" hidden>${esc(d.artifact.full)}</div>` : ''}</div>` : '';
+    const art = d.artifact ? `<div class="art"><div class="prev"><span class="tag">${esc(o.artifactLabel || 'Result')}</span><div class="sw" aria-hidden="true"></div><h3>${esc(d.artifact.title)}</h3>${d.artifact.text ? `<p>${esc(d.artifact.text)}</p>` : ''}</div><div class="meta-row"><b>${esc(d.artifact.name || 'result.txt')}</b>${o.fullResult && d.artifact.full ? `<button type="button" class="link" data-full aria-expanded="${o.isOpen && o.isOpen('full') ? 'true' : 'false'}">${o.isOpen && o.isOpen('full') ? 'Show less ↑' : 'Show all ↓'}</button>` : `<small>${d.artifact.words ? d.artifact.words + ' words' : ''}</small>`}</div>${o.fullResult && d.artifact.full ? `<div class="full"${o.isOpen && o.isOpen('full') ? '' : ' hidden'}>${esc(d.artifact.full)}</div>` : ''}</div>` : '';
     return `<div class="eyb"><span class="av s24" style="--av:${esc(d.bot.color || '#121212')}" aria-hidden="true">${esc(d.bot.initials)}</span>Receipt · ${esc(new Date(d.at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }))}</div>
       <h1>${esc(d.headline)}</h1>${d.lede ? `<p class="lede">${esc(d.lede)}</p>` : ''}
-      ${art}
+      ${art}${o.afterArt || ''}
       ${facts.length ? `<div class="costs">${facts.join('')}</div>` : ''}
       ${d.showCost !== false ? `<p class="honest">${d.costUsd == null ? 'Model costs were not reported for this job, so none are shown. This never includes subscriptions or tools.' : 'Model costs only. Excludes the owner\'s subscription and any tools they pay for.'}</p>` : ''}
       ${steps ? `<div class="tl"><h5>How it got done</h5><ol class="steps">${steps}</ol></div>` : ''}`;
   };
-  window.receiptBind = function (root) {
+  /* Expansion is owned by the caller (o.isOpen / o.onToggle), so a repaint draws the same state again instead of resetting it. */
+  window.receiptBind = function (root, o) {
     const b = root.querySelector('[data-full]'); if (!b) return;
-    b.onclick = () => { const f = root.querySelector('.art .full'); f.hidden = !f.hidden; b.setAttribute('aria-expanded', !f.hidden); b.textContent = f.hidden ? 'Show all ↓' : 'Show less ↑'; };
+    b.onclick = () => { const f = root.querySelector('.art .full'); f.hidden = !f.hidden; b.setAttribute('aria-expanded', !f.hidden); b.textContent = f.hidden ? 'Show all ↓' : 'Show less ↑'; if (o && o.onToggle) o.onToggle('full', !f.hidden); };
   };
 })();
 

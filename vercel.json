@@ -1,4 +1,9 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "feat/work-visibility": false
+    }
+  },
   "redirects": [
     {
       "source": "/",
