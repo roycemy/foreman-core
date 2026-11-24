@@ -37,7 +37,14 @@ const expireThrottle=id=>mem.kv.delete('gl:wake:'+id); // what Redis does after 
  const n0=emails('custom-bot@example.com').length;expireThrottle(B.id);const due=mem.kv.get('gl:wakeDue:'+B.id);if(due)mem.kv.set('gl:wakeDue:'+B.id,JSON.stringify({...JSON.parse(due),dueAt:Date.now()-1}));
  await owner('GET','/api/state');assert.equal(emails('custom-bot@example.com').length,n0,'no follow-up when nothing is waiting any more');
  // ---- T6: any provider can use WAKE_<PROVIDER>_EMAIL; Muse included; a malformed value is ignored; a declared target wins
- await owner('POST','/api/tasks',{title:'Muse job',assignee:M.id});assert.equal(emails('muse-inbox@example.com').length,1,'Muse woken through WAKE_MUSE_EMAIL');
+ const mj=await owner('POST','/api/tasks',{title:'Muse job',assignee:M.id});assert.equal(emails('muse-inbox@example.com').length,1,'Muse woken through WAKE_MUSE_EMAIL');
+ const mjId=(mj.j.task||mj.j).id,mBody=JSON.parse(emails('muse-inbox@example.com')[0].o.body).text;
+ assert.ok(mBody.includes(' Job: '+mjId+'.')&&mBody.includes('task_id: '+mjId),'an env-fallback email wake names the exact job to claim (it used to arrive bare)');
+ assert.ok(!mBody.includes('Muse job'),'the env-fallback wake still carries no job content beyond its id');
+ const named=await owner('POST','/api/tasks',{title:'Muse, draft the launch note',route:true}),nt=named.j.task||named.j;
+ assert.equal(nt.assignee,M.id,'a title naming Muse routes to Muse');
+ assert.equal(nt.assignedBy,'owner','owner-named assignment is recorded as the owner choice: the asleep sweep never moves it');
+ assert.ok(/^You named Muse\./.test(nt.routingReason||''),'routing reason says the owner named the bot');
  env.WAKE_MUSE_EMAIL='not an address';expireThrottle(M.id);const n1=out.length;await owner('POST','/api/tasks',{title:'Muse job 2',assignee:M.id});assert.equal(out.filter(x=>x.u==='https://api.resend.com/emails').length,out.slice(0,n1).filter(x=>x.u==='https://api.resend.com/emails').length,'malformed env inbox: no send');
  // ---- T5: owner sets a Bearer-mode webhook (Grok Bot routine); stored encrypted; never shown or logged
  const TOK='synthetic-bearer-'+crypto.randomBytes(12).toString('hex'),G=await bot('Grok Bot','grok');
