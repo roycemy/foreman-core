@@ -1,5 +1,5 @@
 // Presence model (Royce's verdict, Oct 19): honest channel status, no fake Live.
-// - Poll-cadence bots (self-declared pollSec via the gateway): blue "Checks in every N min - last check X ago", amber "Late" after two missed beats, never Live, never the flat Went dark.
+// - Poll-cadence bots (self-declared pollSec via the gateway): blue "Declared check-in every N min - last activity X ago", amber "Late" after two missed beats, never Live, never the flat Went dark.
 // - Muse (message-mode, no verified push/poll hook): grey "Dark - acts when messaged", never Live, Copy nudge available.
 // - Live (green) only when a real channel acked inside its expectation; red only for Needs re-paste.
 // - Every finished job is tagged "by Grok" or "by Alter for Grok" (hosted run never pretends the bot did it).
@@ -18,9 +18,9 @@ function state(agents, extra) { BB.S = Object.assign({ killed: false, agents, ta
 // 1. poll bot, on time: blue cadence status, not dark, not inactive
 state([bot('i1', 'Instinct', { providerId: 'instinct', pollSec: 300, lastSeen: ago(180) })]);
 let a = BB.S.agents[0], s = BB.botState(a);
-assert.equal(s.kind, 'poll'); assert.equal(s.text, 'Checks in every 5 min · last check 3 min ago');
+assert.equal(s.kind, 'poll'); assert.equal(s.text, 'Declared check-in every 5 min · last activity 3 min ago');
 assert.equal(BB.wentDark(a), false); assert.notEqual(BB.signal(a), 'inactive');
-let tag = BB.channelTag(a); assert.equal(tag.cls, 'poll'); assert.equal(tag.text, 'Checks in every 5 min');
+let tag = BB.channelTag(a); assert.equal(tag.cls, 'poll'); assert.equal(tag.text, 'Declared check-in every 5 min');
 
 // 2. poll bot at 90s: past the flat 60s but inside its cadence - still on time (the old Went dark bug)
 state([bot('i1', 'Instinct', { providerId: 'instinct', pollSec: 300, lastSeen: ago(90) })]);
@@ -30,7 +30,7 @@ a = BB.S.agents[0]; assert.equal(BB.wentDark(a), false); assert.equal(BB.botStat
 state([bot('i1', 'Instinct', { providerId: 'instinct', pollSec: 300, lastSeen: ago(601) })]);
 a = BB.S.agents[0]; s = BB.botState(a);
 assert.equal(BB.wentDark(a), true); assert.equal(s.kind, 'late');
-assert.ok(s.text.startsWith('Late · checks in every 5 min'), s.text);
+assert.ok(s.text.startsWith('Late · declared check-in every 5 min'), s.text);
 assert.equal(BB.goneDark(a), false, 'late poller does not raise the went-dark banner');
 assert.equal(BB.channelTag(a).cls, 'late');
 assert.equal(BB.teamSummary().calm, true, 'a late poller is a status, not an alarm');
