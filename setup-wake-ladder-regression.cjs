@@ -12,7 +12,7 @@ vm.runInNewContext(source,ctx);const f=ctx.window.test;
 const forP=p=>{f.set({p,label:p,agent:{id:'agent_test',name:'Owner bot'}});return {msg:f.runnerMessage(),mcp:f.setupMessageFor(),url:f.pairUrl()};};
 
 // All three browser-console paths use one action and one declared two-minute cadence.
-for(const p of ['instinct','grok','muse']){const x=forP(p);assert(x.url.includes('&poll=120'));assert(x.msg.includes('every 2 minutes'));assert(x.msg.includes('20 seconds'));assert(x.msg.includes('saved authorization before'));assert(!x.msg.includes('MCP'));assert(!x.msg.includes('keep this page open'));assert(x.msg.includes('same paired browser'));assert(x.msg.includes('No purchases'));}
+for(const p of ['instinct','grok','muse']){const x=forP(p);assert(x.url.includes('&poll=120'));assert(x.msg.includes('every 2 minutes'));assert(x.msg.includes('20 seconds'));assert(x.msg.includes('saved authorization before'));assert(p!=='grok'?!x.msg.includes('MCP'):(x.msg.includes('DIRECT PATH FIRST')&&x.msg.includes('/api/mcp')&&/browser fallback/i.test(x.msg)));assert(!x.msg.includes('keep this page open'));assert(x.msg.includes('same paired browser'));assert(x.msg.includes('No purchases'));}
 // Explicit MCP alternative retains its existing provider-specific optional wake controls.
 const g=forP('grok');assert(g.mcp.includes('ALTER AUTO-WAKE SETUP'));assert(g.mcp.includes('wakeNonce'));
 
@@ -42,4 +42,4 @@ const api=fs.readFileSync('api/index.js','utf8');
 assert(api.includes('if(_ps)await notePollCadence(agent,_ps)'),'server records declared cadence');
 assert(api.includes('if(_wt)await noteWakeTarget(agent,_wt)'),'server records declared wake targets from gateway calls');
 assert(api.includes('wakeChannel'),'MCP foreman_presence schema accepts wake declarations');
-console.log('PASS revised browser pairing: grok routine + instinct declared cadence in one paste each, muse verified client cadence with honest capability fallback, console stamps pollSec honestly. No network.');
+console.log('PASS revised browser pairing: grok direct-first MCP with browser fallback label + grok routine + instinct declared cadence in one paste each, muse verified client cadence with honest capability fallback, console stamps pollSec honestly. No network.');
