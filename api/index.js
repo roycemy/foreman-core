@@ -820,11 +820,11 @@ const REQ_WORDS={'pilot.handoff':'hand approved moments to another bot','email.s
 // An email the provider only accepted (or that failed) is not delivered: a finished job with one reads Finished, not Delivered,
 // on the private timeline and the shared receipt alike. Delivered waits for the provider's own delivered status on the request.
 // What the private timeline says after "Resend accepted it", from the provider state the delivery check stored. Acceptance is not delivery.
-const SENT_STATE_WORDS={accepted:'Delivery not confirmed here.',delivered:'Resend reports it delivered to the recipientâs mail server.',delayed:'Resend reports delivery delayed.',bounced:'Resend reports it bounced.',complained:'Resend reports it delivered, then marked as spam.',failed:'Resend reports it could not send it.',suppressed:'Resend reports the address is suppressed; it was not sent.'};
+const SENT_STATE_WORDS={accepted:'Delivery not confirmed here.',delivered:'Resend reports it delivered to the recipient’s mail server.',delayed:'Resend reports delivery delayed.',bounced:'Resend reports it bounced.',complained:'Resend reports it delivered, then marked as spam.',failed:'Resend reports it could not send it.',suppressed:'Resend reports the address is suppressed; it was not sent.'};
 const emailUnconfirmed=requests=>(requests||[]).some(q=>q.action==='email.send'&&['executed','failed'].includes(q.status)&&!(q.delivery&&q.delivery.state==='delivered'));
 function timelineOf(t,events,requests,receipts,kids,name){
  const out=[],bot=t.assignee?name(t.assignee):'A bot';
- out.push({at:t.createdAt,text:t.createdBy==='owner'?'Owner assigned the job':t.origin==='chat'?bot+' started it from a chat with the owner':name(t.createdBy)+' handed over the job',kind:'step',detail:t.brief?'â'+t.brief.slice(0,120)+'â':null});
+ out.push({at:t.createdAt,text:t.createdBy==='owner'?'Owner assigned the job':t.origin==='chat'?bot+' started it from a chat with the owner':name(t.createdBy)+' handed over the job',kind:'step',detail:t.brief?'“'+t.brief.slice(0,120)+'”':null});
  if(t.startedAt&&t.createdBy==='owner')out.push({at:t.startedAt,text:bot+' took the job',kind:'step'});
  if(t.handoffPlan&&t.handoffPlan.length)out.push({at:t.createdAt,text:'Routing plan: '+bot+' leads; then '+t.handoffPlan.map(h=>name(h.botId)+(h.category?' ('+h.category+')':'')).join(', then ')+' - each hop only on a real handoff',kind:'step',detail:'Planned, not done yet'});
  for(const e of events){
@@ -836,9 +836,9 @@ function timelineOf(t,events,requests,receipts,kids,name){
   const w=ACTION_WORDS[rc.action]||['Ran','action','actions',rc.action];
   if(g&&g.action===rc.action){g.n++;g.cents+=rc.costCents||0;g.details.push(rc.summary);}
   else{g={action:rc.action,n:1,cents:rc.costCents||0,at:rc.at,details:[rc.summary],w};out.push(g);}}
- for(const x of out.filter(x=>x.action)){x.text=x.w[0]+' '+x.n+' '+(x.n===1?x.w[1]:x.w[2]);x.kind='step';x.meta=x.w[3]+(x.cents?' Â· '+x.cents+'Â¢':'');x.detail=x.details.slice(0,3).join(' Â· ');delete x.w;delete x.details;delete x.n;delete x.cents;delete x.action;}
+ for(const x of out.filter(x=>x.action)){x.text=x.w[0]+' '+x.n+' '+(x.n===1?x.w[1]:x.w[2]);x.kind='step';x.meta=x.w[3]+(x.cents?' · '+x.cents+'¢':'');x.detail=x.details.slice(0,3).join(' · ');delete x.w;delete x.details;delete x.n;delete x.cents;delete x.action;}
  for(const q of requests){
-  const w=REQ_WORDS[q.action]||q.action,what=q.params&&(q.params.title||q.params.url)?'â'+String(q.params.title||q.params.url).slice(0,60)+'â':null;
+  const w=REQ_WORDS[q.action]||q.action,what=q.params&&(q.params.title||q.params.url)?'“'+String(q.params.title||q.params.url).slice(0,60)+'”':null;
   if(['approved','executed','failed','outcome_unknown','reconciling','recovering'].includes(q.status))out.push({at:q.decidedAt||q.createdAt,text:'Owner approved: '+w,kind:'approval',detail:what});
   if(q.status==='executed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:q.action==='email.send'?'Alter sent it: Resend accepted it'+(q.delivery&&q.delivery.providerMessageId?' ('+q.delivery.providerMessageId+')':'')+'. '+(SENT_STATE_WORDS[q.delivery&&q.delivery.state]||SENT_STATE_WORDS.accepted):'Alter ran it',kind:'step'});
   if(q.status==='failed')out.push({at:q.executedAt||q.decidedAt||q.createdAt,text:(q.action==='email.send'?'Not sent: ':'It did not run: ')+String((q.result&&q.result.error)||'it failed'),kind:'denied'});
@@ -847,7 +847,7 @@ function timelineOf(t,events,requests,receipts,kids,name){
   else if(q.status==='denied')out.push({at:q.decidedAt||q.createdAt,text:'Owner denied: '+w,kind:'denied',detail:what});
   else if(q.status==='pending')out.push({at:q.createdAt,text:'Waiting for the owner: '+w,kind:'approval',detail:what});
   else if(q.status==='blocked')out.push({at:q.decidedAt||q.createdAt,text:'Blocked: '+w,kind:'denied',detail:q.reason||null});}
- for(const k of kids)if(['done','failed'].includes(k.status))out.push({at:k.finishedAt,text:name(k.assignee)+(k.status==='done'?' finished â'+k.title+'â':' could not finish â'+k.title+'â'),kind:'step'});
+ for(const k of kids)if(['done','failed'].includes(k.status))out.push({at:k.finishedAt,text:name(k.assignee)+(k.status==='done'?' finished “'+k.title+'”':' could not finish “'+k.title+'”'),kind:'step'});
  for(const k of kids)if(k.status==='running')out.push({at:k.startedAt||k.createdAt,text:name(k.assignee)+' is working on its part',kind:'step'});else if(k.status==='queued')out.push({at:k.createdAt,text:'A part waits for '+name(k.assignee),kind:'step'});
  const openKids=kids.filter(k=>['queued','running'].includes(k.status));
  /* a handed-off part that is not done yet means the job is NOT delivered: say who it waits on. An email the provider only accepted
@@ -933,7 +933,7 @@ function receiptPage(x,origin,brand){
  const og=s?origin+'/og/'+x.token+'.png':origin+'/og/missing.png',url=s?origin+'/receipt/'+x.token:origin;
  const data=s?JSON.stringify(x).replace(/</g,'\\u003c'):'null';
  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${htmlEsc(title)} Â· ${htmlEsc(brand)}</title><meta name="description" content="${htmlEsc(desc)}"><meta name="theme-color" content="#F4F4F1"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
+<title>${htmlEsc(title)} · ${htmlEsc(brand)}</title><meta name="description" content="${htmlEsc(desc)}"><meta name="theme-color" content="#F4F4F1"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
 <meta property="og:type" content="article"><meta property="og:title" content="${htmlEsc(title)}"><meta property="og:description" content="${htmlEsc(desc)}"><meta property="og:url" content="${htmlEsc(url)}"><meta property="og:image" content="${htmlEsc(og)}"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:site_name" content="${htmlEsc(brand)}">
 <meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${htmlEsc(title)}"><meta name="twitter:description" content="${htmlEsc(desc)}"><meta name="twitter:image" content="${htmlEsc(og)}">
 <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml"><link rel="icon" href="/brand/favicon-32.png" sizes="32x32" type="image/png"><link rel="icon" href="/brand/favicon-16.png" sizes="16x16" type="image/png"><link rel="apple-touch-icon" href="/brand/alter-icon-light-180.png">
@@ -978,16 +978,16 @@ const CRED_PATTERNS = [
   ['password or token assignment', /\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)\s*[:=]\s*\S{6,}/i],
 ];
 const credKind = s => { for (const [k, re] of CRED_PATTERNS) if (re.test(s)) return k; return null; };
-const CTRL = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7Fâ-ââª-â®â¦-â©]/;
+const CTRL = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F​-‏‪-‮⁦-⁩]/;
 // One line of text: NFC, trimmed, inner whitespace collapsed, no control or bidi characters. null if invalid.
 function pilotLine(x, max) { if (typeof x !== 'string') return null; const s = x.normalize('NFC').replace(/\s+/g, ' ').trim(); return s && s.length <= max && !CTRL.test(s) ? s : null; }
 // A block of text (newlines kept). null if invalid.
 function pilotBlock(x, max) { if (typeof x !== 'string') return null; const s = x.normalize('NFC').replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim(); return s && s.length <= max && !CTRL.test(s.replace(/[\n\t]/g, ' ')) ? s : null; }
 const TS_RE = /^(?:(\d{1,2}):)?(\d{1,2}):(\d{2})$/;
 const tsSeconds = s => { const m = TS_RE.exec(s); if (!m) return null; const h = +(m[1] || 0), mi = +m[2], se = +m[3]; if (se > 59 || (m[1] != null && mi > 59)) return null; return h * 3600 + mi * 60 + se; };
-const pilotHasTimestamps = tr => /(^|[\s[(])\d{1,2}:\d{2}(?::\d{2})?(?=$|[\s\])\-â,.])/m.test(tr);
+const pilotHasTimestamps = tr => /(^|[\s[(])\d{1,2}:\d{2}(?::\d{2})?(?=$|[\s\])\-–,.])/m.test(tr);
 const pilotParagraphs = tr => { const p = tr.split(/\n\s*\n/).map(x => x.trim()).filter(Boolean); return p.length > 1 ? p : tr.split('\n').map(x => x.trim()).filter(Boolean); };
-const looseText = s => s.normalize('NFC').toLowerCase().replace(/[ââÊ¼]/g, "'").replace(/[ââ]/g, '"').replace(/[ââ]/g, '-').replace(/\s+/g, ' ').trim();
+const looseText = s => s.normalize('NFC').toLowerCase().replace(/[‘’ʼ]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/\s+/g, ' ').trim();
 // Validates A's proposal against the trial: exactly {moments:[...]}, each moment drawn from the owner's transcript.
 function pilotMoments(params, pilot, transcript) {
   const bad = (code, reason) => ({ code, reason });
@@ -998,7 +998,7 @@ function pilotMoments(params, pilot, transcript) {
   const ts = pilot.hasTimestamps, shape = ts ? ['end', 'excerpt', 'reason', 'start'] : ['excerpt', 'reason', 'ref'], hay = looseText(transcript), out = [];
   for (let i = 0; i < list.length; i++) {
     const m = list[i], at = 'moments[' + i + ']';
-    if (!m || typeof m !== 'object' || Array.isArray(m) || Object.keys(m).sort().join(',') !== shape.join(',')) return bad('extra_field', at + ' must have exactly: ' + shape.join(', ') + (ts ? '' : ' (this transcript has no timestamps, so use paragraph refs like Â¶3)'));
+    if (!m || typeof m !== 'object' || Array.isArray(m) || Object.keys(m).sort().join(',') !== shape.join(',')) return bad('extra_field', at + ' must have exactly: ' + shape.join(', ') + (ts ? '' : ' (this transcript has no timestamps, so use paragraph refs like ¶3)'));
     const reason = pilotLine(m.reason, PILOT_MAX.reason), excerpt = pilotLine(m.excerpt, PILOT_MAX.excerpt);
     if (!reason) return bad('field_invalid', at + '.reason must be 1 to ' + PILOT_MAX.reason + ' characters of plain text');
     if (!excerpt) return bad('field_invalid', at + '.excerpt must be 1 to ' + PILOT_MAX.excerpt + ' characters of plain text');
@@ -1009,10 +1009,10 @@ function pilotMoments(params, pilot, transcript) {
       if (a == null || b == null || b < a) return bad('field_invalid', at + ' needs start and end like 1:05 or 0:01:05, with end not before start');
       out.push({ start, end, reason, excerpt });
     } else {
-      const mm = /^Â¶?\s*(\d{1,4})(?:\s*-\s*Â¶?\s*(\d{1,4}))?$/.exec(String(m.ref || '').trim()), n = pilotParagraphs(transcript).length;
+      const mm = /^¶?\s*(\d{1,4})(?:\s*-\s*¶?\s*(\d{1,4}))?$/.exec(String(m.ref || '').trim()), n = pilotParagraphs(transcript).length;
       const a = mm && +mm[1], b = mm && +(mm[2] || mm[1]);
-      if (!mm || a < 1 || b < a || b > n) return bad('field_invalid', at + '.ref must be a paragraph ref like Â¶3 or Â¶3-4 within Â¶1-Â¶' + n);
-      out.push({ ref: a === b ? 'Â¶' + a : 'Â¶' + a + '-' + b, reason, excerpt });
+      if (!mm || a < 1 || b < a || b > n) return bad('field_invalid', at + '.ref must be a paragraph ref like ¶3 or ¶3-4 within ¶1-¶' + n);
+      out.push({ ref: a === b ? '¶' + a : '¶' + a + '-' + b, reason, excerpt });
     }
   }
   return { moments: out, kind: ts ? 'timestamps' : 'paragraphs' };
@@ -1078,7 +1078,7 @@ async function pilotPropose(agent, task, params) {
   // One handoff per source job. The same package again is the same request; a different package is refused.
   if (!await r(['SET', 'fm:pilotreq:' + task.id, reqId, 'NX'])) { const prior = await r(['GET', 'fm:pilotreq:' + task.id]); if (prior !== reqId) { const old = await getJ('fm:req:' + prior); return { status: 409, body: { status: 'conflict', code: 'handoff_exists', reason: 'This job already proposed a different handoff', request_id: prior, request_status: old ? old.status : 'unknown' } }; } }
   const created = Date.now();
-  let snap = { v: 1, kind: 'pilot.handoff', ws: wsId(), pilotId: pilot.id, pilotRev: pilotRev(pilot), sourceTaskId: task.id, sourceJobRev: jobRev(task), sourceAgentId: agent.id, sourceName: agent.name, sourceGrantId: (task.jobGrant && task.jobGrant.id) || null, sourcePolicyRev: polRev(agent), targetAgentId: B.id, targetName: B.name, targetPolicyRev: polRev(B), targetTaskId: pilotTargetId(pilot.id, task.id), request: { title: pilot.targetTitle, instructions: pilot.targetInstructions }, input: { kind: v.kind, note: v.kind === 'timestamps' ? 'Timestamps are from the supplied transcript.' : 'The transcript has no timestamps; moments use paragraph refs (Â¶N).' }, moments: v.moments, createdAt: new Date(created).toISOString(), expiresAt: new Date(created + PILOT_TTL_MS).toISOString() };
+  let snap = { v: 1, kind: 'pilot.handoff', ws: wsId(), pilotId: pilot.id, pilotRev: pilotRev(pilot), sourceTaskId: task.id, sourceJobRev: jobRev(task), sourceAgentId: agent.id, sourceName: agent.name, sourceGrantId: (task.jobGrant && task.jobGrant.id) || null, sourcePolicyRev: polRev(agent), targetAgentId: B.id, targetName: B.name, targetPolicyRev: polRev(B), targetTaskId: pilotTargetId(pilot.id, task.id), request: { title: pilot.targetTitle, instructions: pilot.targetInstructions }, input: { kind: v.kind, note: v.kind === 'timestamps' ? 'Timestamps are from the supplied transcript.' : 'The transcript has no timestamps; moments use paragraph refs (¶N).' }, moments: v.moments, createdAt: new Date(created).toISOString(), expiresAt: new Date(created + PILOT_TTL_MS).toISOString() };
   if (!await r(['SET', 'fm:handoff:' + reqId, JSON.stringify(snap), 'NX'])) snap = await getJ('fm:handoff:' + reqId);
   const detailsHash = sha(canon(snap)), n = snap.moments.length;
   const q = { id: reqId, agentId: agent.id, agentName: agent.name, action: 'pilot.handoff', params: { to: snap.targetName, toId: snap.targetAgentId, moments: n, pilotId: pilot.id }, rawParams: { pilotId: pilot.id }, detailsHash, label: ACTIONS['pilot.handoff'].label, costCents: 0, status: 'pending', createdAt: snap.createdAt, expiresAt: snap.expiresAt, taskId: task.id, grantId: snap.sourceGrantId, pilotId: pilot.id, targetAgentId: snap.targetAgentId };
@@ -1165,8 +1165,8 @@ async function pilotInput(agent0, id) {
     if (pilot.sourceTaskId !== t.id || pilot.sourceAgentId !== agent.id) return nf;
     const transcript = await r(['GET', 'fm:pilotinput:' + pilot.id]); if (!transcript || sha(transcript) !== pilot.transcriptHash) return { status: 409, body: { error: 'input_changed' } };
     await receipt(agent, 'pilot.handoff', {}, 'read', 0, 'Read the owner\'s trial transcript', null, { taskId: t.id, onceKey: 'pilotsrc:' + t.id });
-    return { status: 200, body: { task_id: t.id, role: 'source', notice: PILOT_NOTICE, instructions: pilot.sourceInstructions, input_kind: pilot.hasTimestamps ? 'timestamps' : 'paragraphs', transcript, ...(pilot.hasTimestamps ? {} : { paragraphs: pilotParagraphs(transcript).map((text, i) => ({ ref: 'Â¶' + (i + 1), text })) }),
-      next_step: { to: { id: pilot.targetAgentId, name: pilot.targetName }, the_owner_reviews: true, request: { action: 'pilot.handoff', task_id: t.id, params: { moments: [pilot.hasTimestamps ? { start: '0:00', end: '0:30', reason: 'why this moment is useful (max 200)', excerpt: 'words quoted from the transcript (max 400)' } : { ref: 'Â¶1', reason: 'why this moment is useful (max 200)', excerpt: 'words quoted from the transcript (max 400)' }] } }, limits: { moments: '1 to 5', reason: PILOT_MAX.reason, excerpt: PILOT_MAX.excerpt, fields: 'exactly these fields; excerpts must be quoted from the transcript' } } } };
+    return { status: 200, body: { task_id: t.id, role: 'source', notice: PILOT_NOTICE, instructions: pilot.sourceInstructions, input_kind: pilot.hasTimestamps ? 'timestamps' : 'paragraphs', transcript, ...(pilot.hasTimestamps ? {} : { paragraphs: pilotParagraphs(transcript).map((text, i) => ({ ref: '¶' + (i + 1), text })) }),
+      next_step: { to: { id: pilot.targetAgentId, name: pilot.targetName }, the_owner_reviews: true, request: { action: 'pilot.handoff', task_id: t.id, params: { moments: [pilot.hasTimestamps ? { start: '0:00', end: '0:30', reason: 'why this moment is useful (max 200)', excerpt: 'words quoted from the transcript (max 400)' } : { ref: '¶1', reason: 'why this moment is useful (max 200)', excerpt: 'words quoted from the transcript (max 400)' }] } }, limits: { moments: '1 to 5', reason: PILOT_MAX.reason, excerpt: PILOT_MAX.excerpt, fields: 'exactly these fields; excerpts must be quoted from the transcript' } } } };
   }
   const q = await getJ('fm:req:' + t.pilot.requestId), snap = q && await getJ('fm:handoff:' + q.id);
   if (!q || !snap || q.status !== 'executed' || q.pilotId !== pilot.id || snap.targetTaskId !== t.id || snap.targetAgentId !== agent.id) return nf;
