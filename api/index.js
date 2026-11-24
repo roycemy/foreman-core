@@ -432,6 +432,7 @@ async function deferWake(a, jobId) {
 }
 async function flushDueWakes() {
   const ids = await r(['SMEMBERS', 'gl:wakeDueSet']); if (!ids || !ids.length) return { sent: 0, pending: 0 }; let sent = 0, pending = 0;
+  const rosters = new Map(); // roster per record workspace: fm: keys are workspace-namespaced, so the check must run in the record's own ws
   for (const id of ids) {
     const k = 'gl:wakeDue:' + id, raw = await r(['GET', k]), due = raw && JSON.parse(raw);
     if (!due) { await r(['SREM', 'gl:wakeDueSet', id]); continue; }
@@ -441,7 +442,8 @@ async function flushDueWakes() {
     await als.run({ ws: due.ws }, async () => {
       const a = await getJ('fm:agent:' + id), ts = (await Promise.all((due.jobs || []).map(j => getJ('fm:task:' + j)))).filter(t => t && t.assignee === id && t.status === 'queued');
       const done = async () => { if (await r(['EVAL', DEL_IF_EQ, 1, k, leased]) === 1) await r(['SREM', 'gl:wakeDueSet', id]); };
-      if (!a || !ts.length) return done(); // nothing waits any more: drop it
+      let roster = rosters.get(due.ws); if (!roster) { roster = new Set((await r(['SMEMBERS', 'fm:agents'])) || []); rosters.set(due.ws, roster); }
+      if (!a || !roster.has(id) || !ts.length) return done(); // nothing waits any more, or the bot is off the roster (retired identity): drop it unsent
       const out = await maybeWakeBot(a, ts[0].id, { eventId: due.id }) || {};
       if (out.sent) { sent++; return done(); }
       if (out.deferred || out.skipped) return out.skipped ? done() : undefined; // re-deferred (merged into the record), or no channel any more
@@ -2619,7 +2621,7 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='pause')await event(a.id,body.on?'paused':'resumed',body.on?'Owner paused '+a.name:'Owner resumed '+a.name,{source:'owner'});
       return res.json(op === 'restore' ? { agent: a, needsNewKey } : { agent: a });
     }
-    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
+    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); await r(['DEL', 'gl:wakeDue:' + a.id]); await r(['SREM', 'gl:wakeDueSet', a.id]); return res.json({ removed: true }); }
     if (path === '/kill' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
     // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
     if (path === '/connect' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'});
