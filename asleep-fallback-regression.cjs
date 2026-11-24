@@ -123,6 +123,14 @@ const ago = s => new Date(Date.now() - s * 1000).toISOString();
   const claimed5 = await f.claimTask({ id: 'm', name: 'Muse', status: 'active', permissions: {}, limits: {} });
   assert(claimed5 && claimed5.id === t5.id, 'the assignee that shows up claims its own waiting job');
 
+  // 11b. the owner-named marker flows through newTask and holds under the sweep
+  const t4b = await f.newTask({ title: 'Owner named in text', assignee: 'm', assignedBy: 'owner' });
+  let t4bO = await f.getJ('fm:task:' + t4b.id);
+  assert.equal(t4bO.assignedBy, 'owner', 'newTask carries the owner-named marker');
+  t4bO.createdAt = ago(900); t4bO.assignedAt = ago(900); await f.setJ('fm:task:' + t4b.id, t4bO);
+  await f.reassignAsleepQueuedTasks();
+  assert.equal((await f.getJ('fm:task:' + t4b.id)).assignee, 'm', 'owner-named job created via newTask is never moved');
+
   // 12. fullState runs the same sweep for the owner view
   const api = read('api/index.js');
   assert(/await expireStalledTasks\(\);\s*\n\s*await reassignAsleepQueuedTasks\(\);/.test(api), 'fullState sweeps stale queued jobs');
@@ -130,6 +138,8 @@ const ago = s => new Date(Date.now() - s * 1000).toISOString();
   assert(/const pick = await freshRoutingPick\(leadCat\)/.test(api), 'type-box routing goes through the awake-aware pick');
   assert(/allAsleep \? \{ allAsleep: true \}/.test(api), 'the all-asleep state reaches the client');
   assert(/t0\.assignedBy === 'owner'/.test(api), 'owner-assigned jobs are excluded');
+  assert(/assignedBy:\s*routed\s*&&\s*routed\.named/.test(api), 'the type box marks owner-named assignments as the owner choice');
+  assert(/o\.assignedBy\s*\?\s*\{\s*assignedBy/.test(api), 'newTask persists assignedBy when supplied');
   assert(/t0\.status !== 'queued'/.test(api), 'running jobs are never stolen');
   assert(/withJobLock\(t0\.id/.test(api) && /EVAL', AGENT_CAS/.test(api), 'the sweep moves jobs under the existing lock + CAS');
 
