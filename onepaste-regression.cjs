@@ -26,3 +26,9 @@ assert(api.includes("gl:pairReplay:"),'redeem must allow same-IP replay within t
 console.log('ONE-PASTE REGRESSION: ALL PASS');
 
 assert(cj.includes('use the code from the link fragment'),'code appears only in link; fallback reads that fragment');
+
+// pairing sheet qualifies self-pairing by capability: no categorical "any client pairs itself" promise
+assert(cj.includes('Connect ${esc(W.agent.name)} with one paste.'),'pairing heading keeps one-paste flow');
+assert(cj.includes('if ${label} can open web links, it opens the link and pairs itself'),'self-pairing is capability-conditional');
+assert(cj.includes('cannot open links cannot self-pair'),'names the prerequisite instead of promising any client pairs');
+assert(!cj.includes('No second step, no code to retype'),'dropped categorical no-second-step promise');

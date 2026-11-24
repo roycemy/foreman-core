@@ -21,9 +21,12 @@ const c=forP('studio');
 assert(!c.mcp.includes('add a Routine'),'generic MCP message has no grok routine step');
 assert(!c.url.includes('poll='),'generic link declares no cadence');
 assert(!c.mcp.includes('start this routine from that event'),'instant-push offer is grok-only');
-// Owner hint: the grok authorize sheet documents the free env wiring for instant push
-assert(raw.includes('WAKE_GROK_SLACK_WEBHOOK')&&raw.includes('WAKE_GITHUB_TOKEN')&&raw.includes('WAKE_GITHUB_REPO'),'authorize sheet names the optional free env channels');
-assert(raw.includes('Optional, free: instant push on queued jobs'),'owner hint copy present');
+// Owner hint: the grok authorize sheet documents the optional env wiring for faster pickup, without promising unverified cost or scheduling
+assert(raw.includes('WAKE_GROK_SLACK_WEBHOOK')&&raw.includes('WAKE_GITHUB_TOKEN')&&raw.includes('WAKE_GITHUB_REPO'),'authorize sheet names the optional env channels');
+assert(raw.includes('Optional: faster pickup on new jobs'),'owner hint copy present, no unverified free/instant claim');
+assert(!raw.includes('Optional, free: instant push'),'no unverified free-instant promise');
+assert(!raw.includes('nothing to set here'),'no no-setup promise');
+assert(!raw.includes('5-minute routine still covers'),'no unverified scheduling assurance');
 assert(raw.includes('declared target wins'),'owner hint notes a bot-declared target wins over env');
 assert(raw.includes("${W.p==='grok'?'<p"),'owner hint is grok-only');
 

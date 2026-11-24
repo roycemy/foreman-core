@@ -432,6 +432,7 @@ async function deferWake(a, jobId) {
 }
 async function flushDueWakes() {
   const ids = await r(['SMEMBERS', 'gl:wakeDueSet']); if (!ids || !ids.length) return { sent: 0, pending: 0 }; let sent = 0, pending = 0;
+  const rosters = new Map(); // roster per record workspace: fm: keys are workspace-namespaced, so the check must run in the record's own ws
   for (const id of ids) {
     const k = 'gl:wakeDue:' + id, raw = await r(['GET', k]), due = raw && JSON.parse(raw);
     if (!due) { await r(['SREM', 'gl:wakeDueSet', id]); continue; }
@@ -441,7 +442,8 @@ async function flushDueWakes() {
     await als.run({ ws: due.ws }, async () => {
       const a = await getJ('fm:agent:' + id), ts = (await Promise.all((due.jobs || []).map(j => getJ('fm:task:' + j)))).filter(t => t && t.assignee === id && t.status === 'queued');
       const done = async () => { if (await r(['EVAL', DEL_IF_EQ, 1, k, leased]) === 1) await r(['SREM', 'gl:wakeDueSet', id]); };
-      if (!a || !ts.length) return done(); // nothing waits any more: drop it
+      let roster = rosters.get(due.ws); if (!roster) { roster = new Set((await r(['SMEMBERS', 'fm:agents'])) || []); rosters.set(due.ws, roster); }
+      if (!a || !roster.has(id) || !ts.length) return done(); // nothing waits any more, or the bot is off the roster (retired identity): drop it unsent
       const out = await maybeWakeBot(a, ts[0].id, { eventId: due.id }) || {};
       if (out.sent) { sent++; return done(); }
       if (out.deferred || out.skipped) return out.skipped ? done() : undefined; // re-deferred (merged into the record), or no channel any more
@@ -469,7 +471,7 @@ async function maybeWakeBot(a, jobId, opts) {
       const who = !(w && w.channel === 'email') && a.providerId === 'instinct' ? 'Instinct' : String(a.name || 'your bot').slice(0, 40);
       const to = w && w.channel === 'email' ? (wakeEmailAllowed(w.target) ? w.target : '') : envWakeEmail(a);
       if (!to) return { skipped: 'no_inbox' }; // no owner-configured or owner-allowlisted inbox: no ping
-      const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json', ...(eventId ? { 'idempotency-key': eventId } : {}) }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [to], subject: 'Alter: job waiting for ' + who, text: 'A job is waiting for ' + who + ' in Alter.' + (w && w.channel === 'email' && jobId ? ' Job: ' + jobId + '. Claim exactly it with foreman_next_task (task_id: ' + jobId + '); if it is already claimed, stop quietly.' : '') }) });
+      const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json', ...(eventId ? { 'idempotency-key': eventId } : {}) }, body: JSON.stringify({ from: process.env.WAKE_EMAIL_FROM, to: [to], subject: 'Alter: job waiting for ' + who, text: 'A job is waiting for ' + who + ' in Alter.' + (jobId ? ' Job: ' + jobId + '. Claim exactly it with foreman_next_task (task_id: ' + jobId + '); if it is already claimed, stop quietly.' : '') }) });
       ok = resp.ok; status = resp.status;
     } else if (channel === 'webhook') {
       const resp = await postSignedPing(w, eventId);
@@ -555,7 +557,7 @@ async function taskForAgent(agent,id) {
   return null;
 }
 
-async function newTask(o) { const t = { id: o.id || rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: o.hold ? 'waiting' : 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.allAsleep ? { allAsleep: true } : {}), ...(o.assignee ? { assignedAt: now() } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}) };
+async function newTask(o) { const t = { id: o.id || rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: o.hold ? 'waiting' : 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.allAsleep ? { allAsleep: true } : {}), ...(o.assignee ? { assignedAt: now() } : {}), ...(o.assignedBy ? { assignedBy: o.assignedBy } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}) };
   bust();
   // A caller-supplied id (the owner's clientRef) makes creation retry-safe: SET NX, and a repeat returns the task that already exists,
   // with no second job, list entry, wake or hosted run.
@@ -2555,7 +2557,7 @@ async function routes(req, res, path, body, agentPre) {
           else{unrouted=true;allAsleep=fallback.eligible>0;routingReason=fallback.reason;}
         }
       }
-      return res.json({ task: await newTask({ ...(clientRef ? { id: clientRef } : {}), title: body.title, brief, assignee, category, routingReason, unrouted, allAsleep, handoffPlan }), routed, unrouted, ...(allAsleep ? { allAsleep: true } : {}) }); }
+      return res.json({ task: await newTask({ ...(clientRef ? { id: clientRef } : {}), title: body.title, brief, assignee, category, routingReason, unrouted, allAsleep, handoffPlan, assignedBy: routed && routed.named ? 'owner' : undefined }), routed, unrouted, ...(allAsleep ? { allAsleep: true } : {}) }); }
     if(path==='/money'&&req.method==='GET')return res.json(await spendSummary());
     {const sm=path.match(/^\/money\/(spend_[a-f0-9]+)\/(approve|deny)$/);if(sm&&req.method==='POST'){if(foreign())return res.status(403).json({error:'origin'});return send(await reviewSpend(sm[1],sm[2],body.detailsHash));}}
     {const cm=path.match(/^\/agents\/(\w+)\/(connection|reconnect)$/);if(cm){if(cm[2]==='connection'&&req.method==='GET'){const a=await getJ('fm:agent:'+cm[1]);return a?res.json({agentId:a.id,connection:await connectionState(a)}):res.status(404).json({error:'not_found'});}if(cm[2]==='reconnect'&&req.method==='POST'){if(!originOk(req.headers.origin))return res.status(403).json({error:'origin'});return send(await reconnectAgent(cm[1],body));}return res.status(405).json({error:'method_not_allowed'});}}
@@ -2619,7 +2621,7 @@ async function routes(req, res, path, body, agentPre) {
       if(op==='pause')await event(a.id,body.on?'paused':'resumed',body.on?'Owner paused '+a.name:'Owner resumed '+a.name,{source:'owner'});
       return res.json(op === 'restore' ? { agent: a, needsNewKey } : { agent: a });
     }
-    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); return res.json({ removed: true }); }
+    if ((m = path.match(/^\/agents\/(\w+)\/remove$/)) && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); const a = await getJ('fm:agent:' + m[1]); if (!a || a.live) return res.status(400).json({ error: 'cannot remove' }); await updateAgent(a.id,x=>{x.status='revoked';x.revokedAt=now();x.oauthEpoch=(x.oauthEpoch||0)+1;}); bust(); await r(['SREM', 'fm:agents', a.id]); await r(['DEL', 'fm:secret:' + a.id]); await r(['DEL', 'gl:wakeDue:' + a.id]); await r(['SREM', 'gl:wakeDueSet', a.id]); return res.json({ removed: true }); }
     if (path === '/kill' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); bust(); if (body.on) await r(['SET', 'fm:kill', '1']); else await r(['DEL', 'fm:kill']); await event(null, 'kill', body.on ? 'KILL SWITCH ON: all agents stopped' : 'Kill switch off'); return res.json({ killed: !!body.on }); }
     // --- v11: one connect flow for every provider. Hosted providers (Grok) need only a pasted key; the rest get one message to paste. ---
     if (path === '/connect' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'});

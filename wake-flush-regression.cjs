@@ -50,10 +50,24 @@ const events=async t=>(await f.als.run({ws},()=>f.r(['LRANGE','fm:events',0,200]
  const G=await mk('Crash bot');await assign(G,'x0');await vsleep(3);await assign(G,'x1');const gid=JSON.parse(mem.kv.get('gl:wakeDue:'+G)).id;crashDel=1;const s3=sends.length;
  await vsleep(40);assert.equal(sends.length,s3+1,'accepted once, then the process "crashed" before closing the record');assert.ok(mem.kv.has('gl:wakeDue:'+G),'the leased record survives the crash');
  await vsleep(65);await cron('Bearer '+CRON);const gs=sends.slice(s3);assert.equal(gs.length,2,'retried after the lease: at-least-once');assert.ok(gs.every(x=>x.key===gid),'same Idempotency-Key, so a deduping receiver drops the repeat');
+ // ---- 5a. a wake record for a bot that is no longer on the roster is dropped unsent (legacy identities outlive their roster entry)
+ const H=await mk('Retired bot');await assign(H,'old job 1');await vsleep(2);await assign(H,'old job 2');
+ assert.ok(mem.kv.has('gl:wakeDue:'+H),'deferred record exists');
+ await f.als.run({ws},()=>f.r(['SREM','fm:agents',H]));const s4=sends.length; // legacy removal: roster is workspace-namespaced
+ await vsleep(35); // let the deferred window close so the record is due
+ await cron('Bearer '+CRON);
+ assert.equal(sends.length,s4,'no send for an off-roster identity');
+ assert.ok(!mem.kv.has('gl:wakeDue:'+H),'stale record dropped unsent');
+ // ---- 5b. removing a bot clears its pending wake record at the source
+ const I=await mk('Remove bot');await assign(I,'job 1');await vsleep(2);await assign(I,'job 2');
+ assert.ok(mem.kv.has('gl:wakeDue:'+I),'deferred record exists');
+ const rm=await owner('POST','/api/agents/'+I+'/remove');assert.equal(rm.code,200,'remove route works: '+JSON.stringify(rm));
+ assert.ok(!mem.kv.has('gl:wakeDue:'+I),'removing a bot clears its pending wake record');
  // ---- 5. the backstop endpoint
  assert.equal((await cron()).code,401);assert.equal((await cron('Bearer wrong-secret-xx')).code,401);assert.equal((await http('POST','/api/cron/flush-wakes',{auth:'Bearer '+CRON})).code,405);
  const ok=await cron('Bearer '+CRON);assert.equal(ok.code,200);assert.deepEqual(Object.keys(ok.j).sort(),['ok','pending','sent']);
  let last;for(let i=0;i<14;i++)last=await cron('Bearer '+CRON);assert.equal(last.code,429,'rate-limited');
  delete env.CRON_SECRET;assert.equal((await cron('Bearer '+CRON)).code,401,'fails closed without a configured secret');
+ console.log('  retired: off-roster wake dropped unsent; remove route clears the pending record');
  console.log('PASS wake flush: idle delivery with no requests ('+lat.toFixed(2)+' s after the window, virtual clock); burst of five coalesced into one follow-up; a failed follow-up retried with the same Idempotency-Key; five failures end in an owner-visible wake_gave_up; six concurrent flushers (timer, cron, traffic) send once; a crash after the provider accepted is retried after the lease with the same id (at-least-once, dedupable); cron endpoint is GET-only, Bearer CRON_SECRET, timing-safe, rate-limited, fails closed, counts only');
 })().catch(e=>{console.error(e);process.exit(1)});

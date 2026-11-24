@@ -1,7 +1,9 @@
 // Instant wake triggers (Royce, Oct 19): when a job is queued to a bot, Alter pings it on the free
 // push channel wired at setup - Instinct: content-free email; Grok: content-free Slack message or a
 // GitHub trigger issue closed right after creation (the notification is the wake signal).
-// No task details, no instructions, one ping per 30s per bot, silent no-op without a channel, schedule stays the backup.
+// No task details beyond the opaque job id, one ping per 30s per bot, silent no-op without a channel, schedule stays the backup.
+// Since the job-reference fix the email names the exact job to claim on every email wake, declared inbox or env fallback alike
+// (declared-record wakes gained the Job line first; the env fallback arriving bare was the divergence this locks against).
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');
 let src=fs.readFileSync(require('path').join(__dirname,'api/index.js'),'utf8');
 src+='\nmodule.exports.t={maybeWakeBot,newTask,assignTask,reassignTaskUnlocked,getJ,setJ,r,als,mem,wakeTargetFrom,noteWakeTarget};';
@@ -21,14 +23,14 @@ const grok=id=>({id,name:'Grok '+id,providerId:'grok',status:'active',paused:fal
 (async()=>{await f.als.run({ws:'t'},async()=>{
  // 1. queue to an Instinct bot with a sender configured: exactly one trigger email, content-free
  await f.setJ('fm:agent:i1',inst('i1'));
- await f.newTask({title:'Secret memo about Q4',assignee:'i1'});
+ const t1=await f.newTask({title:'Secret memo about Q4',assignee:'i1'});
  assert.equal(sends.length,1);const m=sends[0];
  assert.equal(m.subject,'Alter: job waiting for Instinct');
  assert.deepEqual(m.to,['inbox@owner.test'],'owner-configured inbox');
  assert.equal(m.from,'Alter <wake@alter.test>');
- assert.equal(m.text,'A job is waiting for Instinct in Alter.');
+ assert.equal(m.text,'A job is waiting for Instinct in Alter. Job: '+t1.id+'. Claim exactly it with foreman_next_task (task_id: '+t1.id+'); if it is already claimed, stop quietly.','env-fallback wake names the exact job, same as a declared-inbox wake');
  assert.ok(!JSON.stringify(m).includes('Secret memo'),'no task details in the trigger');
- assert.ok(!/poll|fetch|run|check|authenticate|claim|start/i.test(m.text),'no instructions in the body');
+ assert.ok(/^A job is waiting for Instinct in Alter\. Job: task_\w+\. Claim exactly it with foreman_next_task \(task_id: task_\w+\); if it is already claimed, stop quietly\.$/.test(m.text),'the only instruction is the exact-claim line');
  // 2. a burst inside 30s sends nothing more
  await f.newTask({title:'Two',assignee:'i1'});await f.newTask({title:'Three',assignee:'i1'});
  assert.equal(sends.length,1,'dedupe: one email per 30s per bot');
