@@ -1,4 +1,5 @@
 /* Black Box vNext · Receipts: what the team finished, with model costs; each opens its receipt (D). */
+
 (function () {
   'use strict';
   const BB = window.BB, $ = BB.$, esc = BB.esc;
@@ -93,8 +94,8 @@
     const M = window.BBWork; if (!M) return null; const t = j.task, kids = j.children || [];
     const run = M.buildRuns([t, ...kids]).find(r => r.id === t.id); if (!run || run.active) return null;
     const f = M.finishedItem(run, M.makeCtx({ tasks: [t, ...kids], agents: BB.agents() }, BB.now())), n = f.partsTotal;
-    const lede = f.status === 'done' ? 'Your team finished all ' + n + ' parts.' : f.status === 'partial' ? f.partsDone + ' of ' + n + ' parts finished. ' + (f.parts.some(p => p.phase === 'notrun') ? 'The rest did not run.' : 'The others did not finish.') : f.status === 'stopped' ? 'This run was stopped before it finished.' : "This run didn't finish.";
-    const body = f.kind === 'parts' ? f.parts.map(p => `<div class="rpart"><h3>${f.chain ? 'Step' : 'Part'} ${p.n}: ${esc(p.title)} <span class="wchip st-${p.phase === 'done' ? 'done' : p.phase === 'notrun' ? 'queued' : 'failed'}">${esc(PHASE_WORD[p.phase] || p.phase)}</span>${p.bot ? `<small class="meta">${esc(p.bot)}</small>` : ''}</h3>${outBlock(t.id, 'part:' + p.id, p.result)}<a class="wlink" href="#receipts/${esc(p.id)}">Open this part's receipt</a></div>`).join('')
+    const lede = f.status === 'done' ? 'Your team finished all ' + n + (f.chain ? ' steps.' : ' parts.') : f.status === 'partial' ? f.partsDone + ' of ' + n + (f.chain ? ' steps finished. ' : ' parts finished. ') + (f.parts.some(p => p.phase === 'notrun') ? 'The rest did not run.' : 'The others did not finish.') : f.status === 'stopped' ? 'This run was stopped before it finished.' : "This run didn't finish.";
+    const body = f.kind === 'parts' ? (f.chain && f.final ? `<div class="rpart rfinal"><h3>Final answer${f.final.bot ? ` <small class="meta">${esc(f.final.bot)}</small>` : ''}</h3>${outBlock(t.id, 'final', f.final.result)}</div>` : '') + f.parts.map(p => `<div class="rpart"><h3>${f.chain ? 'Step' : 'Part'} ${p.n}: ${esc(p.title)} <span class="wchip st-${p.phase === 'done' ? 'done' : p.phase === 'notrun' ? 'queued' : 'failed'}">${esc(PHASE_WORD[p.phase] || p.phase)}</span>${p.bot ? `<small class="meta">${esc(p.bot)}</small>` : ''}</h3>${outBlock(t.id, 'part:' + p.id, p.result)}<a class="wlink" href="#receipts/${esc(p.id)}">Open this part's receipt</a></div>`).join('')
       : outBlock(t.id, 'summary', f.text);
     const open = exp.id === t.id && exp.keys.has('process');
     return `<div class="rhead"><div class="eyb">Receipt · ${esc(new Date(d.at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }))}</div><span><span class="wchip st-${esc(f.status)}">${esc(RUN_WORD[f.status] || f.status)}</span></span><h1>${esc(t.title)}</h1><p class="lede">${esc(lede)}</p></div>
@@ -107,7 +108,7 @@
     let lead = (t.orchestration || (j.children || []).length) && done ? runLayout(j, d) : null;
     if (!lead) { const f = window.BBWork && done ? window.BBWork.finishedItem({ task: t, parts: [], status: t.status === 'failed' ? 'failed' : 'done', finishedAtMs: Date.parse(t.finishedAt) }, window.BBWork.makeCtx({ tasks: [t], agents: BB.agents() }, BB.now())) : null; o.afterArt = f ? sourcesHTML(f) : ''; lead = `${BB.partsHTML ? BB.partsHTML(t, j.children) : ''}${receiptDoc(d, { fullResult: true, ...o })}`; }
     return `<div class="rc wide"><a class="back" href="#receipts">‹ Receipts</a><div style="height:28px"></div>${lead}${savedNotes(j)}${t.orchestration && !done ? '<div class="acts" style="margin-top:20px"><button class="b out" data-stop-plan>Stop remaining parts</button></div>' : ''}
-      ${done ? `<div class="share-box" id="share-box"><h3>Share a public receipt</h3><p>You write a public title, description and reusable template, review the exact page, then publish. Nothing from the private job is copied in. Links expire in 30 days.</p><div class="acts" style="justify-content:flex-start;margin-top:14px"><button class="b ink" type="button" data-share>Share…</button></div></div>` : `<p class="meta" style="margin-top:24px">This job is ${esc(BB.jobStatus(t).word.toLowerCase())}. Its receipt is final once it finishes.</p>`}
+      ${done ? `<div class="share-box" id="share-box"><h3>Share a public receipt</h3><p>One tap generates a safe snapshot from bot names, step count, status and timing only - never your job text, names, links or file paths - and publishes it. Links expire in 30 days and can be unshared anytime.</p><div class="acts" style="justify-content:flex-start;margin-top:14px"><button class="b ink" type="button" data-share>Share</button></div></div>` : `<p class="meta" style="margin-top:24px">This job is ${esc(BB.jobStatus(t).word.toLowerCase())}. Its receipt is final once it finishes.</p>`}
       <div class="foot"><span class="mark"><i aria-hidden="true"></i>${esc(BRAND.upper)}</span>· Receipt</div></div>`;
   }
   function bindDetail(j) {
