@@ -1,5 +1,4 @@
 /* Black Box vNext · one-tap sharing. The share button generates the public title, description, reusable template and
-
    budget itself - ONLY from non-private facts (bot names, step count, status, timing, recorded budget) - and publishes
    in one tap. Job text, titles, results, links, paths and credentials are never copied in. Links expire in 30 days and
    can be unshared. There is no "clone after sign-in": a public receipt can only be copied as text. */
