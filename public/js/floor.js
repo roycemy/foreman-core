@@ -275,7 +275,9 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     as.forEach((a, i) => {
       const r = ensure(a, i), t = targetOf(a, waitList), s = BB.botState(a);
       r.el.classList.toggle('owner-revoked',a.status==='revoked'&&a.revokedBy==='owner');r.el.classList.toggle('ghost', BB.isGhost(a)); r.el.classList.toggle('paused', s.kind === 'off'); r.el.dataset.signal = BB.signal(a); r.el.classList.toggle('dark', s.kind === 'dark' || s.kind === 'late' || s.kind === 'msg');
-      const sameRoom=as.filter(b=>BB.roomOf(b)===BB.roomOf(a)), labelShift=sameRoom.length>1?(sameRoom.indexOf(a)%2?28:-28):0;
+      /* labels de-collide by where bots actually stand, not by home room: two bots from different rooms
+         (meeting for a handoff, gathered at the tray) still stack apart instead of covering each other */
+      const near=as.filter(b=>{const q=F[b.id];return q&&r.x!=null&&q.x!=null&&Math.abs(q.x-r.x)<7&&Math.abs(q.y-r.y)<7;}).sort((x,y)=>String(x.id).localeCompare(String(y.id))), labelShift=near.length>1?(near.findIndex(b=>b.id===a.id)%2?28:-28):0;
       r.el.style.setProperty('--label-shift',labelShift+'px');
       r.el.querySelector('.floor-bot-label b').textContent=a.name;
       r.el.querySelector('.floor-bot-label small').textContent=BB.isGhost(a)?'Not connected':a.status==='revoked'?'Access revoked':BB.presence(a)==='reconnect'?'Reconnect':['dark','late'].includes(s.kind)?'No recent activity':s.kind==='msg'?'Acts when messaged':BB.signal(a)==='working'&&BB.runningTask(a)?'Working':a.paused||BB.S.killed?'Paused':'Idle';
@@ -301,7 +303,8 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
     if (!built || !BB.S) return;
     const ov = $('#ov'); BB.$$('.fx,.collab', ov).forEach(e => e.remove());
     const pos = id => { const r = F[id]; return r && r.x != null ? [r.x, r.y] : null; };
-    const notes = [];
+    /* status notes stack apart from each other AND from a live handoff bubble (.mbub), which owns the space above a meeting sender */
+    const notes = [...ov.querySelectorAll('.mbub')].map(b => { const SW = ov.clientWidth || 1000, SH = ov.clientHeight || 700, l = parseFloat(b.style.left) || 0, t = parseFloat(b.style.top) || 0, w = (b.offsetWidth || 160) / SW * 100, h = (b.offsetHeight || 40) / SH * 100; return { l: l, r: l + w, t: t - h, b: t + h }; });
     BB.agents().forEach((a, i) => {
       const r = F[a.id], p = pos(a.id); if (!r || !p) return;
       const k = BB.activity(a), sit = r.key && r.key.includes('|sit|');
