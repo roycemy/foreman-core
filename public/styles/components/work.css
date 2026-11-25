@@ -1,5 +1,4 @@
 /* Work control, Floor notes and result-first receipts. App tokens only; motion is limited to one short pulse and is off under reduced motion. */
-
 .wbtn{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:var(--r-control);font-weight:500;border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font:inherit;font-weight:500;cursor:pointer;white-space:nowrap;max-width:100%}
 .wbtn:focus-visible,.wpanel button:focus-visible,.wpanel a:focus-visible{outline:none;box-shadow:var(--sh-focus)}
 .wbtn .wdot{width:8px;height:8px;border-radius:50%;background:var(--line-2);flex:none}
