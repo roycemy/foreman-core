@@ -1,4 +1,5 @@
 /* Work visibility model: turns the app's real state (tasks, agents, requests, events) into runs, honest statuses and short updates.
+
    Pure functions, no DOM, no network: the same file runs in the browser (window.BBWork) and in the regression tests (require).
    Rules it keeps:
    - A status is only what the stored records support. Queued is not running; a notification sent is not a pickup.
@@ -119,8 +120,10 @@
     return runs.map(r => {
       const cur = r.current || r.task, d = describe(cur, ctx), a = cur.assignee && ctx.agents.get(cur.assignee);
       const partNo = r.task.orchestration && r.current ? (r.current.partIndex != null ? r.current.partIndex : r.parts.indexOf(r.current)) + 1 : null;
+      const seq = r.task.orchestration ? r.parts : (r.parts.length ? [r.task, ...r.parts] : []);
+      const progress = (r.task.orchestration || seq.length > 1) ? { done: seq.filter(p => phaseOf(p) === 'done').length, total: r.task.orchestration ? (r.task.partIds || []).length : seq.length } : null;
       return { id: r.id, title: r.task.title, status: r.status, label: d.label, phase: d.phase, reason: d.reason, detail: d.detail, bot: a ? a.name : null, botId: a ? a.id : null, ageMs: d.ageMs,
-        part: r.task.orchestration ? { n: partNo, of: (r.task.partIds || []).length, title: r.current ? r.current.title : null } : null, failedSoFar: r.parts.filter(p => ['failed', 'notrun', 'stopped'].includes(phaseOf(p))).length, partsMissing: r.partsMissing,
+        part: r.task.orchestration ? { n: partNo, of: (r.task.partIds || []).length, title: r.current ? r.current.title : null } : null, progress, failedSoFar: r.parts.filter(p => ['failed', 'notrun', 'stopped'].includes(phaseOf(p))).length, partsMissing: r.partsMissing,
         sortAt: ms(r.task.createdAt) || 0 };
     }).sort((x, y) => y.sortAt - x.sortAt);
   }
@@ -139,9 +142,12 @@
     const status = run.status;
     const kind = parts.length ? 'parts' : !t.orchestration ? 'single' : 'summary_only';
     const text = kind === 'single' ? (t.result == null ? '' : String(t.result)) : kind === 'summary_only' ? String(t.result || '') : '';
+    /* a chain's last finished hop IS the final answer the earlier steps fed into; show it as one, with every step below */
+    const lastDone = chain ? parts.filter(p => p.phase === 'done').slice(-1)[0] : null;
+    const final = lastDone ? { bot: lastDone.bot, result: lastDone.result } : null;
     return { id: run.id, title: t.title, status, finishedAtMs: run.finishedAtMs, bots: [...new Set((parts.length ? parts.map(p => p.bot) : [(botOf(t, ctx) || {}).name || null]).filter(Boolean))],
-      kind, chain, text, parts, partsDone: done, partsTotal: t.orchestration ? (t.partIds || []).length : (parts.length || 1), partsMissing: run.partsMissing,
-      note: kind === 'parts' ? 'No single combined answer was produced. Each part\'s own result is shown, in order.' : kind === 'summary_only' ? 'The individual parts are no longer available; this is the plan\'s own saved summary.' : '',
+      kind, chain, final, text, parts, partsDone: done, partsTotal: t.orchestration ? (t.partIds || []).length : (parts.length || 1), partsMissing: run.partsMissing,
+      note: kind === 'parts' ? (chain && final ? 'The last step produced the final answer. Every step\'s own result is shown below, in order.' : 'No single combined answer was produced. Each part\'s own result is shown, in order.') : kind === 'summary_only' ? 'The individual parts are no longer available; this is the plan\'s own saved summary.' : '',
       sources: urlsIn(kind === 'parts' ? parts.map(p => p.result).join('\n') : text) };
   }
 
@@ -221,5 +227,15 @@
     return { done, bad };
   }
 
-  return { phaseOf, buildRuns, describe, activeItems, finishedItems, finishedItem, snapshot, transitions, finishCopy, recentUpdates, botBubble, freshness, newAck, unseen, markSeen, urlsIn, cadence, ago, agoText, short, partParent, makeCtx, finishCount };
+  /* progress of the run one task belongs to: real steps done out of total, or null for a single-step job (no invented fractions) */
+  function runProgress(tasks, taskId) {
+    const by = idx(tasks), t = by.get(taskId); if (!t) return null;
+    const root = partParent(t, by) || t, run = buildRuns(tasks).find(r => r.id === root.id); if (!run) return null;
+    const seq = run.task.orchestration ? run.parts : (run.parts.length ? [run.task, ...run.parts] : []);
+    const total = run.task.orchestration ? (run.task.partIds || []).length : seq.length;
+    if (total < 2) return null;
+    return { done: seq.filter(p => phaseOf(p) === 'done').length, total, status: run.status };
+  }
+
+  return { phaseOf, buildRuns, describe, activeItems, finishedItems, finishedItem, snapshot, transitions, finishCopy, recentUpdates, botBubble, freshness, newAck, unseen, markSeen, urlsIn, cadence, ago, agoText, short, partParent, makeCtx, finishCount, runProgress };
 });
