@@ -1,4 +1,5 @@
 /* Black Box vNext · shell: sign-in, routing, top bar, account menu, emergency stop, composer, crew pill.
+
    Panels (inbox, inspector), receipts, card, connect and the command palette register themselves on BB. */
 (function () {
   'use strict';
@@ -150,7 +151,7 @@
     let title = raw, assignee = null; const m = raw.match(/^@(\S+)\s+(.+)$/);
     if (m) { const bot = BB.assignable().find(a => a.name.toLowerCase().replace(/\s+/g, '') === m[1].toLowerCase()); if (bot) { assignee = bot.id; title = m[2]; } }
     ask.querySelector('button').disabled = true;
-    if(!assignee&&/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){ask.querySelector('button').disabled=false;return BB.reviewParts(title,plan);}}
+    if(!assignee&&(/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)||BB.namedSegs&&BB.namedSegs(title))){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){ask.querySelector('button').disabled=false;return BB.reviewParts(title,plan);}}
     const send = assignee ? { title, assignee } : { title, route: true };
     /* pending is shown the moment Start is pressed; "queued" only after the server returns the task record. A failed send keeps the text and can be retried without a second task. */
     const j = await (BB.work ? BB.work.send('/api/tasks', send, title) : BB.api('/api/tasks', 'POST', send));
@@ -170,7 +171,7 @@
       <label class="fld">Who takes it<select class="in" id="nj-a"><option value="">Pick the best available bot</option>${BB.assignable().map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
       <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit">Add job</button></div></form>`, { label: 'New job' });
     box.querySelector('#nj').onsubmit = async e => {
-      e.preventDefault();const title=$('#nj-t').value.trim(),brief=$('#nj-b').value.trim(),assignee=$('#nj-a').value||null;if(!assignee&&/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){BB.closeModal();return BB.reviewParts(title,plan,brief);}}
+      e.preventDefault();const title=$('#nj-t').value.trim(),brief=$('#nj-b').value.trim(),assignee=$('#nj-a').value||null;if(!assignee&&(/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)||BB.namedSegs&&BB.namedSegs(title))){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){BB.closeModal();return BB.reviewParts(title,plan,brief);}}
       const j = await (BB.work ? BB.work.send('/api/tasks', {title,brief,assignee,route:!assignee}, title) : BB.api('/api/tasks', 'POST', {title,brief,assignee,route:!assignee}));
       if (j.error) return BB.toast(j.error); BB.closeModal(); BB.toast('Job added.'); BB.sync(true);
     };
