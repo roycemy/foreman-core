@@ -23,7 +23,7 @@
       headline: t.orchestration ? (t.status==='done'?'Your team finished all parts':t.status==='failed'?'This plan stopped':'Your team is working through the parts') : t.status === 'failed' ? bot.name + ' stopped after ' + BB.durWords(ms) : bot.name + ' finished this in ' + BB.durWords(ms),
       lede: t.brief ? t.title + '. ' + t.brief : t.title,
       artifact: lines.length ? { title: lines[0].replace(/^\d+[.)]\s*/, '').slice(0, 90), text: lines.slice(1).join(' · ').slice(0, 220), words, name: t.title, full: t.result } : null,
-      costUsd: t.modelCostUsd == null ? null : t.modelCostUsd, showCost: true,
+      costUsd: (() => { const all = [t, ...(j.children || [])].map(x => x.modelCostUsd).filter(x => x != null); return all.length ? all.reduce((x, y) => x + y, 0) : null; })(), showCost: true,
       approvals: j.timeline.filter(s => /^Owner approved/.test(s.text)).length, durationMs: ms,
       timeline: j.timeline
     };
@@ -37,7 +37,7 @@
     const row = (t, run) => {
       const who = BB.jobWho(t), a = who[0], st = run ? run.status : (t.status === 'failed' ? 'failed' : 'done'), cost = t.status === 'failed' ? 'Didn\'t finish' : t.modelCostUsd != null ? BB.modelCost(t.modelCostUsd) : '–';
       const tag = st === 'partial' ? '<span class="rtag bad">Partly finished</span>' : st === 'failed' ? '<span class="rtag bad">Didn\'t finish</span>' : st === 'stopped' ? '<span class="rtag bad">Stopped</span>' : '';
-      const nParts = t.orchestration && run ? ' · ' + run.parts.filter(p => p.status === 'done').length + ' of ' + (t.partIds || []).length + ' parts' : '';
+      const nParts = t.orchestration && run ? ' · ' + run.parts.filter(p => p.status === 'done').length + ' of ' + (t.partIds || []).length + ' parts' : run && run.parts.length ? ' · ' + (run.parts.filter(p => p.status === 'done').length + (t.status === 'done' ? 1 : 0)) + ' of ' + (run.parts.length + 1) + ' steps' : '';
       const meta = (who.length ? (t.runByAlter ? 'by Alter for ' : 'by ') + who.map(x => x.name).join(' + ') : 'Unassigned') + nParts + ' · ' + BB.when(t.finishedAt);
       if (phone) return `<a class="kr" href="#receipts/${t.id}">${a ? `<span class="kav" style="--av:${BB.avColor(a)}">${esc(BB.initials(a.name))}</span>` : '<span class="kav merch">?</span>'}<div class="t"><b class="wrap" title="${esc(t.title)}">${esc(t.title)}${tag}</b><small class="wrapm">${esc(meta)}</small></div><span class="r">${esc(cost)}</span></a>`;
       return `<a class="row" href="#receipts/${t.id}" style="text-decoration:none">${BB.jobAv(t)}<span class="t"><b class="wrap" title="${esc(t.title)}">${esc(t.title)}${tag}</b><small class="wrapm">${esc(meta)}</small></span><span class="r" title="${t.modelCostUsd != null ? 'Model costs' : ''}">${esc(cost)}</span><span class="chev">${BB.ICON.chev}</span></a>`;
@@ -94,7 +94,7 @@
     const run = M.buildRuns([t, ...kids]).find(r => r.id === t.id); if (!run || run.active) return null;
     const f = M.finishedItem(run, M.makeCtx({ tasks: [t, ...kids], agents: BB.agents() }, BB.now())), n = f.partsTotal;
     const lede = f.status === 'done' ? 'Your team finished all ' + n + ' parts.' : f.status === 'partial' ? f.partsDone + ' of ' + n + ' parts finished. ' + (f.parts.some(p => p.phase === 'notrun') ? 'The rest did not run.' : 'The others did not finish.') : f.status === 'stopped' ? 'This run was stopped before it finished.' : "This run didn't finish.";
-    const body = f.kind === 'parts' ? f.parts.map(p => `<div class="rpart"><h3>Part ${p.n}: ${esc(p.title)} <span class="wchip st-${p.phase === 'done' ? 'done' : p.phase === 'notrun' ? 'queued' : 'failed'}">${esc(PHASE_WORD[p.phase] || p.phase)}</span>${p.bot ? `<small class="meta">${esc(p.bot)}</small>` : ''}</h3>${outBlock(t.id, 'part:' + p.id, p.result)}<a class="wlink" href="#receipts/${esc(p.id)}">Open this part's receipt</a></div>`).join('')
+    const body = f.kind === 'parts' ? f.parts.map(p => `<div class="rpart"><h3>${f.chain ? 'Step' : 'Part'} ${p.n}: ${esc(p.title)} <span class="wchip st-${p.phase === 'done' ? 'done' : p.phase === 'notrun' ? 'queued' : 'failed'}">${esc(PHASE_WORD[p.phase] || p.phase)}</span>${p.bot ? `<small class="meta">${esc(p.bot)}</small>` : ''}</h3>${outBlock(t.id, 'part:' + p.id, p.result)}<a class="wlink" href="#receipts/${esc(p.id)}">Open this part's receipt</a></div>`).join('')
       : outBlock(t.id, 'summary', f.text);
     const open = exp.id === t.id && exp.keys.has('process');
     return `<div class="rhead"><div class="eyb">Receipt · ${esc(new Date(d.at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }))}</div><span><span class="wchip st-${esc(f.status)}">${esc(RUN_WORD[f.status] || f.status)}</span></span><h1>${esc(t.title)}</h1><p class="lede">${esc(lede)}</p></div>
@@ -104,7 +104,7 @@
   function liveJob(j) { const t = BB.task(j.task.id) || j.task; const kids = t.orchestration ? (t.partIds || []).map(id => BB.task(id) || (j.children || []).find(x => x.id === id)).filter(Boolean) : []; return { ...j, task: t, children: kids.length ? kids : j.children }; }
   function renderDetail(j) {
     const t = j.task, d = BB.receiptData(j), done = ['done', 'failed'].includes(t.status), o = expOpts(t.id);
-    let lead = t.orchestration && done ? runLayout(j, d) : null;
+    let lead = (t.orchestration || (j.children || []).length) && done ? runLayout(j, d) : null;
     if (!lead) { const f = window.BBWork && done ? window.BBWork.finishedItem({ task: t, parts: [], status: t.status === 'failed' ? 'failed' : 'done', finishedAtMs: Date.parse(t.finishedAt) }, window.BBWork.makeCtx({ tasks: [t], agents: BB.agents() }, BB.now())) : null; o.afterArt = f ? sourcesHTML(f) : ''; lead = `${BB.partsHTML ? BB.partsHTML(t, j.children) : ''}${receiptDoc(d, { fullResult: true, ...o })}`; }
     return `<div class="rc wide"><a class="back" href="#receipts">‹ Receipts</a><div style="height:28px"></div>${lead}${savedNotes(j)}${t.orchestration && !done ? '<div class="acts" style="margin-top:20px"><button class="b out" data-stop-plan>Stop remaining parts</button></div>' : ''}
       ${done ? `<div class="share-box" id="share-box"><h3>Share a public receipt</h3><p>You write a public title, description and reusable template, review the exact page, then publish. Nothing from the private job is copied in. Links expire in 30 days.</p><div class="acts" style="justify-content:flex-start;margin-top:14px"><button class="b ink" type="button" data-share>Share…</button></div></div>` : `<p class="meta" style="margin-top:24px">This job is ${esc(BB.jobStatus(t).word.toLowerCase())}. Its receipt is final once it finishes.</p>`}
