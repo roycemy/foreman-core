@@ -1,5 +1,4 @@
 /* Work control (top right): active and finished work in one panel, honest about what is known.
-
    Everything shown comes from BB.S through BBWork (work-model.js). Task titles, bot names, reasons and results are untrusted text: every
    string is escaped here, and no HTML from the server is ever inserted. Nothing here sends email, push or browser notifications. */
 (function () {
