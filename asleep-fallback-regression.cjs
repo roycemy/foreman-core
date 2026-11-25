@@ -137,7 +137,7 @@ const ago = s => new Date(Date.now() - s * 1000).toISOString();
   assert(/expireStalledTasks\(\);await reconcileTaskParents\(\);await reassignAsleepQueuedTasks\(agent\.id\)/.test(api), 'claimTask sweeps with the claimant excluded');
   assert(/const pick = await freshRoutingPick\(leadCat\)/.test(api), 'type-box routing goes through the awake-aware pick');
   assert(/allAsleep \? \{ allAsleep: true \}/.test(api), 'the all-asleep state reaches the client');
-  assert(/t0\.assignedBy === 'owner'/.test(api), 'owner-assigned jobs are excluded');
+  assert(/!t0\.assignee \|\| t0\.assignedBy \|\|/.test(api), 'deliberately assigned jobs (owner or bot) are excluded');
   assert(/assignedBy:\s*routed\s*&&\s*routed\.named/.test(api), 'the type box marks owner-named assignments as the owner choice');
   assert(/o\.assignedBy\s*\?\s*\{\s*assignedBy/.test(api), 'newTask persists assignedBy when supplied');
   assert(/t0\.status !== 'queued'/.test(api), 'running jobs are never stolen');
@@ -191,7 +191,7 @@ const ago = s => new Date(Date.now() - s * 1000).toISOString();
 
   // inbox + floor + app wiring (source)
   const inbox = read('public/js/inbox.js'), floor = read('public/js/floor.js'), app = read('public/js/app.js');
-  assert(inbox.includes("i.type === 'asleep'") && /is asleep/.test(inbox) && /reconnect it to wake it/.test(inbox), 'desktop asleep card names the job and the wake path');
+  assert(inbox.includes("i.type === 'asleep'") && /is asleep/.test(inbox) && /run-my-queue message to wake it/.test(inbox), 'desktop asleep card names the job and the wake path');
   assert(/reconnect to wake it/.test(inbox), 'phone asleep card tells the owner to reconnect');
   assert(inbox.includes('i.t.allAsleep'), 'the all-asleep queued job gets honest copy');
   assert(inbox.includes('BB.fallbackNote(t)'), 'job rows carry the handoff note');
