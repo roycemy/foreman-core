@@ -1,5 +1,4 @@
 /* Black Box vNext · floor (A, H, I, J). Full bleed, no signs or labels: bots are just figures.
-
    Art: /hq/floor.svg environment + isometric props + per-bot figures, all in the floor's projection
    (viewBox 60 40 1320 750, iso K=5.2, origin 720,96). Placement is presentation only: every state comes from BB.S. */
 (function () {
