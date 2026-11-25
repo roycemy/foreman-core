@@ -1,5 +1,4 @@
 /* Work visibility model: turns the app's real state (tasks, agents, requests, events) into runs, honest statuses and short updates.
-
    Pure functions, no DOM, no network: the same file runs in the browser (window.BBWork) and in the regression tests (require).
    Rules it keeps:
    - A status is only what the stored records support. Queued is not running; a notification sent is not a pickup.
