@@ -253,6 +253,259 @@
     const dark = BB.agents().filter(a => BB.goneDark(a)), bar = $('#darkbar');
     bar.hidden = !dark.length || !!(BB.S && BB.S.killed);
     if (dark.length) bar.querySelector('span').textContent = dark.map(a => a.name).join(', ') + ' went dark: no accepted activity for 60s. Authorization may still be saved.';
+   Panels (inbox, inspector), receipts, card, connect and the command palette register themselves on BB. */
+(function () {
+  'use strict';
+  const BB = window.BB, $ = BB.$, $$ = BB.$$, esc = BB.esc;
+  /* icon slots in the static markup */
+  const ICONS = { plus: BB.ICON.plus, grid: BB.ICON.grid, stop: BB.ICON.stop, out: BB.ICON.out, up: BB.ICON.up, inbox: BB.ICON.inbox, receipt: BB.ICON.receipt, card: BB.ICON.card };
+  ['#acctmenu', '#ask', '#tabs'].forEach(s => { const e = $(s); if (e) e.innerHTML = e.innerHTML.replace(/\$\{(\w+)\}/g, (m, k) => ICONS[k] || ''); });
+  $$('.menu button svg,.menu a svg').forEach(s => { s.setAttribute('width', 15); s.setAttribute('height', 15); });
+
+  /* ---------- routing ---------- */
+  const VIEWS = ['floor', 'inbox', 'business', 'receipts', 'card', 'trial'];
+  BB.route = () => { const h = location.hash.replace(/^#/, ''); const [v, ...rest] = h.split('/'); return { v: VIEWS.includes(v) ? v : (BB.phone() ? 'inbox' : 'floor'), arg: rest.join('/') || null }; };
+  BB.go = h => { if (location.hash !== h) location.hash = h; else applyRoute(); };
+  const routeHooks = BB._routeHooks;
+  function applyRoute() {
+    let r = BB.route();
+    /* desktop has no Inbox page: the Inbox is a rail on the floor */
+    if (r.v === 'inbox' && !BB.phone()) { history.replaceState(null, '', '#floor'); r = { v: 'floor' }; setTimeout(() => BB.openRail && BB.openRail(), 0); }
+    VIEWS.forEach(v => { const e = $('#v-' + v); if (e) e.classList.toggle('on', v === r.v); });
+    $$('#nav a,#tabs a').forEach(a => { if (a.dataset.v === r.v) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+    if (r.v !== 'floor') { BB.closePanels && BB.closePanels(); }
+    routeHooks.forEach(fn => fn(r));
+    if (r.v === 'floor') requestAnimationFrame(() => BB.floorFit && BB.floorFit());
+    document.title = BB.t ? BB.t('{brand}') : document.title;
+  }
+  addEventListener('hashchange', applyRoute);
+  let wasPhone = BB.phone();
+  addEventListener('resize', () => { const p = BB.phone(); if (p !== wasPhone) { wasPhone = p; applyRoute(); } });
+  $$('[data-go]').forEach(b => b.onclick = () => BB.go(b.dataset.go));
+
+  /* ---------- sign-in ---------- */
+  let mode = 'in';
+  const au = $('#auth');
+  function needAuth() { if (resetToken && mode !== 'reset') setMode('reset'); au.classList.add('on'); setTimeout(() => { const f = $(mode === 'reset' ? '#aup' : '#aue'); if (f && !f.value) f.focus(); }, 30); }
+  BB.onAuth = needAuth;
+  /* password recovery: 'forgot' asks for a link by email; 'reset' sets a new password with the one-time token from the link's #reset= fragment */
+  let resetToken = null;
+  let resetSentAt = 0, resetSentMsg = '', aumToForgot = false;
+  { const mt = /^#reset=([a-f0-9]{64})$/.exec(location.hash); if (mt) { resetToken = mt[1]; history.replaceState(null, '', location.pathname); } }
+  function showResetSent(msg) {
+    /* Prominent announced confirmation after a reset request. Hides the form so a repeat tap cannot send another email; newest link already voids older ones. */
+    $('#auth-h').textContent = 'Check your email';
+    $('#aue').closest('label').hidden = true; $('#aue').required = false;
+    $('#aup').closest('label').hidden = true; $('#aup').required = false;
+    $('#aucl').hidden = true; $('#auf').hidden = true; $('#aug').hidden = true;
+    $('#aum').textContent = 'Back to sign in';
+    const r = $('#aur'); r.textContent = msg || resetSentMsg;
+    r.style.cssText = 'display:block;font-size:16px;line-height:1.5;color:#121212;background:#fff;border:1px solid #e0e0db;border-radius:12px;padding:14px 16px;margin-top:12px';
+  }
+  function setMode(m) {
+    mode = m; const T = { in: ['Sign in', 'Sign in'], up: ['Create your account', 'Create account'], forgot: ['Reset your password', 'Email me a reset link'], reset: ['Choose a new password', 'Save new password'] }[m];
+    aumToForgot = false;
+    $('#auth-h').textContent = T[0]; $('#aug').textContent = T[1]; $('#aug').hidden = false;
+    $('#aur').textContent = ''; $('#aur').style.cssText = '';
+    $('#aum').textContent = m === 'in' ? 'Create an account' : m === 'up' ? 'I already have an account' : 'Back to sign in'; $('#aup').autocomplete = m === 'in' ? 'current-password' : 'new-password';
+    $('#aue').closest('label').hidden = m === 'reset'; $('#aue').required = m !== 'reset';
+    $('#aup').closest('label').hidden = m === 'forgot'; $('#aup').required = m !== 'forgot';
+    $('#aucl').hidden = m === 'forgot' || m === 'reset'; $('#auf').hidden = m !== 'in';
+    if (m !== 'up') $('#auc-l').hidden = true;
+    if (m === 'forgot' && resetSentAt && Date.now() - resetSentAt < 60000) showResetSent();
+  }
+  $('#auf').onclick = () => { setMode('forgot'); if (!$('#aug').hidden) $('#aue').focus(); };
+  $('#aum').onclick = () => { if (aumToForgot) { aumToForgot = false; setMode('forgot'); if (!$('#aug').hidden) $('#aue').focus(); return; } setMode(mode === 'in' ? 'up' : 'in'); };
+  $('#aucl').onclick = () => { setMode('up'); $('#auc-l').hidden = false; $('#auc').focus(); };
+  $('#authf').onsubmit = async e => {
+    e.preventDefault(); $('#aur').textContent = ''; $('#aug').disabled = true;
+    const b = { email: $('#aue').value.trim(), password: $('#aup').value }; if (mode === 'up' && $('#auc').value.trim()) b.claim = $('#auc').value.trim();
+    try {
+      if (mode === 'forgot') { const j = await BB.api('/api/auth/reset-request', 'POST', { email: b.email }); if (j.error) { $('#aur').textContent = j.error; $('#aur').style.color = ''; return; } resetSentAt = Date.now(); resetSentMsg = j.message || 'If this address can be recovered, a reset link is on its way. It works once and expires in 30 minutes.'; showResetSent(resetSentMsg); return; }
+      if (mode === 'reset') { const j = await BB.api('/api/auth/reset', 'POST', { token: resetToken, password: b.password }); if (j.error) { $('#aur').textContent = j.error; if (/invalid, used or expired/.test(j.error)) { aumToForgot = true; $('#aum').textContent = 'Email me a new link'; } return; } resetToken = null; $('#aup').value = ''; au.classList.remove('on'); setMode('in'); await boot(); return; }
+      const j = await BB.api('/api/auth/' + (mode === 'in' ? 'login' : 'signup'), 'POST', b);
+      if (j.error) { $('#aur').textContent = j.error; return; }
+      $('#aup').value = ''; au.classList.remove('on'); await boot();
+    } finally { $('#aug').disabled = false; }
+  };
+
+  /* ---------- account menu ---------- */
+  const acct = $('#acctbtn'), menu = $('#acctmenu');
+  const setMenu = on => { menu.classList.toggle('on', on); acct.setAttribute('aria-expanded', on); if (on) { const f = menu.querySelector('button'); f && f.focus(); } };
+  acct.onclick = e => { e.stopPropagation(); setMenu(!menu.classList.contains('on')); };
+  document.addEventListener('click', e => { if (!e.target.closest('.acct')) setMenu(false); });
+  menu.addEventListener('keydown', e => { if (e.key === 'Escape') { setMenu(false); acct.focus(); } });
+  document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (!b) return; setMenu(false); BB.act(b.dataset.act); });
+  BB.act = function (k) {
+    if (k === 'invite') return BB.openInvite();
+    if (k === 'connect') return BB.openConnect ? BB.openConnect() : null;
+    if (k === 'perms') return BB.openPermsOverview ? BB.openPermsOverview() : null;
+    if (k === 'trial') return BB.go('#trial');
+    if (k === 'emergency') return openEmergency();
+    if (k === 'reset-workspace') return resetWorkspace();
+    if (k === 'signout') return signOut();
+  };
+  async function resetWorkspace() {
+    const me = await BB.api('/api/me');
+    const ids = BB.S.agents.filter(a => !a.harness && !a.hosted).map(a => a.id);
+    const box = BB.modal(`<h3>Fresh workspace</h3><p>This turns off your current bots and public receipt links, signs out old sessions, and starts empty onboarding. Your login and password stay the same. Old jobs and receipts are archived, not deleted.</p><p>Current bots: ${ids.map(id => esc(BB.agent(id).name)).join(', ') || 'none'}.</p><div class="acts"><button class="b ghost" data-close>Cancel</button><button class="b ink" id="reset-confirm">Start fresh workspace</button></div>`, {label:'Fresh workspace'});
+    box.querySelector('#reset-confirm').onclick = async () => {
+      box.querySelector('#reset-confirm').disabled = true;
+      const out = await BB.api('/api/auth/reset-workspace','POST',{confirmed:true,expectedWorkspace:me.legacy?'legacy':me.workspace,expectedAgentIds:ids});
+      if(out.error){BB.toast(out.error);box.querySelector('#reset-confirm').disabled=false;return;}
+      location.href='/hq';
+    };
+  }
+  async function signOut() { await fetch('/api/auth/logout', { method: 'POST' }); location.reload(); }
+
+  /* ---------- modal helper (focus trap, Escape, restore focus) ---------- */
+  let lastFocus = null, modalClose = null;
+  BB.modal = function (html, opts) {
+    opts = opts || {}; const m = $('#modal'), box = m.querySelector('.box');
+    lastFocus = document.activeElement; box.className = 'box' + (opts.wide ? ' wide' : '');
+    box.innerHTML = `<button class="x" type="button" aria-label="Close" data-close>${BB.ICON.x}</button>` + html;
+    m.setAttribute('aria-label', opts.label || 'Dialog'); m.classList.add('on'); modalClose = opts.onClose || null;
+    box.querySelectorAll('[data-close]').forEach(b => b.onclick = BB.closeModal);
+    requestAnimationFrame(() => { const f = box.querySelector(opts.focus || 'input,select,textarea,button:not([data-close])'); (f || box).focus && (f || box).focus(); });
+    return box;
+  };
+  BB.closeModal = function () { const m = $('#modal'); if (!m.classList.contains('on')) return; m.classList.remove('on'); if (modalClose) { const f = modalClose; modalClose = null; f(); } if (lastFocus && lastFocus.focus) lastFocus.focus(); };
+  $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') BB.closeModal(); });
+  $('#modal').addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.stopPropagation(); BB.closeModal(); return; }
+    if (e.key !== 'Tab') return; const f = $$('#modal .box button:not([disabled]),#modal .box input,#modal .box select,#modal .box textarea,#modal .box a[href]').filter(x => x.offsetParent); if (!f.length) return;
+    const a = f[0], z = f[f.length - 1]; if (e.shiftKey && document.activeElement === a) { e.preventDefault(); z.focus(); } else if (!e.shiftKey && document.activeElement === z) { e.preventDefault(); a.focus(); }
+  });
+
+  /* ---------- emergency stop: moved out of the bar into the account menu and the command palette ---------- */
+  function openEmergency() {
+    const S = BB.S || {}, as = BB.agents().filter(a => a.status === 'active'), allRevoked = BB.agents().length > 0 && !as.length;
+    const box = BB.modal(`<h3>Emergency stop</h3><p>Stops every bot at once. Nothing is deleted.</p>
+      <div class="stackf"><button class="b ${S.killed ? 'ink' : 'pri'} lg block" id="em-kill">${S.killed ? 'Resume all bots' : 'Pause all bots now'}</button>
+      <button class="b out lg block" id="em-rev">${allRevoked ? 'Restore every bot\'s access' : 'Revoke every bot\'s access'}</button>
+      <p class="meta">Pause blocks every action until you resume. Revoke also signs bots out; they need to reconnect after you restore access.</p></div>`, { label: 'Emergency stop', focus: '#em-kill' });
+    box.querySelector('#em-kill').onclick = async () => { await BB.api('/api/kill', 'POST', { on: !S.killed }); BB.closeModal(); BB.toast(S.killed ? 'Resumed. Bots can act again.' : 'Paused. No bot can act until you resume.'); BB.sync(true); };
+    const rev = box.querySelector('#em-rev');
+    rev.onclick = async () => {
+      if (!rev.dataset.arm) { rev.dataset.arm = 1; rev.textContent = 'Click again to confirm'; return; }
+      rev.disabled = true; for (const a of BB.agents()) await BB.api('/api/agents/' + a.id + '/' + (allRevoked ? 'restore' : 'revoke'), 'POST');
+      BB.closeModal(); BB.toast(allRevoked ? 'Access restored.' : 'Access revoked for every bot.'); BB.sync(true);
+    };
+  }
+  BB.openEmergency = openEmergency;
+  $('#resume').onclick = async () => { await BB.api('/api/kill', 'POST', { on: false }); BB.toast('Resumed. Bots can act again.'); BB.sync(true); };
+
+  /* ---------- type box: one message routes to the single best bot (scored history only, never a guess) ---------- */
+  const ask = $('#ask'), askin = $('#askin');
+  askin.addEventListener('input', () => ask.querySelector('button').disabled = !askin.value.trim());
+  ask.onsubmit = async e => {
+    e.preventDefault(); const raw = askin.value.trim(); if (!raw) return;
+    /* "@Name do this" assigns it straight to that bot, skipping routing */
+    let title = raw, assignee = null; const m = raw.match(/^@(\S+)\s+(.+)$/);
+    if (m) { const bot = BB.assignable().find(a => a.name.toLowerCase().replace(/\s+/g, '') === m[1].toLowerCase()); if (bot) { assignee = bot.id; title = m[2]; } }
+    ask.querySelector('button').disabled = true;
+    if(!assignee&&(/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)||BB.namedSegs&&BB.namedSegs(title))){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){ask.querySelector('button').disabled=false;return BB.reviewParts(title,plan);}}
+    const send = assignee ? { title, assignee } : { title, route: true };
+    /* pending is shown the moment Start is pressed; "queued" only after the server returns the task record. A failed send keeps the text and can be retried without a second task. */
+    const j = await (BB.work ? BB.work.send('/api/tasks', send, title) : BB.api('/api/tasks', 'POST', send));
+    if (j.error) { BB.toast('Not sent: ' + j.error + ' Your text is still here; try again.'); ask.querySelector('button').disabled = false; return; }
+    askin.value = '';
+    /* never say "Sent" without the catch: a bot that is not connected, needs reconnecting or is dark picks the job up later, not now */
+    const sendNote = b => { if (!b) return ''; const pr = BB.presence(b); if (pr === 'prepared' || pr === 'waiting') return ' It isn\'t connected yet - it picks the job up once connected.'; if (pr === 'reconnect') return ' It needs reconnecting first - the job waits until then.'; if (BB.wentDark(b)) return ' It went dark; the job starts when it\'s back.'; return ''; };
+    if (j.routed) { const ch = j.routed.chain && j.routed.chain.length ? ' Then ' + j.routed.chain.map(h => h.botName + (h.category ? ' (' + h.category + ')' : '')).join(', then ') + ' - planned, each hop fires on a real handoff.' : ''; BB.toast((j.routed.fallbackFrom ? j.routed.fallbackFrom.name + ' is asleep - sent to ' + j.routed.botName + ' instead.' : 'Sent to ' + j.routed.botName + (j.routed.named ? '' : ' (' + j.routed.category + ')') + '.') + sendNote(BB.agent(j.routed.botId)) + ch); BB.sync(true); BB.openInspector && BB.openInspector(j.routed.botId); }
+    else if (j.unrouted) { BB.toast(j.allAsleep ? 'Every bot is asleep right now. It\'s queued - the first bot to check in takes it.' : 'Couldn\'t route this. It\'s in your inbox, marked unrouted.' + (BB.assignable().length ? '' : ' Connect a bot and assign it there.')); BB.sync(true); }
+    else { BB.toast(assignee ? 'Sent to ' + BB.agent(assignee).name + '.' + sendNote(BB.agent(assignee)) : 'Added to your inbox. Pick a bot for it.' + (BB.assignable().length ? '' : ' Connect a bot first.')); BB.sync(true); }
+  };
+  BB.reviewParts=function(title,plan,brief){const box=BB.modal(`<h3>Review the parts</h3><p>${esc(plan.note)}</p><form id="parts-form"><div class="parts-plan">${plan.parts.map((p,i)=>`<label class="fld">Part ${i+1}<input class="in" data-part-title value="${esc(p.title)}" maxlength="120" required><small>${esc(p.reason)}</small><select class="in" data-part-bot><option value="">First available bot</option>${BB.assignable().filter(a=>!a.hosted&&!a.paused).map(a=>`<option value="${esc(a.id)}" ${a.id===p.assignee?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label>`).join('')}</div><p class="meta">Each part waits for the previous result. No bot-to-bot connection is needed. Nothing has started yet.</p><div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit">Start these parts</button></div></form>`,{label:'Review task parts'});box.querySelector('#parts-form').onsubmit=async e=>{e.preventDefault();const b=box.querySelector('[type=submit]');b.disabled=true;const titles=[...box.querySelectorAll('[data-part-title]')],bots=[...box.querySelectorAll('[data-part-bot]')];const parts=plan.parts.map((p,i)=>({...p,title:titles[i].value.trim(),assignee:bots[i].value||null}));const j=await (BB.work?BB.work.send('/api/tasks',{title,brief,orchestrate:true,parts},title):BB.api('/api/tasks','POST',{title,brief,orchestrate:true,parts}));b.disabled=false;if(j.error)return BB.toast(j.error);askin.value='';BB.closeModal();BB.toast('Parts queued. Each starts after the previous result.');await BB.sync(true);BB.go('#receipts/'+j.task.id);};};
+  BB.newJob = function () {
+    const box = BB.modal(`<h3>New job</h3><p>Describe what you want done. Pick a bot, or let Alter choose an awake bot.</p>
+      <form class="stackf" id="nj"><label class="fld">What should happen?<input class="in" id="nj-t" maxlength="120" required placeholder="Summarize this week's support tickets"></label>
+      <label class="fld">Details <small>optional</small><textarea class="in" id="nj-b" maxlength="1500" style="min-height:90px"></textarea></label>
+      <label class="fld">Who takes it<select class="in" id="nj-a"><option value="">Pick the best available bot</option>${BB.assignable().map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
+      <div class="acts"><button class="b ghost" type="button" data-close>Cancel</button><button class="b ink" type="submit">Add job</button></div></form>`, { label: 'New job' });
+    box.querySelector('#nj').onsubmit = async e => {
+      e.preventDefault();const title=$('#nj-t').value.trim(),brief=$('#nj-b').value.trim(),assignee=$('#nj-a').value||null;if(!assignee&&(/;|\bthen\b|\band (?:write|draft|review|check|research|compare|summarize|design|build|make)\b/i.test(title)||BB.namedSegs&&BB.namedSegs(title))){const plan=await BB.api('/api/tasks/plan','POST',{title});if(plan.parts&&plan.parts.length>1){BB.closeModal();return BB.reviewParts(title,plan,brief);}}
+      const j = await (BB.work ? BB.work.send('/api/tasks', {title,brief,assignee,route:!assignee}, title) : BB.api('/api/tasks', 'POST', {title,brief,assignee,route:!assignee}));
+      if (j.error) return BB.toast(j.error); BB.closeModal(); BB.toast('Job added.'); BB.sync(true);
+    };
+  };
+
+  /* ---------- crew pill + compact roster ---------- */
+  const crew = $('#crew'), roster = $('#roster');
+  function paintCrew() {
+    const as = BB.agents().filter(a => a.status !== 'revoked'); if (!as.length) { crew.hidden = true; roster.classList.remove('on'); return; } crew.hidden = false;
+    const sum = BB.teamSummary();
+    const fin = BB.finishedToday();
+    const finLine = fin.done > 0 ? `Your team finished ${fin.done} ${fin.done === 1 ? 'job' : 'jobs'} today.${fin.bad > 0 ? ` ${fin.bad} didn't finish.` : ''}` : (fin.bad > 0 ? `${fin.bad} ${fin.bad === 1 ? 'job' : 'jobs'} didn't finish today.` : '');
+    crew.innerHTML = `<span class="stack">${as.slice(0, 5).map((a, i) => BB.av(a, '', BB.glyph(a, -(i * .37)))).join('')}</span>` + (finLine ? `<p><b>${esc(finLine)}</b></p>` : `<p><b>${esc(sum.count)}</b> · ${esc(sum.parts.join(' · '))}</p>`);
+    crew.setAttribute('aria-label', sum.text + '. Open crew');
+    if (roster.classList.contains('on')) paintRoster();
+  }
+  function paintRoster() {
+    const as = BB.agents();
+    roster.innerHTML = `<h3>Crew <span>${as.length}</span></h3>` + as.map(a => { const hs = BB.honestStatus && !BB.isGhost(a) && BB.presence(a) !== 'revoked' ? BB.honestStatus(a) : null; return `<button class="r${hs ? ' bst' : ''}" type="button" data-bot="${a.id}"${hs ? ` data-s="${hs.s}"` : ''}>${BB.av(a)}<span class="t"><b>${esc(a.name)}</b>${hs ? `<span class="bst-line"><i class="bst-dot" aria-hidden="true"></i>${esc(hs.line)}</span>${hs.why ? `<span class="bst-why">${esc(hs.why)}</span>` : ''}` : `<small>${esc(BB.statusLine(a))}</small>`}</span>${hs && !(BB.pollSec(a) && BB.wentDark(a)) && !BB.goneDark(a) ? '' : BB.presence(a) === 'reconnect' ? '<span class="st need"><i></i></span>' : BB.pollSec(a) && BB.wentDark(a) ? '<span class="badge-late" title="Last accepted activity: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Late</span>' : BB.goneDark(a) ? '<span class="badge-dim" title="Last accepted activity: ' + esc(new Date(a.lastSeen).toLocaleString()) + '">Went dark</span>' : BB.isGhost(a) ? '' : `<span class="st sig-${BB.signal(a)}" data-signal="${BB.signal(a)}" title="${BB.SIGNAL_COPY[BB.signal(a)]}"><i></i></span>`}</button>`; }).join('') + `<button class="add" type="button" data-act="connect">${BB.ICON.plus} Connect a bot</button>`;
+    roster.querySelectorAll('[data-bot]').forEach(b => b.onclick = () => { setRoster(false); BB.openInspector && BB.openInspector(b.dataset.bot); });
+  }
+  function setRoster(on) { roster.classList.toggle('on', on); crew.setAttribute('aria-expanded', on); if (on) paintRoster(); }
+  crew.onclick = e => { e.stopPropagation(); setRoster(!roster.classList.contains('on')); };
+  document.addEventListener('click', e => { if (!e.target.closest('#roster,#crew')) setRoster(false); });
+  /* round M: jobs finished today, counted as runs by honest status (a plan is one job; only fully done counts as finished; partial, failed and stopped count separately) */
+  BB.finishedToday = () => { const d0 = new Date(); d0.setHours(0, 0, 0, 0); return window.BBWork ? BBWork.finishCount(BB.tasks(), d0.getTime()) : { done: BB.tasks().filter(t => t.status === 'done' && !t.synthetic && Date.parse(t.finishedAt) >= d0.getTime()).length, bad: 0 }; };
+  /* round M: three example chips that fill the type box. Prefer the owner's own recent job titles. */
+  const EXAMPLES = ['Write this week\u2019s memo', 'Find three competitors', 'Draft a launch email'];
+  function paintChips() {
+    const el = $('#chips'); if (!el) return;
+    const seen = new Set(), mine = [];
+    BB.tasks().slice().sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt))).forEach(t => { const k = String(t.title || '').trim(); if (k && k.length <= 48 && !t.parent && !seen.has(k.toLowerCase())) { seen.add(k.toLowerCase()); mine.push(k); } });
+    const list = mine.concat(EXAMPLES.filter(e => !seen.has(e.toLowerCase()))).slice(0, 3), key = list.join('|');
+    if (el.dataset.k === key) return; el.dataset.k = key;
+    el.innerHTML = list.map(t => `<button class="chip" type="button">${esc(t)}</button>`).join('');
+    el.querySelectorAll('.chip').forEach(c => c.onclick = () => { askin.value = c.textContent; askin.dispatchEvent(new Event('input')); askin.focus(); });
+  }
+  /* round M: three-tip welcome tour, shown once per owner (localStorage alter.tour). Skip ends it too. */
+  const TIPS = [['#crew', 'This is your team', 'Every bot you connect works here. Hover one to see what it is doing.'], ['#ibtn', 'Things wait for you here', 'Anything that needs your OK shows up in the Inbox, and on the tray.'], ['#ask', 'Ask here', 'Type what you want done. The right bot picks it up.']];
+  function tour(n) {
+    BB.$$('.tour,.spot').forEach(e => e.remove());
+    if (n >= TIPS.length) { try { localStorage.setItem('alter.tour', '1'); } catch (e) {} return; }
+    const [sel, h, d] = TIPS[n], t = $(sel); if (!t || !t.offsetParent) return tour(n + 1);
+    const r = t.getBoundingClientRect(), sp = document.createElement('div'); sp.className = 'spot';
+    Object.assign(sp.style, { left: (r.left - 6) + 'px', top: (r.top - 6) + 'px', width: (r.width + 12) + 'px', height: (r.height + 12) + 'px' });
+    const c = document.createElement('div'); c.className = 'tour'; c.setAttribute('role', 'dialog'); c.setAttribute('aria-label', h);
+    c.innerHTML = `<h3>${esc(h)}</h3><p>${esc(d)}</p><div class="row2"><small>${n + 1} of 3</small><button class="skip" type="button">Skip</button><button class="nx" type="button">${n === 2 ? 'Got it' : 'Next'}</button></div>`;
+    document.body.append(sp, c);
+    const cw = 300, below = r.top < innerHeight / 2;
+    c.style.left = Math.max(12, Math.min(innerWidth - cw - 12, r.left + r.width / 2 - cw / 2)) + 'px';
+    if (below) c.style.top = (r.bottom + 14) + 'px';
+    else {
+      let gap = 14; const ch = $('#chips');
+      if (ch) { const cr = ch.getBoundingClientRect(), cardH = c.offsetHeight || 0;
+        if (r.top - gap > cr.top && r.top - gap - cardH < cr.bottom && cr.top - 12 - cardH >= 12) gap = (r.top - cr.top) + 12; }
+      c.style.bottom = (innerHeight - r.top + gap) + 'px';
+    }
+    c.querySelector('.nx').onclick = () => tour(n + 1); c.querySelector('.skip').onclick = () => tour(9); c.querySelector('.nx').focus();
+  }
+  let toured = false;
+  function maybeTour() {
+    if (toured || !BB.S || !BB.agents().length || location.hash.replace(/^#/, '').split('/')[0] !== 'floor' && location.hash) return;
+    let seen = null; try { seen = localStorage.getItem('alter.tour'); } catch (e) { seen = '1'; }
+    toured = true; if (!seen) setTimeout(() => tour(0), 900);
+  }
+
+
+  /* ---------- top bar state ---------- */
+  function paintTop() {
+    const n = BB.onYou().length;
+    [['#icount', n], ['#tcount', n]].forEach(([s, v]) => { const e = $(s); if (!e) return; e.hidden = !v; e.textContent = v; });
+    /* round M: say it in words. "N need you" + vermilion dot only when something waits; otherwise a quiet "M running" */
+    const nw = $('#nw'), run = BB.teamSummary().running;
+    if (nw) { nw.className = 'nw' + (n ? '' : ' q'); nw.hidden = !n && !run; nw.innerHTML = n ? '<i aria-hidden="true"></i>' + n + ' need you' : run + ' running'; }
+    const tm = $('.top .mark'); if (tm) tm.classList.toggle('idle', !n);
+    $('#ibtn').setAttribute('aria-label', 'Inbox' + (n ? ', ' + n + ' on you' : ''));
+    $('#pausedbar').hidden = !(BB.S && BB.S.killed);
+    /* round 3 liveness, kept: a connected bot with no accepted activity for 60s "went dark"; pollers and Muse carry their own honest status instead */
+    const dark = BB.agents().filter(a => BB.goneDark(a)), bar = $('#darkbar');
+    bar.hidden = !dark.length || !!(BB.S && BB.S.killed);
+    if (dark.length) bar.querySelector('span').textContent = dark.map(a => a.name).join(', ') + ' went dark: no accepted activity for 60s. Authorization may still be saved.';
   }
   /* unrouted marker: type-box jobs no bot could take stay visible on the floor until assigned */
   function paintUnrouted() {
