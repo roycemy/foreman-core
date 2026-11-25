@@ -1,4 +1,5 @@
 /* Black Box vNext · floor (A, H, I, J). Full bleed, no signs or labels: bots are just figures.
+
    Art: /hq/floor.svg environment + isometric props + per-bot figures, all in the floor's projection
    (viewBox 60 40 1320 750, iso K=5.2, origin 720,96). Placement is presentation only: every state comes from BB.S. */
 (function () {
@@ -260,7 +261,7 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
   function ensure(a, i) {
     let r = F[a.id]; if (r) return r;
     const el = document.createElement('div'); el.className = 'ch'; el.tabIndex = 0; el.setAttribute('role', 'button'); el.dataset.id = a.id;
-    el.innerHTML = '<div class="body"><div class="avs"></div></div><span class="floor-bot-label"><b></b><small></small></span>'; el.style.setProperty('--bd', (-(BB.hash(a.id) % 32) / 10) + 's'); el.style.setProperty('--fig', (fw * (BB.phone() ? .062 : .054)) + 'px');
+    el.innerHTML = '<div class="body"><div class="avs"></div></div><span class="floor-bot-label"><b></b><small></small><i class="lprog" hidden><b></b></i></span>'; el.style.setProperty('--bd', (-(BB.hash(a.id) % 32) / 10) + 's'); el.style.setProperty('--fig', (fw * (BB.phone() ? .062 : .054)) + 'px');
     el.addEventListener('click', () => { if (BB.sleeping && BB.sleeping(BB.agent(a.id)) && BB.reconnect) BB.reconnect(a.id); else if(BB.openInspector) BB.openInspector(a.id); });
     el.addEventListener('mouseenter', () => liveTip(a.id, true)); el.addEventListener('mouseleave', () => liveTip(a.id, false));
     el.addEventListener('focus', () => liveTip(a.id, true)); el.addEventListener('blur', () => liveTip(a.id, false));
@@ -281,6 +282,9 @@ function figureSVG(a,opts){opts=opts||{};const e=opts.cast!=null?BB.CAST[opts.ca
       r.el.style.setProperty('--label-shift',labelShift+'px');
       r.el.querySelector('.floor-bot-label b').textContent=a.name;
       r.el.querySelector('.floor-bot-label small').textContent=BB.isGhost(a)?'Not connected':a.status==='revoked'?'Access revoked':BB.presence(a)==='reconnect'?'Reconnect':['dark','late'].includes(s.kind)?'No recent activity':s.kind==='msg'?'Acts when messaged':BB.signal(a)==='working'&&BB.runningTask(a)?'Working':a.paused||BB.S.killed?'Paused':'Idle';
+      /* label progress bar: real steps of the run this bot's current job belongs to; hidden for single-step jobs */
+      const pt=BB.runningTask(a)||BB.tasks().filter(x=>x.assignee===a.id&&x.status==='queued').sort((x,y)=>String(x.createdAt).localeCompare(String(y.createdAt)))[0]||null, pg=pt&&window.BBWork?BBWork.runProgress(BB.tasks(),pt.id):null;
+      const lp=r.el.querySelector('.lprog'); if(pg){lp.hidden=false;lp.firstChild.style.width=Math.round(pg.done/pg.total*100)+'%';lp.setAttribute('aria-label',pg.done+' of '+pg.total+' steps done');}else lp.hidden=true;
       r.el.setAttribute('aria-label', a.name + ': ' + BB.statusLine(a) + (BB.sleeping && BB.sleeping(a) ? '. Open connection setup' : '. Open details'));
       const moved = r.tk !== t.k || !r.tp || Math.abs(r.tp[0] - t.p[0]) + Math.abs(r.tp[1] - t.p[1]) > .3;
       r.tk = t.k; r.tp = t.p;
