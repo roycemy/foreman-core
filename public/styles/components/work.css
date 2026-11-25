@@ -1,4 +1,5 @@
 /* Work control, Floor notes and result-first receipts. App tokens only; motion is limited to one short pulse and is off under reduced motion. */
+
 .wbtn{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:var(--r-control);font-weight:500;border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font:inherit;font-weight:500;cursor:pointer;white-space:nowrap;max-width:100%}
 .wbtn:focus-visible,.wpanel button:focus-visible,.wpanel a:focus-visible{outline:none;box-shadow:var(--sh-focus)}
 .wbtn .wdot{width:8px;height:8px;border-radius:50%;background:var(--line-2);flex:none}
@@ -92,3 +93,8 @@
 @media (max-width:760px){.wpanel{max-height:calc(100dvh - 72px)}.wi{padding:14px}.wlink,.wtab,.wclose{min-height:40px}.wlink{display:inline-flex;align-items:center}.fx.wnote{max-width:124px;font-size:10px;padding:4px 7px;line-height:1.25}}
 
 #v-floor .floor-work{position:absolute;right:16px;top:calc(env(safe-area-inset-top,0px) + 16px);z-index:30}
+.wprog{height:4px;margin:6px 0 2px;border-radius:2px;background:#12121214;overflow:hidden}
+.wprog i{display:block;height:100%;background:#121212;border-radius:2px;transition:width .6s ease}
+.wprog.ind i{width:40%;animation:wprog-slide 1.4s ease-in-out infinite}
+@keyframes wprog-slide{0%{margin-left:0}50%{margin-left:60%}100%{margin-left:0}}
+@media(prefers-reduced-motion:reduce){.wprog.ind i{animation:none;width:100%;opacity:.3}}
