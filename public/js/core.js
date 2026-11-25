@@ -1,4 +1,5 @@
 /* Black Box vNext · core: API client, live state store, identity, presence and copy helpers.
+
    Every screen renders from BB.S (the server's /api/state plus /api/money and /api/cards). Nothing here invents data. */
 (function () {
   'use strict';
@@ -211,6 +212,8 @@
     let s = out.join(' ').replace(/[.,:;·…-]+$/, ''); if (s.length > 32) { s = s.slice(0, 32).replace(/\s+\S*$/, ''); more = true; } if (!s) return ''; return s.charAt(0).toUpperCase() + s.slice(1) + (more ? '…' : '');
   };
   BB.runningTask = a => BB.tasks().filter(t => t.assignee === a.id && t.status === 'running').sort((x, y) => String(y.startedAt || y.createdAt).localeCompare(String(x.startedAt || x.createdAt)))[0] || null;
+  /* true when the text addresses two or more connected bots with 'Name:' segments, so the parts planner should review it */
+  BB.namedSegs = t => { const as = BB.agents ? BB.agents() : []; let n = 0; for (const a of as) { const nm = String(a.name || '').trim(); if (!nm) continue; const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); if (new RegExp('\\b' + esc(nm) + '\\s*:', 'i').test(t)) { n++; continue; } const f = nm.split(/\s+/)[0]; if (f.length >= 3 && f !== nm && new RegExp('\\b' + esc(f) + '\\s*:', 'i').test(t)) n++; } return n >= 2; };
   /* Provider capabilities drive both the setup prompt (connect.js) and honest pickup labels here: what a bot type can do out of the box, not what we wish it did. queueWatch/emailWake describe pickup paths the bot sets up itself from the paste; nothing is enabled server-side. */
   BB.PROVIDER_CAPS = {
     instinct: { mcp: true, emailWake: true, queueWatch: false, browserPairing: true },
