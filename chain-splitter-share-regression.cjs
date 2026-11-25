@@ -132,5 +132,15 @@ assert(api.includes('|| t0.assignedBy ||'), 'the sweep never moves a deliberatel
   const desc = api.match(/foreman_next_task', description: '([^']+)'/);
   assert(desc && /without asking the owner/.test(desc[1]) && /until nothing is queued/.test(desc[1]), 'the MCP tool description itself says drain the queue');
 
+  /* --- 6: cheap standing-watch probe for bots with no free push channel (Muse on any plan) --- */
+  assert(/name:'foreman_queue_probe',description:'Cheapest possible standing-watch check/.test(api), 'MCP exposes the probe tool');
+  assert(/path === '\/gateway\/queue-probe' && req\.method === 'GET'/.test(api), 'REST exposes the probe');
+  assert((api.match(/\/gateway\/queue-probe/g) || []).length >= 3, 'probe registered as a poll path for presence');
+  assert(/foreman_queue_probe[\s\S]{0,220}queueGuidance/.test(api), 'probe reuses the queue-drain guidance');
+  const conn = fs.readFileSync('public/js/connect.js', 'utf8');
+  assert(conn.includes('foreman_queue_probe'), 'the Muse setup message teaches the cheap probe, not 10s claims');
+  assert(!conn.includes('runs every 10 seconds'), 'the expensive 10-second watch instruction is gone');
+  assert(conn.includes('free plan use every 15-30 minutes'), 'the setup message is plan-aware');
+
   console.log('chain-splitter-share regression: ALL PASS');
 })().catch(e => { console.error(e); process.exit(1); });
