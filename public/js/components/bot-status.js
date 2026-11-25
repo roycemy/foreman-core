@@ -11,8 +11,8 @@ const WHY={session_expired:'Its session expired',token_reused:'Its renewal token
 const ago=iso=>{const m=Math.round((Date.now()-Date.parse(iso))/60000);return !Number.isFinite(m)?'never':m<1?'just now':m+' min ago'};
 const first=n=>String(n||'It').split(/\s+/)[0];
 BB.checkInWhy=function(a){const ps=BB.pollSec?BB.pollSec(a):0;
- if(ps&&a.instantWake)return first(a.name)+' has instant wake on; backup check every '+Math.round(ps/60)+' min';
- if(ps)return first(a.name)+' checks in about every '+Math.round(ps/60)+' min';
+ if(ps&&a.instantWake)return first(a.name)+' has instant wake on; backup check every '+(BB.fmtEvery?BB.fmtEvery(ps):(ps<60?Math.round(ps)+' sec':Math.round(ps/60)+' min'));
+ if(ps)return first(a.name)+' checks in about every '+(BB.fmtEvery?BB.fmtEvery(ps):(ps<60?Math.round(ps)+' sec':Math.round(ps/60)+' min'));
  if((a.providerId||'').toLowerCase()==='muse')return first(a.name)+' checks in when you message it';
  return '';};
 /* Offline = connected on paper but silent 30+ min (Muse, hosted, revoked and not-yet-connected bots never count). */
