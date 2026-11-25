@@ -1,4 +1,5 @@
 /* Work control (top right): active and finished work in one panel, honest about what is known.
+
    Everything shown comes from BB.S through BBWork (work-model.js). Task titles, bot names, reasons and results are untrusted text: every
    string is escaped here, and no HTML from the server is ever inserted. Nothing here sends email, push or browser notifications. */
 (function () {
@@ -95,7 +96,9 @@
       const unconf = i.phase === 'queued' && i.detail.includes('Pickup not confirmed');
       const meta = [i.part && i.part.n ? 'Part ' + i.part.n + ' of ' + i.part.of + (i.part.title ? ': ' + M.short(i.part.title, 40) : '') : null, i.bot, i.ageMs != null && i.phase === 'queued' ? 'queued ' + M.ago(0, i.ageMs) : null, unconf ? 'pickup not confirmed' : null].filter(Boolean).join(' · ');
       const open = !!ui.rowOpen[i.id], extra = i.failedSoFar ? `<p class="wi-warn">${i.failedSoFar} earlier part${i.failedSoFar === 1 ? '' : 's'} did not finish.</p>` : '';
-      return `<li class="wi" data-run="${esc(i.id)}"><div class="wi-top"><b class="wi-title">${esc(i.title)}</b><span class="wchip st-${esc(i.phase)}">${esc(i.label)}</span></div>${meta ? `<p class="wi-meta">${esc(meta)}</p>` : ''}${extra}
+      /* a bar only where real steps exist (done of total); a single running job gets an indeterminate bar that claims no fraction */
+      const bar = i.progress ? `<div class="wprog" role="progressbar" aria-valuemin="0" aria-valuemax="${i.progress.total}" aria-valuenow="${i.progress.done}" title="${i.progress.done} of ${i.progress.total} steps done"><i style="width:${Math.round(i.progress.done / i.progress.total * 100)}%"></i></div>` : (i.phase === 'running' ? '<div class="wprog ind" role="progressbar" aria-label="In progress; no step count to show"><i></i></div>' : '');
+      return `<li class="wi" data-run="${esc(i.id)}"><div class="wi-top"><b class="wi-title">${esc(i.title)}</b><span class="wchip st-${esc(i.phase)}">${esc(i.label)}</span></div>${meta ? `<p class="wi-meta">${esc(meta)}</p>` : ''}${bar}${extra}
         <ul class="wi-detail">${i.detail.filter(d => !(unconf && d === 'Pickup not confirmed')).slice(0, open ? 8 : 2).map(d => `<li>${esc(d)}</li>`).join('')}</ul>
         <div class="wi-act">${i.detail.filter(d => !(unconf && d === 'Pickup not confirmed')).length > 2 ? `<button class="wlink" type="button" data-wmore="${esc(i.id)}" data-fk="more-${esc(i.id)}" aria-expanded="${open}">${open ? 'Fewer details' : 'All details'}</button>` : ''}<a class="wlink" href="#receipts/${encodeURIComponent(i.id)}" data-wgo data-fk="open-${esc(i.id)}">Open</a></div></li>`;
     }).join('');
