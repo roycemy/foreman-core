@@ -318,10 +318,15 @@ async function execute(agent, action, params, reqId) {
     if (!to || to.id === agent.id) throw new Error('unknown target agent'); if (to.status !== 'active') throw new Error('target agent is not active');
     // Retry-safe: a repeat of the same handoff (same task, same target) returns the child it already made instead of a second job and wake.
     if (t.childId && t.handedTo === to.id) { const prev = await getJ('fm:task:' + t.childId); if (prev) return { summary: `Already handed "${t.title}" to ${to.name} (task ${prev.id})`, data: { child_task_id: prev.id, to: to.name, duplicate: true } }; }
-    const child = await newTask({ title: String(params.title || t.title).slice(0, 120), brief: String(params.brief || '').slice(0, 1500), assignee: to.id, parentId: t.id, context: t.result || '', createdBy: agent.id });
+    // Scope pin + no silent truncation: the owner-typed root request leads the child's brief, and a brief that does not fit
+    // 1,500 chars rides in full in the child's context (4,000) instead of being cut. The sender hears when it spilled.
+    let root = t, depth = 0; while (root.parentId && depth++ < 10) { const up = await getJ('fm:task:' + root.parentId); if (!up) break; root = up; }
+    const pin = 'Scope, from the owner\'s original request ("' + String(root.title || '').slice(0, 120) + '"): do only this part as the owner described. Do not send, queue, or widen scope beyond it.\n\n';
+    const fullBrief = String(params.brief || ''), spilled = pin.length + fullBrief.length > 1500;
+    const child = await newTask({ title: String(params.title || t.title).slice(0, 120), brief: (pin + fullBrief).slice(0, 1500), assignee: to.id, parentId: t.id, context: (spilled ? pin + fullBrief + '\n\n--- Earlier context from ' + agent.name + ' ---\n' + String(t.result || '') : String(t.result || '')).slice(0, 4000), createdBy: agent.id });
     t.handedTo = to.id; t.childId = child.id; await setJ('fm:task:' + t.id, t);
     await event(agent.id, 'handoff', `Handed "${t.title}" to ${to.name}`, { kind: 'HANDOFF', toAgentId: to.id, taskId: t.id, childTaskId: child.id });
-    return { summary: `Handed task "${t.title}" to ${to.name} (new task ${child.id}) with context from ${agent.name}`, data: { child_task_id: child.id, to: to.name } };
+    return { summary: `Handed task "${t.title}" to ${to.name} (new task ${child.id}) with context from ${agent.name}` + (spilled ? '. The brief ran past 1,500 characters; its full text is in the new task\'s context, nothing was lost.' : ''), data: { child_task_id: child.id, to: to.name, ...(spilled ? { brief_in_context: true } : {}) } };
   }
   throw new Error('unknown action');
 }
@@ -646,7 +651,7 @@ async function generalRoutingPick(){
 /* Small deterministic planner: split explicit steps, never claim model reasoning. Owner reviews
    each part and assignment before any task is queued. Dependencies run in order. */
 function taskParts(text){return String(text||'').trim().split(/\s*(?:;|\n|\bthen\b|\band (?=(?:write|draft|review|check|research|compare|summarize|summarise|design|build|make)\b))\s*/i).map(x=>x.replace(/^(?:and|then)\s+/i,'').trim()).filter(Boolean);}
-async function planTaskParts(body){const text=String(body.title||'').trim(),parts=taskParts(text);if(parts.length>4||parts.some(p=>p.length>120))return {parts:[],method:'explicit-steps',note:'Use 2 to 4 short explicit steps. Nothing has been queued.'};if(parts.length<2)return {parts:[],method:'explicit-steps',note:'One task is enough. No clear separate steps were found.'};const out=[];for(const title of parts){const cat=categorizeAll(title)[0]?.category||null,pick=cat?await freshRoutingPick(cat):null,fallback=pick?.picked?null:await generalRoutingPick(),bot=pick?.picked||fallback?.picked;out.push({title:title.slice(0,120),category:cat,assignee:bot?.id||null,botName:bot?.name||null,reason:pick?.picked?(pick.advice?.suggested?.reason||'Awake bot for '+cat):fallback.reason});}return {parts:out,method:'explicit-steps',note:'Rule-based split of your explicit steps, not AI reasoning. Parts run in order; the same bot can do several. Review each assignment.'};}
+async function planTaskParts(body){const text=String(body.title||'').trim(),parts=taskParts(text);if(parts.length>4||parts.some(p=>p.length>120))return {parts:[],method:'explicit-steps',note:'Use 2 to 4 short explicit steps. Nothing has been queued.'};if(parts.length<2)return {parts:[],method:'explicit-steps',note:'One task is enough. No clear separate steps were found.'};const out=[],agents=await listAgents();for(const title of parts){const named=matchNamedBots(title,agents);if(named.length){out.push({title:title.slice(0,120),category:null,assignee:named[0].id,botName:named[0].name,reason:'You named '+named[0].name+'.'});continue;}const cat=categorizeAll(title)[0]?.category||null,pick=cat?await freshRoutingPick(cat):null,fallback=pick?.picked?null:await generalRoutingPick(),bot=pick?.picked||fallback?.picked;out.push({title:title.slice(0,120),category:cat,assignee:bot?.id||null,botName:bot?.name||null,reason:pick?.picked?(pick.advice?.suggested?.reason||'Awake bot for '+cat):fallback.reason});}return {parts:out,method:'explicit-steps',note:'Rule-based split of your explicit steps, not AI reasoning. Parts run in order; the same bot can do several. Review each assignment.'};}
 async function createTaskParts(body,clientRef){const parts=body.parts;if(!Array.isArray(parts)||parts.length<2||parts.length>4||parts.some(p=>!p||!String(p.title||'').trim()||String(p.title).length>120))return {status:400,body:{error:'Review 2 to 4 titled parts'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}};for(const p of parts)if(p.assignee){const a=await getJ('fm:agent:'+p.assignee);if(!a||a.status!=='active'||a.paused||a.hosted||a.harness)return {status:400,body:{error:'Choose active external bots only'}};}
  const parent=await newTask({...(clientRef?{id:clientRef}:{}),title:body.title,brief:body.brief,hold:true});if(parent.duplicate)return {status:200,body:{task:parent,duplicate:true}};parent.orchestration=true;parent.status='waiting';parent.startedAt=now();parent.partIds=[];await setJ('fm:task:'+parent.id,parent);
  for(let i=0;i<parts.length;i++){const p=parts[i],t=await newTask({title:p.title,brief:'Part '+(i+1)+' of '+parts.length+'. Only do this part. Original request: '+String(body.title||'')+'\n'+String(body.brief||''),parentId:parent.id,assignee:p.assignee||null,category:p.category,context:'Part of: '+body.title,hold:true});t.partIndex=i;t.dependsOn=i?parent.partIds[i-1]:null;t.status='waiting';t.assignedBy='owner';await setJ('fm:task:'+t.id,t);parent.partIds.push(t.id);}
@@ -801,12 +806,18 @@ async function stopTask(id){return withJobLock(id,async()=>{
 async function jobDetail(id){
  const t=await getJ('fm:task:'+id);if(!t)return null;
  const parse=a=>(a||[]).filter(Boolean).map(x=>JSON.parse(x));
- const kids=t.orchestration?(await Promise.all(t.partIds.map(id=>getJ('fm:task:'+id)))).filter(Boolean):(await listTasks()).filter(x=>x.parentId===id);
+ /* children of a handoff chain are the whole descendant tree, not only the first hop: one chain reads as one job. */
+ let kids;
+ if(t.orchestration)kids=(await Promise.all(t.partIds.map(id=>getJ('fm:task:'+id)))).filter(Boolean);
+ else{const all=await listTasks(),byParent=new Map();for(const x of all){if(!x.parentId)continue;if(!byParent.has(x.parentId))byParent.set(x.parentId,[]);byParent.get(x.parentId).push(x);}
+  kids=[];const q=[...(byParent.get(id)||[])],seenIds=new Set([id]);while(q.length){const k=q.shift();if(seenIds.has(k.id))continue;seenIds.add(k.id);kids.push(k);q.push(...(byParent.get(k.id)||[]));}
+  kids.sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)));}
  const ids=new Set([id,...kids.map(k=>k.id)]);
  const events=parse(await r(['LRANGE','fm:events',0,299])).filter(e=>ids.has(e.taskId)||ids.has(e.childTaskId)).reverse();
- const reqIds=await r(['SMEMBERS','fm:taskreqs:'+id]);const requests=reqIds.length?parse(await r(['MGET',...reqIds.map(x=>'fm:req:'+x)])).map(pub):[];
+ /* receipts and approvals from every task in the chain land on the root's one receipt */
+ const reqIds=[...new Set((await Promise.all([...ids].map(i=>r(['SMEMBERS','fm:taskreqs:'+i])))).flat())];const requests=reqIds.length?parse(await r(['MGET',...reqIds.map(x=>'fm:req:'+x)])).map(pub):[];
  for(const q of requests)if(q.action==='notes.write'&&q.result&&q.result.note_id){const n=await getJ('fm:note:'+q.result.note_id);if(n&&n.deleted)q.noteDeleted=true;}
- const receipts=parse(await r(['LRANGE','fm:receipts',0,299])).filter(x=>x.taskId===id).reverse();
+ const receipts=parse(await r(['LRANGE','fm:receipts',0,299])).filter(x=>ids.has(x.taskId)).reverse();
  const agents=await listAgents(),name=x=>(agents.find(a=>a.id===x)||{}).name||'A bot';
  const [taskOut, ...kidsOut] = await withJobSpend([t, ...kids]);
  const pilot=t.pilot?await pilotView(t.pilot.id):null;
