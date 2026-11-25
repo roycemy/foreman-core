@@ -32,3 +32,5 @@ Other docs: `INTERCEPTION.md`, `ISSUING-TEST.md`, `docs/`.
 ## Join the waitlist
 
 https://www.alterhq.app/waitlist
+
+<!-- redeploy: pick up env update for Muse wake allowlist (2026-11-25) -->
