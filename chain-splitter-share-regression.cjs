@@ -140,7 +140,13 @@ assert(api.includes('|| t0.assignedBy ||'), 'the sweep never moves a deliberatel
   const conn = fs.readFileSync('public/js/connect.js', 'utf8');
   assert(conn.includes('foreman_queue_probe'), 'the Muse setup message teaches the cheap probe, not 10s claims');
   assert(!conn.includes('runs every 10 seconds'), 'the expensive 10-second watch instruction is gone');
-  assert(conn.includes('free plan use every 15-30 minutes'), 'the setup message is plan-aware');
+  assert(!conn.includes('Create one scheduled task'), 'Muse setup no longer teaches scheduled polling (Meta declines it)');
+  assert(conn.includes('INSTANT WAKE SETUP'), 'Muse setup leads with email instant wake');
+  assert(conn.includes('wakeNonce'), 'Muse setup teaches nonce verification');
+  const core = fs.readFileSync('public/js/core.js', 'utf8');
+  assert(core.includes('Run your Alter queue now'), 'nudgeText is the run-my-queue drain instruction');
+  const inbox = fs.readFileSync('public/js/inbox.js', 'utf8');
+  assert(inbox.includes('data-runqueue'), 'asleep card carries the Run my queue button');
 
   console.log('chain-splitter-share regression: ALL PASS');
 })().catch(e => { console.error(e); process.exit(1); });
