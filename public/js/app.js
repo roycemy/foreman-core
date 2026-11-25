@@ -1,5 +1,4 @@
 /* Black Box vNext · shell: sign-in, routing, top bar, account menu, emergency stop, composer, crew pill.
-
    Panels (inbox, inspector), receipts, card, connect and the command palette register themselves on BB. */
 (function () {
   'use strict';
