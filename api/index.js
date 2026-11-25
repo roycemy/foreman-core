@@ -557,6 +557,8 @@ async function taskForAgent(agent,id) {
   return null;
 }
 
+// A long prompt must survive the 120-char display cap on titles: the full text rides in brief (cap 1500) so no instruction is silently lost.
+function preserveFullPrompt(body){ if(body&&!String(body.brief||'').trim()&&String(body.title||'').length>120) body.brief=String(body.title); return body; }
 async function newTask(o) { const t = { id: o.id || rid('task'), title: String(o.title || 'Untitled').slice(0, 120), brief: String(o.brief || '').slice(0, 1500), assignee: o.assignee || null, status: o.hold ? 'waiting' : 'queued', parentId: o.parentId || null, context: String(o.context || '').slice(0, 4000), createdBy: o.createdBy || 'owner', createdAt: now(), result: null, ...(o.category ? { category: o.category } : {}), ...(o.routingReason ? { routingReason: o.routingReason } : {}), ...(o.unrouted ? { unrouted: true } : {}), ...(o.allAsleep ? { allAsleep: true } : {}), ...(o.assignee ? { assignedAt: now() } : {}), ...(o.assignedBy ? { assignedBy: o.assignedBy } : {}), ...(o.handoffPlan && o.handoffPlan.length ? { handoffPlan: o.handoffPlan } : {}) };
   bust();
   // A caller-supplied id (the owner's clientRef) makes creation retry-safe: SET NX, and a repeat returns the task that already exists,
@@ -2491,7 +2493,7 @@ async function routes(req, res, path, body, agentPre) {
     {const sm=path.match(/^\/agents\/(\w+)\/permission-scope$/);if(sm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await setJobScope(sm[1],body));}}
     {const gm=path.match(/^\/tasks\/(\w+)\/grant$/);if(gm&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await grantJob(gm[1],body));}}
     if(path==='/tasks/plan'&&req.method==='POST'){if(foreign())return res.status(403).json({error:'origin'});return res.json(await planTaskParts(body));}
-    if (path === '/tasks' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); const clientRef = /^[A-Za-z0-9_-]{8,64}$/.test(String(body.clientRef || '')) ? 'task_' + sha('ref|' + wsId() + '|' + body.clientRef).slice(0, 24) : null;
+    if (path === '/tasks' && req.method === 'POST') { if(foreign())return res.status(403).json({error:'origin'}); if (!String(body.title || '').trim()) return res.status(400).json({ error: 'title required' }); preserveFullPrompt(body); const clientRef = /^[A-Za-z0-9_-]{8,64}$/.test(String(body.clientRef || '')) ? 'task_' + sha('ref|' + wsId() + '|' + body.clientRef).slice(0, 24) : null;
       if (clientRef) { const ex = await getJ('fm:task:' + clientRef); if (ex) return res.json({ task: ex, duplicate: true }); }
       await track('first_task_started');if(body.orchestrate===true){const out=await createTaskParts(body,clientRef);return res.status(out.status).json(out.body);}
       let routed = null, category = null, routingReason = null, unrouted = false, allAsleep = false, assignee = body.assignee || null, handoffPlan = null, brief = body.brief;
