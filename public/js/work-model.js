@@ -18,7 +18,9 @@
   const agoText = (from, now) => { const a = ago(from, now); return a === 'just now' ? a : a ? a + ' ago' : ''; };
 
   /* a part: its parent is present, is a plan, and lists it. A part whose plan is gone from state is shown as its own item rather than hidden. */
-  function partParent(t, by) { const p = t && t.parentId && by.get(t.parentId); return p && p.orchestration && (p.partIds || []).includes(t.id) ? p : null; }
+  /* the root of a task's chain: plan parts fold under their plan, handoff children under the job that started the chain,
+     so a multi-bot chain reads as ONE run with ONE receipt. A child whose parent aged out of state stands alone. */
+  function partParent(t, by) { if (!t || !t.parentId) return null; let cur = t, root = null, n = 0; while (cur.parentId && by.get(cur.parentId) && n++ < 10) { cur = by.get(cur.parentId); root = cur; } return root; }
 
   /* task-level phase from the stored status and the few markers the server writes */
   function phaseOf(t) {
@@ -31,11 +33,13 @@
 
   /* run status. A plan is done only when every part is done; partial means some finished and some did not. */
   function runStatus(run, parts, missing) {
-    if (!run.orchestration) { const p = phaseOf(run); return p === 'notrun' ? 'failed' : p === 'dismissed' ? 'stopped' : p; }
+    if (!run.orchestration && !parts.length) { const p = phaseOf(run); return p === 'notrun' ? 'failed' : p === 'dismissed' ? 'stopped' : p; }
     if (missing) { const s = run.status; return s === 'done' ? 'done' : s === 'failed' ? 'failed' : s === 'waiting' ? 'waiting' : 'running'; } // parts aged out of state: the plan's own status is all there is
-    const ph = parts.map(phaseOf), done = ph.filter(x => x === 'done').length, bad = ph.filter(x => ['failed', 'stopped', 'notrun', 'dismissed'].includes(x)).length;
-    if (done === parts.length) return 'done';
-    if (done + bad === parts.length) return done ? 'partial' : (ph.includes('stopped') && !ph.includes('failed') ? 'stopped' : 'failed');
+    /* a plan is its parts; a handoff chain is its root plus every hop - the run is not done until the last hop is */
+    const all = run.orchestration ? parts : [run, ...parts];
+    const ph = all.map(phaseOf), done = ph.filter(x => x === 'done').length, bad = ph.filter(x => ['failed', 'stopped', 'notrun', 'dismissed'].includes(x)).length;
+    if (done === all.length) return 'done';
+    if (done + bad === all.length) return done ? 'partial' : (ph.includes('stopped') && !ph.includes('failed') ? 'stopped' : 'failed');
     return ph.includes('running') ? 'running' : ph.includes('queued') ? 'queued' : 'waiting';
   }
 
@@ -45,10 +49,10 @@
     for (const t of tasks || []) {
       if (!t || !t.id || partParent(t, by)) continue;
       if (t.status === 'dismissed') continue;
-      const parts = t.orchestration ? (t.partIds || []).map(i => by.get(i)).filter(Boolean) : [], missing = t.orchestration && parts.length < (t.partIds || []).length;
+      const parts = t.orchestration ? (t.partIds || []).map(i => by.get(i)).filter(Boolean) : (tasks || []).filter(x => { const p = partParent(x, by); return p && p.id === t.id; }).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))), missing = t.orchestration && parts.length < (t.partIds || []).length;
       const status = runStatus(t, parts, missing), active = ['queued', 'running', 'waiting'].includes(status);
-      const current = t.orchestration ? (parts.find(p => p.status === 'running') || parts.find(p => p.status === 'queued') || parts.find(p => p.status === 'waiting') || null) : t;
-      const fin = t.orchestration && !active ? Math.max(...[ms(t.finishedAt), ...parts.map(p => ms(p.finishedAt))].filter(x => x != null), 0) || null : ms(t.finishedAt);
+      const current = parts.find(p => p.status === 'running') || parts.find(p => p.status === 'queued') || parts.find(p => p.status === 'waiting') || (t.orchestration ? null : t);
+      const fin = !active ? Math.max(...[ms(t.finishedAt), ...parts.map(p => ms(p.finishedAt))].filter(x => x != null), 0) || null : ms(t.finishedAt);
       runs.push({ id: t.id, task: t, parts, status, active, partsMissing: !!missing, current, finishedAtMs: fin, createdAtMs: ms(t.createdAt) });
     }
     return runs;
@@ -128,13 +132,15 @@
      a single task shows its own result; a plan shows each part's own result in order and says so when there is no combined answer. */
   function finishedItem(run, ctx) {
     const t = run.task, now = ctx.now;
-    const parts = run.parts.map(p => ({ id: p.id, n: (p.partIndex != null ? p.partIndex : 0) + 1, title: p.title, phase: phaseOf(p), bot: (botOf(p, ctx) || {}).name || null, result: p.result == null ? '' : String(p.result), finishedAtMs: ms(p.finishedAt) }));
+    /* a handoff chain shows every hop including the job that started it, in order, as one finished item */
+    const chain = !t.orchestration && run.parts.length > 0, seq = t.orchestration ? run.parts : (chain ? [t, ...run.parts] : []);
+    const parts = seq.map((p, i) => ({ id: p.id, n: (p.partIndex != null ? p.partIndex : i) + 1, title: p.title, phase: phaseOf(p), bot: (botOf(p, ctx) || {}).name || null, result: p.result == null ? '' : String(p.result), finishedAtMs: ms(p.finishedAt) }));
     const done = parts.filter(p => p.phase === 'done').length;
     const status = run.status;
-    const kind = !t.orchestration ? 'single' : parts.length ? 'parts' : 'summary_only';
+    const kind = parts.length ? 'parts' : !t.orchestration ? 'single' : 'summary_only';
     const text = kind === 'single' ? (t.result == null ? '' : String(t.result)) : kind === 'summary_only' ? String(t.result || '') : '';
-    return { id: run.id, title: t.title, status, finishedAtMs: run.finishedAtMs, bots: [...new Set((t.orchestration ? parts.map(p => p.bot) : [(botOf(t, ctx) || {}).name || null]).filter(Boolean))],
-      kind, text, parts, partsDone: done, partsTotal: t.orchestration ? (t.partIds || []).length : 1, partsMissing: run.partsMissing,
+    return { id: run.id, title: t.title, status, finishedAtMs: run.finishedAtMs, bots: [...new Set((parts.length ? parts.map(p => p.bot) : [(botOf(t, ctx) || {}).name || null]).filter(Boolean))],
+      kind, chain, text, parts, partsDone: done, partsTotal: t.orchestration ? (t.partIds || []).length : (parts.length || 1), partsMissing: run.partsMissing,
       note: kind === 'parts' ? 'No single combined answer was produced. Each part\'s own result is shown, in order.' : kind === 'summary_only' ? 'The individual parts are no longer available; this is the plan\'s own saved summary.' : '',
       sources: urlsIn(kind === 'parts' ? parts.map(p => p.result).join('\n') : text) };
   }
