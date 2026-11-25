@@ -1,5 +1,4 @@
 /* Black Box vNext · Receipts: what the team finished, with model costs; each opens its receipt (D). */
-
 (function () {
   'use strict';
   const BB = window.BB, $ = BB.$, esc = BB.esc;
