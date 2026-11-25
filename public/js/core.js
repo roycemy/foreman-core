@@ -211,6 +211,15 @@
     let s = out.join(' ').replace(/[.,:;·…-]+$/, ''); if (s.length > 32) { s = s.slice(0, 32).replace(/\s+\S*$/, ''); more = true; } if (!s) return ''; return s.charAt(0).toUpperCase() + s.slice(1) + (more ? '…' : '');
   };
   BB.runningTask = a => BB.tasks().filter(t => t.assignee === a.id && t.status === 'running').sort((x, y) => String(y.startedAt || y.createdAt).localeCompare(String(x.startedAt || x.createdAt)))[0] || null;
+  /* Provider capabilities drive both the setup prompt (connect.js) and honest pickup labels here: what a bot type can do out of the box, not what we wish it did. queueWatch/emailWake describe pickup paths the bot sets up itself from the paste; nothing is enabled server-side. */
+  BB.PROVIDER_CAPS = {
+    instinct: { mcp: true, emailWake: true, queueWatch: false, browserPairing: true },
+    grok: { mcp: true, emailWake: true, queueWatch: false, browserPairing: true },
+    muse: { mcp: true, emailWake: false, queueWatch: true, browserPairing: true },
+    custom: { mcp: true, emailWake: false, queueWatch: false, browserPairing: true }
+  };
+  /* honest cadence wording: a 10-second queue watch must never read "every 0 min" */
+  BB.fmtEvery = s => (s < 60 ? Math.round(s) + ' sec' : Math.round(s / 60) + ' min');
   BB.botState = function (a) {
     /* one source of truth for the floor, the roster, the inspector header and the crew pill */
     const p = BB.presence(a);
@@ -231,11 +240,12 @@
     if (a.providerId === 'muse' && !poll && !(t && liveNow)) return { kind: 'msg', text: 'Dark · acts when messaged', task: t };
     /* PR #28: authorization is not activity. No accepted activity means quiet, whatever the job list says. */
     if (BB.wentDark(a)) {
-      if (poll) return { kind: 'late', text: 'Late · declared check-in every ' + Math.round(poll / 60) + ' min · last activity ' + last, task: t };
+      if (poll) return { kind: 'late', text: 'Late · declared check-in every ' + BB.fmtEvery(poll) + ' · last activity ' + last, task: t };
       return { kind: 'dark', text: (t ? BB.sentenceCase(t.title) + ' · ' : '') + 'Went dark ' + BB.ago(a.lastSeen) + (BB.ago(a.lastSeen) === 'just now' ? '' : ' ago'), task: t };
     }
-    if (poll && !t && a.instantWake) return { kind: 'poll', text: 'Instant wake on · backup check every ' + Math.round(poll / 60) + ' min · last activity ' + last };
-    if (poll && !t) return { kind: 'poll', text: 'Declared check-in every ' + Math.round(poll / 60) + ' min · last activity ' + last };
+    if (poll && !t && a.instantWake) return { kind: 'poll', text: 'Instant wake on · backup check every ' + BB.fmtEvery(poll) + ' · last activity ' + last };
+    if (poll && !t) return { kind: 'poll', text: 'Declared check-in every ' + BB.fmtEvery(poll) + ' · last activity ' + last };
+    if (!poll && !t && a.instantWake) return { kind: 'poll', text: 'Instant wake on · last activity ' + last };
     if (BB.signal(a) === 'inactive') return { kind: 'quiet', text: t ? BB.sentenceCase(t.title) + ' · no recent activity' : a.hosted ? 'Runs when you assign a job' : 'No recent activity', task: t };
     if (t && BB.budgetBlock(t)) return { kind: 'blocked', text: 'Blocked: over action budget', task: t };
     if (t) return { kind: 'run', text: t.title, task: t };
@@ -283,8 +293,8 @@
     const k = BB.botState(a).kind;
     if (k === 'msg' || k === 'dark') return { cls: 'dim', text: k === 'msg' ? 'Dark · acts when messaged' : 'Dark' };
     if (k === 'late') return { cls: 'late', text: 'Late' };
-    if (BB.pollSec(a) && a.instantWake) return { cls: 'poll', text: 'Instant wake on · backup every ' + Math.round(BB.pollSec(a) / 60) + ' min' };
-    if (BB.pollSec(a)) return { cls: 'poll', text: 'Declared check-in every ' + Math.round(BB.pollSec(a) / 60) + ' min' };
+    if (BB.pollSec(a) && a.instantWake) return { cls: 'poll', text: 'Instant wake on · backup every ' + BB.fmtEvery(BB.pollSec(a)) };
+    if (BB.pollSec(a)) return { cls: 'poll', text: 'Declared check-in every ' + BB.fmtEvery(BB.pollSec(a)) };
     return { cls: 'run', text: 'Live' };
   };
   /* the copy-nudge message the owner can paste into a dark or late bot's chat */
