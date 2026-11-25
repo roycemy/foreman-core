@@ -1,5 +1,4 @@
 /* Black Box vNext · core: API client, live state store, identity, presence and copy helpers.
-
    Every screen renders from BB.S (the server's /api/state plus /api/money and /api/cards). Nothing here invents data. */
 (function () {
   'use strict';
