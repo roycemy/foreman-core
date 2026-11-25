@@ -8,7 +8,7 @@
    4. One-tap share: publicReceiptAuto generates every public word from non-private facts (bot names, step count,
       status, timing, budget) and publishes in one call; job text never enters the snapshot; revoke kills the link. */
 const fs = require('fs'), vm = require('vm'), assert = require('assert');
-const src = fs.readFileSync('api/index.js', 'utf8') + '\nmodule.exports.t={execute,planTaskParts,splitNamedSegments,newTask,getJ,setJ,r,listTasks,listAgents,reassignAsleepQueuedTasks,publicReceiptAuto,publicReceiptRead,publicReceiptRevoke};';
+const src = fs.readFileSync('api/index.js', 'utf8') + '\nmodule.exports.t={execute,planTaskParts,splitNamedSegments,newTask,getJ,setJ,r,listTasks,listAgents,reassignAsleepQueuedTasks,publicReceiptAuto,publicReceiptRead,publicReceiptRevoke,queueGuidance,completeTask,claimTask};';
 const c = { require, module: { exports: {} }, process: { env: {} }, global: {}, console, fetch: () => { throw Error('NO NETWORK') }, setTimeout, clearTimeout, URL, AbortSignal };
 vm.runInNewContext(src, c); const f = c.module.exports.t;
 const BBWork = require('./public/js/work-model.js');
@@ -108,6 +108,29 @@ assert(api.includes('|| t0.assignedBy ||'), 'the sweep never moves a deliberatel
   assert.equal(fpub.status, 201);
   assert(fpub.body.snapshot.title.includes('attempted'), 'a failed job says attempted, not completed');
   assert.equal(fpub.body.snapshot.outcome, 'failed');
+
+  /* --- 5: queue-drain guidance (Muse asked which of 2 queued jobs to start; the answer is always: both, in order) --- */
+  await mk('qb', 'Queue Bot');
+  const q1 = await f.newTask({ title: 'queued one', assignee: 'qb' });
+  const q2 = await f.newTask({ title: 'queued two', assignee: 'qb' });
+  const g0 = await f.queueGuidance({ id: 'qb' });
+  assert.equal(g0.queued_for_you, 2, 'both queued jobs counted');
+  assert(/without asking the owner/.test(g0.next), 'the guidance answers the question Muse asked');
+  assert(/oldest first/.test(g0.next));
+  /* completing a running job reports the remaining queue */
+  await mk('qc', 'Queue Bot Three');
+  const run1 = await f.newTask({ title: 'running job', assignee: 'qc' });
+  await f.setJ('fm:task:' + run1.id, Object.assign({}, run1, { status: 'running', startedAt: new Date().toISOString() }));
+  const mq = await f.newTask({ title: 'qc queued', assignee: 'qc' });
+  const done = await f.completeTask(await f.getJ('fm:agent:qc'), run1.id, { result: 'done' });
+  assert.equal(done.status, 200);
+  assert.equal(done.body.queued_for_you, 1, 'complete response carries the remaining queue');
+  assert(/claim the next one now/.test(done.body.next));
+  const empty = await f.completeTask; assert(empty, 'completeTask exported');
+  const gnone = await f.queueGuidance({ id: 'never-used-agent' });
+  assert.equal(gnone, null, 'no guidance when the queue is empty');
+  const desc = api.match(/foreman_next_task', description: '([^']+)'/);
+  assert(desc && /without asking the owner/.test(desc[1]) && /until nothing is queued/.test(desc[1]), 'the MCP tool description itself says drain the queue');
 
   console.log('chain-splitter-share regression: ALL PASS');
 })().catch(e => { console.error(e); process.exit(1); });
