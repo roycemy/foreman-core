@@ -297,7 +297,7 @@ async function execute(agent, action, params, reqId) {
    const id='task_'+sha(agent.id+':'+source).slice(0,24),old=await getJ('fm:task:'+id);if(old){if(old.assignee!==to.id)throw Error('Source ID already belongs to a different assignment');return {summary:'Assignment already registered: '+old.title,data:{task_id:id,status:old.status,assignee:old.assignee,duplicate:true}};}
    const parent=params.parent_id?await getJ('fm:task:'+params.parent_id):null;if(params.parent_id&&(!parent||(parent.assignee!==agent.id&&parent.createdBy!==agent.id)))throw Error('Parent job not yours');
    const advice=await routing(String(params.category||'').toLowerCase());
-   const t={id,title,parentId:parent?.id||null,context:parent?String(parent.result||parent.brief||'').slice(0,4000):'',routingReason:advice.suggested?advice.suggested.reason:'No scored category history. Explicit bot choice.',suggestedBotId:advice.suggested?.id||null,brief:String(params.brief||'').slice(0,1500),category:String(params.category||'').toLowerCase(),assignee:to.id,status:'queued',createdBy:agent.id,createdAt:now(),result:null,origin:'chat',sourceId:source};
+   const t={id,title,parentId:parent?.id||null,context:parent?String(parent.result||parent.brief||'').slice(0,4000):'',routingReason:advice.suggested?advice.suggested.reason:'No scored category history. Explicit bot choice.',suggestedBotId:advice.suggested?.id||null,brief:String(params.brief||'').slice(0,1500),category:String(params.category||'').toLowerCase(),assignee:to.id,assignedBy:'bot',status:'queued',createdBy:agent.id,createdAt:now(),result:null,origin:'chat',sourceId:source};
    if(!await r(['SET','fm:task:'+id,JSON.stringify(t),'NX']))throw Error('Assignment registered concurrently; read the task before retrying');await r(['LPUSH','fm:tasklist',id]);await r(['LTRIM','fm:tasklist',0,59]);
    await event(agent.id,'handoff','Assigned "'+title+'" to '+to.name,{kind:'HANDOFF',taskId:id,toAgentId:to.id});await event(to.id,'assigned',agent.name+' assigned "'+title+'"',{kind:'WAITING',taskId:id,fromAgentId:agent.id});await maybeWakeBot(to,id);
    return {summary:'Assigned "'+title+'" to '+to.name,data:{task_id:id,status:'queued',assignee:to.id}};
@@ -323,7 +323,7 @@ async function execute(agent, action, params, reqId) {
     let root = t, depth = 0; while (root.parentId && depth++ < 10) { const up = await getJ('fm:task:' + root.parentId); if (!up) break; root = up; }
     const pin = 'Scope, from the owner\'s original request ("' + String(root.title || '').slice(0, 120) + '"): do only this part as the owner described. Do not send, queue, or widen scope beyond it.\n\n';
     const fullBrief = String(params.brief || ''), spilled = pin.length + fullBrief.length > 1500;
-    const child = await newTask({ title: String(params.title || t.title).slice(0, 120), brief: (pin + fullBrief).slice(0, 1500), assignee: to.id, parentId: t.id, context: (spilled ? pin + fullBrief + '\n\n--- Earlier context from ' + agent.name + ' ---\n' + String(t.result || '') : String(t.result || '')).slice(0, 4000), createdBy: agent.id });
+    const child = await newTask({ title: String(params.title || t.title).slice(0, 120), brief: (pin + fullBrief).slice(0, 1500), assignee: to.id, parentId: t.id, context: (spilled ? pin + fullBrief + '\n\n--- Earlier context from ' + agent.name + ' ---\n' + String(t.result || '') : String(t.result || '')).slice(0, 4000), createdBy: agent.id, assignedBy: 'bot' });
     t.handedTo = to.id; t.childId = child.id; await setJ('fm:task:' + t.id, t);
     await event(agent.id, 'handoff', `Handed "${t.title}" to ${to.name}`, { kind: 'HANDOFF', toAgentId: to.id, taskId: t.id, childTaskId: child.id });
     return { summary: `Handed task "${t.title}" to ${to.name} (new task ${child.id}) with context from ${agent.name}` + (spilled ? '. The brief ran past 1,500 characters; its full text is in the new task\'s context, nothing was lost.' : ''), data: { child_task_id: child.id, to: to.name, ...(spilled ? { brief_in_context: true } : {}) } };
@@ -651,7 +651,18 @@ async function generalRoutingPick(){
 /* Small deterministic planner: split explicit steps, never claim model reasoning. Owner reviews
    each part and assignment before any task is queued. Dependencies run in order. */
 function taskParts(text){return String(text||'').trim().split(/\s*(?:;|\n|\bthen\b|\band (?=(?:write|draft|review|check|research|compare|summarize|summarise|design|build|make)\b))\s*/i).map(x=>x.replace(/^(?:and|then)\s+/i,'').trim()).filter(Boolean);}
-async function planTaskParts(body){const text=String(body.title||'').trim(),parts=taskParts(text);if(parts.length>4||parts.some(p=>p.length>120))return {parts:[],method:'explicit-steps',note:'Use 2 to 4 short explicit steps. Nothing has been queued.'};if(parts.length<2)return {parts:[],method:'explicit-steps',note:'One task is enough. No clear separate steps were found.'};const out=[],agents=await listAgents();for(const title of parts){const named=matchNamedBots(title,agents);if(named.length){out.push({title:title.slice(0,120),category:null,assignee:named[0].id,botName:named[0].name,reason:'You named '+named[0].name+'.'});continue;}const cat=categorizeAll(title)[0]?.category||null,pick=cat?await freshRoutingPick(cat):null,fallback=pick?.picked?null:await generalRoutingPick(),bot=pick?.picked||fallback?.picked;out.push({title:title.slice(0,120),category:cat,assignee:bot?.id||null,botName:bot?.name||null,reason:pick?.picked?(pick.advice?.suggested?.reason||'Awake bot for '+cat):fallback.reason});}return {parts:out,method:'explicit-steps',note:'Rule-based split of your explicit steps, not AI reasoning. Parts run in order; the same bot can do several. Review each assignment.'};}
+/* Inline 'Name: ...' segments: 'Grok: research X. Muse: draft. Instinct: audit.' in ONE paragraph is still explicit steps.
+   Splits at each connected bot's name (or first word) followed by a colon, in mention order. Long segments are fine here:
+   the title is sliced to 120 and the full text rides in the part brief (original request), like every plan. */
+function splitNamedSegments(text, agents){
+  const names=[];for(const a of agents||[]){if(a.status!=='active'||a.harness||a.hosted)continue;const nm=String(a.name||'').toLowerCase().trim();if(!nm)continue;names.push(nm);const first=nm.split(/\s+/)[0];if(first.length>=3&&first!==nm&&!(typeof CATEGORY_KEYWORDS!=='undefined'&&CATEGORY_KEYWORDS[first]))names.push(first);}
+  if(!names.length)return null;
+  const esc=x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),re=new RegExp('\\b('+names.map(esc).join('|')+')\\s*:','gi');
+  const marks=[];let m;while((m=re.exec(text)))marks.push(m.index);
+  if(marks.length<2)return null;
+  return marks.map((at,i)=>text.slice(at,i+1<marks.length?marks[i+1]:undefined).trim()).filter(Boolean);
+}
+async function planTaskParts(body){const text=String(body.title||'').trim();const agents=await listAgents();const namedSeg=splitNamedSegments(text,agents),parts=namedSeg||taskParts(text);if(parts.length>4||(!namedSeg&&parts.some(p=>p.length>120)))return {parts:[],method:'explicit-steps',note:'Use 2 to 4 short explicit steps. Nothing has been queued.'};if(parts.length<2)return {parts:[],method:'explicit-steps',note:'One task is enough. No clear separate steps were found.'};const out=[];for(const title of parts){const named=matchNamedBots(title,agents);if(named.length){out.push({title:title.slice(0,120),category:null,assignee:named[0].id,botName:named[0].name,reason:'You named '+named[0].name+'.'});continue;}const cat=categorizeAll(title)[0]?.category||null,pick=cat?await freshRoutingPick(cat):null,fallback=pick?.picked?null:await generalRoutingPick(),bot=pick?.picked||fallback?.picked;out.push({title:title.slice(0,120),category:cat,assignee:bot?.id||null,botName:bot?.name||null,reason:pick?.picked?(pick.advice?.suggested?.reason||'Awake bot for '+cat):fallback.reason});}return {parts:out,method:'explicit-steps',note:'Rule-based split of your explicit steps, not AI reasoning. Parts run in order; the same bot can do several. Review each assignment.'};}
 async function createTaskParts(body,clientRef){const parts=body.parts;if(!Array.isArray(parts)||parts.length<2||parts.length>4||parts.some(p=>!p||!String(p.title||'').trim()||String(p.title).length>120))return {status:400,body:{error:'Review 2 to 4 titled parts'}};if(await r(['GET','fm:kill']))return {status:403,body:{error:'Workspace is paused'}};for(const p of parts)if(p.assignee){const a=await getJ('fm:agent:'+p.assignee);if(!a||a.status!=='active'||a.paused||a.hosted||a.harness)return {status:400,body:{error:'Choose active external bots only'}};}
  const parent=await newTask({...(clientRef?{id:clientRef}:{}),title:body.title,brief:body.brief,hold:true});if(parent.duplicate)return {status:200,body:{task:parent,duplicate:true}};parent.orchestration=true;parent.status='waiting';parent.startedAt=now();parent.partIds=[];await setJ('fm:task:'+parent.id,parent);
  for(let i=0;i<parts.length;i++){const p=parts[i],t=await newTask({title:p.title,brief:'Part '+(i+1)+' of '+parts.length+'. Only do this part. Original request: '+String(body.title||'')+'\n'+String(body.brief||''),parentId:parent.id,assignee:p.assignee||null,category:p.category,context:'Part of: '+body.title,hold:true});t.partIndex=i;t.dependsOn=i?parent.partIds[i-1]:null;t.status='waiting';t.assignedBy='owner';await setJ('fm:task:'+t.id,t);parent.partIds.push(t.id);}
@@ -668,7 +679,8 @@ async function reassignAsleepQueuedTasks(claimantId) {
   const nowMs = Date.now(); let changed = false;
   const tasks = await listTasks();
   for (const t0 of tasks) {
-    if (t0.status !== 'queued' || !t0.assignee || t0.assignedBy === 'owner' || t0.assignee === claimantId) continue;
+    /* a deliberately assigned job (owner or a bot's own handoff/assignment) is never moved; only auto-routed ones are */
+    if (t0.status !== 'queued' || !t0.assignee || t0.assignedBy || t0.assignee === claimantId) continue;
     const a = await getJ('fm:agent:' + t0.assignee);
     if (!a || a.status !== 'active' || a.paused || a.hosted || a.harness) continue;
     if ((t0.reassignments || []).filter(x => x.by === 'auto-asleep').length >= ASLEEP_FALLBACK_MAX) continue;
@@ -925,6 +937,42 @@ async function publicReceiptReview(taskId,b){
  return {status:200,body:{reviewId,expiresAt,snapshot,hash:sha(JSON.stringify(snapshot)),suggestedBudgetCents:suggestedBudgetCents(t,src.j.receipts),audience:'Anyone with the link, for '+PUBLIC_TTL_DAYS+' days or until you revoke it. People who already saw or copied it keep what they saw.'}};}
 // Suggested budget for the review form, before the owner writes anything public.
 async function publicReceiptDraft(taskId){const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};return {status:200,body:{suggestedBudgetCents:suggestedBudgetCents(src.j.task,src.j.receipts),title:'',summary:'',template:''}};}
+/* One-tap share: every public word is GENERATED from non-private facts only - bot names, step count, status, elapsed time,
+   approval count and the recorded budget. Job text, titles, results, links, paths and credentials are never copied in.
+   Bot names are allowed here because the owner asked for them; people names and job titles stay checked and excluded. */
+function generatedPublicFields(t,kids,agents,approvals,budgetCents){
+ const nameOf=id=>{const a=agents.find(x=>x.id===id);return a?String(a.name||'').trim():null;};
+ const bots=[...new Set([t,...kids].map(x=>nameOf(x.assignee)).filter(Boolean))];
+ const list=bots.length>2?bots.slice(0,-1).join(', ')+' and '+bots[bots.length-1]:bots.join(' and ');
+ const steps=1+kids.length, ok=t.status==='done';
+ const started=Date.parse(t.startedAt||t.createdAt),ended=Date.parse(t.finishedAt),ms=ended-started;
+ const dur=Number.isFinite(ms)&&ms>=0?(ms<60000?Math.max(1,Math.round(ms/1000))+' seconds':ms<3600000?Math.round(ms/60000)+' minutes':Math.round(ms/360000)/10+' hours'):null;
+ const word=ok?'completed':'attempted', outc=ok?'completed':'did not finish';
+ const title=(bots.length>1?'Team task '+word+' by '+list:(bots.length?'Task '+word+' by '+list:(ok?'Team task completed':'Team task attempted'))).slice(0,100);
+ const summary=['A '+steps+'-step job'+(bots.length?' run by '+list:'')+', '+outc+(dur?' in '+dur:'')+'.',approvals?approvals+' owner approval'+(approvals===1?'':'s')+'.':'No owner approvals were needed.'].join(' ').slice(0,700);
+ const template=('A '+steps+'-step team job'+(bots.length?' where '+list+' work in sequence':'')+': each step runs only after the previous one finishes, and the last step produces the final answer.').slice(0,1500);
+ return {title,summary,template,budgetCents};
+}
+async function publicReceiptAuto(taskId){
+ const src=await publicSource(taskId);if(!src||!['done','failed'].includes(src.j.task.status))return {status:404,body:{error:'A finished job is required'}};
+ const t=src.j.task,agents=await listAgents();
+ const approvals=src.j.requests.filter(q=>['approved','executed','failed'].includes(q.status)).length;
+ const fields=generatedPublicFields(t,src.j.children,agents,approvals,suggestedBudgetCents(t,src.j.receipts));
+ for(const k of ['title','summary','template'])if(!publicText(fields[k],k==='title'?100:k==='summary'?700:1500))return {status:400,body:{error:'The generated '+k+' did not pass the public-text check. Nothing was published.'}};
+ /* job titles and people names stay checked; connected bot names are allowed in generated text by owner policy */
+ const problems=publicProblems({title:fields.title,summary:fields.summary,template:fields.template},[t.title,...src.j.children.map(k=>k.title)]);
+ if(problems.length)return {status:400,body:{error:'The generated text tripped a privacy check ('+problems.map(p=>p.kind+' in '+p.field).join(', ')+'). Nothing was published.'}};
+ const started=Date.parse(t.startedAt),ended=Date.parse(t.finishedAt),ms=ended-started,ledger=src.j.receipts.filter(x=>Number.isSafeInteger(x.costCents)&&x.costCents>=0);
+ const snapshot={version:2,title:fields.title,summary:fields.summary,template:fields.template,budgetCents:fields.budgetCents,outcome:t.status==='done'?'completed':'failed',
+  elapsedSeconds:Number.isFinite(started)&&Number.isFinite(ended)&&ms>=0?Math.round(ms/1000):null,
+  reportedModelCostUsd:t.modelCostUsd!=null&&Number.isFinite(Number(t.modelCostUsd))?Math.round(Number(t.modelCostUsd)*1e6)/1e6:null,externalCost:null,
+  ledgerCents:ledger.length?ledger.reduce((v,x)=>v+x.costCents,0):null,trackedActions:src.j.receipts.length,approvals,
+  steps:publicSteps(t,src.j.requests,src.j.receipts,src.j.children),
+  provenance:'Outcome and model costs are reported by the bot, not verified. Title, description and template were generated from non-private facts (bot names, step count, status, timing) and published in one tap by the owner. Elapsed is wall-clock time, not active work time. The gateway ledger covers retained linked actions only; it is not provider spending or a complete job cost.'};
+ const token=crypto.randomBytes(24).toString('hex'),publishedAt=now(),expiresAt=new Date(Date.now()+PUBLIC_TTL_DAYS*86400000).toISOString();
+ await setJ('gl:publicReceipt:'+token,{snapshot,hash:sha(JSON.stringify(snapshot)),ownerWs:wsId(),taskId:t.id,revoked:false,publishedAt,expiresAt});await r(['EXPIRE','gl:publicReceipt:'+token,PUBLIC_TTL_DAYS*86400]);
+ await r(['SADD','fm:publicReceipts',token]);
+ return {status:201,body:{token,path:'/receipt/'+token,publishedAt,expiresAt,snapshot,hash:sha(JSON.stringify(snapshot))}};}
 async function publicReceiptPublish(b){
  if(b.confirmed!==true||b.audience!=='public'||typeof b.reviewId!=='string'||!/^[a-f0-9]{36}$/.test(b.reviewId))return {status:400,body:{error:'Review the exact snapshot and confirm its public audience'}};
  const k='fm:publicReview:'+b.reviewId,review=await getJ(k);if(!review||Date.parse(review.expiresAt)<=Date.now())return {status:409,body:{error:'Review expired; review again'}};
@@ -2496,6 +2544,7 @@ async function routes(req, res, path, body, agentPre) {
     if(path==='/public-receipts/draft'&&req.method==='GET')return send(await publicReceiptDraft(new URL(req.url,'https://local.invalid').searchParams.get('taskId')));
     if(path==='/public-receipts/review'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptReview(body.taskId,body));}
     if(path==='/public-receipts/publish'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptPublish(body));}
+    if(path==='/public-receipts/auto'&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptAuto(body.taskId));}
     {const rv=path.match(/^\/public-receipts\/([a-f0-9]{48})\/revoke$/);if(rv&&req.method==='POST'){if(req.headers.origin!==origin)return res.status(403).json({error:'origin'});return send(await publicReceiptRevoke(rv[1]));}}
     {const jm=path.match(/^\/jobs\/(\w+)$/);if(jm&&req.method==='GET'){const j=await jobDetail(jm[1]);return j?res.json(j):res.status(404).json({error:'not found'});}}
     {const nm=path.match(/^\/notes\/([A-Za-z0-9_]{1,60})$/);if(nm&&req.method==='GET'){res.setHeader('Cache-Control','no-store');const x=await noteRead(nm[1],new URL(req.url||'/','https://local.invalid').searchParams.get('request'));return !x?res.status(404).json({error:'not found'}):x.deleted?res.status(410).json({error:'deleted',...x}):res.json(x);}}
