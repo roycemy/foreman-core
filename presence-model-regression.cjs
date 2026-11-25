@@ -74,8 +74,8 @@ tag = BB.channelTag(BB.S.agents[0]); assert.equal(tag.cls, 'run'); assert.equal(
 // 9. poll bot with a queued job: nudge text names the bot, the count and HQ
 state([bot('m1', 'Muse', { providerId: 'muse', hosted: true, lastSeen: ago(3600) })], { tasks: [{ id: 't1', title: 'Memo', status: 'queued', assignee: 'm1', createdAt: ago(60) }] });
 const nudge = BB.nudgeText(BB.S.agents[0]);
-assert.ok(nudge.includes('Muse - check Alter: 1 job is waiting for you.'), nudge);
-assert.ok(nudge.includes('/hq'), nudge);
+assert.ok(nudge.includes('Run your Alter queue now') && nudge.includes('1 job is waiting for you right now.'), nudge);
+assert.ok(nudge.includes('foreman_next_task'), nudge);
 
 // 10. by-tag on finished jobs: "by Grok" normally, "by Alter for Grok" when the hosted worker ran it; nothing on unfinished jobs
 state([bot('g1', 'Grok Bot', { providerId: 'grok' })]);
