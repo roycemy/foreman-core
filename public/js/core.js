@@ -1,4 +1,5 @@
 /* Black Box vNext · core: API client, live state store, identity, presence and copy helpers.
+
    Every screen renders from BB.S (the server's /api/state plus /api/money and /api/cards). Nothing here invents data. */
 (function () {
   'use strict';
@@ -302,8 +303,7 @@
   /* the copy-nudge message the owner can paste into a dark or late bot's chat */
   BB.nudgeText = a => {
     const n = BB.tasks().filter(t => t.assignee === a.id && t.status === 'queued').length;
-    const base = (typeof location !== 'undefined' && location.origin ? location.origin : 'https://www.alterhq.app') + '/hq';
-    return a.name + ' - check Alter: ' + (n ? n + (n === 1 ? ' job is' : ' jobs are') + ' waiting for you.' : 'the owner wants a check-in.') + ' ' + base;
+    return 'Run your Alter queue now: call foreman_queue_probe. For every job it reports, claim it with foreman_next_task, do the brief, complete it with foreman_complete_task with the real result, then check again until nothing is queued, oldest first. ' + (n ? n + (n === 1 ? ' job is' : ' jobs are') + ' waiting for you right now.' : 'The owner wants a check-in.');
   };
   /* the visible note when Alter moved a job off a sleeping bot onto an awake one */
   BB.fallbackNote = t => {
