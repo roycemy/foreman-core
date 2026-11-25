@@ -1,5 +1,4 @@
 /* Regression: per-task progress bars. Multi-step runs (plans and handoff chains) expose real steps done/total;
-
    single-step jobs expose no fraction (no invented progress); the Work panel and floor labels render the bar; CSS exists. */
 const fs = require('fs'), assert = require('assert');
 const BBWork = require('./public/js/work-model.js');
