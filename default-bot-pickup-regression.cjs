@@ -1,4 +1,4 @@
-// Default pickup for new users: one provider-capability table drives the setup paste and the pickup labels; Muse gets email wake + manual run-queue fallback, Grok the email-wake steps; sub-minute cadences never read "every 0 min"; instant wake shows even without a backup cadence.
+// Default pickup for new users: one provider-capability table drives the setup paste and the pickup labels; Muse gets the honest manual-mode paste, Grok the email-wake steps; sub-minute cadences never read "every 0 min"; instant wake shows even without a backup cadence.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const raw=fs.readFileSync('public/js/connect.js','utf8'),source=raw.replace(/\}\)\(\);\s*$/,"window.test={set:x=>W=x,runnerMessage,setupMessageFor,gatewayMessage};})();");
 const CAPS={instinct:{mcp:true,emailWake:true,queueWatch:false},grok:{mcp:true,emailWake:true,queueWatch:false},muse:{mcp:true,emailWake:false,queueWatch:true}};
@@ -7,11 +7,11 @@ const f=load('https://www.alterhq.app');
 /* Muse: the paste carries the queue-watch self-setup with honest cost note, quiet-stop rules and the timed-test proof bar */
 f.set({p:'muse',label:'Muse',agent:{id:'agent_muse',name:'Muse'}});
 const mm=f.setupMessageFor();
-assert(mm.includes('INSTANT WAKE SETUP'),'muse paste leads with email instant wake');
-assert(mm.includes('wakeNonce'),'the email wake verification step is explicit');
+assert(!mm.includes('INSTANT WAKE SETUP')&&!mm.includes('wakeNonce'),'muse paste promises no automatic wake (Meta declines every form)');
+assert(mm.includes('MANUAL MODE'),'muse paste is honest manual mode');
 assert(!mm.includes('Create one scheduled task'),'no scheduled-task self-setup (Meta declines it)');
-assert(mm.includes('foreman_queue_probe')&&mm.includes('foreman_next_task'),'the manual fallback uses the real tools');
-assert(/measured queue-to-claim time/.test(mm),'proof bar is a measured pickup time');
+assert(mm.includes('foreman_queue_probe')&&mm.includes('foreman_next_task'),'the manual path uses the real tools');
+assert(/measured message-to-claim time/.test(mm),'proof bar is a measured pickup time');
 assert(!mm.includes('ALTER AUTO-WAKE SETUP'),'muse is not offered the grok email-wake paste');
 /* Grok: email-wake steps stay; no queue-watch block */
 f.set({p:'grok',label:'Grok Bot',agent:{id:'agent_grok',name:'Grok Bot'}});
@@ -20,7 +20,7 @@ assert(gm.includes('ALTER AUTO-WAKE SETUP')&&gm.includes('wake@mail.alterhq.app'
 assert(!gm.includes('INSTANT WAKE SETUP'),'grok is not offered the muse watch');
 /* Without the table (core not loaded yet) the fallback keeps both blocks */
 const BB2={$:()=>null,esc:x=>x,toast:()=>{},S:{agents:[]},sync:async()=>{},presence:a=>a.presence};const ctx2={window:{BB:BB2},BRAND:{name:'Alter'},location:{origin:'https://www.alterhq.app'},clearInterval,setInterval,navigator:{},console};vm.runInNewContext(source,ctx2);const g2=ctx2.window.test;
-g2.set({p:'muse',label:'Muse',agent:{id:'agent_muse',name:'Muse'}});assert(g2.setupMessageFor().includes('INSTANT WAKE SETUP'),'fallback table keeps the muse block');
+g2.set({p:'muse',label:'Muse',agent:{id:'agent_muse',name:'Muse'}});assert(g2.setupMessageFor().includes('MANUAL MODE'),'fallback table keeps the muse block');
 g2.set({p:'grok',label:'Grok Bot',agent:{id:'agent_grok',name:'Grok Bot'}});assert(g2.setupMessageFor().includes('ALTER AUTO-WAKE SETUP'),'fallback table keeps the grok block');
 /* core.js: the table exists once and labels use the shared cadence formatter */
 const core=fs.readFileSync('public/js/core.js','utf8');
